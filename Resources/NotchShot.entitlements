@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- Not sandboxed. NotchShot writes captures to folders the user picks and
+	     can launch a user-supplied Now Playing helper; both are incompatible
+	     with the App Sandbox. This is a locally-signed personal build, not an
+	     App Store one. -->
+
+	<!-- Microphone, for recordings that include voice. -->
+	<key>com.apple.security.device.audio-input</key>
+	<true/>
+
+	<!-- Apple Events, for the Music/Spotify Now Playing fallback. -->
+	<key>com.apple.security.automation.apple-events</key>
+	<true/>
+
+	<!-- Hardened Runtime otherwise blocks spawning the Now Playing helper the
+	     user configured, since it is signed by someone else. -->
+	<key>com.apple.security.cs.disable-library-validation</key>
+	<true/>
+</dict>
+</plist>
