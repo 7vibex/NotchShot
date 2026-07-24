@@ -17,6 +17,8 @@ public enum Log {
 
 public enum NotchShotError: LocalizedError, Equatable {
     case screenRecordingPermissionDenied
+    /// Asked, prompt shown, grant not yet in effect for this process.
+    case screenRecordingPermissionPending
     case microphonePermissionDenied
     case noShareableContent
     case displayNotFound
@@ -33,6 +35,8 @@ public enum NotchShotError: LocalizedError, Equatable {
         switch self {
         case .screenRecordingPermissionDenied:
             "NotchShot needs Screen & System Audio Recording permission."
+        case .screenRecordingPermissionPending:
+            "Allow NotchShot in Screen & System Audio Recording, then quit and reopen it."
         case .microphonePermissionDenied:
             "NotchShot needs Microphone permission to record your voice."
         case .noShareableContent:
@@ -62,6 +66,7 @@ public enum NotchShotError: LocalizedError, Equatable {
     public var notchMessage: String {
         switch self {
         case .screenRecordingPermissionDenied: "Screen Recording denied"
+        case .screenRecordingPermissionPending: "Allow Screen Recording, then reopen NotchShot"
         case .microphonePermissionDenied: "Microphone denied"
         case .cancelled: "Cancelled"
         case .diskSpaceUnavailable: "Disk full"

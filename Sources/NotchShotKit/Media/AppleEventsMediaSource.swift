@@ -29,6 +29,10 @@ public actor AppleEventsMediaSource: MediaSource {
     private var pollTask: Task<Void, Never>?
     private var continuation: AsyncStream<MediaSnapshot>.Continuation?
     private var lastSnapshot = MediaSnapshot.empty
+    /// Artwork keyed by "artist — title", so it is fetched once per track
+    /// rather than on every poll tick.
+    private var artworkCache: [String: Data] = [:]
+    private var artworkCacheOrder: [String] = []
     /// Apple Events are synchronous and comparatively expensive, so the poll is
     /// slow by design — the notch interpolates playback position between ticks.
     private let pollInterval: Duration = .seconds(2)
@@ -85,13 +89,80 @@ public actor AppleEventsMediaSource: MediaSource {
     // MARK: Polling
 
     private func poll() async {
-        let snapshot = await MainActor.run { Self.snapshot() }
+        var snapshot = await MainActor.run { Self.snapshot() }
+        snapshot.artworkData = await artwork(for: snapshot)
+
         // Only emit when something the UI cares about actually changed, so the
         // 2 s tick doesn't churn SwiftUI or reload artwork.
         if !snapshot.isMateriallyEqual(to: lastSnapshot) || snapshot.position != lastSnapshot.position {
             lastSnapshot = snapshot
             continuation?.yield(snapshot)
         }
+    }
+
+    /// Album art for the current track.
+    ///
+    /// Music stores the image locally, so it comes back as raw bytes over Apple
+    /// Events. Spotify only exposes a CDN URL, so that one costs a single
+    /// request per track — the only network access in the app, and only when
+    /// Spotify is the active player.
+    private func artwork(for snapshot: MediaSnapshot) async -> Data? {
+        guard let key = Self.cacheKey(for: snapshot) else { return nil }
+        if let cached = artworkCache[key] { return cached }
+
+        let data: Data?
+        switch snapshot.applicationBundleID {
+        case Player.music.rawValue:
+            data = await MainActor.run { Self.musicArtworkData() }
+        case Player.spotify.rawValue:
+            guard let urlString = await MainActor.run(body: { Self.spotifyArtworkURL() }),
+                  let url = URL(string: urlString),
+                  url.scheme == "https"
+            else { return nil }
+            data = try? await URLSession.shared.data(from: url).0
+        default:
+            data = nil
+        }
+
+        guard let data, !data.isEmpty else { return nil }
+        cache(data, for: key)
+        return data
+    }
+
+    private static func cacheKey(for snapshot: MediaSnapshot) -> String? {
+        guard let title = snapshot.title else { return nil }
+        return "\(snapshot.artist ?? "")—\(title)"
+    }
+
+    private func cache(_ data: Data, for key: String) {
+        artworkCache[key] = data
+        artworkCacheOrder.append(key)
+        // Album art is a few hundred KB apiece; a handful is plenty of history.
+        while artworkCacheOrder.count > 8 {
+            artworkCache.removeValue(forKey: artworkCacheOrder.removeFirst())
+        }
+    }
+
+    @MainActor
+    private static func musicArtworkData() -> Data? {
+        let source = """
+        tell application "Music"
+            if player state is stopped then return missing value
+            if (count of artworks of current track) is 0 then return missing value
+            return raw data of artwork 1 of current track
+        end tell
+        """
+        guard let script = NSAppleScript(source: source) else { return nil }
+        var error: NSDictionary?
+        let result = script.executeAndReturnError(&error)
+        guard error == nil else { return nil }
+        // `raw data` arrives as a typed image descriptor, not a string.
+        return result.data.isEmpty ? nil : result.data
+    }
+
+    @MainActor
+    private static func spotifyArtworkURL() -> String? {
+        run(script: "tell application \"Spotify\" to get artwork url of current track")
     }
 
     @MainActor

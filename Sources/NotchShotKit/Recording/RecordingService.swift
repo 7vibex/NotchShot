@@ -25,6 +25,9 @@ public final class RecordingService {
     private var stream: SCStream?
     private var recordingOutput: SCRecordingOutput?
     private var bridge: StreamBridge?
+    /// The live stream configuration, kept so mid-recording updates can change
+    /// one property instead of rebuilding (and zeroing) the rest.
+    private var activeStreamConfiguration: SCStreamConfiguration?
     private var temporaryURL: URL?
     private var startedAt: Date?
     private var tickTimer: Timer?
@@ -117,6 +120,7 @@ public final class RecordingService {
 
         self.stream = stream
         self.recordingOutput = output
+        self.activeStreamConfiguration = streamConfiguration
         self.temporaryURL = temporary
         self.configuration = configuration
         self.startedAt = Date()
@@ -204,13 +208,15 @@ public final class RecordingService {
         }
         self.configuration = configuration
 
-        let content = try? await fetchRawShareableContent()
-        guard let content else { return }
-        let updated = makeStreamConfiguration(
-            configuration,
-            sourcePixelSize: nil,
-            content: content
-        )
+        // Mutate the live configuration rather than building a fresh one:
+        // rebuilding without the source dimensions would push width/height 0
+        // into a running stream and kill the recording mid-take.
+        guard let updated = activeStreamConfiguration else { return }
+        updated.captureMicrophone = enabled
+        if let deviceID = configuration.microphoneDeviceID {
+            updated.microphoneCaptureDeviceID = deviceID
+        }
+
         do {
             try await stream.updateConfiguration(updated)
             status.isMicrophoneEnabled = enabled
@@ -265,6 +271,7 @@ public final class RecordingService {
         stream = nil
         recordingOutput = nil
         bridge = nil
+        activeStreamConfiguration = nil
         temporaryURL = nil
         startedAt = nil
         configuration = nil

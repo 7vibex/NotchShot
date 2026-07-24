@@ -236,6 +236,16 @@ private struct NotchSettings: View {
                 ))
             }
 
+            Section("System HUD") {
+                Toggle("Show volume and brightness in the notch", isOn: Binding(
+                    get: { preferences.systemLevelHUDEnabled },
+                    set: { coordinator.setSystemLevelHUDEnabled($0) }
+                ))
+                Text("macOS keeps showing its own overlay as well — NotchShot mirrors the change rather than replacing the system HUD, which would mean interfering with a system process.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
             Section("Hover") {
                 Toggle("Reveal a peek on hover", isOn: $preferences.hoverPeekEnabled)
                 LabeledContent("Hover delay") {

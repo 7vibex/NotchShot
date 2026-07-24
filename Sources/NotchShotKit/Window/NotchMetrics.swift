@@ -92,7 +92,7 @@ public struct NotchLayout: Sendable, Equatable {
 
     /// Largest island the panel must be able to contain. The panel is sized to
     /// this plus shadow padding, once, so state changes never resize the window.
-    public static let maximumSize = CGSize(width: 620, height: 420)
+    public static let maximumSize = CGSize(width: 640, height: 440)
     /// Slack around the island for shadows and spring overshoot.
     public static let shadowPadding: CGFloat = 40
 
@@ -100,7 +100,8 @@ public struct NotchLayout: Sendable, Equatable {
         for activity: NotchActivity,
         metrics: NotchMetrics,
         isPeeking: Bool,
-        resultCount: Int
+        resultCount: Int,
+        hasStack: Bool = false
     ) -> NotchLayout {
         let closed = CGSize(
             width: max(metrics.notchSize.width, 1),
@@ -129,7 +130,15 @@ public struct NotchLayout: Sendable, Equatable {
             return NotchLayout(size: CGSize(width: 320, height: 62), cornerRadius: 18)
         case .result:
             let extra = min(max(resultCount - 1, 0), 4) * 12
-            return NotchLayout(size: CGSize(width: 470 + CGFloat(extra), height: 186), cornerRadius: 24)
+            let height: CGFloat = hasStack ? 226 : 186
+            return NotchLayout(size: CGSize(width: 470 + CGFloat(extra), height: height), cornerRadius: 24)
+        case .systemLevel:
+            // Just wide enough for an icon and a bar: a volume nudge should
+            // feel like the notch flexing, not like a panel opening.
+            return NotchLayout(
+                size: CGSize(width: max(closed.width + 130, 300), height: 46),
+                cornerRadius: 20
+            )
         case .error:
             return NotchLayout(size: CGSize(width: 360, height: 62), cornerRadius: 18)
         }

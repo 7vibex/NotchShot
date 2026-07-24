@@ -37,7 +37,8 @@ public struct NotchRootView: View {
             for: effectiveActivity,
             metrics: context.metrics,
             isPeeking: coordinator.isPeeking && isActiveDisplay,
-            resultCount: coordinator.shelfItems.count
+            resultCount: coordinator.shelfItems.count,
+            hasStack: coordinator.stack.isCollecting || !coordinator.stack.isEmpty
         )
     }
 
@@ -47,9 +48,10 @@ public struct NotchRootView: View {
             Spacer(minLength: 0)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-        .onHover { hovering in
-            handleHover(hovering)
-        }
+        // Hover is *not* handled here. SwiftUI's onHover fires for the whole
+        // panel — which is far larger than the island — and fighting the window
+        // controller's own hit test made the notch open on its own. The
+        // controller is the single source of truth.
         .onDrop(of: [.fileURL], isTargeted: $isTargetedForDrop) { providers in
             handleDrop(providers)
         }
@@ -58,47 +60,79 @@ public struct NotchRootView: View {
         }
     }
 
+    private var shape: NotchShape {
+        NotchShape(
+            bottomRadius: layout.cornerRadius,
+            // The fillets only make sense against a real cutout; on an external
+            // display they would look like a floating tab with odd ears.
+            topRadius: context.metrics.hasPhysicalNotch ? 10 : 0
+        )
+    }
+
     private var island: some View {
-        content
-            .frame(width: layout.size.width, height: layout.size.height)
-            .background {
-                NotchShape(
-                    bottomRadius: layout.cornerRadius,
-                    topRadius: context.metrics.hasPhysicalNotch ? 9 : 0
-                )
+        ZStack(alignment: .top) {
+            shape
                 .fill(islandFill)
-                .shadow(
-                    color: .black.opacity(effectiveActivity.isExpanded ? 0.4 : 0),
-                    radius: 18,
-                    y: 8
-                )
-            }
-            .clipShape(NotchShape(
-                bottomRadius: layout.cornerRadius,
-                topRadius: context.metrics.hasPhysicalNotch ? 9 : 0
-            ))
-            .overlay {
-                if isTargetedForDrop {
-                    NotchShape(bottomRadius: layout.cornerRadius)
-                        .stroke(Color.accentColor, lineWidth: 2)
+                .overlay {
+                    if isTargetedForDrop {
+                        shape.stroke(Color.accentColor, lineWidth: 2)
+                    }
                 }
-            }
-            .animation(islandAnimation, value: layout.size)
-            .animation(islandAnimation, value: effectiveActivity)
-            .accessibilityElement(children: .contain)
-            .accessibilityLabel("NotchShot")
-            .accessibilityValue(accessibilityDescription)
+                // The shadow only appears once the island is bigger than the
+                // cutout, so a closed notch casts nothing onto the bezel.
+                .shadow(
+                    color: .black.opacity(effectiveActivity.isExpanded ? 0.45 : 0),
+                    radius: 22,
+                    y: 10
+                )
+
+            content
+                .frame(width: layout.size.width, height: layout.size.height)
+                .clipShape(shape)
+                // Content fades in a beat after the shape has started growing,
+                // so text never appears outside the island it belongs to.
+                .transition(contentTransition)
+        }
+        .frame(width: layout.size.width, height: layout.size.height)
+        .animation(shapeAnimation, value: layout.size)
+        .animation(contentAnimation, value: effectiveActivity)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("NotchShot")
+        .accessibilityValue(accessibilityDescription)
     }
 
-    /// The physical notch mask must stay opaque — Liquid Glass over a hardware
-    /// cutout looks like a rendering bug. Transient controls inside the island
-    /// use glass instead.
-    private var islandFill: some ShapeStyle {
-        Color.black.opacity(reduceTransparency ? 1 : 0.96)
+    /// Pure, fully opaque black.
+    ///
+    /// The island has to read as the hardware cutout growing, and the cutout is
+    /// literally black — even 4% transparency lets the desktop bleed through and
+    /// breaks the illusion the moment a light window sits behind the menu bar.
+    /// Liquid Glass belongs on the controls *inside* the island, never on the
+    /// mask itself.
+    private var islandFill: Color { .black }
+
+    /// Size changes get a spring with a little overshoot; content gets a
+    /// shorter, softer curve so the two don't visibly fight.
+    private var shapeAnimation: Animation? {
+        reduceMotion
+            ? .easeInOut(duration: 0.18)
+            : .spring(response: 0.38, dampingFraction: 0.72)
     }
 
-    private var islandAnimation: Animation? {
-        reduceMotion ? .easeInOut(duration: 0.16) : .spring(response: 0.34, dampingFraction: 0.78)
+    private var contentAnimation: Animation? {
+        reduceMotion
+            ? .easeInOut(duration: 0.18)
+            : .spring(response: 0.30, dampingFraction: 0.86)
+    }
+
+    private var contentTransition: AnyTransition {
+        guard !reduceMotion else { return .opacity }
+        return .asymmetric(
+            insertion: .opacity
+                .combined(with: .scale(scale: 0.90, anchor: .top))
+                .combined(with: .offset(y: -8)),
+            removal: .opacity
+                .combined(with: .scale(scale: 0.96, anchor: .top))
+        )
     }
 
     @ViewBuilder
@@ -127,6 +161,8 @@ public struct NotchRootView: View {
             ProcessingContent(message: message, coordinator: coordinator)
         case .result:
             ShelfContent(coordinator: coordinator)
+        case .systemLevel(let level):
+            SystemLevelContent(level: level)
         case .error(let message):
             ErrorContent(message: message, coordinator: coordinator)
         }
@@ -142,28 +178,12 @@ public struct NotchRootView: View {
         case .recording: "Recording, \(coordinator.recordingStatus.elapsedDescription)"
         case .processing(let message): message
         case .result: "\(coordinator.shelfItems.count) recent captures"
+        case .systemLevel(let level): "\(level.kind.title) \(Int(level.value * 100)) percent"
         case .error(let message): "Error: \(message)"
         }
     }
 
     // MARK: Interaction
-
-    private func handleHover(_ hovering: Bool) {
-        peekTask?.cancel()
-        guard Preferences.shared.hoverPeekEnabled else { return }
-
-        if hovering {
-            // A delay is what stops the notch flaring open every time the
-            // pointer crosses the top of the screen on its way somewhere else.
-            peekTask = Task {
-                try? await Task.sleep(for: .seconds(Preferences.shared.hoverPeekDelay))
-                guard !Task.isCancelled else { return }
-                coordinator.setPeeking(true)
-            }
-        } else {
-            coordinator.setPeeking(false)
-        }
-    }
 
     private func handleDrop(_ providers: [NSItemProvider]) -> Bool {
         Task {
@@ -266,14 +286,22 @@ private struct MediaContent: View {
             artwork(size: 52)
 
             VStack(alignment: .leading, spacing: 3) {
-                Text(snapshot.title ?? "Not Playing")
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(.white)
-                    .lineLimit(1)
-                Text(snapshot.artist ?? snapshot.applicationName ?? "")
-                    .font(.system(size: 10))
-                    .foregroundStyle(.white.opacity(0.65))
-                    .lineLimit(1)
+                // Scrolls itself when the title is longer than the space, so a
+                // long track name is fully readable rather than truncated.
+                MarqueeText(
+                    snapshot.title ?? "Not Playing",
+                    font: .system(size: 12, weight: .semibold),
+                    color: .white
+                )
+                .frame(height: 15)
+
+                MarqueeText(
+                    snapshot.artist ?? snapshot.applicationName ?? "",
+                    font: .system(size: 10),
+                    color: .white.opacity(0.65),
+                    speed: 22
+                )
+                .frame(height: 13)
 
                 if snapshot.duration != nil {
                     ProgressView(value: snapshot.progress)
@@ -283,6 +311,7 @@ private struct MediaContent: View {
                         .padding(.top, 2)
                 }
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
 
             Spacer(minLength: 0)
 
@@ -312,7 +341,10 @@ private struct MediaContent: View {
             }
         }
         .padding(.horizontal, 12)
-        .id(now.timeIntervalSince1970.rounded())
+        // `now` is read so the progress bar re-evaluates on each tick. It must
+        // not become a view identity — keying the view on it rebuilt the whole
+        // subtree every second and restarted the marquee mid-scroll.
+        .opacity(now == .distantPast ? 0 : 1)
     }
 
     @ViewBuilder
@@ -635,6 +667,56 @@ private struct RecordingContent: View {
             }
         }
         .padding(.horizontal, 14)
+    }
+}
+
+// MARK: - System level HUD
+
+/// Mirrors a volume or brightness change, in the shape of the system HUD but
+/// living in the notch.
+private struct SystemLevelContent: View {
+    var level: SystemLevel
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Image(systemName: level.symbolName)
+                .font(.system(size: 15, weight: .medium))
+                .foregroundStyle(.white)
+                .frame(width: 22)
+                // The symbol swaps as the level crosses each threshold; a plain
+                // swap would pop, so cross-fade it.
+                .contentTransition(.symbolEffect(.replace))
+
+            GeometryReader { geometry in
+                ZStack(alignment: .leading) {
+                    Capsule()
+                        .fill(.white.opacity(0.18))
+                    Capsule()
+                        .fill(.white)
+                        .frame(width: max(3, geometry.size.width * fillFraction))
+                }
+            }
+            .frame(height: 6)
+
+            Text("\(Int((level.isMuted ? 0 : level.value) * 100))")
+                .font(.system(size: 11, weight: .semibold, design: .rounded))
+                .foregroundStyle(.white.opacity(0.7))
+                .monospacedDigit()
+                .frame(width: 26, alignment: .trailing)
+                .contentTransition(.numericText())
+        }
+        .padding(.horizontal, 16)
+        .animation(
+            reduceMotion ? .easeOut(duration: 0.12) : .spring(response: 0.24, dampingFraction: 0.9),
+            value: level.value
+        )
+        .animation(.easeOut(duration: 0.15), value: level.isMuted)
+    }
+
+    private var fillFraction: Double {
+        level.isMuted ? 0 : min(max(level.value, 0), 1)
     }
 }
 

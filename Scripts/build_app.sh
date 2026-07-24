@@ -18,9 +18,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
 CONFIGURATION="debug"
-# "-" is an ad-hoc signature: enough for TCC to remember the app across
-# launches on this Mac, but it will not pass Gatekeeper elsewhere.
-IDENTITY="-"
+IDENTITY=""
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -37,6 +35,46 @@ APP_DIR="$ROOT/dist/$APP_NAME.app"
 CONTENTS="$APP_DIR/Contents"
 MACOS_DIR="$CONTENTS/MacOS"
 RESOURCES_DIR="$CONTENTS/Resources"
+
+# Pick a stable signing identity if the caller didn't name one.
+#
+# This matters far more than it looks: macOS ties Screen Recording and
+# Microphone grants to the app's *designated requirement*. Under an ad-hoc
+# signature ("-") that requirement is the code hash, so every rebuild looks like
+# a brand-new app and the permission you granted five minutes ago is silently
+# dropped — the app then fails to capture with no visible reason. Signing with a
+# real certificate keys the requirement to the identity plus the bundle id, so
+# the grant survives rebuilds.
+if [[ -z "$IDENTITY" ]]; then
+    IDENTITY_LIST="$(security find-identity -v -p codesigning 2>/dev/null || true)"
+    for PREFIX in "Developer ID Application" "Apple Development" "Mac Developer" "NotchShot"; do
+        # `|| true` matters: a non-matching grep exits 1, and under
+        # `set -euo pipefail` that would abort the whole script before it ever
+        # reached the next candidate.
+        FOUND="$(printf '%s\n' "$IDENTITY_LIST" | grep "$PREFIX" | head -1 | sed -E 's/.*"(.*)"/\1/' || true)"
+        if [[ -n "$FOUND" ]]; then
+            IDENTITY="$FOUND"
+            break
+        fi
+    done
+fi
+
+if [[ -z "$IDENTITY" ]]; then
+    IDENTITY="-"
+    cat >&2 <<'WARN'
+
+⚠️  No code-signing certificate found — falling back to an ad-hoc signature.
+
+    macOS will forget Screen Recording and Microphone permission on EVERY
+    rebuild, because an ad-hoc signature's identity is its code hash.
+
+    To fix permanently, create a free self-signed certificate:
+      Keychain Access ▸ Certificate Assistant ▸ Create a Certificate…
+      Name: NotchShot Local · Type: Code Signing · Self Signed Root
+    then rerun:  ./Scripts/build_app.sh --identity "NotchShot Local"
+
+WARN
+fi
 
 echo "==> Building ($CONFIGURATION)"
 swift build -c "$CONFIGURATION" --product "$APP_NAME"
@@ -80,7 +118,14 @@ echo
 echo "Next steps:"
 echo "  open $APP_DIR"
 echo
-echo "The first capture will ask for Screen Recording. macOS caches the old"
-echo "signature, so if permission seems stuck after a rebuild, remove NotchShot"
-echo "from System Settings > Privacy & Security > Screen & System Audio"
-echo "Recording and let it re-prompt."
+echo "Signed as: $IDENTITY"
+echo
+if [[ "$IDENTITY" == "-" ]]; then
+    echo "Ad-hoc signature: macOS will forget Screen Recording on the next"
+    echo "rebuild. See the warning above to fix that permanently."
+else
+    echo "The first capture asks for Screen Recording. Allow it, then QUIT AND"
+    echo "REOPEN NotchShot — macOS only applies a new capture grant to freshly"
+    echo "launched processes. Because this build is signed with a real"
+    echo "certificate, you only have to do this once; later rebuilds keep it."
+fi

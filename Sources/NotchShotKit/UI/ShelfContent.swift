@@ -26,6 +26,10 @@ struct ShelfContent: View {
                 actions(for: selected)
             }
 
+            if !coordinator.stack.isEmpty || coordinator.stack.isCollecting {
+                stackBar
+            }
+
             if items.count > 1 {
                 pager
             }
@@ -173,6 +177,88 @@ struct ShelfContent: View {
                 .accessibilityLabel(action.title)
             }
         }
+    }
+
+    /// Capture Stack strip: collect several shots, reorder them, then export
+    /// the set as one artefact instead of handing over four separate files.
+    private var stackBar: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "square.stack.3d.up.fill")
+                .font(.system(size: 10))
+                .foregroundStyle(coordinator.stack.isCollecting ? Color.accentColor : .white.opacity(0.6))
+
+            Text("\(coordinator.stack.count)")
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(.white)
+                .contentTransition(.numericText())
+
+            ForEach(coordinator.stack.items) { item in
+                Button {
+                    coordinator.stack.moveItem(id: item.id, by: -1)
+                } label: {
+                    Text(item.asset.url.deletingPathExtension().lastPathComponent.suffix(2))
+                        .font(.system(size: 8, weight: .medium))
+                        .foregroundStyle(.white.opacity(0.75))
+                        .frame(width: 20, height: 16)
+                        .glassEffect(.regular, in: .rect(cornerRadius: 4))
+                }
+                .buttonStyle(.plain)
+                .help("Move earlier")
+                .contextMenu {
+                    Button("Move Earlier") { coordinator.stack.moveItem(id: item.id, by: -1) }
+                    Button("Move Later") { coordinator.stack.moveItem(id: item.id, by: 1) }
+                    Divider()
+                    Button("Remove", role: .destructive) { coordinator.stack.remove(id: item.id) }
+                }
+            }
+
+            Spacer(minLength: 0)
+
+            Menu {
+                ForEach(StackExportStyle.allCases) { style in
+                    Button {
+                        coordinator.exportStack(style: style, numbersSteps: false)
+                    } label: {
+                        Label(style.title, systemImage: style.symbolName)
+                    }
+                }
+                Divider()
+                Section("Numbered steps") {
+                    ForEach(StackExportStyle.allCases) { style in
+                        Button("\(style.title) with steps") {
+                            coordinator.exportStack(style: style, numbersSteps: true)
+                        }
+                    }
+                }
+                Divider()
+                Button("Clear Stack", role: .destructive) { coordinator.stack.clear() }
+            } label: {
+                Label("Export", systemImage: "square.and.arrow.up")
+                    .font(.system(size: 9, weight: .semibold))
+            }
+            .menuStyle(.borderlessButton)
+            .fixedSize()
+            .foregroundStyle(.white)
+            .disabled(coordinator.stack.isEmpty)
+
+            Button {
+                coordinator.toggleStackCollecting()
+            } label: {
+                Image(systemName: coordinator.stack.isCollecting ? "pause.circle.fill" : "plus.circle.fill")
+                    .font(.system(size: 13))
+                    .foregroundStyle(coordinator.stack.isCollecting ? Color.accentColor : .white)
+            }
+            .buttonStyle(.plain)
+            .help(coordinator.stack.isCollecting
+                  ? "Stop adding new captures to the stack"
+                  : "Add every new capture to the stack")
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 5)
+        .background {
+            RoundedRectangle(cornerRadius: 8).fill(.white.opacity(0.07))
+        }
+        .animation(reduceMotion ? nil : .snappy, value: coordinator.stack.count)
     }
 
     private var pager: some View {

@@ -96,6 +96,8 @@ public final class Preferences {
     /// Hover reveals a compact peek; the full interface still needs a click.
     public var hoverPeekEnabled = true { didSet { write(hoverPeekEnabled, .hoverPeek) } }
     public var hoverPeekDelay: Double = 0.35 { didSet { write(hoverPeekDelay, .hoverPeekDelay) } }
+    /// Mirror volume and brightness changes in the notch.
+    public var systemLevelHUDEnabled = true { didSet { write(systemLevelHUDEnabled, .systemLevelHUD) } }
     public var mediaIntegrationEnabled = true { didSet { write(mediaIntegrationEnabled, .mediaEnabled) } }
     public var appleEventsFallbackEnabled = true { didSet { write(appleEventsFallbackEnabled, .appleEventsFallback) } }
     /// Path to the user-installed mediaremote-adapter bundle, if present.
@@ -184,7 +186,7 @@ public final class Preferences {
         case recordsSystemAudio, recordsMicrophone, preferredMicrophone
         case recordingShowsCursor, recordingHighlightsClicks
         case historyRetentionDays, historyEnabled, indexesCaptureText
-        case notchEnabled, islandOnExternal, hoverPeek, hoverPeekDelay
+        case notchEnabled, islandOnExternal, hoverPeek, hoverPeekDelay, systemLevelHUD
         case mediaEnabled, appleEventsFallback, adapterPath
         case backgroundPreset, annotationColor, annotationLineWidth
         case launchAtLogin, showsDockIcon, firstRun, adapterCheckBuild
@@ -240,6 +242,7 @@ public final class Preferences {
         showsIslandOnExternalDisplays = bool(.islandOnExternal, true)
         hoverPeekEnabled = bool(.hoverPeek, true)
         hoverPeekDelay = double(.hoverPeekDelay, 0.35)
+        systemLevelHUDEnabled = bool(.systemLevelHUD, true)
         mediaIntegrationEnabled = bool(.mediaEnabled, true)
         appleEventsFallbackEnabled = bool(.appleEventsFallback, true)
         mediaRemoteAdapterPath = string(.adapterPath)

@@ -27,6 +27,7 @@ public final class NotchWindowController {
     private var mouseMonitors: [Any] = []
     private var observers: [NSObjectProtocol] = []
     private var rebuildWorkItem: DispatchWorkItem?
+    private var presenceTimer: Timer?
 
     private let makeContent: (NotchDisplayContext) -> AnyView
 
@@ -51,6 +52,7 @@ public final class NotchWindowController {
     private var currentActivity: NotchActivity = .idle
     private var isPeeking = false
     private var resultCount = 0
+    private var hasStack = false
 
     public init(makeContent: @escaping (NotchDisplayContext) -> AnyView) {
         self.makeContent = makeContent
@@ -65,6 +67,8 @@ public final class NotchWindowController {
     }
 
     public func stop() {
+        presenceTimer?.invalidate()
+        presenceTimer = nil
         for monitor in mouseMonitors { NSEvent.removeMonitor(monitor) }
         mouseMonitors.removeAll()
         for observer in observers { NotificationCenter.default.removeObserver(observer) }
@@ -204,37 +208,75 @@ public final class NotchWindowController {
 
     // MARK: Layout / hit testing
 
-    public func update(activity: NotchActivity, isPeeking: Bool, resultCount: Int) {
+    public func update(activity: NotchActivity, isPeeking: Bool, resultCount: Int, hasStack: Bool) {
         self.currentActivity = activity
         self.isPeeking = isPeeking
         self.resultCount = resultCount
+        self.hasStack = hasStack
         applyLayout()
     }
 
+    /// The island a display should currently draw.
+    private func currentLayout(for context: NotchDisplayContext) -> NotchLayout {
+        // Only the display the user is working on expands; the rest stay in
+        // their closed state so a second monitor doesn't grow a panel.
+        let isActive = context.displayID == activeDisplayID
+        let effectiveActivity: NotchActivity = isActive
+            ? currentActivity
+            : (currentActivity == .media ? .media : .idle)
+        return NotchLayout.layout(
+            for: effectiveActivity,
+            metrics: context.metrics,
+            isPeeking: isPeeking && isActive,
+            resultCount: resultCount,
+            hasStack: hasStack
+        )
+    }
+
+    /// Updates click-through regions. Deliberately does **not** re-evaluate
+    /// hover: hover changes drive layout, so evaluating hover from here closes
+    /// a feedback loop that makes the notch flap open on its own.
     private func applyLayout() {
         for entry in entries.values {
-            let metrics = entry.context.metrics
-            // Only the display the user is working on expands; the rest stay
-            // in their closed state so a second monitor doesn't grow a panel.
-            let isActive = entry.context.displayID == activeDisplayID
-            let effectiveActivity: NotchActivity = isActive ? currentActivity : (currentActivity == .media ? .media : .idle)
-            let layout = NotchLayout.layout(
-                for: effectiveActivity,
-                metrics: metrics,
-                isPeeking: isPeeking && isActive,
-                resultCount: resultCount
+            entry.panel.setInteractiveRectFromScreenRect(
+                interactiveRect(for: entry.context)
             )
-            var island = layout.islandRect(in: metrics)
-            // Give the pointer a few points of slack so small mouse jitter at
-            // the island's edge doesn't flicker hover off and on.
-            island = island.insetBy(dx: -4, dy: -4)
-            entry.panel.setInteractiveRectFromScreenRect(island)
         }
-        updateHover(at: NSEvent.mouseLocation)
+        refreshMouseTransparency()
+        updatePresencePoll()
+    }
+
+    /// Region that accepts clicks: the island as drawn, plus the fixed trigger
+    /// zone so the closed notch is always clickable.
+    private func interactiveRect(for context: NotchDisplayContext) -> CGRect {
+        let island = currentLayout(for: context).islandRect(in: context.metrics)
+        return island.union(triggerZone(for: context.metrics))
+    }
+
+    /// The zone that *starts* a hover.
+    ///
+    /// Fixed to the closed notch regardless of what the notch is currently
+    /// showing. Deriving it from the live island instead means an expanded
+    /// island keeps re-triggering its own hover, which reads to the user as the
+    /// notch opening when they never went near it.
+    private func triggerZone(for metrics: NotchMetrics) -> CGRect {
+        metrics.notchRect.insetBy(dx: -6, dy: -4)
+    }
+
+    /// The zone that *sustains* an existing hover — the island as drawn, with a
+    /// little slack. Wider than the trigger zone on purpose: easy to keep, and
+    /// deliberate to start.
+    private func keepAliveZone(for context: NotchDisplayContext) -> CGRect {
+        currentLayout(for: context)
+            .islandRect(in: context.metrics)
+            .insetBy(dx: -8, dy: -8)
+            .union(triggerZone(for: context.metrics))
     }
 
     private func installMouseMonitors() {
-        let matching: NSEvent.EventTypeMask = [.mouseMoved, .leftMouseDragged, .rightMouseDragged]
+        let matching: NSEvent.EventTypeMask = [
+            .mouseMoved, .leftMouseDragged, .rightMouseDragged, .mouseExited,
+        ]
         if let global = NSEvent.addGlobalMonitorForEvents(matching: matching, handler: { [weak self] _ in
             MainActor.assumeIsolated { self?.updateHover(at: NSEvent.mouseLocation) }
         }) {
@@ -250,16 +292,55 @@ public final class NotchWindowController {
         }
     }
 
+    /// Resolves which display's island the pointer is over, with hysteresis so
+    /// a pointer resting on the boundary can't oscillate.
     private func updateHover(at screenPoint: CGPoint) {
         var newHover: CGDirectDisplayID?
         for (displayID, entry) in entries {
-            if entry.panel.updateMouseTransparency(screenPoint: screenPoint) {
+            let zone = hoveredDisplayID == displayID
+                ? keepAliveZone(for: entry.context)
+                : triggerZone(for: entry.context.metrics)
+            if zone.contains(screenPoint) {
                 newHover = displayID
+                break
             }
         }
-        if newHover != hoveredDisplayID {
-            hoveredDisplayID = newHover
-            onHoverChange?(newHover)
+
+        refreshMouseTransparency(mouseLocation: screenPoint)
+
+        guard newHover != hoveredDisplayID else { return }
+        hoveredDisplayID = newHover
+        updatePresencePoll()
+        onHoverChange?(newHover)
+    }
+
+    private func refreshMouseTransparency(mouseLocation: CGPoint? = nil) {
+        let point = mouseLocation ?? NSEvent.mouseLocation
+        for entry in entries.values {
+            entry.panel.updateMouseTransparency(screenPoint: point)
+        }
+    }
+
+    // MARK: Presence poll
+
+    /// While the notch is open, a slow poll confirms the pointer is still
+    /// there.
+    ///
+    /// Mouse-move events stop arriving if the pointer ends up over a window
+    /// that swallows them, or leaves via a screen edge — without this the notch
+    /// can stay stuck open with the pointer nowhere near it. Runs only while
+    /// something is open, so an idle notch still costs nothing.
+    private func updatePresencePoll() {
+        let needsPoll = hoveredDisplayID != nil || currentActivity.isExpanded
+        if needsPoll, presenceTimer == nil {
+            let timer = Timer(timeInterval: 0.45, repeats: true) { [weak self] _ in
+                MainActor.assumeIsolated { self?.updateHover(at: NSEvent.mouseLocation) }
+            }
+            RunLoop.main.add(timer, forMode: .common)
+            presenceTimer = timer
+        } else if !needsPoll, let presenceTimer {
+            presenceTimer.invalidate()
+            self.presenceTimer = nil
         }
     }
 
@@ -278,6 +359,20 @@ public final class NotchWindowController {
     public func focusActivePanel() {
         guard let displayID = activeDisplayID, let entry = entries[displayID] else { return }
         entry.panel.makeKeyAndOrderFront(nil)
+    }
+
+    /// Puts every panel back on screen at the right level.
+    ///
+    /// Needed after anything that activates the app or takes over the display —
+    /// a selection overlay, a Space switch, a fullscreen transition — any of
+    /// which can leave a panel ordered out or stuck behind the menu bar.
+    public func reassertPanels() {
+        for entry in entries.values {
+            entry.panel.level = NotchPanel.notchLevel
+            entry.panel.orderFrontRegardless()
+            position(panel: entry.panel, for: entry.context.metrics)
+        }
+        applyLayout()
     }
 
     public func resignFocus() {

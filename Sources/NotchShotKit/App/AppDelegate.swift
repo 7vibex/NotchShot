@@ -28,7 +28,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             AnyView(NotchRootView(coordinator: coordinator, context: context))
         }
         controller.onHoverChange = { [weak self] displayID in
-            self?.coordinator.setPeeking(displayID != nil)
+            self?.coordinator.setHovering(displayID != nil)
         }
         windowController = controller
         coordinator.windowController = controller
@@ -141,6 +141,11 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         add(menu, title: "Stop Recording", action: #selector(stopRecording))
 
         menu.addItem(.separator())
+        add(menu, title: "Collect Captures in Stack", action: #selector(toggleStack))
+        add(menu, title: "Add Latest Capture to Stack", action: #selector(addToStack))
+        add(menu, title: "Clear Stack", action: #selector(clearStack))
+
+        menu.addItem(.separator())
         add(menu, title: "History…", action: #selector(showHistoryFromMenu))
         add(menu, title: "Restore Last Capture", action: #selector(restoreLastCapture))
         add(menu, title: "Close All Pinned Captures", action: #selector(closePins))
@@ -164,6 +169,9 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         coordinator.capture(intent)
     }
 
+    @objc private func toggleStack() { coordinator.toggleStackCollecting() }
+    @objc private func addToStack() { coordinator.addSelectedToStack() }
+    @objc private func clearStack() { coordinator.stack.clear() }
     @objc private func startRecording() { coordinator.startRecording() }
     @objc private func stopRecording() { coordinator.stopRecording() }
     @objc private func restoreLastCapture() { coordinator.restoreLastDismissed() }

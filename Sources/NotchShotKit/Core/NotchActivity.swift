@@ -18,6 +18,8 @@ public enum NotchActivity: Sendable, Equatable {
     case processing(String)
     /// A finished capture is sitting in the shelf.
     case result
+    /// Mirroring a system volume or brightness change.
+    case systemLevel(SystemLevel)
     /// A transient error banner.
     case error(String)
 
@@ -36,6 +38,9 @@ public enum NotchActivity: Sendable, Equatable {
         case .processing: 70
         case .result: 60
         case .expanded: 40
+        // Above media so a volume nudge is visible while a track is showing,
+        // below `expanded` so it can't shove aside a menu the user opened.
+        case .systemLevel: 30
         case .media: 20
         case .idle: 0
         }
@@ -68,6 +73,7 @@ public enum NotchActivity: Sendable, Equatable {
         case .recording: "recording"
         case .processing(let s): "processing(\(s))"
         case .result: "result"
+        case .systemLevel(let level): "systemLevel(\(level.kind.rawValue))"
         case .error(let s): "error(\(s))"
         }
     }
@@ -83,6 +89,7 @@ public struct ActivityArbiter: Sendable {
     public var hasResult = false
     public var isDraggingFiles = false
     public var userExpanded = false
+    public var systemLevel: SystemLevel?
     public var hasMedia = false
     public var error: String?
 
@@ -97,6 +104,7 @@ public struct ActivityArbiter: Sendable {
         if hasResult { return .result }
         if isDraggingFiles { return .expanded }
         if userExpanded { return .expanded }
+        if let systemLevel { return .systemLevel(systemLevel) }
         if hasMedia { return .media }
         return .idle
     }

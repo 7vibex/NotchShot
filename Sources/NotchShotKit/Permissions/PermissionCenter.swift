@@ -91,15 +91,37 @@ public final class PermissionCenter {
             screenRecording = .granted
             return true
         }
-        // Shows the system prompt the first time; afterwards it is a no-op and
-        // the user must go to System Settings, which is why we start polling.
+
+        // `CGRequestScreenCaptureAccess` returns *immediately* with the
+        // current (still-false) state while the system prompt is on screen —
+        // it does not wait for the user. Treating its `false` as a refusal is
+        // why the first capture used to fail with "denied" the moment the
+        // prompt appeared.
         let granted = CGRequestScreenCaptureAccess()
-        screenRecording = granted ? .granted : .denied
-        if !granted {
-            pendingRemediation = .screenRecording
-            startPollingScreenRecording()
+        if granted {
+            screenRecording = .granted
+            return true
         }
-        return granted
+
+        // So: remember that we asked, poll for the grant, and report a state
+        // the UI can explain rather than a flat denial.
+        let hasAskedBefore = hasRequestedScreenRecording
+        hasRequestedScreenRecording = true
+        screenRecording = hasAskedBefore ? .denied : .notDetermined
+        pendingRemediation = .screenRecording
+        startPollingScreenRecording()
+        return false
+    }
+
+    /// True the first time a capture is attempted, when the system prompt is
+    /// probably still on screen and a restart will be needed.
+    public var isAwaitingFirstScreenRecordingGrant: Bool {
+        screenRecording != .granted && hasRequestedScreenRecording
+    }
+
+    private var hasRequestedScreenRecording: Bool {
+        get { UserDefaults.standard.bool(forKey: "notchshot.askedScreenRecording") }
+        set { UserDefaults.standard.set(newValue, forKey: "notchshot.askedScreenRecording") }
     }
 
     /// macOS does not notify us when the toggle flips, and the grant only takes

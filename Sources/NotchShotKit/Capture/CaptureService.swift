@@ -112,7 +112,59 @@ public actor CaptureService {
         configuration.colorSpaceName = CGColorSpace.sRGB
 
         let image = try await captureImage(filter: filter, configuration: configuration)
+
+        // `sourceRect` is the fast path, but it is also the part of
+        // ScreenCaptureKit most likely to disagree with us about scaling on an
+        // unusual display mode. If what came back isn't the size we asked for,
+        // fall back to grabbing the whole display and cropping — slower, but it
+        // cannot return the wrong region.
+        let expected = CGSize(width: CGFloat(Int(pixelSize.width)), height: CGFloat(Int(pixelSize.height)))
+        let actual = CGSize(width: image.width, height: image.height)
+        if abs(actual.width - expected.width) > 2 || abs(actual.height - expected.height) > 2 {
+            Log.capture.notice("""
+                sourceRect capture returned \(Int(actual.width))×\(Int(actual.height)), \
+                expected \(Int(expected.width))×\(Int(expected.height)); cropping from full display
+                """)
+            if let cropped = try await captureAreaByCropping(
+                clamped,
+                display: display,
+                scale: scale,
+                excludedWindows: excludedWindows,
+                showsCursor: showsCursor
+            ) {
+                return cropped
+            }
+        }
+
         return CapturedImage(cgImage: image, scale: scale, sourceRect: clamped)
+    }
+
+    /// Full-display grab cropped to `globalRect`. The reliable-but-wasteful
+    /// path, used only when the direct one misbehaves.
+    private func captureAreaByCropping(
+        _ globalRect: CGRect,
+        display: SCDisplay,
+        scale: CGFloat,
+        excludedWindows: Set<CGWindowID>,
+        showsCursor: Bool
+    ) async throws -> CapturedImage? {
+        let full = try await captureDisplay(
+            display.displayID,
+            excludedWindows: excludedWindows,
+            showsCursor: showsCursor
+        )
+        let local = ScreenGeometry.displayLocalRect(
+            globalCGRect: globalRect,
+            displayCGBounds: display.frame
+        )
+        let pixelRect = CGRect(
+            x: local.origin.x * scale,
+            y: local.origin.y * scale,
+            width: local.width * scale,
+            height: local.height * scale
+        ).integral
+        guard let cropped = full.cgImage.cropping(to: pixelRect) else { return nil }
+        return CapturedImage(cgImage: cropped, scale: scale, sourceRect: globalRect)
     }
 
     public func captureDisplay(

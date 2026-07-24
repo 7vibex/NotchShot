@@ -58,6 +58,8 @@ public final class AppCoordinator {
     public let media = MediaCoordinator.shared
     public let history = HistoryRepository.shared
     public let permissions = PermissionCenter.shared
+    public let systemLevels = SystemLevelMonitor.shared
+    public let stack = CaptureStack.shared
 
     /// Most recent capture the user dismissed, for "restore last".
     private var lastDismissed: ShelfItem?
@@ -65,6 +67,8 @@ public final class AppCoordinator {
     private var countdownTask: Task<Void, Never>?
     private var scrollingSession: ScrollingCaptureSession?
     private var errorTask: Task<Void, Never>?
+    private var systemLevelTask: Task<Void, Never>?
+    private var peekTask: Task<Void, Never>?
 
     public var windowController: NotchWindowController?
     public var onOpenEditor: ((AnnotationDocumentController) -> Void)?
@@ -90,12 +94,16 @@ public final class AppCoordinator {
             Task { await self?.finishRecordingAfterFailure(error) }
         }
 
-        // Media presence feeds the arbiter but can never outrank a capture.
-        withObservationTracking {
-            _ = media.snapshot.hasContent
-        } onChange: { [weak self] in
-            Task { @MainActor in self?.observeMedia() }
+        systemLevels.onChange = { [weak self] level in
+            self?.showSystemLevel(level)
         }
+        if Preferences.shared.systemLevelHUDEnabled {
+            systemLevels.start()
+        }
+
+        // Media presence feeds the arbiter but can never outrank a capture.
+        // `observeMedia` re-arms its own tracker, so it must be started exactly
+        // once — arming it here as well doubled the trackers on every change.
         observeMedia()
         refreshActivity()
     }
@@ -110,6 +118,36 @@ public final class AppCoordinator {
         }
     }
 
+    // MARK: System level HUD
+
+    private func showSystemLevel(_ level: SystemLevel) {
+        arbiter.systemLevel = level
+        refreshActivity()
+
+        systemLevelTask?.cancel()
+        systemLevelTask = Task { [weak self] in
+            // Each further change restarts the timer, so holding a volume key
+            // keeps the HUD up rather than flickering.
+            try? await Task.sleep(for: .seconds(1.4))
+            guard !Task.isCancelled else { return }
+            await MainActor.run {
+                self?.arbiter.systemLevel = nil
+                self?.refreshActivity()
+            }
+        }
+    }
+
+    public func setSystemLevelHUDEnabled(_ enabled: Bool) {
+        Preferences.shared.systemLevelHUDEnabled = enabled
+        if enabled {
+            systemLevels.start()
+        } else {
+            systemLevels.stop()
+            arbiter.systemLevel = nil
+            refreshActivity()
+        }
+    }
+
     private func refreshActivity() {
         let resolved = arbiter.resolve()
         if resolved != activity {
@@ -118,12 +156,39 @@ public final class AppCoordinator {
         windowController?.update(
             activity: activity,
             isPeeking: isPeeking,
-            resultCount: shelfItems.count
+            resultCount: shelfItems.count,
+            hasStack: stack.isCollecting || !stack.isEmpty
         )
     }
 
+    /// Hover reported by the window controller.
+    ///
+    /// The delay lives here rather than in the view: it is what stops the notch
+    /// flaring open every time the pointer crosses the top of the screen on its
+    /// way to the menu bar. Leaving is immediate — a lingering open notch after
+    /// the pointer has gone is exactly the "it opened by itself" complaint.
+    public func setHovering(_ hovering: Bool) {
+        peekTask?.cancel()
+        guard Preferences.shared.hoverPeekEnabled else {
+            if isPeeking { setPeeking(false) }
+            return
+        }
+
+        guard hovering else {
+            setPeeking(false)
+            return
+        }
+        guard !isPeeking else { return }
+
+        peekTask = Task { [weak self] in
+            let delay = Preferences.shared.hoverPeekDelay
+            try? await Task.sleep(for: .seconds(delay))
+            guard !Task.isCancelled else { return }
+            await MainActor.run { self?.setPeeking(true) }
+        }
+    }
+
     public func setPeeking(_ peeking: Bool) {
-        guard Preferences.shared.hoverPeekEnabled else { return }
         guard peeking != isPeeking else { return }
         isPeeking = peeking
         refreshActivity()
@@ -362,6 +427,11 @@ public final class AppCoordinator {
             .selectableWindows(excluding: excluded) ?? []
 
         let previous = intent == .area ? await CaptureService.shared.previousAreaRect : nil
+        // Activating for the overlay can push our panels behind the menu bar,
+        // so they are re-asserted the moment the overlay goes away.
+        SelectionOverlayController.shared.onDismiss = { [weak self] in
+            self?.windowController?.reassertPanels()
+        }
         let result = await SelectionOverlayController.shared.beginSelection(
             mode: mode,
             freezeFrames: freezeFrames,
@@ -581,6 +651,11 @@ public final class AppCoordinator {
     // MARK: Shelf
 
     private func push(_ item: ShelfItem) {
+        // While the stack is collecting, every capture also joins it, so a
+        // multi-step flow can be grabbed without touching the UI between shots.
+        if stack.isCollecting, item.asset.kind != .recording {
+            stack.add(item.asset)
+        }
         shelfItems.insert(item, at: 0)
         if shelfItems.count > Self.maximumShelfItems {
             shelfItems.removeLast(shelfItems.count - Self.maximumShelfItems)
@@ -779,6 +854,65 @@ public final class AppCoordinator {
         onOpenEditor?(controller)
     }
 
+    // MARK: Capture stack
+
+    public func toggleStackCollecting() {
+        stack.isCollecting.toggle()
+        // Starting a stack from an existing result should include that result,
+        // otherwise the first shot of the flow is silently missing.
+        if stack.isCollecting, stack.isEmpty, let selected = selectedShelfItem,
+           selected.asset.kind != .recording {
+            stack.add(selected.asset)
+        }
+        refreshActivity()
+    }
+
+    public func addSelectedToStack() {
+        guard let selected = selectedShelfItem, selected.asset.kind != .recording else { return }
+        stack.add(selected.asset)
+        refreshActivity()
+    }
+
+    public func exportStack(style: StackExportStyle, numbersSteps: Bool) {
+        guard !stack.isEmpty else { return }
+
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [style == .pdf ? .pdf : .png]
+        panel.nameFieldStringValue = "\(Preferences.shared.expandFilename(appName: "Stack"))"
+            + ".\(style.fileExtension)"
+        panel.directoryURL = Preferences.shared.outputFolder
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+
+        arbiter.isProcessing = "Building \(style.title.lowercased())"
+        refreshActivity()
+
+        do {
+            let options = StackExportOptions(style: style, numbersSteps: numbersSteps)
+            _ = try stack.export(to: url, options: options)
+
+            let image = NSImage(contentsOf: url)
+            let cgImage = image?.cgImage(forProposedRect: nil, context: nil, hints: nil)
+            let asset = CaptureAsset(
+                url: url,
+                kind: .screenshot,
+                pixelSize: cgImage.map { CGSize(width: $0.width, height: $0.height) } ?? .zero,
+                scale: 2
+            )
+            history.record(asset: asset, image: cgImage)
+
+            let thumbnail = cgImage
+                .flatMap { ImageExport.makeThumbnail(from: $0) }
+                .map { NSImage(cgImage: $0, size: NSSize(width: $0.width, height: $0.height)) }
+
+            arbiter.isProcessing = nil
+            stack.clear()
+            push(ShelfItem(asset: asset, thumbnail: thumbnail, image: nil))
+        } catch {
+            arbiter.isProcessing = nil
+            present(error: error)
+        }
+    }
+
     public func openEditor(for entry: HistoryEntry) {
         let item = ShelfItem(asset: entry.asset, thumbnail: nil, image: nil)
         openEditor(for: item)
@@ -819,10 +953,15 @@ public final class AppCoordinator {
     private func ensureScreenRecordingPermission() -> Bool {
         if permissions.screenRecording.isUsable { return true }
         let granted = permissions.requestScreenRecordingAccess()
-        if !granted {
-            present(error: NotchShotError.screenRecordingPermissionDenied)
-        }
-        return granted
+        guard !granted else { return true }
+
+        // Distinguish "the prompt is on screen, go allow it" from "you said no
+        // and we can't ask again" — the remedies are different, and the first
+        // one is what every user hits on their very first capture.
+        present(error: permissions.isAwaitingFirstScreenRecordingGrant
+            ? NotchShotError.screenRecordingPermissionPending
+            : NotchShotError.screenRecordingPermissionDenied)
+        return false
     }
 
     public func present(error: Error) {

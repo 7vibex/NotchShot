@@ -138,11 +138,24 @@ public final class SelectionOverlayController {
         windows.removeAll()
 
         // Hand focus back so the capture's subject app is frontmost again.
-        NSApp.hide(nil)
+        //
+        // `NSApp.hide` would do that, but it also orders out *every* window we
+        // own — including the notch panels, which then stay hidden until the
+        // next screen-parameters change. Deactivating gives back focus without
+        // touching our own windows.
+        NSApp.deactivate()
+        if let policy = previousActivationPolicy {
+            NSApp.setActivationPolicy(policy)
+            previousActivationPolicy = nil
+        }
+        onDismiss?()
 
         continuation?.resume(returning: result)
         continuation = nil
     }
+
+    /// Called after the overlay tears down, so the notch can re-assert itself.
+    public var onDismiss: (() -> Void)?
 }
 
 // MARK: - Overlay window
