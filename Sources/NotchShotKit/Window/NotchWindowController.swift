@@ -28,11 +28,18 @@ public final class NotchWindowController {
     private var observers: [NSObjectProtocol] = []
     private var rebuildWorkItem: DispatchWorkItem?
     private var presenceTimer: Timer?
+    /// Whether the pointer is inside any panel's interactive rect, and so
+    /// whether that panel is currently swallowing mouse events.
+    private var isPointerOverIsland = false
 
     private let makeContent: (NotchDisplayContext) -> AnyView
 
     /// Called with the display under the pointer (or nil) whenever hover changes.
     public var onHoverChange: ((CGDirectDisplayID?) -> Void)?
+    /// A click in the physical notch trigger band. The cutout itself has no
+    /// pixels for SwiftUI to hit-test, so AppKit must bridge this deliberate
+    /// action into the coordinator.
+    public var onTriggerClick: ((CGDirectDisplayID) -> Void)?
 
     /// Display the pointer is currently over the island of.
     public private(set) var hoveredDisplayID: CGDirectDisplayID?
@@ -275,20 +282,30 @@ public final class NotchWindowController {
 
     private func installMouseMonitors() {
         let matching: NSEvent.EventTypeMask = [
-            .mouseMoved, .leftMouseDragged, .rightMouseDragged, .mouseExited,
+            .mouseMoved, .leftMouseDown, .leftMouseDragged, .rightMouseDragged, .mouseExited,
         ]
-        if let global = NSEvent.addGlobalMonitorForEvents(matching: matching, handler: { [weak self] _ in
-            MainActor.assumeIsolated { self?.updateHover(at: NSEvent.mouseLocation) }
+        if let global = NSEvent.addGlobalMonitorForEvents(matching: matching, handler: { [weak self] event in
+            MainActor.assumeIsolated { self?.handleMouseEvent(event, at: NSEvent.mouseLocation) }
         }) {
             mouseMonitors.append(global)
         }
         // The global monitor stops firing once one of our panels is key, so a
         // local monitor keeps hover accurate while the user is in the notch.
         if let local = NSEvent.addLocalMonitorForEvents(matching: matching, handler: { [weak self] event in
-            MainActor.assumeIsolated { self?.updateHover(at: NSEvent.mouseLocation) }
+            MainActor.assumeIsolated { self?.handleMouseEvent(event, at: NSEvent.mouseLocation) }
             return event
         }) {
             mouseMonitors.append(local)
+        }
+    }
+
+    private func handleMouseEvent(_ event: NSEvent, at screenPoint: CGPoint) {
+        updateHover(at: screenPoint)
+        guard event.type == .leftMouseDown else { return }
+        guard !isPeeking, currentActivity == .idle || currentActivity == .media else { return }
+        for (displayID, entry) in entries where triggerZone(for: entry.context.metrics).contains(screenPoint) {
+            onTriggerClick?(displayID)
+            return
         }
     }
 
@@ -316,24 +333,49 @@ public final class NotchWindowController {
 
     private func refreshMouseTransparency(mouseLocation: CGPoint? = nil) {
         let point = mouseLocation ?? NSEvent.mouseLocation
+        var overIsland = false
         for entry in entries.values {
-            entry.panel.updateMouseTransparency(screenPoint: point)
+            if entry.panel.updateMouseTransparency(screenPoint: point) {
+                overIsland = true
+            }
         }
+        guard overIsland != isPointerOverIsland else { return }
+        isPointerOverIsland = overIsland
+        // The panel just changed whether it swallows mouse events, which changes
+        // whether the monitors can still see the pointer at all.
+        updatePresencePoll()
     }
 
     // MARK: Presence poll
 
-    /// While the notch is open, a slow poll confirms the pointer is still
-    /// there.
+    /// While the notch is open — or the pointer is anywhere over the island — a
+    /// poll confirms where the pointer actually is.
     ///
     /// Mouse-move events stop arriving if the pointer ends up over a window
     /// that swallows them, or leaves via a screen edge — without this the notch
-    /// can stay stuck open with the pointer nowhere near it. Runs only while
-    /// something is open, so an idle notch still costs nothing.
+    /// can stay stuck open with the pointer nowhere near it.
+    ///
+    /// `isPointerOverIsland` is in the condition because of a deadlock that made
+    /// hover fail to *start*. The island is wider than the trigger zone whenever
+    /// the notch shows media or is expanded, so the pointer can sit inside the
+    /// interactive rect without having acquired hover. At that moment the panel
+    /// stops ignoring mouse events — and that blinds both monitors: the global
+    /// one no longer fires because the pointer is over our own window, and the
+    /// local one gets no `mouseMoved` because AppKit only sends those to the key
+    /// window, which a nonactivating panel is not. Nothing was left to notice
+    /// the pointer reaching the notch, so hover never began. Approaching across
+    /// that band is what made it look intermittent and side-dependent.
+    ///
+    /// Runs only while the pointer is at the very top of the screen, so an idle
+    /// notch still costs nothing.
     private func updatePresencePoll() {
-        let needsPoll = hoveredDisplayID != nil || currentActivity.isExpanded
+        let needsPoll = hoveredDisplayID != nil
+            || currentActivity.isExpanded
+            || isPointerOverIsland
         if needsPoll, presenceTimer == nil {
-            let timer = Timer(timeInterval: 0.45, repeats: true) { [weak self] _ in
+            // Fast enough to feel like hover, not a poll: the peek delay alone is
+            // 0.35s, so this must not be the slower of the two.
+            let timer = Timer(timeInterval: 0.15, repeats: true) { [weak self] _ in
                 MainActor.assumeIsolated { self?.updateHover(at: NSEvent.mouseLocation) }
             }
             RunLoop.main.add(timer, forMode: .common)

@@ -192,11 +192,11 @@ struct ShelfContent: View {
                 .foregroundStyle(.white)
                 .contentTransition(.numericText())
 
-            ForEach(coordinator.stack.items) { item in
+            ForEach(Array(coordinator.stack.items.enumerated()), id: \.element.id) { index, item in
                 Button {
                     coordinator.stack.moveItem(id: item.id, by: -1)
                 } label: {
-                    Text(item.asset.url.deletingPathExtension().lastPathComponent.suffix(2))
+                    Text("\(index + 1)")
                         .font(.system(size: 8, weight: .medium))
                         .foregroundStyle(.white.opacity(0.75))
                         .frame(width: 20, height: 16)
@@ -207,6 +207,7 @@ struct ShelfContent: View {
                 .contextMenu {
                     Button("Move Earlier") { coordinator.stack.moveItem(id: item.id, by: -1) }
                     Button("Move Later") { coordinator.stack.moveItem(id: item.id, by: 1) }
+                    Button("Annotate…") { coordinator.openEditor(for: item) }
                     Divider()
                     Button("Remove", role: .destructive) { coordinator.stack.remove(id: item.id) }
                 }
@@ -230,6 +231,11 @@ struct ShelfContent: View {
                         }
                     }
                 }
+                Divider()
+                Button("Compare First Two") {
+                    coordinator.compareFirstTwoStackItems()
+                }
+                .disabled(coordinator.stack.count < 2)
                 Divider()
                 Button("Clear Stack", role: .destructive) { coordinator.stack.clear() }
             } label: {

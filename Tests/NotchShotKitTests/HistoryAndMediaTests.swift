@@ -1,4 +1,6 @@
 import AppKit
+import AudioToolbox
+import CoreMedia
 import Foundation
 import Testing
 @testable import NotchShotKit
@@ -103,6 +105,26 @@ struct HistoryRetentionTests {
     func emptyQuery() {
         #expect(entry(ageDays: 1).matches(""))
     }
+
+    @Test("History preserves exact generated-caption ownership")
+    func captionOwnershipRoundTrip() throws {
+        let captionURL = URL(fileURLWithPath: "/tmp/owned-captions.srt")
+        let asset = CaptureAsset(
+            url: URL(fileURLWithPath: "/tmp/recording.mp4"),
+            kind: .recording,
+            pixelSize: CGSize(width: 1_920, height: 1_080),
+            duration: 30,
+            captionURL: captionURL
+        )
+        let original = HistoryEntry(asset: asset, thumbnailFilename: nil, indexedText: nil)
+        let decoded = try JSONDecoder().decode(
+            HistoryEntry.self,
+            from: JSONEncoder().encode(original)
+        )
+
+        #expect(decoded.captionPath == captionURL.path)
+        #expect(decoded.asset.captionURL == captionURL)
+    }
 }
 
 @Suite("Media snapshot")
@@ -176,6 +198,34 @@ struct MediaSnapshotTests {
         let a = MediaSnapshot(source: .mediaRemote, title: "One", isPlaying: true)
         var b = a
         b.isPlaying = false
+        #expect(!a.isMateriallyEqual(to: b))
+    }
+
+    @Test("Same-sized new artwork is still a material media change")
+    func dedupDetectsArtworkContent() {
+        let a = MediaSnapshot(
+            source: .mediaRemote,
+            title: "One",
+            artworkData: Data([1, 2, 3])
+        )
+        var b = a
+        b.artworkData = Data([3, 2, 1])
+        #expect(!a.isMateriallyEqual(to: b))
+    }
+
+    @Test("Visible app names and command availability refresh")
+    func dedupDetectsControlsAndAppName() {
+        let a = MediaSnapshot(
+            source: .mediaRemote,
+            applicationName: "Music",
+            title: "One",
+            supportedCommands: [.play]
+        )
+        var b = a
+        b.applicationName = "Spotify"
+        #expect(!a.isMateriallyEqual(to: b))
+        b = a
+        b.supportedCommands = [.pause, .nextTrack]
         #expect(!a.isMateriallyEqual(to: b))
     }
 
@@ -405,5 +455,119 @@ struct RecordingConfigurationTests {
         #expect(status.elapsedDescription == "01:05")
         status.elapsed = 3_725
         #expect(status.elapsedDescription == "1:02:05")
+    }
+
+    @Test("Audio meter attack, bounds, and decay are stable")
+    func audioMeterEnvelope() {
+        var meter = AudioLevelMeter()
+        meter.push(rms: 1)
+        let attacked = meter.level
+        #expect(attacked > 0)
+        #expect(attacked <= 1)
+        meter.decay()
+        #expect(meter.level < attacked)
+
+        meter.push(rms: .infinity)
+        #expect(meter.level >= 0)
+        #expect(meter.level <= 1)
+    }
+
+    @Test("RMS reads every channel of a planar float sample buffer")
+    func planarAudioRMS() throws {
+        var description = AudioStreamBasicDescription(
+            mSampleRate: 48_000,
+            mFormatID: kAudioFormatLinearPCM,
+            mFormatFlags: kAudioFormatFlagIsFloat
+                | kAudioFormatFlagIsPacked
+                | kAudioFormatFlagIsNonInterleaved,
+            mBytesPerPacket: 4,
+            mFramesPerPacket: 1,
+            mBytesPerFrame: 4,
+            mChannelsPerFrame: 2,
+            mBitsPerChannel: 32,
+            mReserved: 0
+        )
+        var formatDescription: CMAudioFormatDescription?
+        #expect(CMAudioFormatDescriptionCreate(
+            allocator: kCFAllocatorDefault,
+            asbd: &description,
+            layoutSize: 0,
+            layout: nil,
+            magicCookieSize: 0,
+            magicCookie: nil,
+            extensions: nil,
+            formatDescriptionOut: &formatDescription
+        ) == noErr)
+
+        let values: [Float] = [0.5, 0.5, 0.5, 0.5, -0.5, -0.5, -0.5, -0.5]
+        let byteCount = values.count * MemoryLayout<Float>.size
+        var blockBuffer: CMBlockBuffer?
+        #expect(CMBlockBufferCreateWithMemoryBlock(
+            allocator: kCFAllocatorDefault,
+            memoryBlock: nil,
+            blockLength: byteCount,
+            blockAllocator: kCFAllocatorDefault,
+            customBlockSource: nil,
+            offsetToData: 0,
+            dataLength: byteCount,
+            flags: 0,
+            blockBufferOut: &blockBuffer
+        ) == noErr)
+        let readyBlockBuffer = try #require(blockBuffer)
+        let replaceStatus = values.withUnsafeBytes { bytes in
+            CMBlockBufferReplaceDataBytes(
+                with: bytes.baseAddress!,
+                blockBuffer: readyBlockBuffer,
+                offsetIntoDestination: 0,
+                dataLength: byteCount
+            )
+        }
+        #expect(replaceStatus == noErr)
+
+        let readyFormatDescription = try #require(formatDescription)
+        var sampleBuffer: CMSampleBuffer?
+        #expect(CMAudioSampleBufferCreateReadyWithPacketDescriptions(
+            allocator: kCFAllocatorDefault,
+            dataBuffer: readyBlockBuffer,
+            formatDescription: readyFormatDescription,
+            sampleCount: 4,
+            presentationTimeStamp: .zero,
+            packetDescriptions: nil,
+            sampleBufferOut: &sampleBuffer
+        ) == noErr)
+
+        let readySampleBuffer = try #require(sampleBuffer)
+        let rms = try #require(AudioLevelMeter.rootMeanSquare(of: readySampleBuffer))
+        #expect(abs(rms - 0.5) < 0.001)
+    }
+
+    @Test("Recording status keeps a fixed history of real meter samples")
+    func waveformHistory() {
+        var status = RecordingStatus()
+        status.isSystemAudioEnabled = true
+        status.isMicrophoneEnabled = true
+
+        for index in 0 ..< RecordingStatus.waveformSampleCount + 4 {
+            status.appendMeterSnapshot(
+                system: Float(index) / 10,
+                microphone: Float(index) / 20
+            )
+        }
+
+        #expect(status.systemWaveform.count == RecordingStatus.waveformSampleCount)
+        #expect(status.microphoneWaveform.count == RecordingStatus.waveformSampleCount)
+        #expect(status.systemWaveform.last == 1)
+        #expect(status.microphoneWaveform.last == 1)
+        #expect(status.systemWaveform.contains(where: { $0 > 0 }))
+    }
+
+    @Test("Disabled audio sources publish silence")
+    func disabledWaveformIsSilent() {
+        var status = RecordingStatus()
+        status.appendMeterSnapshot(system: 0.9, microphone: 0.8)
+        #expect(status.systemLevel == 0)
+        #expect(status.microphoneLevel == 0)
+        #expect(status.systemWaveform.allSatisfy { $0 == 0 })
+        #expect(status.microphoneWaveform.allSatisfy { $0 == 0 })
     }
 }

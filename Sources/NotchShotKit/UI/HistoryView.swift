@@ -65,10 +65,14 @@ public struct HistoryView: View {
         }
         Divider()
         Button("Remove from History") {
-            coordinator.history.delete(id: entry.id, includingFile: false)
+            try? coordinator.history.delete(id: entry.id, includingFile: false)
         }
-        Button("Move File to Trash", role: .destructive) {
-            coordinator.history.delete(id: entry.id, includingFile: true)
+        Button(entry.kind == .recording ? "Move Recording and Captions to Trash" : "Move File to Trash", role: .destructive) {
+            do {
+                try coordinator.history.delete(id: entry.id, includingFile: true)
+            } catch {
+                coordinator.present(error: error)
+            }
         }
     }
 }
@@ -140,6 +144,7 @@ private struct HistoryDetail: View {
     let entry: HistoryEntry
     @Bindable var coordinator: AppCoordinator
     @State private var image: NSImage?
+    @State private var finishedLoading = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -148,8 +153,14 @@ private struct HistoryDetail: View {
                     Image(nsImage: image)
                         .resizable()
                         .aspectRatio(contentMode: .fit)
-                } else if entry.fileExists {
+                } else if entry.fileExists, !finishedLoading {
                     ProgressView()
+                } else if entry.fileExists {
+                    ContentUnavailableView(
+                        "Preview unavailable",
+                        systemImage: entry.kind.symbolName,
+                        description: Text("Reveal the file in Finder to open it in another app.")
+                    )
                 } else {
                     ContentUnavailableView(
                         "File not found",
@@ -185,7 +196,18 @@ private struct HistoryDetail: View {
             .padding(12)
         }
         .task(id: entry.id) {
-            image = entry.fileExists ? NSImage(contentsOf: entry.fileURL) : nil
+            finishedLoading = false
+            image = nil
+            guard entry.fileExists else {
+                finishedLoading = true
+                return
+            }
+            if entry.kind == .recording {
+                image = await VideoThumbnail.make(for: entry.fileURL)
+            } else {
+                image = NSImage(contentsOf: entry.fileURL)
+            }
+            finishedLoading = true
         }
     }
 }

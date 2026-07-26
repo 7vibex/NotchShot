@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import ImageIO
 
 /// Fallback Now Playing source driven by Apple Events.
 ///
@@ -33,6 +34,16 @@ public actor AppleEventsMediaSource: MediaSource {
     /// rather than on every poll tick.
     private var artworkCache: [String: Data] = [:]
     private var artworkCacheOrder: [String] = []
+    private let maximumArtworkBytes = 8_000_000
+    private let maximumArtworkDimension = 4_096
+    private let maximumArtworkPixels = 16_000_000
+    private let artworkSession: URLSession = {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.timeoutIntervalForRequest = 8
+        configuration.timeoutIntervalForResource = 12
+        configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
+        return URLSession(configuration: configuration)
+    }()
     /// Apple Events are synchronous and comparatively expensive, so the poll is
     /// slow by design — the notch interpolates playback position between ticks.
     private let pollInterval: Duration = .seconds(2)
@@ -119,7 +130,7 @@ public actor AppleEventsMediaSource: MediaSource {
                   let url = URL(string: urlString),
                   url.scheme == "https"
             else { return nil }
-            data = try? await URLSession.shared.data(from: url).0
+            data = await remoteArtwork(from: url)
         default:
             data = nil
         }
@@ -127,6 +138,46 @@ public actor AppleEventsMediaSource: MediaSource {
         guard let data, !data.isEmpty else { return nil }
         cache(data, for: key)
         return data
+    }
+
+    private func remoteArtwork(from url: URL) async -> Data? {
+        do {
+            let (bytes, response) = try await artworkSession.bytes(from: url)
+            guard let http = response as? HTTPURLResponse,
+                  (200 ..< 300).contains(http.statusCode),
+                  http.url?.scheme?.lowercased() == "https",
+                  response.mimeType?.lowercased().hasPrefix("image/") == true,
+                  response.expectedContentLength <= Int64(maximumArtworkBytes) else {
+                return nil
+            }
+
+            var data = Data()
+            data.reserveCapacity(max(0, Int(response.expectedContentLength)))
+            for try await byte in bytes {
+                guard data.count < maximumArtworkBytes else { return nil }
+                data.append(byte)
+            }
+            guard !data.isEmpty, isSafeArtwork(data) else { return nil }
+            return data
+        } catch {
+            return nil
+        }
+    }
+
+    private func isSafeArtwork(_ data: Data) -> Bool {
+        guard let source = CGImageSourceCreateWithData(data as CFData, nil),
+              CGImageSourceGetCount(source) == 1,
+              let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil)
+                as? [CFString: Any],
+              let width = (properties[kCGImagePropertyPixelWidth] as? NSNumber)?.intValue,
+              let height = (properties[kCGImagePropertyPixelHeight] as? NSNumber)?.intValue,
+              width > 0, height > 0,
+              width <= maximumArtworkDimension,
+              height <= maximumArtworkDimension,
+              width <= maximumArtworkPixels / height else {
+            return false
+        }
+        return true
     }
 
     private static func cacheKey(for snapshot: MediaSnapshot) -> String? {

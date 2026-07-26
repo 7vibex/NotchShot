@@ -92,6 +92,8 @@ public struct RecordingConfiguration: Sendable, Equatable {
     public var framesPerSecond: Int
     public var showsCursor: Bool
     public var highlightsClicks: Bool
+    public var autoZoomsOnClicks: Bool
+    public var framesWithBackground: Bool
 
     public init(
         target: RecordingTarget,
@@ -101,7 +103,9 @@ public struct RecordingConfiguration: Sendable, Equatable {
         resolution: RecordingResolution = .native,
         framesPerSecond: Int = 60,
         showsCursor: Bool = true,
-        highlightsClicks: Bool = false
+        highlightsClicks: Bool = false,
+        autoZoomsOnClicks: Bool = false,
+        framesWithBackground: Bool = false
     ) {
         self.target = target
         self.audioSources = audioSources
@@ -111,6 +115,8 @@ public struct RecordingConfiguration: Sendable, Equatable {
         self.framesPerSecond = framesPerSecond
         self.showsCursor = showsCursor
         self.highlightsClicks = highlightsClicks
+        self.autoZoomsOnClicks = autoZoomsOnClicks
+        self.framesWithBackground = framesWithBackground
     }
 
     /// Scales `sourcePixelSize` down to the configured resolution, preserving
@@ -134,6 +140,37 @@ public struct RecordingConfiguration: Sendable, Equatable {
         return Int(min(max(raw, 1_000_000), 60_000_000))
     }
 
+    /// Insets and aspect-fits the captured pixels into a restrained matte.
+    /// The canvas dimensions stay unchanged, so enabling framing never exceeds
+    /// the selected resolution or bitrate cap.
+    public func destinationRect(
+        for sourcePixelSize: CGSize,
+        outputPixelSize: CGSize
+    ) -> CGRect {
+        let canvas = CGRect(origin: .zero, size: outputPixelSize)
+        guard framesWithBackground,
+              sourcePixelSize.width > 0, sourcePixelSize.height > 0 else {
+            return canvas
+        }
+
+        let inset = max(16, min(outputPixelSize.width, outputPixelSize.height) * 0.055)
+        let available = canvas.insetBy(dx: inset, dy: inset)
+        let scale = min(
+            available.width / sourcePixelSize.width,
+            available.height / sourcePixelSize.height
+        )
+        let fitted = CGSize(
+            width: sourcePixelSize.width * scale,
+            height: sourcePixelSize.height * scale
+        )
+        return CGRect(
+            x: (outputPixelSize.width - fitted.width) / 2,
+            y: (outputPixelSize.height - fitted.height) / 2,
+            width: fitted.width,
+            height: fitted.height
+        ).integral
+    }
+
     private func evenValue(_ value: CGFloat) -> CGFloat {
         let rounded = max(2, (value / 2).rounded() * 2)
         return rounded
@@ -142,13 +179,24 @@ public struct RecordingConfiguration: Sendable, Equatable {
 
 /// Live state published while a recording runs.
 public struct RecordingStatus: Sendable, Equatable {
+    public static let waveformSampleCount = 18
+
     public var elapsed: TimeInterval = 0
     /// 0…1 normalised power for the system-audio tap.
     public var systemLevel: Float = 0
     /// 0…1 normalised power for the microphone tap.
     public var microphoneLevel: Float = 0
+    /// Recent real meter samples, oldest first. The UI renders these directly
+    /// instead of inventing a decorative oscillation from one scalar value.
+    public var systemWaveform = Array(repeating: Float.zero, count: waveformSampleCount)
+    public var microphoneWaveform = Array(repeating: Float.zero, count: waveformSampleCount)
     public var isMicrophoneEnabled = false
     public var isSystemAudioEnabled = false
+    /// A source can be captured into the MP4 even when its optional visual
+    /// meter tap could not be registered or does not support the native PCM
+    /// sample format. Keep those states distinct so a flat line never lies.
+    public var isMicrophoneMeterAvailable = false
+    public var isSystemMeterAvailable = false
     public var fileSizeBytes: Int64 = 0
 
     public init() {}
@@ -161,5 +209,30 @@ public struct RecordingStatus: Sendable, Equatable {
         return hours > 0
             ? String(format: "%d:%02d:%02d", hours, minutes, seconds)
             : String(format: "%02d:%02d", minutes, seconds)
+    }
+
+    mutating func appendMeterSnapshot(system: Float, microphone: Float) {
+        systemLevel = isSystemAudioEnabled ? Self.clampLevel(system) : 0
+        microphoneLevel = isMicrophoneEnabled ? Self.clampLevel(microphone) : 0
+        Self.append(systemLevel, to: &systemWaveform)
+        Self.append(microphoneLevel, to: &microphoneWaveform)
+    }
+
+    private static func append(_ level: Float, to waveform: inout [Float]) {
+        if waveform.count >= waveformSampleCount {
+            waveform.removeFirst(waveform.count - waveformSampleCount + 1)
+        }
+        waveform.append(level)
+        if waveform.count < waveformSampleCount {
+            waveform.insert(
+                contentsOf: repeatElement(0, count: waveformSampleCount - waveform.count),
+                at: 0
+            )
+        }
+    }
+
+    private static func clampLevel(_ value: Float) -> Float {
+        guard value.isFinite else { return 0 }
+        return min(max(value, 0), 1)
     }
 }

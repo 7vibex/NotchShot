@@ -4,7 +4,10 @@ A local-first macOS 26 capture utility that lives in the MacBook notch. Screensh
 recording, annotation, OCR, history and floating captures, with the notch acting as the
 capture launcher, the recording HUD, and the post-capture shelf.
 
-No account, no backend, no telemetry, no subscription. Everything stays on the machine.
+No account, no backend, no telemetry, no subscription. Captures, recordings, transcripts,
+OCR text, projects and history stay on the Mac. If the Spotify Apple Events fallback is
+enabled, NotchShot fetches the current track's artwork from Spotify's HTTPS CDN; it never
+uploads capture content.
 
 ## Build and run
 
@@ -14,14 +17,27 @@ No account, no backend, no telemetry, no subscription. Everything stays on the m
 
 Then `open dist/NotchShot.app`.
 
+To verify screenshot and recording under the app's actual Screen Recording identity:
+
+```bash
+dist/NotchShot.app/Contents/MacOS/NotchShot --self-test
+```
+
+The check captures a small temporary area, writes PNG and MP4, validates them, and removes
+both immediately.
+
 A real `.app` bundle is required, not `swift run`: macOS ties Screen Recording, Microphone
 and Automation grants to a bundle identifier plus a stable code signature, so a bare binary
 gets re-prompted or silently denied every launch.
 
 ```bash
 swift build          # library + executable
-swift test           # 121 tests
+swift test           # 167 tests
 ```
+
+The app bundle build now stops if it cannot find a stable signing identity. That protects
+the existing Screen Recording grant from being replaced by a new ad-hoc code identity.
+Use `--adhoc` only for a disposable build where re-granting permission is acceptable.
 
 ## Architecture
 
@@ -31,10 +47,14 @@ Sources/NotchShotKit/
                 RecordingConfiguration, MediaSnapshot, Preferences, ScreenGeometry
   Window/       NotchPanel (nonactivating NSPanel), per-display controller,
                 notch detection, capture-exclusion registry
-  Capture/      ScreenCaptureKit service, selection overlay, scrolling stitcher, export
-  Recording/    SCRecordingOutput session, audio metering
+  Capture/      ScreenCaptureKit service, selection overlay, recipes, capture stack,
+                scrolling stitcher, export
+  Recording/    SCRecordingOutput session, audio metering, click zoom, local captions
   Annotation/   document model, renderer, background composer, .notchshot package, editor
   OCR/          Vision text recognition and data detectors
+  Privacy/      on-device privacy suggestions and explicit redaction handoff
+  Comparison/   before/after slider and pixel-difference rendering
+  Reporting/    inspectable, opt-in bug-report packages
   Floating/     pinned always-on-top captures
   History/      local JSON-backed history with retention
   Media/        MediaSource protocol, MediaRemote bridge, Apple Events fallback
@@ -77,17 +97,27 @@ sanitised.
 Area / window / display / previous-area capture, 3s and 10s timers, crosshair, pixel
 magnifier, frozen-screen selection, aspect lock. PNG / JPEG / HEIC. Manual vertical
 scrolling capture with overlap stitching, seam confidence and preserved frames on failure.
-H.264 MP4 recording with system audio, microphone, live meters, mic toggle and crash
-recovery. Annotation (arrow, rectangle, ellipse, line, text, pencil, highlighter, numbered
+H.264 MP4 recording with system audio, microphone, a real live audio-history waveform,
+click highlights and background framing, optional on-device transcript / `.srt` captions,
+sleep prevention, and crash recovery. Recording audio sources are chosen before a take so
+the direct ScreenCaptureKit file cannot be silently finalized by a mid-recording stream
+reconfiguration. Annotation (arrow, rectangle, ellipse, line, text, pencil, highlighter, numbered
 steps, blackout, pixelate) with crop, rotate, undo/redo. Background composer with presets,
 padding, radius, shadow, aspect presets and optical balancing. Editable `.notchshot`
 projects. On-device OCR with link/email/phone detection. Floating pinned captures. Local
 history with retention and opt-in text search. Now Playing with artwork, progress and
-transport controls.
+transport controls. Capture Stack collection with reorder, per-shot annotation, numbered
+storyboard, long-image, filmstrip and PDF exports. Named GitHub Issue, App Store,
+Documentation, Social Post and Bug Report recipes. On-device privacy suggestions for
+email, phone, token, account ID and faces; nothing is selected or redacted automatically.
+Interactive before/after comparison with an optional difference overlay. Inspectable bug
+report folders where every diagnostic detail is off until selected.
 
-Phase 2 (not built): horizontal and automatic scrolling, combine images, GIF, webcam,
-presenter mode, keystroke overlay, pause/resume, video trimming, colour picker, QR reader,
-URL scheme / Shortcuts / Raycast actions.
+Later (not built): horizontal and automatic scrolling, GIF, webcam, presenter mode,
+post-process click zoom and cursor smoothing, live audio-source changes, keystroke overlay,
+pause/resume, video trimming, colour picker, QR reader, URL scheme / Shortcuts / Raycast
+actions. Generic notch modules such as clipboard, timer, AirPods, calendar and file
+transforms remain out of the default product so the capture workflow stays focused.
 
 ## Media integration
 
@@ -104,9 +134,14 @@ URL scheme / Shortcuts / Raycast actions.
 The whole thing sits behind the protocol so an App Store build could delete
 `MediaRemoteAdapterSource.swift` and lose nothing else.
 
+Music artwork is read locally. Spotify exposes artwork as a CDN URL, so the Apple Events
+fallback makes one HTTPS request per track and caches the result in memory.
+
 ## Permissions
 
-Requested lazily, at the moment the feature needs them, never at launch:
+Requested when the feature needs them. Screen Recording and Microphone are never requested
+at launch; Automation can be requested when the enabled Apple Events media fallback finds
+Music or Spotify already running:
 
 | Permission | When |
 |---|---|
@@ -115,15 +150,19 @@ Requested lazily, at the moment the feature needs them, never at launch:
 | Automation | only if the Apple Events media fallback is used |
 
 Denials surface in the notch with a button that deep-links to the right System Settings
-pane, and a short poll picks the grant up without a restart.
+pane. macOS does not apply a newly granted Screen Recording permission to the process that
+requested it, so NotchShot explicitly shows **Quit & Reopen** after it detects the grant.
+The next signed launch can capture immediately.
 
 ## Privacy
 
-Captures, recordings, OCR text, projects and history all stay in
+Captures, recordings, transcripts, OCR text, projects and history all stay in
 `~/Library/Application Support/NotchShot` or wherever you choose to save. Recognised text
 enters the search index only if you switch on "Search capture text", and switching it back
 off deletes the text already stored. History retention removes rows and thumbnails; it
-never deletes your capture files.
+never deletes your capture files. Privacy Review runs with Vision on the Mac and only
+suggests regions. Bug packages never include logs, serial numbers, account data, system
+details or an editable unredacted project unless the corresponding choice is explicit.
 
 ## Notes
 

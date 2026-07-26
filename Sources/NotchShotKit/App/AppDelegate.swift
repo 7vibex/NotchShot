@@ -14,6 +14,10 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     private var settingsWindow: NSWindow?
     private var historyWindow: NSWindow?
     private var editorWindows: [ObjectIdentifier: NSWindow] = [:]
+    private var privacyReviewWindows: [ObjectIdentifier: NSWindow] = [:]
+    private var bugReportWindows: [ObjectIdentifier: NSWindow] = [:]
+    private var comparisonWindows: [ObjectIdentifier: NSWindow] = [:]
+    private var isFinalizingForTermination = false
 
     public override init() { super.init() }
 
@@ -30,6 +34,15 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         controller.onHoverChange = { [weak self] displayID in
             self?.coordinator.setHovering(displayID != nil)
         }
+        controller.onTriggerClick = { [weak self, weak controller] _ in
+            guard let self else { return }
+            if coordinator.activity == .media {
+                coordinator.setPeeking(true)
+                controller?.focusActivePanel()
+            } else {
+                coordinator.toggleExpanded()
+            }
+        }
         windowController = controller
         coordinator.windowController = controller
 
@@ -37,6 +50,15 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         coordinator.onOpenHistory = { [weak self] in self?.showHistory() }
         coordinator.onOpenEditor = { [weak self] documentController in
             self?.showEditor(documentController)
+        }
+        coordinator.onOpenPrivacyReview = { [weak self] session in
+            self?.showPrivacyReview(session)
+        }
+        coordinator.onOpenBugReport = { [weak self] session in
+            self?.showBugReport(session)
+        }
+        coordinator.onOpenComparison = { [weak self] session in
+            self?.showComparison(session)
         }
 
         controller.start()
@@ -62,10 +84,36 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     public func applicationWillTerminate(_ notification: Notification) {
+        // Before anything else: a paused system overlay must never outlive the
+        // app that paused it.
+        SystemOSDSuppressor.shared.stop()
         HotKeyController.shared.stop()
         coordinator.history.save()
         windowController?.stop()
         FloatingCaptureManager.shared.closeAll()
+    }
+
+    public func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        guard RecordingService.shared.hasActiveSession else { return .terminateNow }
+        guard !isFinalizingForTermination else { return .terminateLater }
+        isFinalizingForTermination = true
+
+        Task { [weak self, weak sender] in
+            guard let self, let sender else { return }
+            do {
+                if let asset = try await RecordingService.shared.finishForTermination() {
+                    coordinator.history.record(asset: asset, image: nil)
+                    coordinator.history.save()
+                }
+            } catch {
+                // The in-progress file remains in the recovery directory when
+                // finalization cannot produce a valid destination.
+                Log.recording.error("Could not finalize recording before quit: \(error.localizedDescription)")
+            }
+            isFinalizingForTermination = false
+            sender.reply(toApplicationShouldTerminate: true)
+        }
+        return .terminateLater
     }
 
     public func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows: Bool) -> Bool {
@@ -91,8 +139,10 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     private func handle(_ action: HotKeyAction) {
         switch action {
         case .captureArea: coordinator.capture(.area)
+        case .captureAreaToClipboard: coordinator.capture(.area, clipboardOnly: true)
         case .captureWindow: coordinator.capture(.window)
         case .captureDisplay: coordinator.capture(.display)
+        case .captureDisplayToClipboard: coordinator.capture(.display, clipboardOnly: true)
         case .capturePreviousArea: coordinator.capture(.previousArea)
         case .captureScrolling: coordinator.capture(.scrolling)
         case .captureText: coordinator.capture(.ocr)
@@ -148,6 +198,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(.separator())
         add(menu, title: "History…", action: #selector(showHistoryFromMenu))
         add(menu, title: "Restore Last Capture", action: #selector(restoreLastCapture))
+        add(menu, title: "Unlock All Pinned Captures", action: #selector(unlockPins))
         add(menu, title: "Close All Pinned Captures", action: #selector(closePins))
 
         menu.addItem(.separator())
@@ -175,6 +226,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func startRecording() { coordinator.startRecording() }
     @objc private func stopRecording() { coordinator.stopRecording() }
     @objc private func restoreLastCapture() { coordinator.restoreLastDismissed() }
+    @objc private func unlockPins() { FloatingCaptureManager.shared.unlockAll() }
     @objc private func closePins() { FloatingCaptureManager.shared.closeAll() }
     @objc private func showSettingsFromMenu() { showSettings() }
     @objc private func showHistoryFromMenu() { showHistory() }
@@ -224,12 +276,12 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         let windowBox = WindowBox()
         let view = AnnotationEditorView(
             controller: documentController,
-            onClose: { [weak self] in
-                self?.editorWindows.removeValue(forKey: key)
+            onClose: {
                 windowBox.window?.performClose(nil)
             },
             onExported: { [weak self] asset in
                 self?.coordinator.history.record(asset: asset, image: nil)
+                self?.coordinator.handleEditorExport(from: documentController, asset: asset)
             }
         )
         let window = makeWindow(
@@ -238,10 +290,105 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             size: CGSize(width: 980, height: 660)
         )
         windowBox.window = window
-        attachCloseHandler(to: window) { [weak self] in
-            self?.editorWindows.removeValue(forKey: key)
-        }
+        attachCloseHandler(
+            to: window,
+            shouldClose: { [weak documentController, weak window] in
+                guard let documentController, documentController.hasUnsavedChanges else { return true }
+                let alert = NSAlert()
+                alert.alertStyle = .warning
+                alert.messageText = "Save changes before closing?"
+                alert.informativeText = "Your annotation changes will be lost if you discard them."
+                alert.addButton(withTitle: "Save Project")
+                alert.addButton(withTitle: "Discard")
+                alert.addButton(withTitle: "Cancel")
+                if let window {
+                    NSApp.activate(ignoringOtherApps: true)
+                    window.makeKeyAndOrderFront(nil)
+                }
+                switch alert.runModal() {
+                case .alertFirstButtonReturn:
+                    do {
+                        _ = try documentController.saveProject()
+                        return true
+                    } catch {
+                        let errorAlert = NSAlert(error: error)
+                        errorAlert.runModal()
+                        return false
+                    }
+                case .alertSecondButtonReturn:
+                    return true
+                default:
+                    return false
+                }
+            },
+            handler: { [weak self] in
+                self?.editorWindows.removeValue(forKey: key)
+                self?.coordinator.discardEditorExportAction(for: documentController)
+            }
+        )
         editorWindows[key] = window
+        bringToFront(window)
+    }
+
+    private func showPrivacyReview(_ session: PrivacyReviewSession) {
+        let key = ObjectIdentifier(session)
+        if let existing = privacyReviewWindows[key] {
+            bringToFront(existing)
+            return
+        }
+
+        let windowBox = WindowBox()
+        let view = PrivacyReviewView(session: session) { [weak self] findings in
+            self?.coordinator.applyPrivacySuggestions(from: session, findings: findings)
+            self?.privacyReviewWindows.removeValue(forKey: key)
+            windowBox.window?.performClose(nil)
+        }
+        let window = makeWindow(
+            title: "Privacy Review — \(session.asset.displayName)",
+            content: view,
+            size: CGSize(width: 900, height: 600)
+        )
+        windowBox.window = window
+        attachCloseHandler(to: window) { [weak self] in
+            self?.privacyReviewWindows.removeValue(forKey: key)
+        }
+        privacyReviewWindows[key] = window
+        bringToFront(window)
+    }
+
+    private func showBugReport(_ session: BugReportSession) {
+        let key = ObjectIdentifier(session)
+        if let existing = bugReportWindows[key] {
+            bringToFront(existing)
+            return
+        }
+        let window = makeWindow(
+            title: "Bug Report Package",
+            content: BugReportView(session: session),
+            size: CGSize(width: 620, height: 580)
+        )
+        attachCloseHandler(to: window) { [weak self] in
+            self?.bugReportWindows.removeValue(forKey: key)
+        }
+        bugReportWindows[key] = window
+        bringToFront(window)
+    }
+
+    private func showComparison(_ session: VisualComparisonSession) {
+        let key = ObjectIdentifier(session)
+        if let existing = comparisonWindows[key] {
+            bringToFront(existing)
+            return
+        }
+        let window = makeWindow(
+            title: "Visual Comparison",
+            content: VisualComparisonView(session: session),
+            size: CGSize(width: 900, height: 620)
+        )
+        attachCloseHandler(to: window) { [weak self] in
+            self?.comparisonWindows.removeValue(forKey: key)
+        }
+        comparisonWindows[key] = window
         bringToFront(window)
     }
 
@@ -262,9 +409,15 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         return window
     }
 
-    private func attachCloseHandler(to window: NSWindow, handler: @escaping () -> Void) {
+    private func attachCloseHandler(
+        to window: NSWindow,
+        shouldClose: (() -> Bool)? = nil,
+        handler: @escaping () -> Void
+    ) {
         window.delegate = WindowCloseObserver.shared
-        WindowCloseObserver.shared.onClose[ObjectIdentifier(window)] = handler
+        let key = ObjectIdentifier(window)
+        WindowCloseObserver.shared.onClose[key] = handler
+        WindowCloseObserver.shared.shouldClose[key] = shouldClose
     }
 
     private func bringToFront(_ window: NSWindow) {
@@ -288,6 +441,11 @@ final class WindowCloseObserver: NSObject, NSWindowDelegate {
     static let shared = WindowCloseObserver()
 
     var onClose: [ObjectIdentifier: () -> Void] = [:]
+    var shouldClose: [ObjectIdentifier: () -> Bool] = [:]
+
+    func windowShouldClose(_ sender: NSWindow) -> Bool {
+        shouldClose[ObjectIdentifier(sender)]?() ?? true
+    }
 
     func windowWillClose(_ notification: Notification) {
         guard let window = notification.object as? NSWindow else { return }
@@ -295,5 +453,6 @@ final class WindowCloseObserver: NSObject, NSWindowDelegate {
         WindowExclusionRegistry.shared.unregister(window)
         onClose[key]?()
         onClose.removeValue(forKey: key)
+        shouldClose.removeValue(forKey: key)
     }
 }

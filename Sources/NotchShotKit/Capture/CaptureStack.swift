@@ -109,6 +109,11 @@ public final class CaptureStack {
         items.removeAll { $0.id == id }
     }
 
+    public func replace(id: UUID, with asset: CaptureAsset) {
+        guard let index = items.firstIndex(where: { $0.id == id }) else { return }
+        items[index].asset = asset
+    }
+
     public func move(from source: IndexSet, to destination: Int) {
         items.move(fromOffsets: source, toOffset: destination)
     }

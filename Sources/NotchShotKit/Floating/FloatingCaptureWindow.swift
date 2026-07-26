@@ -231,4 +231,12 @@ public final class FloatingCaptureManager {
         }
         windows.removeAll()
     }
+
+    /// Locked pins intentionally ignore all pointer events, so the menu-bar
+    /// app must always provide an out-of-band way to make them interactive.
+    public func unlockAll() {
+        for window in windows where window.locked {
+            window.setLocked(false)
+        }
+    }
 }

@@ -127,18 +127,39 @@ public final class WindowExclusionRegistry {
     public var excludedWindowNumbers: Set<CGWindowID> {
         var result = Set<CGWindowID>()
         let optedIn = Set(opsInWindows.compactMap { key in
-            windows[key].map { CGWindowID($0.windowNumber) }
+            windows[key].flatMap(Self.captureID)
         })
-        for window in NSApp.windows where window.windowNumber > 0 && window.isVisible {
-            let number = CGWindowID(window.windowNumber)
+        // `NSApp` is an implicitly unwrapped global and can still be nil in a
+        // signed headless diagnostic. `shared` is safe in both that path and
+        // the normal AppDelegate lifecycle.
+        for window in NSApplication.shared.windows where window.isVisible {
+            guard let number = Self.captureID(of: window) else { continue }
             if optedIn.contains(number) { continue }
             result.insert(number)
         }
-        for window in windows.values where window.windowNumber > 0 {
-            let number = CGWindowID(window.windowNumber)
+        for window in windows.values {
+            guard let number = Self.captureID(of: window) else { continue }
             if optedIn.contains(number) { continue }
             result.insert(number)
         }
         return result
+    }
+
+    /// A window's number as a `CGWindowID`, or nil when it has none.
+    ///
+    /// `NSWindow.windowNumber` is an `Int` and is **-1** for a window with no
+    /// window device — one created with `defer: true` and not yet shown, for
+    /// instance. `CGWindowID` is a `UInt32`, so converting that traps with
+    /// "Negative value is not representable" and takes the whole app down.
+    ///
+    /// This getter runs on the way into every capture and recording, and the app
+    /// is menu-bar-only, so the trap killed it with no window and no visible
+    /// error — a capture that appeared to do nothing at all. Checking the range
+    /// once, here, is the only place that needs to know about it: a window
+    /// without a device is not on screen and so cannot be in a capture anyway.
+    private static func captureID(of window: NSWindow) -> CGWindowID? {
+        let number = window.windowNumber
+        guard number > 0, number <= Int(CGWindowID.max) else { return nil }
+        return CGWindowID(number)
     }
 }

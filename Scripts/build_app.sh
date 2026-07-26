@@ -8,9 +8,10 @@
 # signature. A bare `swift run` binary gets prompted every launch, or silently
 # denied, so always test through this script.
 #
-#   ./Scripts/build_app.sh                 # debug build, ad-hoc signature
+#   ./Scripts/build_app.sh                 # debug build, stable identity required
 #   ./Scripts/build_app.sh --release       # optimised build
 #   ./Scripts/build_app.sh --release --identity "Developer ID Application: …"
+#   ./Scripts/build_app.sh --adhoc          # explicit, permission-unstable fallback
 #
 set -euo pipefail
 
@@ -19,12 +20,14 @@ cd "$ROOT"
 
 CONFIGURATION="debug"
 IDENTITY=""
+ALLOW_ADHOC=false
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --release) CONFIGURATION="release"; shift ;;
         --debug) CONFIGURATION="debug"; shift ;;
         --identity) IDENTITY="$2"; shift 2 ;;
+        --adhoc) ALLOW_ADHOC=true; shift ;;
         -h|--help) sed -n '2,20p' "$0"; exit 0 ;;
         *) echo "Unknown option: $1" >&2; exit 1 ;;
     esac
@@ -60,7 +63,22 @@ if [[ -z "$IDENTITY" ]]; then
 fi
 
 if [[ -z "$IDENTITY" ]]; then
-    IDENTITY="-"
+    if [[ "$ALLOW_ADHOC" == true ]]; then
+        IDENTITY="-"
+    else
+        cat >&2 <<'WARN'
+
+No usable code-signing identity was found, so the build stopped before it
+could replace a permission-stable app with an ad-hoc build.
+
+Create a Code Signing certificate in Keychain Access, pass an existing one with
+--identity, or use --adhoc only when you accept that macOS will forget Screen
+Recording and Microphone permission after the next rebuild.
+
+WARN
+        exit 2
+    fi
+
     cat >&2 <<'WARN'
 
 ⚠️  No code-signing certificate found — falling back to an ad-hoc signature.
@@ -91,6 +109,7 @@ mkdir -p "$MACOS_DIR" "$RESOURCES_DIR"
 
 cp "$BINARY" "$MACOS_DIR/$APP_NAME"
 cp "$ROOT/Resources/Info.plist" "$CONTENTS/Info.plist"
+cp "$ROOT/Resources/PrivacyInfo.xcprivacy" "$RESOURCES_DIR/PrivacyInfo.xcprivacy"
 printf 'APPL????' > "$CONTENTS/PkgInfo"
 
 if [[ -f "$ROOT/Resources/AppIcon.icns" ]]; then
@@ -101,16 +120,22 @@ fi
 echo "==> Signing with identity: $IDENTITY"
 # --options runtime enables the Hardened Runtime; the entitlements grant back
 # exactly the two things it would otherwise block.
+TIMESTAMP_OPTION=(--timestamp=none)
+if [[ "$IDENTITY" == "Developer ID Application:"* ]]; then
+    # Public Developer ID distribution needs Apple's secure timestamp. Local
+    # self-signed and ad-hoc identities cannot obtain one.
+    TIMESTAMP_OPTION=(--timestamp)
+fi
 codesign \
     --force \
     --sign "$IDENTITY" \
     --options runtime \
     --entitlements "$ROOT/Resources/NotchShot.entitlements" \
-    --timestamp=none \
+    "${TIMESTAMP_OPTION[@]}" \
     "$APP_DIR"
 
 echo "==> Verifying"
-codesign --verify --verbose=2 "$APP_DIR"
+codesign --verify --deep --strict --verbose=2 "$APP_DIR"
 
 echo
 echo "Built: $APP_DIR"

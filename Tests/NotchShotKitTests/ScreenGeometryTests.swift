@@ -217,5 +217,83 @@ struct NotchMetricsTests {
         )
         let layout = NotchLayout.layout(for: .idle, metrics: metrics, isPeeking: false, resultCount: 0)
         #expect(layout.size == metrics.notchSize)
+        #expect(layout.contentTopInset == 0)
+    }
+
+    @Test("Revealed content clears the physical notch")
+    func revealedContentClearsNotch() {
+        let metrics = NotchMetrics(
+            screenFrame: CGRect(x: 0, y: 0, width: 1512, height: 982),
+            hasPhysicalNotch: true,
+            notchSize: CGSize(width: 250, height: 37),
+            menuBarHeight: 37
+        )
+
+        let systemLevel = NotchLayout.layout(
+            for: .systemLevel(SystemLevel(kind: .brightness, value: 0.5, isMuted: false)),
+            metrics: metrics,
+            isPeeking: false,
+            resultCount: 0
+        )
+        #expect(systemLevel.contentTopInset == 37)
+        #expect(systemLevel.size.height == 83)
+
+        let mediaPeek = NotchLayout.layout(
+            for: .media,
+            metrics: metrics,
+            isPeeking: true,
+            resultCount: 0
+        )
+        #expect(mediaPeek.contentTopInset == 37)
+        // 86pt of content plus the 37pt cutout band. The content grew from 78
+        // when the progress bar became a scrubber with a time either side of it.
+        #expect(mediaPeek.size.height == 123)
+        // Whatever the content height, it must clear the camera.
+        #expect(mediaPeek.size.height - mediaPeek.contentTopInset == 86)
+
+        let compactMedia = NotchLayout.layout(
+            for: .media,
+            metrics: metrics,
+            isPeeking: false,
+            resultCount: 0
+        )
+        #expect(compactMedia.contentTopInset == 0)
+        #expect(compactMedia.size.height == 37)
+    }
+
+    @Test("Notchless displays keep their existing content heights")
+    func notchlessContentNeedsNoClearance() {
+        let metrics = NotchMetrics(
+            screenFrame: CGRect(x: 0, y: 0, width: 2560, height: 1440),
+            hasPhysicalNotch: false,
+            notchSize: NotchMetrics.syntheticIslandSize,
+            menuBarHeight: 24
+        )
+        let layout = NotchLayout.layout(
+            for: .systemLevel(SystemLevel(kind: .volume, value: 0.5, isMuted: false)),
+            metrics: metrics,
+            isPeeking: false,
+            resultCount: 0
+        )
+        #expect(layout.contentTopInset == 0)
+        #expect(layout.size.height == 46)
+    }
+
+    /// `visibleFrame` excludes the Dock as well as the menu bar, so deriving the
+    /// menu bar from the difference of *heights* counted the Dock too — 96pt
+    /// instead of 33 on a 14" MacBook Pro with the Dock showing.
+    @Test("The menu bar height ignores the Dock")
+    func menuBarHeightExcludesDock() {
+        // Real values measured on a 14" MacBook Pro with a visible Dock.
+        let frame = CGRect(x: 0, y: 0, width: 1470, height: 956)
+        let visible = CGRect(x: 0, y: 63, width: 1470, height: 860)
+
+        let fromTops = max(frame.maxY - visible.maxY, 24)
+        let fromHeights = max(frame.height - visible.height, 24)
+
+        #expect(fromTops == 33)
+        #expect(fromHeights == 96)
+        // The notch itself is 32pt here, so the correct value stays close to it.
+        #expect(abs(fromTops - 32) <= 2)
     }
 }

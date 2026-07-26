@@ -59,19 +59,26 @@ public final class AppCoordinator {
     public let history = HistoryRepository.shared
     public let permissions = PermissionCenter.shared
     public let systemLevels = SystemLevelMonitor.shared
+    public let osd = SystemOSDSuppressor.shared
     public let stack = CaptureStack.shared
 
     /// Most recent capture the user dismissed, for "restore last".
     private var lastDismissed: ShelfItem?
     private var shelfTimer: Timer?
     private var countdownTask: Task<Void, Never>?
+    private var captureOperationID: UUID?
     private var scrollingSession: ScrollingCaptureSession?
     private var errorTask: Task<Void, Never>?
     private var systemLevelTask: Task<Void, Never>?
     private var peekTask: Task<Void, Never>?
+    private var recordingCompletionTask: Task<Void, Never>?
+    private var editorExportActions: [ObjectIdentifier: (CaptureAsset) -> Void] = [:]
 
     public var windowController: NotchWindowController?
     public var onOpenEditor: ((AnnotationDocumentController) -> Void)?
+    public var onOpenPrivacyReview: ((PrivacyReviewSession) -> Void)?
+    public var onOpenBugReport: ((BugReportSession) -> Void)?
+    public var onOpenComparison: ((VisualComparisonSession) -> Void)?
     public var onOpenSettings: (() -> Void)?
     public var onOpenHistory: (() -> Void)?
 
@@ -90,8 +97,8 @@ public final class AppCoordinator {
         RecordingService.shared.onStatusChange = { [weak self] status in
             self?.recordingStatus = status
         }
-        RecordingService.shared.onUnexpectedStop = { [weak self] error in
-            Task { await self?.finishRecordingAfterFailure(error) }
+        RecordingService.shared.onUnexpectedStop = { [weak self] error, recoveryURL in
+            Task { await self?.finishRecordingAfterFailure(error, recoveryURL: recoveryURL) }
         }
 
         systemLevels.onChange = { [weak self] level in
@@ -99,6 +106,11 @@ public final class AppCoordinator {
         }
         if Preferences.shared.systemLevelHUDEnabled {
             systemLevels.start()
+            osd.start()
+        } else {
+            // Never hold back the system overlay when the notch is not showing
+            // the level itself — that would leave no feedback at all.
+            osd.stop()
         }
 
         // Media presence feeds the arbiter but can never outrank a capture.
@@ -141,11 +153,29 @@ public final class AppCoordinator {
         Preferences.shared.systemLevelHUDEnabled = enabled
         if enabled {
             systemLevels.start()
+            osd.setEnabled(Preferences.shared.suppressesSystemOSD)
         } else {
             systemLevels.stop()
+            // The notch no longer mirrors anything, so macOS has to be allowed
+            // to show its own overlay again.
+            osd.stop()
             arbiter.systemLevel = nil
             refreshActivity()
         }
+    }
+
+    public func setBrightnessMirroringEnabled(_ enabled: Bool) {
+        Preferences.shared.mirrorsBrightnessChanges = enabled
+        systemLevels.setBrightnessMirroringEnabled(enabled)
+        if !enabled, arbiter.systemLevel?.kind == .brightness {
+            arbiter.systemLevel = nil
+            refreshActivity()
+        }
+    }
+
+    public func setSystemOSDSuppressed(_ suppressed: Bool) {
+        Preferences.shared.suppressesSystemOSD = suppressed
+        osd.setEnabled(suppressed && Preferences.shared.systemLevelHUDEnabled)
     }
 
     private func refreshActivity() {
@@ -198,20 +228,46 @@ public final class AppCoordinator {
     public func toggleExpanded() {
         arbiter.userExpanded.toggle()
         refreshActivity()
+        if arbiter.userExpanded {
+            windowController?.focusActivePanel()
+        } else {
+            windowController?.resignFocus()
+        }
     }
 
     public func collapse() {
         arbiter.userExpanded = false
         refreshActivity()
+        windowController?.resignFocus()
     }
 
     // MARK: Capture flow
 
-    public func capture(_ intent: CaptureIntent, timer: CaptureTimer = .none) {
-        Task { await performCapture(intent, timer: timer) }
+    /// - Parameter clipboardOnly: Copies the result and keeps the file in the
+    ///   app's own store rather than the user's output folder. This is what the
+    ///   ⌃⇧⌘3 and ⌃⇧⌘4 shortcuts mean, and it overrides the save-to-disk
+    ///   preference for this one capture without touching the active recipe.
+    public func capture(
+        _ intent: CaptureIntent,
+        timer: CaptureTimer = .none,
+        clipboardOnly: Bool = false
+    ) {
+        countdownTask?.cancel()
+        let operationID = UUID()
+        captureOperationID = operationID
+        countdownTask = Task { [weak self] in
+            await self?.performCapture(intent, timer: timer, clipboardOnly: clipboardOnly)
+            guard let self, self.captureOperationID == operationID else { return }
+            self.countdownTask = nil
+            self.captureOperationID = nil
+        }
     }
 
-    private func performCapture(_ intent: CaptureIntent, timer: CaptureTimer) async {
+    private func performCapture(
+        _ intent: CaptureIntent,
+        timer: CaptureTimer,
+        clipboardOnly: Bool = false
+    ) async {
         guard ensureScreenRecordingPermission() else { return }
         collapse()
 
@@ -249,10 +305,15 @@ public final class AppCoordinator {
             guard await runCountdown(seconds: timer.rawValue, intent: intent) else { return }
         }
 
-        await executeCapture(request, intent: intent)
+        guard !Task.isCancelled else { return }
+        await executeCapture(request, intent: intent, clipboardOnly: clipboardOnly)
     }
 
-    private func executeCapture(_ request: CaptureRequest, intent: CaptureIntent) async {
+    private func executeCapture(
+        _ request: CaptureRequest,
+        intent: CaptureIntent,
+        clipboardOnly: Bool = false
+    ) async {
         arbiter.isProcessing = "Capturing"
         refreshActivity()
         defer {
@@ -278,7 +339,8 @@ public final class AppCoordinator {
                 kind: .screenshot,
                 sourceApplication: frontmost,
                 warnings: [],
-                seams: []
+                seams: [],
+                clipboardOnly: clipboardOnly
             )
         } catch {
             present(error: error)
@@ -325,28 +387,48 @@ public final class AppCoordinator {
         kind: CaptureAssetKind,
         sourceApplication: NSRunningApplication?,
         warnings: [String],
-        seams: [StitchSeam]
+        seams: [StitchSeam],
+        clipboardOnly: Bool = false
     ) async {
         do {
-            let asset = try await persist(image, kind: kind, sourceApplication: sourceApplication)
+            let recipe = CaptureRecipeStore.shared.activeRecipe
+            let prepared = try CaptureRecipeRenderer.render(image, recipe: recipe)
+            let asset = try await persist(
+                prepared,
+                kind: kind,
+                sourceApplication: sourceApplication,
+                recipe: recipe,
+                clipboardOnly: clipboardOnly
+            )
 
-            if Preferences.shared.copyToClipboardAfterCapture {
-                ImageExport.copyToPasteboard(image.cgImage)
+            if clipboardOnly
+                || Preferences.shared.copyToClipboardAfterCapture
+                || recipe.destination == .clipboardOnly {
+                ImageExport.copyToPasteboard(prepared.cgImage)
             }
 
-            let thumbnail = ImageExport.makeThumbnail(from: image.cgImage).map {
+            let thumbnail = ImageExport.makeThumbnail(from: prepared.cgImage).map {
                 NSImage(cgImage: $0, size: NSSize(width: $0.width, height: $0.height))
             }
-            history.record(asset: asset, image: image.cgImage)
+            history.record(asset: asset, image: prepared.cgImage)
 
             let item = ShelfItem(
                 asset: asset,
                 thumbnail: thumbnail,
-                image: image,
+                image: prepared,
                 stitchWarnings: warnings,
                 seams: seams
             )
             push(item)
+
+            switch recipe.annotationMode {
+            case .none:
+                break
+            case .openEditor:
+                openEditor(for: item)
+            case .privacyReview:
+                openPrivacyReview(for: item)
+            }
         } catch {
             present(error: error)
         }
@@ -357,15 +439,49 @@ public final class AppCoordinator {
     private func persist(
         _ image: CapturedImage,
         kind: CaptureAssetKind,
-        sourceApplication: NSRunningApplication?
+        sourceApplication: NSRunningApplication?,
+        recipe: CaptureRecipe? = nil,
+        clipboardOnly: Bool = false
     ) async throws -> CaptureAsset {
         let preferences = Preferences.shared
+        let recipe = recipe ?? CaptureRecipe.all[0]
         let appName = sourceApplication?.localizedName
-        let name = preferences.expandFilename(appName: appName)
-        let folder = preferences.saveToDiskAfterCapture ? preferences.outputFolder : AppPaths.captures
+        let template = recipe.id == "standard" ? nil : recipe.filenameTemplate
+        let name = preferences.expandFilename(template: template, appName: appName)
 
-        let format = preferences.imageFormat
-        let url = AppPaths.uniqueURL(in: folder, name: name, extension: format.fileExtension)
+        let format = recipe.imageFormat ?? preferences.imageFormat
+        let url: URL
+        // A clipboard-only capture keeps its file in the app's store so it stays
+        // recoverable from History, without dropping a file the user did not ask
+        // for into their output folder.
+        switch clipboardOnly ? .clipboardOnly : recipe.destination {
+        case .configuredFolder:
+            let folder = recipe.id == "standard" && !preferences.saveToDiskAfterCapture
+                ? AppPaths.captures : preferences.outputFolder
+            url = AppPaths.uniqueURL(in: folder, name: name, extension: format.fileExtension)
+        case .clipboardOnly:
+            url = AppPaths.uniqueURL(
+                in: AppPaths.captures,
+                name: name,
+                extension: format.fileExtension
+            )
+        case .askEveryTime:
+            let panel = NSSavePanel()
+            panel.allowedContentTypes = [ImageExport.utType(for: format)]
+            panel.nameFieldStringValue = "\(name).\(format.fileExtension)"
+            panel.directoryURL = preferences.outputFolder
+            if panel.runModal() == .OK, let chosen = panel.url {
+                url = chosen
+            } else {
+                // Cancelling the destination dialog must not destroy the pixels
+                // the user just captured; retain them in the app's local store.
+                url = AppPaths.uniqueURL(
+                    in: AppPaths.captures,
+                    name: name,
+                    extension: format.fileExtension
+                )
+            }
+        }
         let written = try ImageExport.write(
             image.cgImage,
             to: url,
@@ -378,8 +494,17 @@ public final class AppCoordinator {
         // Preview will disagree about the file.
         var finalURL = url
         if written != format {
-            finalURL = url.deletingPathExtension().appendingPathExtension(written.fileExtension)
-            try? FileManager.default.moveItem(at: url, to: finalURL)
+            let preferred = url.deletingPathExtension().appendingPathExtension(written.fileExtension)
+            if FileManager.default.fileExists(atPath: preferred.path) {
+                finalURL = AppPaths.uniqueURL(
+                    in: preferred.deletingLastPathComponent(),
+                    name: preferred.deletingPathExtension().lastPathComponent,
+                    extension: written.fileExtension
+                )
+            } else {
+                finalURL = preferred
+            }
+            try FileManager.default.moveItem(at: url, to: finalURL)
         }
 
         return CaptureAsset(
@@ -443,8 +568,8 @@ public final class AppCoordinator {
 
     /// Returns false if the user cancelled during the countdown.
     private func runCountdown(seconds: Int, intent: CaptureIntent) async -> Bool {
-        countdownTask?.cancel()
         for remaining in stride(from: seconds, through: 1, by: -1) {
+            guard !Task.isCancelled else { return false }
             arbiter.countdown = (remaining, intent)
             refreshActivity()
             do {
@@ -457,7 +582,7 @@ public final class AppCoordinator {
         }
         arbiter.countdown = nil
         refreshActivity()
-        return true
+        return !Task.isCancelled
     }
 
     public func cancelCurrentOperation() {
@@ -466,6 +591,8 @@ public final class AppCoordinator {
         }
         if arbiter.countdown != nil {
             countdownTask?.cancel()
+            countdownTask = nil
+            captureOperationID = nil
             arbiter.countdown = nil
         }
         if let scrollingSession {
@@ -572,7 +699,12 @@ public final class AppCoordinator {
             resolution: preferences.recordingResolution,
             framesPerSecond: preferences.recordingFrameRate,
             showsCursor: preferences.recordingShowsCursor,
-            highlightsClicks: preferences.recordingHighlightsClicks
+            highlightsClicks: preferences.recordingHighlightsClicks,
+            // SCRecordingOutput finalizes the file if its stream
+            // configuration changes. Smooth click zoom therefore belongs in
+            // a post-processing pipeline, not the live recording stream.
+            autoZoomsOnClicks: false,
+            framesWithBackground: preferences.recordingFramesWithBackground
         )
 
         do {
@@ -585,25 +717,62 @@ public final class AppCoordinator {
     }
 
     public func stopRecording() {
-        Task {
-            arbiter.isRecording = false
-            arbiter.isProcessing = "Finishing recording"
+        guard recordingCompletionTask == nil else { return }
+        recordingCompletionTask = Task { [weak self] in
+            await self?.finishRecording()
+        }
+    }
+
+    private func finishRecording() async {
+        arbiter.isRecording = false
+        arbiter.isProcessing = "Finishing recording"
+        refreshActivity()
+        defer {
+            recordingCompletionTask = nil
+            arbiter.isProcessing = nil
             refreshActivity()
-            defer {
-                arbiter.isProcessing = nil
+        }
+        do {
+            var asset = try await RecordingService.shared.stop()
+            // Persist the base MP4 before any optional caption or thumbnail
+            // await. If the user quits during post-processing, the finished
+            // recording is still discoverable on the next launch.
+            history.record(asset: asset, image: nil)
+            history.save()
+            var captionWarning: Error?
+
+            if Preferences.shared.recordingGeneratesCaptions {
+                arbiter.isProcessing = "Creating captions on this Mac"
                 refreshActivity()
+                do {
+                    let transcript = try await OnDeviceTranscriptionService.shared.transcribe(
+                        recordingURL: asset.url
+                    )
+                    let captionURL = asset.url.deletingPathExtension().appendingPathExtension("srt")
+                    try transcript.srt.write(to: captionURL, atomically: true, encoding: .utf8)
+                    asset.recognizedText = transcript.text
+                    asset.captionURL = captionURL
+                } catch {
+                    // Captioning is optional: the finished MP4 must never be
+                    // discarded because a language model or audio track is absent.
+                    captionWarning = error
+                }
             }
-            do {
-                let asset = try await RecordingService.shared.stop()
-                let thumbnail = await VideoThumbnail.make(for: asset.url)
-                history.record(
-                    asset: asset,
-                    image: thumbnail?.cgImage(forProposedRect: nil, context: nil, hints: nil)
-                )
-                push(ShelfItem(asset: asset, thumbnail: thumbnail, image: nil))
-            } catch {
-                present(error: error)
+            let thumbnail = await VideoThumbnail.make(for: asset.url)
+            history.record(
+                asset: asset,
+                image: thumbnail?.cgImage(forProposedRect: nil, context: nil, hints: nil),
+                recognizedText: asset.recognizedText
+            )
+            history.save()
+            push(ShelfItem(asset: asset, thumbnail: thumbnail, image: nil))
+            if let captionWarning {
+                present(error: NotchShotError.recordingFailed(
+                    "The recording was saved, but captions could not be created: \(captionWarning.localizedDescription)"
+                ))
             }
+        } catch {
+            present(error: error)
         }
     }
 
@@ -615,18 +784,23 @@ public final class AppCoordinator {
         }
     }
 
-    public func toggleRecordingMicrophone() {
-        Task {
-            await RecordingService.shared.setMicrophoneEnabled(!recordingStatus.isMicrophoneEnabled)
-        }
-    }
-
-    private func finishRecordingAfterFailure(_ error: NotchShotError) async {
+    private func finishRecordingAfterFailure(
+        _ error: NotchShotError,
+        recoveryURL: URL?
+    ) async {
         arbiter.isRecording = false
-        // The stream died, but the partial file is usually still playable.
-        if let orphan = RecordingService.orphanedRecordings().first,
-           let asset = try? await RecordingService.shared.recover(orphan) {
+        // Recover this exact session. Picking the newest global orphan could
+        // move an unrelated file left by an older crash.
+        if let recoveryURL,
+           RecordingService.isRecoverableRecording(recoveryURL),
+           let asset = try? await RecordingService.shared.recover(recoveryURL) {
+            history.record(asset: asset, image: nil)
+            history.save()
             let thumbnail = await VideoThumbnail.make(for: asset.url)
+            history.record(
+                asset: asset,
+                image: thumbnail?.cgImage(forProposedRect: nil, context: nil, hints: nil)
+            )
             push(ShelfItem(asset: asset, thumbnail: thumbnail, image: nil))
             present(error: NotchShotError.recordingFailed("Recording stopped early — the partial file was kept"))
         } else {
@@ -641,8 +815,13 @@ public final class AppCoordinator {
         Task {
             for orphan in orphans.prefix(3) {
                 guard let asset = try? await RecordingService.shared.recover(orphan) else { continue }
-                let thumbnail = await VideoThumbnail.make(for: asset.url)
                 history.record(asset: asset, image: nil)
+                history.save()
+                let thumbnail = await VideoThumbnail.make(for: asset.url)
+                history.record(
+                    asset: asset,
+                    image: thumbnail?.cgImage(forProposedRect: nil, context: nil, hints: nil)
+                )
                 push(ShelfItem(asset: asset, thumbnail: thumbnail, image: nil))
             }
         }
@@ -746,6 +925,12 @@ public final class AppCoordinator {
         case .annotate:
             openEditor(for: item)
 
+        case .privacyReview:
+            openPrivacyReview(for: item)
+
+        case .bugReport:
+            onOpenBugReport?(BugReportSession(asset: item.asset))
+
         case .ocr:
             Task { await copyText(from: item) }
 
@@ -759,8 +944,19 @@ public final class AppCoordinator {
             NSWorkspace.shared.activateFileViewerSelecting([item.asset.url])
 
         case .delete:
-            history.delete(id: item.asset.id, includingFile: true)
-            dismissShelfItem(item)
+            do {
+                if history.entry(id: item.asset.id) != nil {
+                    try history.delete(id: item.asset.id, includingFile: true)
+                } else {
+                    try HistoryRepository.trashCaptureAndCaption(
+                        at: item.asset.url,
+                        captionURL: item.asset.captionURL
+                    )
+                }
+                dismissShelfItem(item)
+            } catch {
+                present(error: NotchShotError.destinationUnwritable(item.asset.url.path))
+            }
         }
     }
 
@@ -769,11 +965,17 @@ public final class AppCoordinator {
         panel.nameFieldStringValue = item.asset.url.lastPathComponent
         panel.directoryURL = Preferences.shared.outputFolder
         guard panel.runModal() == .OK, let url = panel.url else { return }
+        let fileManager = FileManager.default
+        let stagingURL = url.deletingLastPathComponent()
+            .appendingPathComponent(".notchshot-copy-\(UUID().uuidString)")
+        defer { try? fileManager.removeItem(at: stagingURL) }
         do {
-            if FileManager.default.fileExists(atPath: url.path) {
-                try FileManager.default.removeItem(at: url)
+            try fileManager.copyItem(at: item.asset.url, to: stagingURL)
+            if fileManager.fileExists(atPath: url.path) {
+                _ = try fileManager.replaceItemAt(url, withItemAt: stagingURL)
+            } else {
+                try fileManager.moveItem(at: stagingURL, to: url)
             }
-            try FileManager.default.copyItem(at: item.asset.url, to: url)
         } catch {
             present(error: NotchShotError.destinationUnwritable(url.path))
         }
@@ -827,7 +1029,10 @@ public final class AppCoordinator {
         service.perform(withItems: [item.asset.url])
     }
 
-    public func openEditor(for item: ShelfItem) {
+    public func openEditor(
+        for item: ShelfItem,
+        afterExport: ((CaptureAsset) -> Void)? = nil
+    ) {
         let controller: AnnotationDocumentController
         if let projectURL = item.asset.projectURL,
            let opened = try? AnnotationDocumentController.open(projectAt: projectURL) {
@@ -850,7 +1055,80 @@ public final class AppCoordinator {
             return
         }
         controller.seams = item.seams
+        if let afterExport {
+            editorExportActions[ObjectIdentifier(controller)] = afterExport
+        }
         hideShelf()
+        onOpenEditor?(controller)
+    }
+
+    public func openEditor(for stackItem: StackItem) {
+        openEditor(
+            for: ShelfItem(asset: stackItem.asset, thumbnail: nil, image: nil)
+        ) { [weak self] exported in
+            self?.stack.replace(id: stackItem.id, with: exported)
+        }
+    }
+
+    public func handleEditorExport(
+        from controller: AnnotationDocumentController,
+        asset: CaptureAsset
+    ) {
+        let key = ObjectIdentifier(controller)
+        editorExportActions.removeValue(forKey: key)?(asset)
+    }
+
+    public func discardEditorExportAction(for controller: AnnotationDocumentController) {
+        editorExportActions.removeValue(forKey: ObjectIdentifier(controller))
+    }
+
+    public func openPrivacyReview(for item: ShelfItem) {
+        let source: CGImage?
+        if let image = item.image {
+            source = image.cgImage
+        } else {
+            source = NSImage(contentsOf: item.asset.url)?
+                .cgImage(forProposedRect: nil, context: nil, hints: nil)
+        }
+        guard let source else {
+            present(error: NotchShotError.exportFailed("Can't review that capture"))
+            return
+        }
+        hideShelf()
+        onOpenPrivacyReview?(PrivacyReviewSession(asset: item.asset, source: source))
+    }
+
+    /// Called only after the user selected privacy findings. The suggested
+    /// pixelation remains editable, and no redaction is burned in until export.
+    public func applyPrivacySuggestions(
+        from session: PrivacyReviewSession,
+        findings: [PrivacyFinding]
+    ) {
+        let document = AnnotationDocument(
+            sourcePixelSize: CGSize(width: session.source.width, height: session.source.height),
+            sourceScale: session.asset.scale
+        )
+        let controller = AnnotationDocumentController(
+            source: session.source,
+            document: document,
+            asset: session.asset
+        )
+        for finding in findings {
+            var style = AnnotationStyle.default(
+                for: .pixelate,
+                baseColorHex: "#000000",
+                lineWidth: 0
+            )
+            style.pixelBlockSize = finding.kind == .face ? 22 : 14
+            controller.add(AnnotationElement(
+                kind: .pixelate,
+                points: [
+                    CGPoint(x: finding.rect.minX, y: finding.rect.minY),
+                    CGPoint(x: finding.rect.maxX, y: finding.rect.maxY),
+                ],
+                style: style
+            ))
+        }
         onOpenEditor?(controller)
     }
 
@@ -913,6 +1191,22 @@ public final class AppCoordinator {
         }
     }
 
+    public func compareFirstTwoStackItems() {
+        guard stack.items.count >= 2 else {
+            present(error: NotchShotError.exportFailed("Add two captures to the stack first"))
+            return
+        }
+        do {
+            let session = try VisualComparisonSession(
+                beforeAsset: stack.items[0].asset,
+                afterAsset: stack.items[1].asset
+            )
+            onOpenComparison?(session)
+        } catch {
+            present(error: error)
+        }
+    }
+
     public func openEditor(for entry: HistoryEntry) {
         let item = ShelfItem(asset: entry.asset, thumbnail: nil, image: nil)
         openEditor(for: item)
@@ -955,12 +1249,16 @@ public final class AppCoordinator {
         let granted = permissions.requestScreenRecordingAccess()
         guard !granted else { return true }
 
-        // Distinguish "the prompt is on screen, go allow it" from "you said no
-        // and we can't ask again" — the remedies are different, and the first
-        // one is what every user hits on their very first capture.
-        present(error: permissions.isAwaitingFirstScreenRecordingGrant
-            ? NotchShotError.screenRecordingPermissionPending
-            : NotchShotError.screenRecordingPermissionDenied)
+        // Three different situations, three different remedies. "Approved but
+        // macOS still says no" is the one that used to be indistinguishable from
+        // a plain refusal, which left no way forward.
+        if permissions.isScreenRecordingGrantStale {
+            present(error: NotchShotError.screenRecordingGrantStale)
+        } else {
+            present(error: permissions.requiresScreenRecordingRelaunch
+                ? NotchShotError.screenRecordingPermissionPending
+                : NotchShotError.screenRecordingPermissionDenied)
+        }
         return false
     }
 

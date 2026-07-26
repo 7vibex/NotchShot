@@ -19,6 +19,9 @@ public enum NotchShotError: LocalizedError, Equatable {
     case screenRecordingPermissionDenied
     /// Asked, prompt shown, grant not yet in effect for this process.
     case screenRecordingPermissionPending
+    /// Approved in an earlier launch, but the stored grant belongs to a
+    /// different signing identity, so macOS keeps refusing this build.
+    case screenRecordingGrantStale
     case microphonePermissionDenied
     case noShareableContent
     case displayNotFound
@@ -37,6 +40,8 @@ public enum NotchShotError: LocalizedError, Equatable {
             "NotchShot needs Screen & System Audio Recording permission."
         case .screenRecordingPermissionPending:
             "Allow NotchShot in Screen & System Audio Recording, then quit and reopen it."
+        case .screenRecordingGrantStale:
+            "macOS is still refusing Screen Recording even though NotchShot looks approved. Reset the permission in Settings › Privacy."
         case .microphonePermissionDenied:
             "NotchShot needs Microphone permission to record your voice."
         case .noShareableContent:
@@ -67,6 +72,7 @@ public enum NotchShotError: LocalizedError, Equatable {
         switch self {
         case .screenRecordingPermissionDenied: "Screen Recording denied"
         case .screenRecordingPermissionPending: "Allow Screen Recording, then reopen NotchShot"
+        case .screenRecordingGrantStale: "Screen Recording needs resetting — open Settings › Privacy"
         case .microphonePermissionDenied: "Microphone denied"
         case .cancelled: "Cancelled"
         case .diskSpaceUnavailable: "Disk full"

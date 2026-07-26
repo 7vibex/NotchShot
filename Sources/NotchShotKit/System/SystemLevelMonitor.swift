@@ -60,12 +60,20 @@ public final class SystemLevelMonitor {
     /// Fires on each *change*, not on each sample.
     public var onChange: ((SystemLevel) -> Void)?
 
+    private struct AudioListenerRegistration {
+        var objectID: AudioObjectID
+        var address: AudioObjectPropertyAddress
+        var block: AudioObjectPropertyListenerBlock
+    }
+
     private var audioDeviceID = AudioObjectID(kAudioObjectUnknown)
-    private var listenerBlocks: [(AudioObjectID, AudioObjectPropertyAddress)] = []
+    private var deviceListeners: [AudioListenerRegistration] = []
+    private var defaultDeviceListener: AudioListenerRegistration?
+    private let listenerQueue = DispatchQueue.main
     private var brightnessTimer: Timer?
     private var lastVolume: Double?
     private var lastMuted: Bool?
-    private var lastBrightness: Double?
+    private var brightness = BrightnessChangeClassifier()
     private var observers: [NSObjectProtocol] = []
     private var isRunning = false
 
@@ -80,7 +88,7 @@ public final class SystemLevelMonitor {
         // Seed the baselines so the first sample doesn't fire a phantom HUD.
         lastVolume = readVolume()
         lastMuted = readMuted()
-        lastBrightness = BrightnessReader.shared.brightness()
+        brightness.reset(to: BrightnessReader.shared.brightness())
 
         installVolumeListeners()
         startBrightnessSampling()
@@ -105,9 +113,64 @@ public final class SystemLevelMonitor {
     // MARK: Volume
 
     private func installVolumeListeners() {
+        installDefaultDeviceListenerIfNeeded()
         audioDeviceID = defaultOutputDevice()
-        guard audioDeviceID != AudioObjectID(kAudioObjectUnknown) else { return }
+        installDeviceVolumeListeners()
+    }
 
+    private func installDefaultDeviceListenerIfNeeded() {
+        guard defaultDeviceListener == nil else { return }
+        // Switching output device (headphones in/out) changes the volume we
+        // should be watching, so follow that too.
+        var deviceAddress = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDefaultOutputDevice,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        let systemObject = AudioObjectID(kAudioObjectSystemObject)
+        let block: AudioObjectPropertyListenerBlock = { [weak self] _, _ in
+            MainActor.assumeIsolated {
+                guard let self, self.isRunning else { return }
+                self.removeDeviceVolumeListeners()
+                self.audioDeviceID = self.defaultOutputDevice()
+                self.installDeviceVolumeListeners()
+                // Headphones sit at their own volume. Re-baseline against the
+                // new device, or the next change would be measured against the
+                // old one and show a HUD for a switch nobody asked for.
+                self.lastVolume = self.readVolume()
+                self.lastMuted = self.readMuted()
+            }
+        }
+        let status = AudioObjectAddPropertyListenerBlock(
+            systemObject,
+            &deviceAddress,
+            listenerQueue,
+            block
+        )
+        if status == noErr {
+            defaultDeviceListener = AudioListenerRegistration(
+                objectID: systemObject,
+                address: deviceAddress,
+                block: block
+            )
+        }
+    }
+
+    private func removeVolumeListeners() {
+        removeDeviceVolumeListeners()
+        if var registration = defaultDeviceListener {
+            _ = AudioObjectRemovePropertyListenerBlock(
+                registration.objectID,
+                &registration.address,
+                listenerQueue,
+                registration.block
+            )
+            defaultDeviceListener = nil
+        }
+    }
+
+    private func installDeviceVolumeListeners() {
+        guard audioDeviceID != AudioObjectID(kAudioObjectUnknown) else { return }
         for selector in [
             kAudioHardwareServiceDeviceProperty_VirtualMainVolume,
             kAudioDevicePropertyMute,
@@ -117,44 +180,35 @@ public final class SystemLevelMonitor {
                 mScope: kAudioDevicePropertyScopeOutput,
                 mElement: kAudioObjectPropertyElementMain
             )
+            let block: AudioObjectPropertyListenerBlock = { [weak self] _, _ in
+                MainActor.assumeIsolated { self?.volumeDidChange() }
+            }
             let status = AudioObjectAddPropertyListenerBlock(
                 audioDeviceID,
                 &address,
-                DispatchQueue.main
-            ) { [weak self] _, _ in
-                MainActor.assumeIsolated { self?.volumeDidChange() }
-            }
+                listenerQueue,
+                block
+            )
             if status == noErr {
-                listenerBlocks.append((audioDeviceID, address))
-            }
-        }
-
-        // Switching output device (headphones in/out) changes the volume we
-        // should be watching, so follow that too.
-        var deviceAddress = AudioObjectPropertyAddress(
-            mSelector: kAudioHardwarePropertyDefaultOutputDevice,
-            mScope: kAudioObjectPropertyScopeGlobal,
-            mElement: kAudioObjectPropertyElementMain
-        )
-        _ = AudioObjectAddPropertyListenerBlock(
-            AudioObjectID(kAudioObjectSystemObject),
-            &deviceAddress,
-            DispatchQueue.main
-        ) { [weak self] _, _ in
-            MainActor.assumeIsolated {
-                guard let self, self.isRunning else { return }
-                self.removeVolumeListeners()
-                self.installVolumeListeners()
+                deviceListeners.append(AudioListenerRegistration(
+                    objectID: audioDeviceID,
+                    address: address,
+                    block: block
+                ))
             }
         }
     }
 
-    private func removeVolumeListeners() {
-        // Blocks added with AudioObjectAddPropertyListenerBlock can't be
-        // removed without the original block reference; dropping our bookkeeping
-        // plus the `isRunning` guard in each handler is enough to make them
-        // inert.
-        listenerBlocks.removeAll()
+    private func removeDeviceVolumeListeners() {
+        for var registration in deviceListeners {
+            _ = AudioObjectRemovePropertyListenerBlock(
+                registration.objectID,
+                &registration.address,
+                listenerQueue,
+                registration.block
+            )
+        }
+        deviceListeners.removeAll()
     }
 
     private func volumeDidChange() {
@@ -217,6 +271,7 @@ public final class SystemLevelMonitor {
     // MARK: Brightness
 
     private func startBrightnessSampling() {
+        guard Preferences.shared.mirrorsBrightnessChanges else { return }
         guard BrightnessReader.shared.isAvailable else {
             Log.app.notice("Brightness monitoring unavailable on this system")
             return
@@ -232,16 +287,26 @@ public final class SystemLevelMonitor {
     }
 
     private func sampleBrightness() {
-        guard isRunning, let brightness = BrightnessReader.shared.brightness() else { return }
-        guard let previous = lastBrightness else {
-            lastBrightness = brightness
-            return
+        guard isRunning, let value = BrightnessReader.shared.brightness() else { return }
+        // The classifier decides whether this was a person or the ambient light
+        // sensor; only the former reaches the notch.
+        guard case .report(let reported) = brightness.classify(
+            value,
+            at: ProcessInfo.processInfo.systemUptime
+        ) else { return }
+        publish(SystemLevel(kind: .brightness, value: reported, isMuted: false))
+    }
+
+    /// Turns brightness mirroring on or off without disturbing volume.
+    public func setBrightnessMirroringEnabled(_ enabled: Bool) {
+        guard isRunning else { return }
+        if enabled {
+            brightness.reset(to: BrightnessReader.shared.brightness())
+            startBrightnessSampling()
+        } else {
+            brightnessTimer?.invalidate()
+            brightnessTimer = nil
         }
-        // Ignore sub-step jitter; the hardware reports tiny fluctuations while
-        // auto-brightness settles, which would otherwise flash the HUD.
-        guard abs(brightness - previous) > 0.004 else { return }
-        lastBrightness = brightness
-        publish(SystemLevel(kind: .brightness, value: brightness, isMuted: false))
     }
 
     private func installSleepObservers() {
@@ -265,7 +330,7 @@ public final class SystemLevelMonitor {
                 guard let self, self.isRunning else { return }
                 // Brightness usually differs after a wake; re-baseline instead
                 // of firing a HUD nobody asked for.
-                self.lastBrightness = BrightnessReader.shared.brightness()
+                self.brightness.reset(to: BrightnessReader.shared.brightness())
                 self.startBrightnessSampling()
             }
         })

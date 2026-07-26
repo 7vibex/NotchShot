@@ -89,12 +89,14 @@ public struct MediaSnapshot: Sendable, Equatable {
     public func isMateriallyEqual(to other: MediaSnapshot) -> Bool {
         source == other.source
             && applicationBundleID == other.applicationBundleID
+            && applicationName == other.applicationName
             && title == other.title
             && artist == other.artist
             && album == other.album
             && isPlaying == other.isPlaying
             && duration == other.duration
-            && artworkData?.count == other.artworkData?.count
+            && artworkData == other.artworkData
+            && supportedCommands == other.supportedCommands
     }
 }
 

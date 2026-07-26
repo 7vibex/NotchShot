@@ -131,6 +131,89 @@ struct AnnotationSerializationTests {
         }
     }
 
+    @Test("Imported projects reject absolute background paths")
+    func rejectsAbsoluteBackgroundPath() throws {
+        let directory = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let source = TestImage.solid(width: 20, height: 20)
+        var document = AnnotationDocument(sourcePixelSize: CGSize(width: 20, height: 20), sourceScale: 1)
+        let url = directory.appendingPathComponent("Unsafe.notchshot")
+        _ = try NotchShotPackage.write(document: document, source: source, to: url)
+        document.background.fill = .image(path: "/tmp/notchshot-private-image.png")
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        try encoder.encode(document).write(to: url.appendingPathComponent("document.json"))
+
+        #expect(throws: NotchShotError.self) {
+            _ = try NotchShotPackage.read(from: url)
+        }
+    }
+
+    @Test("Imported projects reject extreme finite render geometry")
+    func rejectsExtremeRenderGeometry() throws {
+        let directory = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let source = TestImage.solid(width: 20, height: 20)
+        var document = AnnotationDocument(sourcePixelSize: CGSize(width: 20, height: 20), sourceScale: 1)
+        let url = directory.appendingPathComponent("Huge.notchshot")
+        _ = try NotchShotPackage.write(document: document, source: source, to: url)
+
+        document.background.padding = 1_000_000
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        try encoder.encode(document).write(to: url.appendingPathComponent("document.json"))
+
+        #expect(throws: NotchShotError.self) {
+            _ = try NotchShotPackage.read(from: url)
+        }
+    }
+
+    @Test("Imported source metadata must match the decoded image")
+    func rejectsMismatchedSourceMetadata() throws {
+        let directory = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let source = TestImage.solid(width: 20, height: 20)
+        var document = AnnotationDocument(sourcePixelSize: CGSize(width: 20, height: 20), sourceScale: 1)
+        let url = directory.appendingPathComponent("Mismatch.notchshot")
+        _ = try NotchShotPackage.write(document: document, source: source, to: url)
+
+        document.sourcePixelSize = CGSize(width: 10_000, height: 20)
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        try encoder.encode(document).write(to: url.appendingPathComponent("document.json"))
+
+        #expect(throws: NotchShotError.self) {
+            _ = try NotchShotPackage.read(from: url)
+        }
+    }
+
+    @Test("Imported projects reject traversal from their Assets directory")
+    func rejectsBackgroundTraversal() throws {
+        let directory = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let source = TestImage.solid(width: 20, height: 20)
+        var document = AnnotationDocument(sourcePixelSize: CGSize(width: 20, height: 20), sourceScale: 1)
+        document.background.fill = .image(path: "Assets/../source.png")
+        let url = directory.appendingPathComponent("Traversal.notchshot")
+        _ = try NotchShotPackage.write(document: document, source: source, to: url)
+
+        #expect(throws: NotchShotError.self) {
+            _ = try NotchShotPackage.read(from: url)
+        }
+    }
+
     @Test("Step counters number themselves in sequence")
     func counterNumbering() {
         var document = AnnotationDocument(sourcePixelSize: CGSize(width: 100, height: 100))

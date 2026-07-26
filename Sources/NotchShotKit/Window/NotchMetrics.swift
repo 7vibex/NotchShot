@@ -62,7 +62,10 @@ public struct NotchMetrics: Sendable, Equatable {
             safeAreaTop: screen.safeAreaInsets.top,
             auxiliaryTopLeft: screen.auxiliaryTopLeftArea,
             auxiliaryTopRight: screen.auxiliaryTopRightArea,
-            menuBarHeight: max(screen.frame.height - screen.visibleFrame.height, 24)
+            // Difference of the *tops*, not of the heights: `visibleFrame` also
+            // excludes the Dock, so subtracting heights reported the menu bar as
+            // menu bar + Dock — 96pt instead of 33 on a 14" MacBook Pro.
+            menuBarHeight: max(screen.frame.maxY - screen.visibleFrame.maxY, 24)
         )
     }
 
@@ -84,10 +87,14 @@ public struct NotchLayout: Sendable, Equatable {
     public var size: CGSize
     /// Corner radius of the island's bottom corners.
     public var cornerRadius: CGFloat
+    /// Vertical space occupied by the physical camera cutout. Revealed content
+    /// is laid out below this band instead of being centered behind hardware.
+    public var contentTopInset: CGFloat
 
-    public init(size: CGSize, cornerRadius: CGFloat) {
+    public init(size: CGSize, cornerRadius: CGFloat, contentTopInset: CGFloat = 0) {
         self.size = size
         self.cornerRadius = cornerRadius
+        self.contentTopInset = contentTopInset
     }
 
     /// Largest island the panel must be able to contain. The panel is sized to
@@ -107,40 +114,70 @@ public struct NotchLayout: Sendable, Equatable {
             width: max(metrics.notchSize.width, 1),
             height: max(metrics.notchSize.height, 1)
         )
+        let revealedContentInset = metrics.hasPhysicalNotch ? closed.height : 0
+
+        func revealed(
+            width: CGFloat,
+            contentHeight: CGFloat,
+            cornerRadius: CGFloat
+        ) -> NotchLayout {
+            NotchLayout(
+                size: CGSize(
+                    width: width,
+                    height: min(contentHeight + revealedContentInset, maximumSize.height)
+                ),
+                cornerRadius: cornerRadius,
+                contentTopInset: revealedContentInset
+            )
+        }
 
         switch activity {
         case .idle:
-            return NotchLayout(
-                size: isPeeking ? CGSize(width: closed.width + 150, height: 46) : closed,
-                cornerRadius: metrics.hasPhysicalNotch ? 12 : 16
-            )
+            if isPeeking {
+                return revealed(
+                    width: closed.width + 150,
+                    contentHeight: 46,
+                    cornerRadius: metrics.hasPhysicalNotch ? 12 : 16
+                )
+            }
+            return NotchLayout(size: closed, cornerRadius: metrics.hasPhysicalNotch ? 12 : 16)
         case .media:
-            let width = isPeeking ? max(closed.width + 230, 420) : closed.width + 92
-            let height = isPeeking ? 78.0 : max(closed.height, 32)
-            return NotchLayout(size: CGSize(width: width, height: height), cornerRadius: 18)
+            let width = isPeeking ? max(closed.width + 290, 470) : closed.width + 92
+            if isPeeking {
+                // Taller and wider than the bare progress bar needed: the
+                // scrubber carries an elapsed and a total time either side of it.
+                return revealed(width: width, contentHeight: 86, cornerRadius: 18)
+            }
+            // Compact media lives in the visible wings beside the camera and
+            // intentionally shares the hardware notch's vertical band.
+            return NotchLayout(
+                size: CGSize(width: width, height: max(closed.height, 32)),
+                cornerRadius: 18
+            )
         case .expanded:
-            return NotchLayout(size: CGSize(width: 520, height: 268), cornerRadius: 24)
+            return revealed(width: 520, contentHeight: 268, cornerRadius: 24)
         case .selecting:
-            return NotchLayout(size: CGSize(width: 340, height: 54), cornerRadius: 18)
+            return revealed(width: 340, contentHeight: 54, cornerRadius: 18)
         case .countdown:
-            return NotchLayout(size: CGSize(width: 260, height: 92), cornerRadius: 22)
+            return revealed(width: 260, contentHeight: 92, cornerRadius: 22)
         case .recording:
-            return NotchLayout(size: CGSize(width: 420, height: 96), cornerRadius: 22)
+            return revealed(width: 420, contentHeight: 96, cornerRadius: 22)
         case .processing:
-            return NotchLayout(size: CGSize(width: 320, height: 62), cornerRadius: 18)
+            return revealed(width: 320, contentHeight: 62, cornerRadius: 18)
         case .result:
             let extra = min(max(resultCount - 1, 0), 4) * 12
             let height: CGFloat = hasStack ? 226 : 186
-            return NotchLayout(size: CGSize(width: 470 + CGFloat(extra), height: height), cornerRadius: 24)
+            return revealed(width: 470 + CGFloat(extra), contentHeight: height, cornerRadius: 24)
         case .systemLevel:
             // Just wide enough for an icon and a bar: a volume nudge should
             // feel like the notch flexing, not like a panel opening.
-            return NotchLayout(
-                size: CGSize(width: max(closed.width + 130, 300), height: 46),
+            return revealed(
+                width: max(closed.width + 230, 390),
+                contentHeight: 46,
                 cornerRadius: 20
             )
         case .error:
-            return NotchLayout(size: CGSize(width: 360, height: 62), cornerRadius: 18)
+            return revealed(width: 360, contentHeight: 62, cornerRadius: 18)
         }
     }
 

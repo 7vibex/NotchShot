@@ -81,6 +81,9 @@ public final class Preferences {
     public var preferredMicrophoneID: String? { didSet { write(preferredMicrophoneID, .preferredMicrophone) } }
     public var recordingShowsCursor = true { didSet { write(recordingShowsCursor, .recordingShowsCursor) } }
     public var recordingHighlightsClicks = false { didSet { write(recordingHighlightsClicks, .recordingHighlightsClicks) } }
+    public var recordingAutoZoomsOnClicks = false { didSet { write(recordingAutoZoomsOnClicks, .recordingAutoZoomsOnClicks) } }
+    public var recordingFramesWithBackground = false { didSet { write(recordingFramesWithBackground, .recordingFramesWithBackground) } }
+    public var recordingGeneratesCaptions = false { didSet { write(recordingGeneratesCaptions, .recordingGeneratesCaptions) } }
 
     // MARK: History
 
@@ -98,6 +101,16 @@ public final class Preferences {
     public var hoverPeekDelay: Double = 0.35 { didSet { write(hoverPeekDelay, .hoverPeekDelay) } }
     /// Mirror volume and brightness changes in the notch.
     public var systemLevelHUDEnabled = true { didSet { write(systemLevelHUDEnabled, .systemLevelHUD) } }
+    /// Include brightness. Off leaves volume mirroring alone — useful when
+    /// auto-brightness is on and the display adapts on its own all day.
+    public var mirrorsBrightnessChanges = true { didSet { write(mirrorsBrightnessChanges, .mirrorsBrightness) } }
+    /// Pause macOS's own overlay so the change is only shown in the notch.
+    /// On by default: two HUDs for one keypress is the thing people notice.
+    public var suppressesSystemOSD = true { didSet { write(suppressesSystemOSD, .suppressesSystemOSD) } }
+    /// Take ⇧⌘4 and ⇧⌘5 from macOS and point them at NotchShot.
+    public var usesSystemScreenshotShortcuts = true {
+        didSet { write(usesSystemScreenshotShortcuts, .usesSystemShortcuts) }
+    }
     public var mediaIntegrationEnabled = true { didSet { write(mediaIntegrationEnabled, .mediaEnabled) } }
     public var appleEventsFallbackEnabled = true { didSet { write(appleEventsFallbackEnabled, .appleEventsFallback) } }
     /// Path to the user-installed mediaremote-adapter bundle, if present.
@@ -158,13 +171,17 @@ public final class Preferences {
 
     /// Expands the filename template. Unknown tokens are left untouched so a
     /// typo produces a visible artefact rather than a silently empty name.
-    public func expandFilename(date: Date = Date(), appName: String? = nil) -> String {
+    public func expandFilename(
+        template: String? = nil,
+        date: Date = Date(),
+        appName: String? = nil
+    ) -> String {
         let dateFormatter = DateFormatter()
         dateFormatter.dateFormat = "yyyy-MM-dd"
         let timeFormatter = DateFormatter()
         timeFormatter.dateFormat = "HH.mm.ss"
 
-        var name = filenameTemplate
+        var name = template ?? filenameTemplate
         name = name.replacingOccurrences(of: "{date}", with: dateFormatter.string(from: date))
         name = name.replacingOccurrences(of: "{time}", with: timeFormatter.string(from: date))
         name = name.replacingOccurrences(of: "{app}", with: appName ?? "Screen")
@@ -184,9 +201,12 @@ public final class Preferences {
         case outputFolderBookmark
         case recordingQuality, recordingResolution, recordingFrameRate
         case recordsSystemAudio, recordsMicrophone, preferredMicrophone
-        case recordingShowsCursor, recordingHighlightsClicks
+        case recordingShowsCursor, recordingHighlightsClicks, recordingAutoZoomsOnClicks
+        case recordingFramesWithBackground
+        case recordingGeneratesCaptions
         case historyRetentionDays, historyEnabled, indexesCaptureText
         case notchEnabled, islandOnExternal, hoverPeek, hoverPeekDelay, systemLevelHUD
+        case mirrorsBrightness, suppressesSystemOSD, usesSystemShortcuts
         case mediaEnabled, appleEventsFallback, adapterPath
         case backgroundPreset, annotationColor, annotationLineWidth
         case launchAtLogin, showsDockIcon, firstRun, adapterCheckBuild
@@ -233,6 +253,9 @@ public final class Preferences {
         preferredMicrophoneID = string(.preferredMicrophone)
         recordingShowsCursor = bool(.recordingShowsCursor, true)
         recordingHighlightsClicks = bool(.recordingHighlightsClicks, false)
+        recordingAutoZoomsOnClicks = bool(.recordingAutoZoomsOnClicks, false)
+        recordingFramesWithBackground = bool(.recordingFramesWithBackground, false)
+        recordingGeneratesCaptions = bool(.recordingGeneratesCaptions, false)
 
         historyRetentionDays = int(.historyRetentionDays, 30)
         historyEnabled = bool(.historyEnabled, true)
@@ -243,6 +266,9 @@ public final class Preferences {
         hoverPeekEnabled = bool(.hoverPeek, true)
         hoverPeekDelay = double(.hoverPeekDelay, 0.35)
         systemLevelHUDEnabled = bool(.systemLevelHUD, true)
+        mirrorsBrightnessChanges = bool(.mirrorsBrightness, true)
+        suppressesSystemOSD = bool(.suppressesSystemOSD, true)
+        usesSystemScreenshotShortcuts = bool(.usesSystemShortcuts, true)
         mediaIntegrationEnabled = bool(.mediaEnabled, true)
         appleEventsFallbackEnabled = bool(.appleEventsFallback, true)
         mediaRemoteAdapterPath = string(.adapterPath)

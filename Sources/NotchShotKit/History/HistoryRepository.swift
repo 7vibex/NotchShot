@@ -17,6 +17,9 @@ public struct HistoryEntry: Codable, Sendable, Identifiable, Equatable {
     public var sourceApplicationName: String?
     public var duration: TimeInterval?
     public var projectPath: String?
+    /// Exact app-generated caption path. Nil for legacy rows, where ownership
+    /// is unknown and the sibling file must be preserved.
+    public var captionPath: String?
     /// Only populated when "Search capture text" is on.
     public var indexedText: String?
 
@@ -33,6 +36,7 @@ public struct HistoryEntry: Codable, Sendable, Identifiable, Equatable {
         self.sourceApplicationName = asset.sourceApplicationName
         self.duration = asset.duration
         self.projectPath = asset.projectURL?.path
+        self.captionPath = asset.captionURL?.path
         self.indexedText = indexedText
     }
 
@@ -62,6 +66,7 @@ public struct HistoryEntry: Codable, Sendable, Identifiable, Equatable {
             sourceApplicationName: sourceApplicationName,
             duration: duration,
             recognizedText: indexedText,
+            captionURL: captionPath.map { URL(fileURLWithPath: $0) },
             projectURL: projectPath.map { URL(fileURLWithPath: $0) }
         )
     }
@@ -145,30 +150,68 @@ public final class HistoryRepository {
     }
 
     /// Removes the entry, its thumbnail, and optionally the capture itself.
-    public func delete(id: UUID, includingFile: Bool) {
+    public func delete(id: UUID, includingFile: Bool) throws {
         guard let index = entries.firstIndex(where: { $0.id == id }) else { return }
-        let entry = entries.remove(at: index)
+        let entry = entries[index]
+        if includingFile {
+            // Complete the user-visible operation before removing its record.
+            // Otherwise a Trash failure disappears from the UI while the
+            // sensitive file remains on disk.
+            try Self.trashCaptureAndCaption(
+                at: entry.fileURL,
+                captionURL: entry.captionPath.map { URL(fileURLWithPath: $0) }
+            )
+        }
+        entries.remove(at: index)
         if let thumbnailURL = entry.thumbnailURL {
             try? FileManager.default.removeItem(at: thumbnailURL)
-        }
-        if includingFile {
-            // Trash rather than unlink, so a mis-tap is recoverable.
-            try? FileManager.default.trashItem(at: entry.fileURL, resultingItemURL: nil)
         }
         scheduleSave()
     }
 
-    public func clearAll(includingFiles: Bool) {
+    /// Returns files that could not be moved to Trash. Their history rows are
+    /// kept so failure is visible and retryable.
+    @discardableResult
+    public func clearAll(includingFiles: Bool) -> [URL] {
+        var failed: [URL] = []
+        var retained: [HistoryEntry] = []
         for entry in entries {
+            if includingFiles {
+                do {
+                    try Self.trashCaptureAndCaption(
+                        at: entry.fileURL,
+                        captionURL: entry.captionPath.map { URL(fileURLWithPath: $0) }
+                    )
+                } catch {
+                    failed.append(entry.fileURL)
+                    retained.append(entry)
+                    continue
+                }
+            }
             if let thumbnailURL = entry.thumbnailURL {
                 try? FileManager.default.removeItem(at: thumbnailURL)
             }
-            if includingFiles {
-                try? FileManager.default.trashItem(at: entry.fileURL, resultingItemURL: nil)
-            }
         }
-        entries.removeAll()
+        entries = includingFiles ? retained : []
         scheduleSave()
+        return failed
+    }
+
+    /// Trashes captions before their MP4, then the primary capture last. A
+    /// failure never unlinks either file permanently; Finder Trash remains the
+    /// recovery path.
+    public nonisolated static func trashCaptureAndCaption(
+        at fileURL: URL,
+        captionURL: URL? = nil
+    ) throws {
+        let fileManager = FileManager.default
+        if let captionURL,
+           fileManager.fileExists(atPath: captionURL.path) {
+            try fileManager.trashItem(at: captionURL, resultingItemURL: nil)
+        }
+        if fileManager.fileExists(atPath: fileURL.path) {
+            try fileManager.trashItem(at: fileURL, resultingItemURL: nil)
+        }
     }
 
     /// Drops every stored OCR string. Called when the user turns text search

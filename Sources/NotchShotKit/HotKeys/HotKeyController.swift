@@ -4,8 +4,10 @@ import Foundation
 
 public enum HotKeyAction: String, Sendable, CaseIterable, Identifiable, Codable {
     case captureArea
+    case captureAreaToClipboard
     case captureWindow
     case captureDisplay
+    case captureDisplayToClipboard
     case capturePreviousArea
     case captureScrolling
     case captureText
@@ -19,8 +21,10 @@ public enum HotKeyAction: String, Sendable, CaseIterable, Identifiable, Codable 
     public var title: String {
         switch self {
         case .captureArea: "Capture Area"
+        case .captureAreaToClipboard: "Capture Area to Clipboard"
         case .captureWindow: "Capture Window"
         case .captureDisplay: "Capture Full Screen"
+        case .captureDisplayToClipboard: "Capture Full Screen to Clipboard"
         case .capturePreviousArea: "Capture Previous Area"
         case .captureScrolling: "Scrolling Capture"
         case .captureText: "Capture Text (OCR)"
@@ -31,10 +35,40 @@ public enum HotKeyAction: String, Sendable, CaseIterable, Identifiable, Codable 
         }
     }
 
+    /// The macOS combination this action replaces, when NotchShot is set to take
+    /// the system screenshot shortcuts over.
+    public var systemStyleBinding: HotKeyBinding? {
+        switch self {
+        case .captureDisplay:
+            HotKeyBinding(keyCode: UInt32(kVK_ANSI_3), modifiers: UInt32(cmdKey | shiftKey))
+        case .captureDisplayToClipboard:
+            HotKeyBinding(keyCode: UInt32(kVK_ANSI_3), modifiers: UInt32(cmdKey | shiftKey | controlKey))
+        case .captureArea:
+            HotKeyBinding(keyCode: UInt32(kVK_ANSI_4), modifiers: UInt32(cmdKey | shiftKey))
+        case .captureAreaToClipboard:
+            HotKeyBinding(keyCode: UInt32(kVK_ANSI_4), modifiers: UInt32(cmdKey | shiftKey | controlKey))
+        case .startRecording:
+            HotKeyBinding(keyCode: UInt32(kVK_ANSI_5), modifiers: UInt32(cmdKey | shiftKey))
+        default: nil
+        }
+    }
+
+    /// Every action that can stand in for a macOS screenshot shortcut, paired
+    /// with the system hotkey that has to be released for it to work.
+    public static let systemShortcutReplacements: [(HotKeyAction, SystemScreenshotHotKeys.SymbolicHotKey)] = [
+        (.captureDisplay, .fullScreenToFile),
+        (.captureDisplayToClipboard, .fullScreenToClipboard),
+        (.captureArea, .areaToFile),
+        (.captureAreaToClipboard, .areaToClipboard),
+        (.startRecording, .screenshotPanel),
+    ]
+
     /// Defaults chosen to sit beside macOS's own ⇧⌘3/4/5 without colliding.
     public var defaultBinding: HotKeyBinding? {
         switch self {
         case .captureArea: HotKeyBinding(keyCode: UInt32(kVK_ANSI_4), modifiers: UInt32(cmdKey | shiftKey | optionKey))
+        // No default of their own: these exist to stand in for ⌃⇧⌘3 and ⌃⇧⌘4.
+        case .captureAreaToClipboard, .captureDisplayToClipboard: nil
         case .captureWindow: HotKeyBinding(keyCode: UInt32(kVK_ANSI_5), modifiers: UInt32(cmdKey | shiftKey | optionKey))
         case .captureDisplay: HotKeyBinding(keyCode: UInt32(kVK_ANSI_3), modifiers: UInt32(cmdKey | shiftKey | optionKey))
         case .capturePreviousArea: HotKeyBinding(keyCode: UInt32(kVK_ANSI_R), modifiers: UInt32(cmdKey | shiftKey | optionKey))
@@ -124,16 +158,52 @@ public final class HotKeyController {
     // MARK: Lifecycle
 
     public func start() {
+        // Any shortcut a previous crash left switched off comes back first, so a
+        // stale state can never cost the user ⇧⌘4 permanently.
+        SystemScreenshotHotKeys.shared.restoreAll(includingUnknown: true)
+        applySystemShortcutTakeover()
         installEventHandler()
         registerAll()
     }
 
     public func stop() {
         unregisterAll()
+        // macOS gets its shortcuts back before this process goes away.
+        SystemScreenshotHotKeys.shared.restoreAll()
         if let eventHandler {
             RemoveEventHandler(eventHandler)
             self.eventHandler = nil
         }
+    }
+
+    /// Points ⇧⌘4 and ⇧⌘5 at NotchShot, or gives them back.
+    ///
+    /// The system owns those combinations at a level above app hotkeys, so the
+    /// system ones have to be released before ours can register. Order matters:
+    /// release first, then register.
+    public func applySystemShortcutTakeover() {
+        let wanted = Preferences.shared.usesSystemScreenshotShortcuts
+        if wanted {
+            SystemScreenshotHotKeys.shared.takeOver(
+                Set(HotKeyAction.systemShortcutReplacements.map(\.1))
+            )
+        } else {
+            SystemScreenshotHotKeys.shared.restoreAll()
+        }
+        for (action, _) in HotKeyAction.systemShortcutReplacements {
+            let current = bindings[action]
+            if wanted {
+                // A combination the user picked themselves is theirs; only the
+                // untouched default gets moved onto the system shortcut.
+                guard current == action.defaultBinding || current == action.systemStyleBinding
+                else { continue }
+                bindings[action] = action.systemStyleBinding
+            } else {
+                guard current == action.systemStyleBinding else { continue }
+                bindings[action] = action.defaultBinding
+            }
+        }
+        registerAll()
     }
 
     // MARK: Bindings

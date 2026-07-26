@@ -319,3 +319,208 @@ struct SystemLevelTests {
         #expect(stacked.size.width <= NotchLayout.maximumSize.width)
     }
 }
+
+@Suite("Brightness change classification")
+struct BrightnessChangeClassifierTests {
+
+    /// Drives a sequence of readings at the monitor's real 5 Hz sample rate.
+    private func run(
+        _ values: [Double],
+        from start: Double,
+        interval: TimeInterval = 0.2
+    ) -> [Double] {
+        var classifier = BrightnessChangeClassifier()
+        classifier.reset(to: start)
+        var reported: [Double] = []
+        for (index, value) in values.enumerated() {
+            let time = TimeInterval(index + 1) * interval
+            if case .report(let level) = classifier.classify(value, at: time) {
+                reported.append(level)
+            }
+        }
+        return reported
+    }
+
+    /// Measured on an adapting display: about 0.006 per sample, off-grid, and it
+    /// keeps going. None of it should reach the notch.
+    @Test("An auto-brightness ramp is never reported")
+    func ambientRampIsSilent() {
+        var value = 0.3649
+        let ramp = (0 ..< 40).map { _ -> Double in
+            value += 0.006
+            return value
+        }
+        #expect(run(ramp, from: 0.3649).isEmpty)
+    }
+
+    /// Readings taken off a real adapting display, resampled to the monitor's
+    /// 200 ms interval. This is the exact case that used to flash the HUD
+    /// continuously: every step clears the old 0.004 gate.
+    @Test("A measured ramp off real hardware is never reported")
+    func measuredRampIsSilent() {
+        let measured = [0.364872724, 0.369790286, 0.374707818, 0.379625350, 0.384542882]
+        for (index, value) in measured.dropFirst().enumerated() {
+            #expect(abs(value - measured[index]) > 0.004)
+        }
+        #expect(run(measured, from: 0.364872724).isEmpty)
+    }
+
+    /// The leak that survived the first version: a real ramp does not glide at a
+    /// constant rate. When a sample dips under the noise floor the burst closes,
+    /// and judging it on accumulated distance reported every few seconds of a
+    /// long adaptation. Only a single fast sample may qualify.
+    @Test("A stuttering auto-brightness ramp is never reported")
+    func stutteringRampIsSilent() {
+        var value = 0.30
+        var samples: [Double] = []
+        // Six seconds of drift that pauses every few samples, as the sensor does.
+        for index in 0 ..< 30 {
+            if index % 4 == 3 {
+                samples.append(value)          // a beat with no movement
+            } else {
+                value += 0.006
+                samples.append(value)
+            }
+        }
+        // Accumulates far past a key press in total, yet no single step is fast.
+        #expect(value - 0.30 > 0.12)
+        #expect(run(samples, from: 0.30).isEmpty)
+    }
+
+    /// A settled display still wobbles slightly; that is not a change either.
+    @Test("Sensor wobble is never reported")
+    func wobbleIsSilent() {
+        let jitter = [0.4202, 0.4195, 0.4207, 0.4191, 0.4206, 0.4198]
+        #expect(run(jitter, from: 0.4200).isEmpty)
+    }
+
+    /// One tap of the brightness key: 1/16, landing on the keyboard grid.
+    @Test("A single key press is reported immediately")
+    func keyPressIsReported() {
+        let reported = run([0.5 + 1.0 / 16, 0.5 + 1.0 / 16], from: 0.5)
+        #expect(reported == [0.5625])
+    }
+
+    /// The finest step the keys produce, with ⇧⌥ held.
+    @Test("A fine key press is reported")
+    func fineKeyPressIsReported() {
+        let target = 0.5 + BrightnessChangeClassifier.keyboardStep
+        #expect(run([target, target], from: 0.5) == [target])
+    }
+
+    /// Holding the key ramps in grid steps; the HUD has to track it, not just
+    /// flash once.
+    @Test("A held key keeps reporting")
+    func heldKeyKeepsReporting() {
+        let steps = (1 ... 5).map { 0.4 + Double($0) * (1.0 / 16) }
+        #expect(run(steps, from: 0.4).count == 5)
+    }
+
+    /// A Control Centre drag lands off-grid, so it is only recognised once the
+    /// movement stops — the final value, not every intermediate one.
+    @Test("A slider drag is reported once it comes to rest")
+    func sliderDragReportsOnRest() {
+        let drag = [0.513, 0.541, 0.572, 0.572, 0.572]
+        let reported = run(drag, from: 0.5)
+        #expect(reported == [0.572])
+    }
+
+    /// A ramp that fools the first sample must not hold the HUD open for the
+    /// whole adaptation.
+    @Test("A slow ramp that starts on-grid is abandoned")
+    func slowRampIsAbandoned() {
+        var value = 0.5
+        // First step is a clean 1/16 onto the grid, then it crawls like a sensor.
+        var samples = [0.5 + 1.0 / 16]
+        value = samples[0]
+        for _ in 0 ..< 20 {
+            value += 0.006
+            samples.append(value)
+        }
+        let reported = run(samples, from: 0.5)
+        #expect(!reported.isEmpty)
+        // Bounded by the 1.2 s ceiling rather than running the full ramp.
+        #expect(reported.count < 8)
+    }
+
+    /// Waking a display reports a different value; that is not a user action.
+    @Test("Resetting the baseline suppresses the next reading")
+    func resetSuppressesNextReading() {
+        var classifier = BrightnessChangeClassifier()
+        classifier.reset(to: 0.5)
+        classifier.reset(to: 0.2)
+        #expect(classifier.classify(0.2, at: 1) == .ignore)
+    }
+}
+
+@Suite("Screen Recording remediation")
+@MainActor
+struct ScreenRecordingRemediationTests {
+
+    /// Drives the class with a scripted TCC state instead of the real one: a
+    /// test process carries the terminal's Screen Recording status, which says
+    /// nothing about the app's.
+    private func center(
+        granted: Bool,
+        asked: Bool
+    ) -> (center: PermissionCenter, requestCount: () -> Int) {
+        let defaults = UserDefaults.standard
+        defaults.set(asked, forKey: "notchshot.askedScreenRecording")
+        let counter = Counter()
+        let center = PermissionCenter(
+            preflight: { granted },
+            request: { counter.increment(); return granted }
+        )
+        return (center, { counter.value })
+    }
+
+    private final class Counter: @unchecked Sendable {
+        private var count = 0
+        func increment() { count += 1 }
+        var value: Int { count }
+    }
+
+    /// The dead end this replaced: a stored "already asked" flag made every
+    /// later launch report denied without ever asking macOS again, so an
+    /// approval that did not land could not be recovered from inside the app.
+    @Test("A request from an earlier launch still asks macOS again")
+    func earlierRequestDoesNotBlockAsking() {
+        let (subject, requestCount) = center(granted: false, asked: true)
+        #expect(subject.requestScreenRecordingAccess() == false)
+        #expect(requestCount() == 1)
+        // Offers a way forward rather than the terminal denial it used to latch.
+        #expect(subject.screenRecording == .restartRequired)
+        #expect(subject.pendingRemediation == .screenRecording)
+    }
+
+    /// A second attempt inside one launch cannot produce another system prompt,
+    /// so that one is allowed to report the denial.
+    @Test("A second attempt in the same launch reports denied without re-asking")
+    func secondAttemptInSameLaunchReportsDenied() {
+        let (subject, requestCount) = center(granted: false, asked: false)
+        _ = subject.requestScreenRecordingAccess()
+        _ = subject.requestScreenRecordingAccess()
+        #expect(requestCount() == 1)
+        #expect(subject.screenRecording == .denied)
+    }
+
+    /// A live grant on a launch that never asked is simply usable.
+    @Test("An existing grant is reported as granted")
+    func existingGrantIsUsable() {
+        let (subject, requestCount) = center(granted: true, asked: true)
+        #expect(subject.requestScreenRecordingAccess())
+        #expect(subject.screenRecording == .granted)
+        #expect(subject.screenRecording.isUsable)
+        #expect(requestCount() == 0)
+        #expect(!subject.isScreenRecordingGrantStale)
+    }
+
+    /// The stale hint is the poll's decision, not the request's: a prompt the
+    /// user is still answering must not be labelled a broken record.
+    @Test("The stale-grant hint is not raised immediately")
+    func staleHintIsNotImmediate() {
+        let (subject, _) = center(granted: false, asked: true)
+        _ = subject.requestScreenRecordingAccess()
+        #expect(!subject.isScreenRecordingGrantStale)
+    }
+}

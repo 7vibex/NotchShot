@@ -52,10 +52,14 @@ public struct NotchShape: Shape {
     }
 }
 
-/// A level meter for the recording HUD.
+/// A compact, live waveform for the recording HUD. Every bar is a recent RMS
+/// sample from the capture stream; silence is still instead of being animated
+/// decoratively, and Reduce Motion disables interpolation between samples.
 struct AudioLevelBar: View {
     var level: Float
+    var samples: [Float]
     var isEnabled: Bool
+    var isAvailable: Bool
     var symbolName: String
     var label: String
 
@@ -65,34 +69,76 @@ struct AudioLevelBar: View {
         HStack(spacing: 5) {
             Image(systemName: symbolName)
                 .font(.system(size: 9))
-                .foregroundStyle(isEnabled ? .white : .white.opacity(0.3))
+                .foregroundStyle(iconColor)
                 .frame(width: 12)
 
-            GeometryReader { geometry in
-                ZStack(alignment: .leading) {
-                    Capsule()
-                        .fill(.white.opacity(0.16))
-                    Capsule()
-                        .fill(meterColor)
-                        .frame(width: geometry.size.width * CGFloat(isEnabled ? level : 0))
-                        .animation(reduceMotion ? nil : .linear(duration: 0.08), value: level)
+            if isEnabled, !isAvailable {
+                Label("Meter unavailable", systemImage: "exclamationmark.triangle.fill")
+                    .labelStyle(.titleAndIcon)
+                    .font(.system(size: 8, weight: .medium))
+                    .foregroundStyle(.orange)
+                    .lineLimit(1)
+                    .frame(height: 14)
+            } else {
+                HStack(alignment: .center, spacing: 1.5) {
+                    ForEach(displayedSamples.indices, id: \.self) { index in
+                        let sample = displayedSamples[index]
+                        Capsule()
+                            .fill(color(for: sample))
+                            .frame(width: 2, height: barHeight(for: sample))
+                    }
                 }
+                .frame(height: 14)
+                .animation(reduceMotion ? nil : .easeOut(duration: 0.1), value: displayedSamples)
             }
-            .frame(height: 4)
         }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(label)
-        .accessibilityValue(isEnabled ? "\(Int(level * 100)) percent" : "off")
+        .accessibilityValue(accessibilityValue)
     }
 
-    /// Green through amber to red, so clipping is visible without a numeric
-    /// readout in a 4-point-tall meter.
-    private var meterColor: Color {
+    private var displayedSamples: [Float] {
+        let recent = Array(samples.suffix(RecordingStatus.waveformSampleCount))
+        if recent.count == RecordingStatus.waveformSampleCount { return recent }
+        return Array(
+            repeating: 0,
+            count: RecordingStatus.waveformSampleCount - recent.count
+        ) + recent
+    }
+
+    private var levelDescription: String {
         switch level {
-        case ..<0.7: .green
-        case ..<0.9: .yellow
-        default: .red
+        case ..<0.02: "silent"
+        case ..<0.35: "low"
+        case ..<0.75: "moderate"
+        case ..<0.92: "high"
+        default: "near clipping"
         }
+    }
+
+    private var accessibilityValue: String {
+        if !isEnabled { return "off" }
+        if !isAvailable { return "meter unavailable" }
+        return levelDescription
+    }
+
+    private var iconColor: Color {
+        if !isEnabled { return .white.opacity(0.3) }
+        if !isAvailable { return .orange }
+        return .white
+    }
+
+    private func barHeight(for sample: Float) -> CGFloat {
+        guard isEnabled, isAvailable else { return 2 }
+        let clamped = max(0, min(CGFloat(sample), 1))
+        return 2 + 11 * clamped
+    }
+
+    private func color(for sample: Float) -> Color {
+        guard isEnabled, isAvailable else { return .white.opacity(0.18) }
+        if sample >= 0.9 { return .red }
+        if sample >= 0.7 { return .yellow }
+        return .green
     }
 }
 

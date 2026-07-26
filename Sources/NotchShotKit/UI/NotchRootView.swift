@@ -87,7 +87,16 @@ public struct NotchRootView: View {
                 )
 
             content
-                .frame(width: layout.size.width, height: layout.size.height)
+                .frame(
+                    width: layout.size.width,
+                    height: max(1, layout.size.height - layout.contentTopInset)
+                )
+                .offset(y: layout.contentTopInset)
+                .frame(
+                    width: layout.size.width,
+                    height: layout.size.height,
+                    alignment: .top
+                )
                 .clipShape(shape)
                 // Content fades in a beat after the shape has started growing,
                 // so text never appears outside the island it belongs to.
@@ -238,9 +247,13 @@ private struct IdleContent: View {
             }
             .padding(.horizontal, 14)
         } else {
-            // Closed state draws nothing: the island is exactly the hardware
-            // notch, so anything here would look like a rendering artefact.
+            // AppKit also bridges clicks from the physical cutout's trigger
+            // band, because hardware pixels themselves cannot be hit-tested.
             Color.clear
+                .contentShape(Rectangle())
+                .onTapGesture { coordinator.toggleExpanded() }
+                .accessibilityLabel("Open NotchShot")
+                .accessibilityAddTraits(.isButton)
         }
     }
 }
@@ -252,7 +265,6 @@ private struct MediaContent: View {
     var isPeeking: Bool
 
     @State private var now = Date()
-    private let ticker = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
 
     private var snapshot: MediaSnapshot { coordinator.media.snapshot }
 
@@ -264,10 +276,17 @@ private struct MediaContent: View {
                 compact
             }
         }
-        .onReceive(ticker) { date in
-            // Only tick while something is actually playing — an idle notch
-            // must not wake the CPU once a second.
-            if snapshot.isPlaying { now = date }
+        // The timer exists only while something is playing, so a paused notch
+        // stops waking the CPU once a second. An autoconnected publisher held in
+        // a property could not do that: it fires for as long as the view lives,
+        // whatever the playback state.
+        .task(id: snapshot.isPlaying) {
+            guard snapshot.isPlaying else { return }
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(1))
+                guard !Task.isCancelled else { return }
+                now = Date()
+            }
         }
     }
 
@@ -279,6 +298,13 @@ private struct MediaContent: View {
             PlaybackIndicator(isPlaying: snapshot.isPlaying)
                 .padding(.trailing, 8)
         }
+        .contentShape(Rectangle())
+        .onTapGesture {
+            coordinator.setPeeking(true)
+            coordinator.windowController?.focusActivePanel()
+        }
+        .accessibilityLabel("Show now playing controls")
+        .accessibilityAddTraits(.isButton)
     }
 
     private var expanded: some View {
@@ -303,13 +329,10 @@ private struct MediaContent: View {
                 )
                 .frame(height: 13)
 
-                if snapshot.duration != nil {
-                    ProgressView(value: snapshot.progress)
-                        .progressViewStyle(.linear)
-                        .tint(.white.opacity(0.85))
-                        .frame(height: 2)
-                        .padding(.top, 2)
+                MediaScrubber(snapshot: snapshot, now: now) { position in
+                    coordinator.media.send(.seek(position))
                 }
+                .padding(.top, 1)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
 
@@ -370,37 +393,180 @@ private struct MediaContent: View {
     }
 }
 
+/// Position bar with elapsed and total time, draggable to seek.
+///
+/// This replaced a plain `ProgressView`, which showed no times and could not be
+/// dragged — the bar moved and that was all it did.
+private struct MediaScrubber: View {
+    var snapshot: MediaSnapshot
+    /// Ticks once a second so the elapsed time advances between source polls.
+    var now: Date
+    var onSeek: (TimeInterval) -> Void
+
+    /// Where the user just dragged to, and when. Held briefly after release —
+    /// see `displayedFraction`.
+    @State private var pending: (fraction: Double, at: Date)?
+
+    private var duration: TimeInterval? {
+        guard let duration = snapshot.duration, duration > 0, duration.isFinite else { return nil }
+        return duration
+    }
+
+    private var canSeek: Bool {
+        duration != nil && snapshot.supportedCommands.contains(.seek)
+    }
+
+    var body: some View {
+        HStack(spacing: 6) {
+            timeLabel(elapsed, alignment: .leading)
+
+            GeometryReader { geometry in
+                ZStack(alignment: .leading) {
+                    Capsule()
+                        .fill(.white.opacity(0.22))
+                        .frame(height: 3)
+                    Capsule()
+                        .fill(.white.opacity(canSeek ? 0.95 : 0.6))
+                        .frame(width: max(3, geometry.size.width * displayedFraction), height: 3)
+                    if canSeek {
+                        Circle()
+                            .fill(.white)
+                            .frame(width: 7, height: 7)
+                            .offset(x: max(0, geometry.size.width * displayedFraction - 3.5))
+                    }
+                }
+                // The bar is 3pt tall but the whole row is grabbable, or seeking
+                // would demand pixel-accurate aim at a hairline.
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .contentShape(Rectangle())
+                .gesture(seekGesture(width: geometry.size.width))
+            }
+            .frame(height: 14)
+
+            timeLabel(duration, alignment: .trailing)
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Playback position")
+        .accessibilityValue(accessibilityValue)
+    }
+
+    @ViewBuilder
+    private func timeLabel(_ time: TimeInterval?, alignment: Alignment) -> some View {
+        Text(Self.formatted(time))
+            .font(.system(size: 9, weight: .medium))
+            .foregroundStyle(.white.opacity(0.6))
+            .monospacedDigit()
+            .frame(width: 32, alignment: alignment)
+    }
+
+    private func seekGesture(width: CGFloat) -> some Gesture {
+        // `minimumDistance: 0` so a plain tap jumps to that point, as it does in
+        // every other player.
+        DragGesture(minimumDistance: 0)
+            .onChanged { value in
+                guard canSeek, width > 0 else { return }
+                pending = (Self.clamped(value.location.x / width), Date())
+            }
+            .onEnded { value in
+                guard canSeek, width > 0, let duration else { return }
+                let fraction = Self.clamped(value.location.x / width)
+                pending = (fraction, Date())
+                onSeek(fraction * duration)
+            }
+    }
+
+    /// The fraction to draw: the dragged one until the player confirms it.
+    ///
+    /// The Apple Events source only polls every couple of seconds, so clearing
+    /// the dragged value on release makes the bar snap back to where the track
+    /// was and then jump forward — it reads as the seek having failed.
+    private var displayedFraction: Double {
+        guard let pending, let duration else { return snapshot.progress }
+        let target = pending.fraction * duration
+        if let position = snapshot.interpolatedPosition(at: now), abs(position - target) < 1.5 {
+            return snapshot.progress
+        }
+        // Give up waiting rather than showing a stale position forever if the
+        // player ignored the seek.
+        if Date().timeIntervalSince(pending.at) > 3 { return snapshot.progress }
+        return pending.fraction
+    }
+
+    private var elapsed: TimeInterval? {
+        if let duration { return displayedFraction * duration }
+        // No duration — a live stream, or a player that does not report one.
+        // The elapsed time is still worth showing.
+        return snapshot.interpolatedPosition(at: now)
+    }
+
+    private var accessibilityValue: String {
+        guard let duration else { return Self.formatted(elapsed) }
+        return "\(Self.formatted(elapsed)) of \(Self.formatted(duration))"
+    }
+
+    private static func clamped(_ fraction: Double) -> Double {
+        min(max(fraction, 0), 1)
+    }
+
+    static func formatted(_ time: TimeInterval?) -> String {
+        guard let time, time.isFinite, time >= 0 else { return "--:--" }
+        let total = Int(time.rounded())
+        let hours = total / 3600
+        let minutes = (total % 3600) / 60
+        let seconds = total % 60
+        return hours > 0
+            ? String(format: "%d:%02d:%02d", hours, minutes, seconds)
+            : String(format: "%d:%02d", minutes, seconds)
+    }
+}
+
 /// Three bars that bounce while audio is playing.
+///
+/// Each bar animates its own height between a short and a tall value, on its own
+/// duration, so they drift out of step and read as a level meter rather than
+/// three things moving together. Driving a shared phase through `sin` does not
+/// work here: SwiftUI interpolates the resulting height, not the phase, so a
+/// phase running 0 → 2π starts and ends at the same height and nothing appears
+/// to move at all.
 private struct PlaybackIndicator: View {
     var isPlaying: Bool
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var phase: CGFloat = 0
+    @State private var isBouncing = false
+
+    /// Short height, tall height, and beat, per bar — a small, a medium and a
+    /// big one, each on a different clock.
+    private let bars: [(low: CGFloat, high: CGFloat, duration: Double)] = [
+        (3, 8, 0.42),
+        (4, 12, 0.55),
+        (3, 10, 0.34),
+    ]
 
     var body: some View {
-        HStack(spacing: 2) {
-            ForEach(0 ..< 3, id: \.self) { index in
+        HStack(alignment: .center, spacing: 2) {
+            ForEach(bars.indices, id: \.self) { index in
+                let bar = bars[index]
                 Capsule()
                     .fill(.white.opacity(isPlaying ? 0.9 : 0.35))
-                    .frame(width: 2, height: height(for: index))
+                    .frame(width: 2, height: isBouncing ? bar.high : bar.low)
+                    .animation(animation(bar.duration), value: isBouncing)
             }
         }
         .frame(height: 12, alignment: .center)
-        .onAppear { startAnimating() }
-        .onChange(of: isPlaying) { _, _ in startAnimating() }
+        .onAppear { isBouncing = isPlaying && !reduceMotion }
+        .onChange(of: isPlaying) { _, playing in
+            isBouncing = playing && !reduceMotion
+        }
+        .onChange(of: reduceMotion) { _, reduced in
+            isBouncing = isPlaying && !reduced
+        }
         .accessibilityHidden(true)
     }
 
-    private func height(for index: Int) -> CGFloat {
-        guard isPlaying, !reduceMotion else { return 5 }
-        let offsets: [CGFloat] = [0, 0.66, 1.33]
-        return 4 + 6 * abs(sin(phase + offsets[index]))
-    }
-
-    private func startAnimating() {
-        guard isPlaying, !reduceMotion else { return }
-        withAnimation(.linear(duration: 1.2).repeatForever(autoreverses: false)) {
-            phase = .pi * 2
-        }
+    /// Nil while paused, so the bars settle at their short height instead of
+    /// being left mid-bounce by a cancelled repeating animation.
+    private func animation(_ duration: Double) -> Animation? {
+        guard isPlaying, !reduceMotion else { return .easeOut(duration: 0.18) }
+        return .easeInOut(duration: duration).repeatForever(autoreverses: true)
     }
 }
 
@@ -408,6 +574,7 @@ private struct PlaybackIndicator: View {
 
 private struct CaptureMenuContent: View {
     @Bindable var coordinator: AppCoordinator
+    @Bindable private var recipeStore = CaptureRecipeStore.shared
     @State private var timer: CaptureTimer = .none
 
     private let intents: [CaptureIntent] = [
@@ -421,13 +588,33 @@ private struct CaptureMenuContent: View {
                     .font(.system(size: 12, weight: .semibold))
                     .foregroundStyle(.white)
                 Spacer()
+                Menu {
+                    ForEach(CaptureRecipe.all) { recipe in
+                        Button {
+                            recipeStore.activeRecipeID = recipe.id
+                        } label: {
+                            if recipe.id == recipeStore.activeRecipeID {
+                                Label(recipe.name, systemImage: "checkmark")
+                            } else {
+                                Text(recipe.name)
+                            }
+                        }
+                    }
+                } label: {
+                    Label(recipeStore.activeRecipe.name, systemImage: "wand.and.stars")
+                        .font(.system(size: 10, weight: .medium))
+                }
+                .menuStyle(.borderlessButton)
+                .frame(width: 130)
+                .help(recipeStore.activeRecipe.detail)
+
                 Picker("Timer", selection: $timer) {
                     ForEach(CaptureTimer.allCases) { option in
                         Text(option.title).tag(option)
                     }
                 }
                 .pickerStyle(.segmented)
-                .frame(width: 170)
+                .frame(width: 145)
                 .labelsHidden()
 
                 NotchIconButton(systemName: "xmark", label: "Close") {
@@ -588,8 +775,11 @@ private struct ErrorContent: View {
             Spacer(minLength: 0)
 
             if coordinator.permissions.pendingRemediation != nil {
-                Button("Open Settings") {
-                    if let kind = coordinator.permissions.pendingRemediation {
+                Button(coordinator.permissions.requiresScreenRecordingRelaunch
+                       ? "Quit & Reopen" : "Open Settings") {
+                    if coordinator.permissions.requiresScreenRecordingRelaunch {
+                        coordinator.permissions.relaunchApplication()
+                    } else if let kind = coordinator.permissions.pendingRemediation {
                         coordinator.permissions.openSettings(for: kind)
                     }
                 }
@@ -636,13 +826,17 @@ private struct RecordingContent: View {
 
                 AudioLevelBar(
                     level: status.systemLevel,
+                    samples: status.systemWaveform,
                     isEnabled: status.isSystemAudioEnabled,
+                    isAvailable: status.isSystemMeterAvailable,
                     symbolName: "speaker.wave.2.fill",
                     label: "System audio level"
                 )
                 AudioLevelBar(
                     level: status.microphoneLevel,
+                    samples: status.microphoneWaveform,
                     isEnabled: status.isMicrophoneEnabled,
+                    isAvailable: status.isMicrophoneMeterAvailable,
                     symbolName: "mic.fill",
                     label: "Microphone level"
                 )
@@ -650,13 +844,6 @@ private struct RecordingContent: View {
             .frame(width: 150)
 
             Spacer(minLength: 0)
-
-            NotchIconButton(
-                systemName: status.isMicrophoneEnabled ? "mic.fill" : "mic.slash.fill",
-                label: status.isMicrophoneEnabled ? "Mute microphone" : "Unmute microphone"
-            ) {
-                coordinator.toggleRecordingMicrophone()
-            }
 
             NotchIconButton(systemName: "stop.fill", label: "Stop recording", tint: .red, isProminent: true) {
                 coordinator.stopRecording()
@@ -688,6 +875,12 @@ private struct SystemLevelContent: View {
                 // The symbol swaps as the level crosses each threshold; a plain
                 // swap would pop, so cross-fade it.
                 .contentTransition(.symbolEffect(.replace))
+
+            Text(level.kind.title)
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(.white.opacity(0.82))
+                .lineLimit(1)
+                .frame(width: 96, alignment: .leading)
 
             GeometryReader { geometry in
                 ZStack(alignment: .leading) {

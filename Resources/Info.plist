@@ -36,6 +36,8 @@
 	     These two are requested lazily, only when the feature is first used. -->
 	<key>NSMicrophoneUsageDescription</key>
 	<string>NotchShot records your microphone only while you have microphone recording switched on for a screen recording.</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>NotchShot can create an optional on-device transcript and caption file from a recording you make.</string>
 	<key>NSAppleEventsUsageDescription</key>
 	<string>NotchShot asks Music and Spotify what is playing, only as a fallback when the system Now Playing bridge is unavailable.</string>
 

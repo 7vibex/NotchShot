@@ -17,6 +17,8 @@ public struct SettingsView: View {
                 .tabItem { Label("General", systemImage: "gearshape") }
             CaptureSettings(preferences: preferences)
                 .tabItem { Label("Capture", systemImage: "camera.viewfinder") }
+            RecipeSettings()
+                .tabItem { Label("Recipes", systemImage: "wand.and.stars") }
             RecordingSettings(preferences: preferences)
                 .tabItem { Label("Recording", systemImage: "record.circle") }
             NotchSettings(coordinator: coordinator, preferences: preferences)
@@ -29,6 +31,48 @@ public struct SettingsView: View {
                 .tabItem { Label("Shortcuts", systemImage: "command") }
         }
         .frame(width: 560, height: 460)
+    }
+}
+
+// MARK: - Recipes
+
+private struct RecipeSettings: View {
+    @Bindable private var store = CaptureRecipeStore.shared
+
+    var body: some View {
+        Form {
+            Section("Active recipe") {
+                Picker("Recipe", selection: $store.activeRecipeID) {
+                    ForEach(CaptureRecipe.all) { recipe in
+                        Text(recipe.name).tag(recipe.id)
+                    }
+                }
+            }
+
+            Section(store.activeRecipe.name) {
+                Text(store.activeRecipe.detail)
+                    .foregroundStyle(.secondary)
+                LabeledContent("Size", value: store.activeRecipe.sizeDescription)
+                LabeledContent(
+                    "Background",
+                    value: store.activeRecipe.background.isEnabled ? "Framed" : "None"
+                )
+                LabeledContent("Annotations", value: store.activeRecipe.annotationMode.title)
+                LabeledContent("Filename", value: store.activeRecipe.filenameTemplate)
+                LabeledContent("Destination", value: store.activeRecipe.destination.title)
+                LabeledContent(
+                    "Format",
+                    value: store.activeRecipe.imageFormat?.title ?? "Capture setting"
+                )
+            }
+
+            Section {
+                Text("Recipes are capture-focused: they change output, framing, follow-up review, naming, and destination without adding unrelated notch widgets.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .formStyle(.grouped)
     }
 }
 
@@ -168,11 +212,6 @@ private struct RecordingSettings: View {
     var body: some View {
         Form {
             Section("Video") {
-                Picker("Quality", selection: $preferences.recordingQuality) {
-                    ForEach(RecordingQuality.allCases) { quality in
-                        Text(quality.title).tag(quality)
-                    }
-                }
                 Picker("Resolution", selection: $preferences.recordingResolution) {
                     ForEach(RecordingResolution.allCases) { resolution in
                         Text(resolution.title).tag(resolution)
@@ -202,6 +241,20 @@ private struct RecordingSettings: View {
             Section("Pointer") {
                 Toggle("Show the pointer", isOn: $preferences.recordingShowsCursor)
                 Toggle("Highlight clicks", isOn: $preferences.recordingHighlightsClicks)
+            }
+
+            Section("Presentation") {
+                Toggle("Frame the recording on a dark background", isOn: $preferences.recordingFramesWithBackground)
+                Text("Adds a clean matte around the capture while keeping the selected output resolution.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Section("Captions") {
+                Toggle("Create an on-device transcript and .srt captions", isOn: $preferences.recordingGeneratesCaptions)
+                Text("Speech stays on this Mac. NotchShot uses an already installed language model and never uploads recording audio.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
         }
         .formStyle(.grouped)
@@ -241,7 +294,22 @@ private struct NotchSettings: View {
                     get: { preferences.systemLevelHUDEnabled },
                     set: { coordinator.setSystemLevelHUDEnabled($0) }
                 ))
-                Text("macOS keeps showing its own overlay as well — NotchShot mirrors the change rather than replacing the system HUD, which would mean interfering with a system process.")
+
+                Toggle("Include brightness", isOn: Binding(
+                    get: { preferences.mirrorsBrightnessChanges },
+                    set: { coordinator.setBrightnessMirroringEnabled($0) }
+                ))
+                .disabled(!preferences.systemLevelHUDEnabled)
+                Text("Brightness the display adjusts by itself is ignored — only changes you make with the keys or the slider appear. Turn this off to leave brightness out entirely and keep volume.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                Toggle("Replace the macOS overlay", isOn: Binding(
+                    get: { preferences.suppressesSystemOSD },
+                    set: { coordinator.setSystemOSDSuppressed($0) }
+                ))
+                .disabled(!preferences.systemLevelHUDEnabled)
+                Text("Pauses the system's own volume and brightness overlay while NotchShot runs, so the change is shown in the notch only. It is restored when NotchShot quits or this is switched off.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -331,7 +399,7 @@ private struct MediaSettings: View {
                         coordinator.media.restart()
                     }
                 ))
-                Text("Used only when the Now Playing bridge is unavailable. Needs Automation permission, and can't see browser audio.")
+                Text("Used only when the Now Playing bridge is unavailable. Needs Automation permission, can't see browser audio, and fetches the active Spotify track's artwork from its HTTPS CDN once per track.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -366,12 +434,36 @@ private struct PrivacySettings: View {
                         HStack {
                             Text(stateText(for: kind))
                                 .foregroundStyle(stateColor(for: kind))
+                            if kind == .screenRecording,
+                               coordinator.permissions.requiresScreenRecordingRelaunch {
+                                Button("Quit & Reopen") {
+                                    coordinator.permissions.relaunchApplication()
+                                }
+                                .buttonStyle(.borderedProminent)
+                            }
                             Button("Open Settings") {
                                 coordinator.permissions.openSettings(for: kind)
                             }
                         }
                     }
                 }
+                if coordinator.permissions.isScreenRecordingGrantStale {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("Screen Recording looks approved but macOS is still refusing it.")
+                            .font(.caption)
+                            .fontWeight(.semibold)
+                        Text("That happens when the entry in Privacy & Security belongs to an earlier build signed with a different identity. Switching it off and on again does not help — the record has to be cleared so macOS asks fresh.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Button("Reset Screen Recording Permission") {
+                            if coordinator.permissions.resetScreenRecordingPermission() {
+                                coordinator.permissions.relaunchApplication()
+                            }
+                        }
+                        .buttonStyle(.borderedProminent)
+                    }
+                }
+
                 Text("NotchShot asks for each permission the first time you use the feature that needs it, never at launch.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -406,10 +498,15 @@ private struct PrivacySettings: View {
                         isPresented: $confirmClear
                     ) {
                         Button("Clear History Only") {
-                            coordinator.history.clearAll(includingFiles: false)
+                            _ = coordinator.history.clearAll(includingFiles: false)
                         }
                         Button("Clear History and Move Files to Trash", role: .destructive) {
-                            coordinator.history.clearAll(includingFiles: true)
+                            let failed = coordinator.history.clearAll(includingFiles: true)
+                            if !failed.isEmpty {
+                                coordinator.present(error: NotchShotError.destinationUnwritable(
+                                    "Could not move \(failed.count) capture file(s) to Trash"
+                                ))
+                            }
                         }
                         Button("Cancel", role: .cancel) {}
                     }
@@ -421,9 +518,9 @@ private struct PrivacySettings: View {
 
     private func stateText(for kind: PermissionKind) -> String {
         switch kind {
-        case .screenRecording: coordinator.permissions.screenRecording.rawValue
-        case .microphone: coordinator.permissions.microphone.rawValue
-        default: "as needed"
+        case .screenRecording: coordinator.permissions.screenRecording.displayName
+        case .microphone: coordinator.permissions.microphone.displayName
+        default: "As needed"
         }
     }
 
@@ -436,6 +533,7 @@ private struct PrivacySettings: View {
         guard let state else { return .secondary }
         return switch state {
         case .granted: .green
+        case .restartRequired: .orange
         case .denied: .red
         case .notDetermined: .secondary
         }
@@ -447,9 +545,29 @@ private struct PrivacySettings: View {
 private struct ShortcutSettings: View {
     @State private var bindings: [HotKeyAction: HotKeyBinding] = HotKeyController.shared.bindings
     @State private var recording: HotKeyAction?
+    @Bindable private var preferences = Preferences.shared
 
     var body: some View {
         Form {
+            Section("macOS shortcuts") {
+                Toggle("Use the macOS screenshot shortcuts for NotchShot", isOn: Binding(
+                    get: { preferences.usesSystemScreenshotShortcuts },
+                    set: { newValue in
+                        preferences.usesSystemScreenshotShortcuts = newValue
+                        HotKeyController.shared.applySystemShortcutTakeover()
+                        bindings = HotKeyController.shared.bindings
+                    }
+                ))
+                Text("Switches off the matching macOS shortcuts so ⇧⌘3 captures the screen, ⇧⌘4 captures an area, ⇧⌘5 starts a recording, and the ⌃⇧⌘ variants copy to the clipboard instead of saving. Every one is handed back to macOS when this is off or NotchShot quits.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                if !SystemScreenshotHotKeys.shared.isAvailable {
+                    Text("This version of macOS does not allow reassigning the system shortcuts.")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                }
+            }
+
             Section("Global shortcuts") {
                 ForEach(HotKeyAction.allCases) { action in
                     LabeledContent(action.title) {
