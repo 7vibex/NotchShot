@@ -4,6 +4,70 @@ import CoreMedia
 import Foundation
 import ScreenCaptureKit
 
+struct RecordingDisplayBounds: Equatable, Sendable {
+    let displayID: CGDirectDisplayID
+    let frame: CGRect
+}
+
+struct RecordingAreaResolution: Equatable, Sendable {
+    let displayID: CGDirectDisplayID
+    let globalRect: CGRect
+    let displayLocalRect: CGRect
+}
+
+/// Resolves an area selection with the same rules as still-image capture:
+/// choose the display containing the largest intersection, then clamp the
+/// selection to that display before passing a local rect to ScreenCaptureKit.
+enum RecordingAreaResolver {
+    static func resolve(
+        globalRect: CGRect,
+        displays: [RecordingDisplayBounds]
+    ) throws -> RecordingAreaResolution {
+        guard globalRect.origin.x.isFinite,
+              globalRect.origin.y.isFinite,
+              globalRect.width.isFinite,
+              globalRect.height.isFinite,
+              globalRect.width > 0,
+              globalRect.height > 0 else {
+            throw NotchShotError.captureFailed("Selection has invalid geometry")
+        }
+
+        let intersectingDisplays = displays.filter {
+            intersectionArea($0.frame, globalRect) > 0
+        }
+        guard intersectingDisplays.count <= 1 else {
+            throw NotchShotError.captureFailed(
+                "Area recordings must stay on one display. Choose a region that does not cross a display edge."
+            )
+        }
+
+        let display = intersectingDisplays.max { lhs, rhs in
+            intersectionArea(lhs.frame, globalRect) < intersectionArea(rhs.frame, globalRect)
+        }
+        guard let display, intersectionArea(display.frame, globalRect) > 0 else {
+            throw NotchShotError.displayNotFound
+        }
+        guard let clamped = ScreenGeometry.clamp(globalRect, to: display.frame) else {
+            throw NotchShotError.captureFailed("Selection is outside every display")
+        }
+
+        return RecordingAreaResolution(
+            displayID: display.displayID,
+            globalRect: clamped,
+            displayLocalRect: ScreenGeometry.displayLocalRect(
+                globalCGRect: clamped,
+                displayCGBounds: display.frame
+            )
+        )
+    }
+
+    private static func intersectionArea(_ lhs: CGRect, _ rhs: CGRect) -> CGFloat {
+        let intersection = lhs.intersection(rhs)
+        guard !intersection.isNull else { return 0 }
+        return intersection.width * intersection.height
+    }
+}
+
 /// Records the screen to an H.264 MP4 using ScreenCaptureKit's own recording
 /// output, which handles muxing, A/V sync and rotation for us.
 ///
@@ -104,6 +168,7 @@ public final class RecordingService {
         if configuration.audioSources.contains(.microphone) {
             let granted = await PermissionCenter.shared.requestMicrophoneAccess()
             guard granted else { throw NotchShotError.microphonePermissionDenied }
+            try Task.checkCancellation()
         }
 
         AppPaths.ensureDirectories()
@@ -119,8 +184,10 @@ public final class RecordingService {
         }
 
         let content = try await fetchRawShareableContent()
+        try Task.checkCancellation()
+        guard lifecycleIsStarting(sessionID) else { throw CancellationError() }
         let excluded = WindowExclusionRegistry.shared.excludedWindowNumbers
-        let (filter, sourcePixelSize) = try makeFilter(
+        let (filter, sourcePixelSize, sourceRect) = try makeFilter(
             for: configuration,
             content: content,
             excludedWindows: excluded
@@ -129,7 +196,7 @@ public final class RecordingService {
         let streamConfiguration = makeStreamConfiguration(
             configuration,
             sourcePixelSize: sourcePixelSize,
-            content: content
+            sourceRect: sourceRect
         )
 
         let bridge = StreamBridge()
@@ -192,7 +259,12 @@ public final class RecordingService {
         do {
             try stream.addRecordingOutput(output)
             try await stream.startCapture()
+            try Task.checkCancellation()
         } catch {
+            if error is CancellationError {
+                await abortStartingSession(sessionID)
+                throw CancellationError()
+            }
             // A delegate callback may already own failure cleanup. Wait for
             // that exact session instead of tearing its writer down twice.
             if lifecycleIsFailing(sessionID) {
@@ -293,9 +365,15 @@ public final class RecordingService {
         }
     }
 
-    /// Stops and throws the footage away.
-    public func cancel() async {
-        guard case .recording(let sessionID) = lifecycle else { return }
+    /// Stops and discards the footage. Returns a fallback location only when
+    /// macOS could not move the partial recording to Trash.
+    @discardableResult
+    public func cancel() async -> URL? {
+        if case .starting(let sessionID) = lifecycle {
+            await abortStartingSession(sessionID)
+            return nil
+        }
+        guard case .recording(let sessionID) = lifecycle else { return nil }
         setLifecycle(.cancelling(sessionID))
         stopTicking()
         if let stream {
@@ -308,9 +386,38 @@ public final class RecordingService {
         teardown()
         setLifecycle(.idle)
         if let temporary {
-            try? FileManager.default.removeItem(at: temporary)
+            do {
+                try FileManager.default.trashItem(at: temporary, resultingItemURL: nil)
+            } catch {
+                Log.recording.error(
+                    "Could not move discarded recording to Trash: \(error.localizedDescription)"
+                )
+                // A deliberate discard must never be offered as crash
+                // recovery on the next launch. Preserve it in a clearly named
+                // fallback folder instead of silently deleting it forever.
+                let fallback = AppPaths.uniqueURL(
+                    in: AppPaths.discardedRecordings,
+                    name: "Discarded Recording",
+                    extension: "mp4"
+                )
+                do {
+                    return try moveOrCopy(from: temporary, to: fallback)
+                } catch {
+                    // The source remains recoverable on disk, but mark it so
+                    // orphan scanning cannot resurrect the user's discard.
+                    do {
+                        try Self.markExcludedFromRecovery(temporary)
+                    } catch {
+                        Log.recording.fault(
+                            "Could not mark discarded recording as excluded from recovery: \(error.localizedDescription)"
+                        )
+                    }
+                    return temporary
+                }
+            }
         }
         Log.recording.notice("Recording cancelled")
+        return nil
     }
 
     // MARK: Recovery
@@ -324,6 +431,7 @@ public final class RecordingService {
         ) else { return [] }
         return contents
             .filter { $0.pathExtension == "mp4" }
+            .filter { !FileManager.default.fileExists(atPath: Self.recoveryExclusionMarker(for: $0).path) }
             .filter(Self.isRecoverableRecording)
             .sorted { lhs, rhs in
                 let l = (try? lhs.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
@@ -332,14 +440,60 @@ public final class RecordingService {
             }
     }
 
+    /// Partial files the user chose to discard but macOS could not move to
+    /// Trash. These are never mixed into crash recovery.
+    public static func retainedDiscardedRecordings() -> [URL] {
+        let fileManager = FileManager.default
+        var retained: [URL] = []
+        if let contents = try? fileManager.contentsOfDirectory(
+            at: AppPaths.discardedRecordings,
+            includingPropertiesForKeys: [.isRegularFileKey, .isSymbolicLinkKey]
+        ) {
+            retained.append(contentsOf: contents.filter(Self.isSafeRetainedDiscard))
+        }
+        if let contents = try? fileManager.contentsOfDirectory(
+            at: AppPaths.inProgress,
+            includingPropertiesForKeys: [.isRegularFileKey, .isSymbolicLinkKey]
+        ) {
+            retained.append(contentsOf: contents.filter { url in
+                Self.isSafeRetainedDiscard(url)
+                    && fileManager.fileExists(atPath: recoveryExclusionMarker(for: url).path)
+            })
+        }
+        return retained.sorted { $0.lastPathComponent < $1.lastPathComponent }
+    }
+
+    /// Retries the recoverable Trash operation. Returns files that still could
+    /// not be moved, preserving them and their exclusion markers.
+    @discardableResult
+    public static func retryTrashRetainedDiscards() -> [URL] {
+        let fileManager = FileManager.default
+        var failures: [URL] = []
+        for url in retainedDiscardedRecordings() {
+            do {
+                try fileManager.trashItem(at: url, resultingItemURL: nil)
+                try? fileManager.removeItem(at: recoveryExclusionMarker(for: url))
+            } catch {
+                failures.append(url)
+            }
+        }
+        return failures
+    }
+
     public static func isRecoverableRecording(_ url: URL) -> Bool {
         // This is only a cheap candidate filter. `recover` performs the actual
         // AVAsset validation before the file is moved or shown as successful.
-        ((try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0) ?? 0) > 0
+        recoveryCandidateIdentity(for: url) != nil
     }
 
     public func recover(_ url: URL) async throws -> CaptureAsset {
+        guard let originalIdentity = Self.recoveryCandidateIdentity(for: url) else {
+            throw NotchShotError.recordingFailed("The recovery item is not a trusted NotchShot scratch recording")
+        }
         let metadata = try await validatedVideoMetadata(of: url)
+        guard Self.recoveryCandidateIdentity(for: url) == originalIdentity else {
+            throw NotchShotError.recordingFailed("The recovery item changed while it was being validated")
+        }
         let destination = defaultRecordingURL()
         let moved = try moveOrCopy(from: url, to: destination)
         return CaptureAsset(
@@ -347,7 +501,8 @@ public final class RecordingService {
             kind: .recording,
             pixelSize: metadata.pixelSize,
             scale: 1,
-            duration: metadata.duration
+            duration: metadata.duration,
+            ownership: AppPaths.owns(moved) ? .managedTemporary : .userDocument
         )
     }
 
@@ -365,7 +520,10 @@ public final class RecordingService {
                 return nil
             case .recording:
                 return try await stop()
-            case .starting, .stopping, .cancelling, .failing:
+            case .starting(let sessionID):
+                await abortStartingSession(sessionID)
+                return nil
+            case .stopping, .cancelling, .failing:
                 let revision = lifecycleRevision
                 await waitForLifecycleChange(after: revision)
             }
@@ -435,7 +593,8 @@ public final class RecordingService {
             kind: .recording,
             pixelSize: metadata.pixelSize,
             scale: 1,
-            duration: metadata.duration
+            duration: metadata.duration,
+            ownership: AppPaths.owns(moved) ? .managedTemporary : .userDocument
         )
     }
 
@@ -487,6 +646,24 @@ public final class RecordingService {
         stopTaskSessionID = nil
     }
 
+    private func abortStartingSession(_ sessionID: UUID) async {
+        guard lifecycleIsStarting(sessionID) else { return }
+        setLifecycle(.cancelling(sessionID))
+        stopTicking()
+        if let stream {
+            try? await stream.stopCapture()
+        }
+        if let bridge {
+            try? await bridge.waitForRecordingToFinish(timeout: 4)
+        }
+        let scratch = temporaryURL
+        teardown()
+        setLifecycle(.idle)
+        if let scratch, AppPaths.owns(scratch) {
+            try? FileManager.default.removeItem(at: scratch)
+        }
+    }
+
     private func teardown() {
         if let bridge, let stream {
             try? stream.removeStreamOutput(bridge, type: .audio)
@@ -512,7 +689,7 @@ public final class RecordingService {
         for configuration: RecordingConfiguration,
         content: SCShareableContent,
         excludedWindows: Set<CGWindowID>
-    ) throws -> (SCContentFilter, CGSize?) {
+    ) throws -> (filter: SCContentFilter, sourcePixelSize: CGSize?, sourceRect: CGRect?) {
         let excluded = content.windows.filter { excludedWindows.contains($0.windowID) }
 
         switch configuration.target {
@@ -522,7 +699,7 @@ public final class RecordingService {
             }
             let scale = ScreenLookup.screen(for: displayID)?.backingScaleFactor ?? 2
             let size = CGSize(width: CGFloat(display.width) * scale, height: CGFloat(display.height) * scale)
-            return (SCContentFilter(display: display, excludingWindows: excluded), size)
+            return (SCContentFilter(display: display, excludingWindows: excluded), size, nil)
 
         case .window(let windowID):
             guard let window = content.windows.first(where: { $0.windowID == windowID }) else {
@@ -530,31 +707,39 @@ public final class RecordingService {
             }
             let scale = ScreenLookup.screen(bestMatchingCGRect: window.frame)?.backingScaleFactor ?? 2
             let size = CGSize(width: window.frame.width * scale, height: window.frame.height * scale)
-            return (SCContentFilter(desktopIndependentWindow: window), size)
+            return (SCContentFilter(desktopIndependentWindow: window), size, nil)
 
-        case .area(let rect, let displayID):
-            guard let display = content.displays.first(where: { $0.displayID == displayID }) else {
+        case .area(let rect, _):
+            // The target's display ID identifies where the drag began. A drag
+            // can cross a bezel, so re-resolve against current display frames.
+            let area = try RecordingAreaResolver.resolve(
+                globalRect: rect,
+                displays: content.displays.map {
+                    RecordingDisplayBounds(displayID: $0.displayID, frame: $0.frame)
+                }
+            )
+            guard let display = content.displays.first(where: { $0.displayID == area.displayID }) else {
                 throw NotchShotError.displayNotFound
             }
-            let scale = ScreenLookup.screen(for: displayID)?.backingScaleFactor ?? 2
-            let size = ScreenGeometry.pixelSize(forPointRect: rect, scale: scale)
-            return (SCContentFilter(display: display, excludingWindows: excluded), size)
+            let scale = ScreenLookup.screen(for: area.displayID)?.backingScaleFactor ?? 2
+            let size = ScreenGeometry.pixelSize(forPointRect: area.globalRect, scale: scale)
+            return (
+                SCContentFilter(display: display, excludingWindows: excluded),
+                size,
+                area.displayLocalRect
+            )
         }
     }
 
     private func makeStreamConfiguration(
         _ configuration: RecordingConfiguration,
         sourcePixelSize: CGSize?,
-        content: SCShareableContent
+        sourceRect: CGRect?
     ) -> SCStreamConfiguration {
         let streamConfiguration = SCStreamConfiguration()
 
-        if case .area(let rect, let displayID) = configuration.target,
-           let display = content.displays.first(where: { $0.displayID == displayID }) {
-            streamConfiguration.sourceRect = ScreenGeometry.displayLocalRect(
-                globalCGRect: rect,
-                displayCGBounds: display.frame
-            )
+        if let sourceRect {
+            streamConfiguration.sourceRect = sourceRect
         }
 
         if let sourcePixelSize {
@@ -700,11 +885,17 @@ public final class RecordingService {
         let preferences = Preferences.shared
         let folder = preferences.saveToDiskAfterCapture ? preferences.outputFolder : AppPaths.recordings
         let name = preferences.expandFilename(appName: "Recording")
-        return AppPaths.uniqueURL(in: folder, name: name, extension: "mp4")
+        return AppPaths.uniqueURL(
+            in: folder,
+            name: name,
+            extension: "mp4",
+            alsoAvoiding: ["srt"]
+        )
     }
 
-    /// Moves when possible, copies across volumes, and falls back to leaving the
-    /// source untouched if neither operation can complete.
+    /// Moves when possible and copies across volumes. If the copy succeeds but
+    /// the app cannot remove its scratch file, a sidecar prevents that source
+    /// from being recovered as a duplicate on the next launch.
     private func moveOrCopy(from source: URL, to destination: URL) throws -> URL {
         let fm = FileManager.default
         try fm.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
@@ -712,9 +903,28 @@ public final class RecordingService {
             try fm.moveItem(at: source, to: destination)
             return destination
         } catch let moveError {
+            let staging = destination.deletingLastPathComponent()
+                .appendingPathComponent(".notchshot-recording-\(UUID().uuidString).partial")
+            defer { try? fm.removeItem(at: staging) }
             do {
-                try fm.copyItem(at: source, to: destination)
-                try? fm.removeItem(at: source)
+                try fm.copyItem(at: source, to: staging)
+                try fm.moveItem(at: staging, to: destination)
+                do {
+                    try fm.removeItem(at: source)
+                } catch let removalError {
+                    do {
+                        try Self.markExcludedFromRecovery(source)
+                        Log.recording.error(
+                            "Copied recording but could not remove scratch file; excluded it from recovery: \(removalError.localizedDescription)"
+                        )
+                    } catch let markerError {
+                        // Do not report a successful export if doing so could
+                        // create a second recovered copy on the next launch.
+                        throw NotchShotError.exportFailed(
+                            "The recording was copied, but its temporary file could not be retired (remove: \(removalError.localizedDescription); marker: \(markerError.localizedDescription))"
+                        )
+                    }
+                }
                 return destination
             } catch let copyError {
                 Log.recording.error("Could not move recording to \(destination.path); keeping \(source.path)")
@@ -723,6 +933,53 @@ public final class RecordingService {
                 )
             }
         }
+    }
+
+    private static func recoveryExclusionMarker(for url: URL) -> URL {
+        url.appendingPathExtension("notchshot-ignore")
+    }
+
+    private static func isSafeRetainedDiscard(_ url: URL) -> Bool {
+        guard url.pathExtension.lowercased() == "mp4" else { return false }
+        let values = try? url.resourceValues(forKeys: [
+            .isRegularFileKey,
+            .isSymbolicLinkKey,
+        ])
+        return values?.isRegularFile == true && values?.isSymbolicLink != true
+    }
+
+    private static func markExcludedFromRecovery(_ url: URL) throws {
+        try Data().write(to: recoveryExclusionMarker(for: url), options: .atomic)
+    }
+
+    private struct RecoveryCandidateIdentity: Equatable {
+        var resourceIdentifier: AnyHashable
+        var size: Int
+        var modifiedAt: Date?
+    }
+
+    private static func recoveryCandidateIdentity(for url: URL) -> RecoveryCandidateIdentity? {
+        guard url.isFileURL else { return nil }
+        let resolved = url.standardizedFileURL
+        guard resolved.deletingLastPathComponent() == AppPaths.inProgress.standardizedFileURL,
+              resolved.pathExtension.lowercased() == "mp4" else { return nil }
+        let values = try? resolved.resourceValues(forKeys: [
+            .isRegularFileKey,
+            .isSymbolicLinkKey,
+            .fileSizeKey,
+            .fileResourceIdentifierKey,
+            .contentModificationDateKey,
+        ])
+        guard values?.isRegularFile == true,
+              values?.isSymbolicLink != true,
+              let size = values?.fileSize,
+              size > 0,
+              let identifier = values?.fileResourceIdentifier as? AnyHashable else { return nil }
+        return RecoveryCandidateIdentity(
+            resourceIdentifier: identifier,
+            size: size,
+            modifiedAt: values?.contentModificationDate
+        )
     }
 
     private func validatedVideoMetadata(of url: URL) async throws -> ValidatedVideoMetadata {

@@ -504,9 +504,10 @@ public enum AnnotationRenderer {
             )
 
         case .image(let path):
-            guard let image = NSImage(contentsOfFile: path),
-                  let cgImage = image.cgImage(forProposedRect: nil, context: nil, hints: nil)
-            else { break }
+            guard let cgImage = SafeImageFile.cgImage(
+                at: URL(fileURLWithPath: path),
+                limits: .background
+            ) else { break }
             // Aspect-fill so a background photo never letterboxes.
             let imageAspect = CGFloat(cgImage.width) / CGFloat(cgImage.height)
             let rectAspect = rect.width / rect.height

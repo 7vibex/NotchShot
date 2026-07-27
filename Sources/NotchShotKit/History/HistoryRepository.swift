@@ -22,6 +22,10 @@ public struct HistoryEntry: Codable, Sendable, Identifiable, Equatable {
     public var captionPath: String?
     /// Only populated when "Search capture text" is on.
     public var indexedText: String?
+    /// Optional for backward-compatible decoding of history written before
+    /// provenance was tracked. Legacy Application Support files are inferred.
+    public var ownership: CaptureAssetOwnership?
+    public var externalFileIdentity: ExternalFileIdentity?
 
     public init(asset: CaptureAsset, thumbnailFilename: String?, indexedText: String?) {
         self.id = asset.id
@@ -38,6 +42,8 @@ public struct HistoryEntry: Codable, Sendable, Identifiable, Equatable {
         self.projectPath = asset.projectURL?.path
         self.captionPath = asset.captionURL?.path
         self.indexedText = indexedText
+        self.ownership = asset.ownership
+        self.externalFileIdentity = asset.externalFileIdentity
     }
 
     public var pixelSize: CGSize {
@@ -55,7 +61,9 @@ public struct HistoryEntry: Codable, Sendable, Identifiable, Equatable {
     }
 
     public var asset: CaptureAsset {
-        CaptureAsset(
+        let resolvedOwnership = ownership
+            ?? (AppPaths.owns(fileURL) ? .managedTemporary : .userDocument)
+        return CaptureAsset(
             id: id,
             url: fileURL,
             kind: kind,
@@ -67,7 +75,9 @@ public struct HistoryEntry: Codable, Sendable, Identifiable, Equatable {
             duration: duration,
             recognizedText: indexedText,
             captionURL: captionPath.map { URL(fileURLWithPath: $0) },
-            projectURL: projectPath.map { URL(fileURLWithPath: $0) }
+            projectURL: projectPath.map { URL(fileURLWithPath: $0) },
+            ownership: resolvedOwnership,
+            externalFileIdentity: externalFileIdentity
         )
     }
 
@@ -133,13 +143,35 @@ public final class HistoryRepository {
         let thumbnailFilename = image.flatMap { writeThumbnail($0, id: asset.id) }
         let indexedText = Preferences.shared.indexesCaptureText ? recognizedText : nil
 
-        let entry = HistoryEntry(
+        var entry = HistoryEntry(
             asset: asset,
             thumbnailFilename: thumbnailFilename,
             indexedText: indexedText
         )
-        entries.removeAll { $0.id == entry.id }
+        let canonicalPrimary = Self.canonicalPath(entry.fileURL)
+        let duplicates = entries.filter {
+            $0.id != entry.id && Self.canonicalPath($0.fileURL) == canonicalPrimary
+        }
+        // Preserve exact sidecar ownership when a caller records a newer view
+        // of the same physical file without re-supplying its metadata.
+        if entry.projectPath == nil {
+            entry.projectPath = duplicates.compactMap(\.projectPath).first
+        }
+        if entry.captionPath == nil {
+            entry.captionPath = duplicates.compactMap(\.captionPath).first
+        }
+        let removed = entries.filter { $0.id == entry.id || duplicates.contains($0) }
+        entries.removeAll { candidate in
+            candidate.id == entry.id || Self.canonicalPath(candidate.fileURL) == canonicalPrimary
+        }
+        for old in removed {
+            if let thumbnailURL = old.thumbnailURL,
+               thumbnailURL.lastPathComponent != entry.thumbnailFilename {
+                try? FileManager.default.removeItem(at: thumbnailURL)
+            }
+        }
         entries.insert(entry, at: 0)
+        Self.removeUnreferencedManagedSidecars(from: removed, retainedEntries: entries)
         scheduleSave()
     }
 
@@ -153,14 +185,26 @@ public final class HistoryRepository {
     public func delete(id: UUID, includingFile: Bool) throws {
         guard let index = entries.firstIndex(where: { $0.id == id }) else { return }
         let entry = entries[index]
+        let remaining = entries.filter { $0.id != id }
+        let protectedPaths = Self.referencedPaths(in: remaining)
         if includingFile {
+            guard !protectedPaths.contains(Self.canonicalPath(entry.fileURL)) else {
+                throw NotchShotError.exportFailed(
+                    "That file is still referenced by another history entry"
+                )
+            }
             // Complete the user-visible operation before removing its record.
             // Otherwise a Trash failure disappears from the UI while the
             // sensitive file remains on disk.
             try Self.trashCaptureAndCaption(
                 at: entry.fileURL,
-                captionURL: entry.captionPath.map { URL(fileURLWithPath: $0) }
+                captionURL: Self.unsharedURL(entry.captionPath, protectedBy: protectedPaths),
+                projectURL: Self.unsharedURL(entry.projectPath, protectedBy: protectedPaths)
             )
+        } else {
+            // Removing a row must also retire hidden unredacted working files
+            // that no other row owns. User documents remain untouched.
+            try Self.removeManagedArtifacts(for: entry, excluding: protectedPaths)
         }
         entries.remove(at: index)
         if let thumbnailURL = entry.thumbnailURL {
@@ -180,8 +224,17 @@ public final class HistoryRepository {
                 do {
                     try Self.trashCaptureAndCaption(
                         at: entry.fileURL,
-                        captionURL: entry.captionPath.map { URL(fileURLWithPath: $0) }
+                        captionURL: entry.captionPath.map { URL(fileURLWithPath: $0) },
+                        projectURL: entry.projectPath.map { URL(fileURLWithPath: $0) }
                     )
+                } catch {
+                    failed.append(entry.fileURL)
+                    retained.append(entry)
+                    continue
+                }
+            } else {
+                do {
+                    try Self.removeManagedArtifacts(for: entry, excluding: [])
                 } catch {
                     failed.append(entry.fileURL)
                     retained.append(entry)
@@ -192,7 +245,7 @@ public final class HistoryRepository {
                 try? FileManager.default.removeItem(at: thumbnailURL)
             }
         }
-        entries = includingFiles ? retained : []
+        entries = retained
         scheduleSave()
         return failed
     }
@@ -202,16 +255,38 @@ public final class HistoryRepository {
     /// recovery path.
     public nonisolated static func trashCaptureAndCaption(
         at fileURL: URL,
-        captionURL: URL? = nil
+        captionURL: URL? = nil,
+        projectURL: URL? = nil
     ) throws {
         let fileManager = FileManager.default
-        if let captionURL,
-           fileManager.fileExists(atPath: captionURL.path) {
-            try fileManager.trashItem(at: captionURL, resultingItemURL: nil)
+        guard fileManager.fileExists(atPath: fileURL.path) else {
+            throw CocoaError(
+                .fileNoSuchFile,
+                userInfo: [NSFilePathErrorKey: fileURL.path]
+            )
         }
-        if fileManager.fileExists(atPath: fileURL.path) {
-            try fileManager.trashItem(at: fileURL, resultingItemURL: nil)
+        for sidecar in deletableSidecars(
+            captionURL: captionURL,
+            projectURL: projectURL
+        ) where fileManager.fileExists(atPath: sidecar.path) {
+            try fileManager.trashItem(at: sidecar, resultingItemURL: nil)
         }
+        try fileManager.trashItem(at: fileURL, resultingItemURL: nil)
+    }
+
+    nonisolated static func deletableSidecars(
+        captionURL: URL?,
+        projectURL: URL?
+    ) -> [URL] {
+        var urls: [URL] = []
+        if let captionURL { urls.append(captionURL) }
+        // A project contains the untouched source image. Delete it with its
+        // capture only when it lives in NotchShot's managed storage; an
+        // external project opened from Finder remains the user's document.
+        if let projectURL, AppPaths.owns(projectURL) {
+            urls.append(projectURL)
+        }
+        return urls
     }
 
     /// Drops every stored OCR string. Called when the user turns text search
@@ -221,6 +296,59 @@ public final class HistoryRepository {
             entries[index].indexedText = nil
         }
         scheduleSave()
+    }
+
+    /// Removes private capture/recording files that have no history owner.
+    ///
+    /// This is especially important when History is disabled: clipboard-only
+    /// and shelf-only files still need a real URL while the app is running, but
+    /// they must not accumulate invisibly across launches. User folders,
+    /// imported files, editable Projects, and in-progress recordings are never
+    /// candidates for this sweep.
+    @discardableResult
+    public func removeUntrackedManagedFiles() -> Int {
+        let fileManager = FileManager.default
+        let allowedExtensions = Set(["png", "jpg", "jpeg", "heic", "mp4", "srt"])
+        var candidates: [URL] = []
+        for directory in [AppPaths.captures, AppPaths.recordings] {
+            guard let contents = try? fileManager.contentsOfDirectory(
+                at: directory,
+                includingPropertiesForKeys: [.isRegularFileKey, .isSymbolicLinkKey],
+                options: [.skipsHiddenFiles]
+            ) else { continue }
+            candidates.append(contentsOf: contents.filter { url in
+                let values = try? url.resourceValues(
+                    forKeys: [.isRegularFileKey, .isSymbolicLinkKey]
+                )
+                return values?.isRegularFile == true
+                    && values?.isSymbolicLink != true
+                    && allowedExtensions.contains(url.pathExtension.lowercased())
+            })
+        }
+
+        let untracked = Self.untrackedManagedArtifacts(
+            candidates: candidates,
+            entries: entries
+        )
+        for url in untracked {
+            try? fileManager.removeItem(at: url)
+        }
+        if !untracked.isEmpty {
+            Log.history.info("Removed \(untracked.count) untracked managed artifacts")
+        }
+        return untracked.count
+    }
+
+    nonisolated static func untrackedManagedArtifacts(
+        candidates: [URL],
+        entries: [HistoryEntry]
+    ) -> [URL] {
+        let known = Set(entries.flatMap { entry in
+            [entry.fileURL.path, entry.captionPath, entry.projectPath].compactMap { $0 }
+        }.map { URL(fileURLWithPath: $0).standardizedFileURL.path })
+        return candidates.filter {
+            AppPaths.owns($0) && !known.contains($0.standardizedFileURL.path)
+        }
     }
 
     // MARK: Retention
@@ -246,7 +374,19 @@ public final class HistoryRepository {
             // A capture the user deleted or moved elsewhere shouldn't linger as
             // a dead row forever.
             guard fileExists(entry) else {
-                removed.append(entry)
+                // Application Support is on the active home volume, so a
+                // missing managed primary is genuinely gone. A user document
+                // may simply live on a temporarily disconnected volume and
+                // must remain retryable until normal age-based expiry.
+                if retentionDeletesManagedFiles(for: entry) {
+                    removed.append(entry)
+                } else if retentionDays > 0,
+                          now.timeIntervalSince(entry.createdAt)
+                            > TimeInterval(retentionDays) * 86_400 {
+                    removed.append(entry)
+                } else {
+                    kept.append(entry)
+                }
                 continue
             }
             guard retentionDays > 0 else {
@@ -280,22 +420,142 @@ public final class HistoryRepository {
             return 0
         }
 
+        let protectedPaths = Self.referencedPaths(in: kept)
+        var successfullyRemoved = Set<UUID>()
         for entry in removed {
-            if let thumbnailURL = entry.thumbnailURL {
-                try? FileManager.default.removeItem(at: thumbnailURL)
+            // A user-visible capture can still have an editable project in the
+            // app's private Projects directory. Expiry must remove that hidden
+            // unredacted copy without touching the user's primary document.
+            do {
+                try Self.removeManagedArtifacts(for: entry, excluding: protectedPaths)
+                if let thumbnailURL = entry.thumbnailURL {
+                    try? FileManager.default.removeItem(at: thumbnailURL)
+                }
+                successfullyRemoved.insert(entry.id)
+            } catch {
+                // Keep a durable retry row if a private artifact cannot be
+                // removed. Losing the row would strand an unredacted project
+                // with no visible owner or future cleanup attempt.
+                Log.history.error(
+                    "Retention could not remove managed artifacts for \(entry.fileURL.lastPathComponent): \(error.localizedDescription)"
+                )
             }
         }
-        entries = kept
+        entries.removeAll { successfullyRemoved.contains($0.id) }
 
-        Log.history.info("Retention removed \(removed.count) history entries")
+        Log.history.info("Retention removed \(successfullyRemoved.count) history entries")
         scheduleSave()
         removeOrphanedThumbnails()
-        return removed.count
+        return successfullyRemoved.count
     }
 
-    /// Retention only ever deletes the *record* and its thumbnail; the capture
-    /// file on disk belongs to the user, so it is left alone.
-    nonisolated static let retentionDeletesFiles = false
+    /// Retention deletes hidden managed working files, but never documents in a
+    /// user-selected folder or external references.
+    nonisolated static let retentionDeletesFiles = true
+
+    nonisolated static func retentionDeletesManagedFiles(for entry: HistoryEntry) -> Bool {
+        let ownership = entry.ownership
+            ?? (AppPaths.owns(entry.fileURL) ? .managedTemporary : .userDocument)
+        return ownership == .managedTemporary
+    }
+
+    private nonisolated static func removeManagedArtifacts(
+        for entry: HistoryEntry,
+        excluding protectedPaths: Set<String>
+    ) throws {
+        let fileManager = FileManager.default
+        for url in managedArtifactsForRetention(for: entry)
+            where !protectedPaths.contains(canonicalPath(url)) {
+            if fileManager.fileExists(atPath: url.path) {
+                try fileManager.removeItem(at: url)
+            }
+        }
+    }
+
+    nonisolated static func managedArtifactsForRetention(
+        for entry: HistoryEntry
+    ) -> [URL] {
+        [
+            entry.captionPath.map { URL(fileURLWithPath: $0) },
+            entry.projectPath.map { URL(fileURLWithPath: $0) },
+            entry.fileURL,
+        ].compactMap { $0 }.filter(AppPaths.owns)
+    }
+
+    nonisolated static func canonicalPath(_ url: URL) -> String {
+        url.standardizedFileURL.path
+    }
+
+    private nonisolated static func referencedPaths(in entries: [HistoryEntry]) -> Set<String> {
+        Set(entries.flatMap { entry in
+            [entry.fileURL.path, entry.captionPath, entry.projectPath].compactMap { $0 }
+        }.map { canonicalPath(URL(fileURLWithPath: $0)) })
+    }
+
+    private nonisolated static func unsharedURL(
+        _ path: String?,
+        protectedBy protectedPaths: Set<String>
+    ) -> URL? {
+        guard let path else { return nil }
+        let url = URL(fileURLWithPath: path)
+        return protectedPaths.contains(canonicalPath(url)) ? nil : url
+    }
+
+    private nonisolated static func removeUnreferencedManagedSidecars(
+        from removed: [HistoryEntry],
+        retainedEntries: [HistoryEntry]
+    ) {
+        let retainedPaths = referencedPaths(in: retainedEntries)
+        let fileManager = FileManager.default
+        for entry in removed {
+            for path in [entry.captionPath, entry.projectPath].compactMap({ $0 }) {
+                let url = URL(fileURLWithPath: path)
+                guard AppPaths.owns(url),
+                      !retainedPaths.contains(canonicalPath(url)),
+                      fileManager.fileExists(atPath: url.path) else { continue }
+                do {
+                    try fileManager.removeItem(at: url)
+                } catch {
+                    Log.history.error(
+                        "Could not remove an unreferenced managed sidecar: \(error.localizedDescription)"
+                    )
+                }
+            }
+        }
+    }
+
+    nonisolated static func coalesceDuplicatePrimaryPaths(
+        _ orderedEntries: [HistoryEntry]
+    ) -> (entries: [HistoryEntry], duplicates: [HistoryEntry]) {
+        var result: [HistoryEntry] = []
+        var indexByPath: [String: Int] = [:]
+        var usedIDs = Set<UUID>()
+        var duplicates: [HistoryEntry] = []
+
+        for entry in orderedEntries {
+            let path = canonicalPath(entry.fileURL)
+            if let index = indexByPath[path] ?? result.firstIndex(where: { $0.id == entry.id }) {
+                if result[index].projectPath == nil {
+                    result[index].projectPath = entry.projectPath
+                }
+                if result[index].captionPath == nil {
+                    result[index].captionPath = entry.captionPath
+                }
+                if result[index].indexedText == nil {
+                    result[index].indexedText = entry.indexedText
+                }
+                duplicates.append(entry)
+                continue
+            }
+            guard usedIDs.insert(entry.id).inserted else {
+                duplicates.append(entry)
+                continue
+            }
+            indexByPath[path] = result.count
+            result.append(entry)
+        }
+        return (result, duplicates)
+    }
 
     private func removeOrphanedThumbnails() {
         let known = Set(entries.compactMap(\.thumbnailFilename))
@@ -357,8 +617,22 @@ public final class HistoryRepository {
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
         do {
-            entries = try decoder.decode([HistoryEntry].self, from: data)
+            let decoded = try decoder.decode([HistoryEntry].self, from: data)
                 .sorted { $0.createdAt > $1.createdAt }
+            let coalesced = Self.coalesceDuplicatePrimaryPaths(decoded)
+            entries = coalesced.entries
+            if !coalesced.duplicates.isEmpty {
+                for duplicate in coalesced.duplicates {
+                    if let thumbnailURL = duplicate.thumbnailURL {
+                        try? FileManager.default.removeItem(at: thumbnailURL)
+                    }
+                }
+                Self.removeUnreferencedManagedSidecars(
+                    from: coalesced.duplicates,
+                    retainedEntries: entries
+                )
+                save()
+            }
         } catch {
             // A corrupt store must not stop the app launching; move it aside so
             // it can be inspected rather than silently overwritten.

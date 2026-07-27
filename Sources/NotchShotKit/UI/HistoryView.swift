@@ -32,7 +32,9 @@ public struct HistoryView: View {
                 ContentUnavailableView(
                     "No capture selected",
                     systemImage: "clock.arrow.circlepath",
-                    description: Text("Captures are kept for \(retentionText). Files stay where you saved them.")
+                    description: Text(
+                        "Captures are kept for \(retentionText). Retention removes app-managed temporary files, but keeps captures you saved or dragged in."
+                    )
                 )
             }
         }
@@ -205,7 +207,7 @@ private struct HistoryDetail: View {
             if entry.kind == .recording {
                 image = await VideoThumbnail.make(for: entry.fileURL)
             } else {
-                image = NSImage(contentsOf: entry.fileURL)
+                image = SafeImageFile.nsImage(for: entry.asset)
             }
             finishedLoading = true
         }

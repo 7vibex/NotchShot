@@ -3,6 +3,7 @@ import AppKit
 import CoreMedia
 import Observation
 import SwiftUI
+import UniformTypeIdentifiers
 
 /// A finished capture sitting in the notch shelf.
 @MainActor
@@ -12,7 +13,7 @@ public final class ShelfItem: Identifiable {
     public var asset: CaptureAsset
     public var thumbnail: NSImage?
     /// Kept in memory so Annotate and OCR don't have to re-read from disk.
-    public let image: CapturedImage?
+    public var image: CapturedImage?
     public var ocrResult: OCRResult?
     public var stitchWarnings: [String]
     public var seams: [StitchSeam]
@@ -68,11 +69,17 @@ public final class AppCoordinator {
     private var countdownTask: Task<Void, Never>?
     private var captureOperationID: UUID?
     private var scrollingSession: ScrollingCaptureSession?
+    private var scrollingSessionID: UUID?
     private var errorTask: Task<Void, Never>?
     private var systemLevelTask: Task<Void, Never>?
+    private var accessibilityLevelTask: Task<Void, Never>?
     private var peekTask: Task<Void, Never>?
+    private var recordingStartTask: Task<Void, Never>?
+    private var recordingStartOperationID: UUID?
     private var recordingCompletionTask: Task<Void, Never>?
+    private var isPresentingRecordingCancellation = false
     private var editorExportActions: [ObjectIdentifier: (CaptureAsset) -> Void] = [:]
+    private var voiceOverObservation: NSKeyValueObservation?
 
     public var windowController: NotchWindowController?
     public var onOpenEditor: ((AnnotationDocumentController) -> Void)?
@@ -93,6 +100,7 @@ public final class AppCoordinator {
         AppPaths.ensureDirectories()
         media.start()
         history.applyRetention()
+        history.removeUntrackedManagedFiles()
 
         RecordingService.shared.onStatusChange = { [weak self] status in
             self?.recordingStatus = status
@@ -104,20 +112,40 @@ public final class AppCoordinator {
         systemLevels.onChange = { [weak self] level in
             self?.showSystemLevel(level)
         }
-        if Preferences.shared.systemLevelHUDEnabled {
-            systemLevels.start()
-            osd.start()
-        } else {
-            // Never hold back the system overlay when the notch is not showing
-            // the level itself — that would leave no feedback at all.
-            osd.stop()
+        // One-time migration: older builds could leave the native helper
+        // suspended without a watchdog. Later launches resume only PIDs owned
+        // by this process, so one app can never cancel another app's lease.
+        if Preferences.shared.hasCompletedFirstRun,
+           !Preferences.shared.hasRecoveredLegacySystemOSD,
+           osd.hasStoppedSystemOSD {
+            presentLegacyOSDRecoveryPrompt()
         }
+        // A new install has no legacy suspension to heal. Marking it complete
+        // without signalling prevents us from resuming an OSD another utility
+        // deliberately paused.
+        Preferences.shared.hasRecoveredLegacySystemOSD = true
+        osd.stop()
+        installVoiceOverObservationIfNeeded()
+        reconcileSystemLevelIntegration()
 
         // Media presence feeds the arbiter but can never outrank a capture.
         // `observeMedia` re-arms its own tracker, so it must be started exactly
         // once — arming it here as well doubled the trackers on every change.
         observeMedia()
         refreshActivity()
+    }
+
+    private func presentLegacyOSDRecoveryPrompt() {
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "Apple’s system overlay is already paused"
+        alert.informativeText = "An older NotchShot build or another utility may own that paused state. Restore it only if brightness and volume overlays stayed missing after the owning app quit."
+        alert.addButton(withTitle: "Leave It Alone")
+        alert.addButton(withTitle: "Restore Apple Overlay")
+        NSApp.activate(ignoringOtherApps: true)
+        if alert.runModal() == .alertSecondButtonReturn {
+            osd.recoverLegacySuspension()
+        }
     }
 
     private func observeMedia() {
@@ -133,8 +161,24 @@ public final class AppCoordinator {
     // MARK: System level HUD
 
     private func showSystemLevel(_ level: SystemLevel) {
-        arbiter.systemLevel = level
+        var routed = level
+        if routed.displayID == nil {
+            routed.displayID = windowController?.activeDisplayID
+        }
+        arbiter.systemLevel = routed
         refreshActivity()
+
+        // Announce the settled value once after a key-repeat burst rather than
+        // speaking every intermediate percentage.
+        accessibilityLevelTask?.cancel()
+        accessibilityLevelTask = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(300))
+            guard !Task.isCancelled, let level = self?.arbiter.systemLevel else { return }
+            let message = level.kind == .volume && level.isMuted
+                ? "Muted"
+                : "\(level.kind.title) \(Int(level.value * 100)) percent"
+            self?.announceForAccessibility(message, priority: .medium)
+        }
 
         systemLevelTask?.cancel()
         systemLevelTask = Task { [weak self] in
@@ -151,17 +195,7 @@ public final class AppCoordinator {
 
     public func setSystemLevelHUDEnabled(_ enabled: Bool) {
         Preferences.shared.systemLevelHUDEnabled = enabled
-        if enabled {
-            systemLevels.start()
-            osd.setEnabled(Preferences.shared.suppressesSystemOSD)
-        } else {
-            systemLevels.stop()
-            // The notch no longer mirrors anything, so macOS has to be allowed
-            // to show its own overlay again.
-            osd.stop()
-            arbiter.systemLevel = nil
-            refreshActivity()
-        }
+        reconcileSystemLevelIntegration()
     }
 
     public func setBrightnessMirroringEnabled(_ enabled: Bool) {
@@ -175,7 +209,48 @@ public final class AppCoordinator {
 
     public func setSystemOSDSuppressed(_ suppressed: Bool) {
         Preferences.shared.suppressesSystemOSD = suppressed
-        osd.setEnabled(suppressed && Preferences.shared.systemLevelHUDEnabled)
+        reconcileSystemLevelIntegration()
+    }
+
+    public func setNotchEnabled(_ enabled: Bool) {
+        Preferences.shared.notchEnabled = enabled
+        windowController?.rebuildPanels()
+        reconcileSystemLevelIntegration()
+    }
+
+    /// Applies the fail-open invariant: native feedback is suppressed only
+    /// while a real panel exists and the custom HUD is enabled. VoiceOver keeps
+    /// Apple's native feedback because the custom HUD is not yet a complete
+    /// accessibility replacement for every system OSD.
+    public func reconcileSystemLevelIntegration() {
+        let preferences = Preferences.shared
+        let canRender = preferences.notchEnabled
+            && preferences.systemLevelHUDEnabled
+            && windowController?.hasRenderablePanel == true
+        guard canRender else {
+            systemLevels.stop()
+            osd.stop()
+            arbiter.systemLevel = nil
+            refreshActivity()
+            return
+        }
+
+        systemLevels.start()
+        let shouldSuppress = preferences.suppressesSystemOSD
+            && !NSWorkspace.shared.isVoiceOverEnabled
+        osd.setEnabled(shouldSuppress)
+    }
+
+    private func installVoiceOverObservationIfNeeded() {
+        guard voiceOverObservation == nil else { return }
+        voiceOverObservation = NSWorkspace.shared.observe(
+            \.isVoiceOverEnabled,
+            options: [.new]
+        ) { [weak self] _, _ in
+            Task { @MainActor in
+                self?.reconcileSystemLevelIntegration()
+            }
+        }
     }
 
     private func refreshActivity() {
@@ -252,11 +327,38 @@ public final class AppCoordinator {
         timer: CaptureTimer = .none,
         clipboardOnly: Bool = false
     ) {
-        countdownTask?.cancel()
+        if recordingStartTask != nil {
+            cancelPendingRecordingStart()
+            refreshActivity()
+            present(error: NotchShotError.recordingFailed(
+                "The pending recording was cancelled. Trigger the capture again when its cleanup finishes."
+            ))
+            return
+        }
+        guard !RecordingService.shared.hasActiveSession,
+              recordingCompletionTask == nil,
+              !isPresentingRecordingCancellation else {
+            // New overlay windows cannot be added to a recording filter after
+            // ScreenCaptureKit has started. Refuse the conflicting workflow so
+            // NotchShot never appears in its own video.
+            present(error: NotchShotError.recordingFailed(
+                "Finish or discard the recording before starting a screenshot."
+            ))
+            return
+        }
+        // A newly requested workflow owns the shared selection overlay. Retire
+        // any older capture or not-yet-started recording before presenting it.
+        cancelPendingRecordingStart()
+        cancelCaptureWorkflow()
         let operationID = UUID()
         captureOperationID = operationID
         countdownTask = Task { [weak self] in
-            await self?.performCapture(intent, timer: timer, clipboardOnly: clipboardOnly)
+            await self?.performCapture(
+                intent,
+                timer: timer,
+                clipboardOnly: clipboardOnly,
+                operationID: operationID
+            )
             guard let self, self.captureOperationID == operationID else { return }
             self.countdownTask = nil
             self.captureOperationID = nil
@@ -266,9 +368,10 @@ public final class AppCoordinator {
     private func performCapture(
         _ intent: CaptureIntent,
         timer: CaptureTimer,
-        clipboardOnly: Bool = false
+        clipboardOnly: Bool = false,
+        operationID: UUID
     ) async {
-        guard ensureScreenRecordingPermission() else { return }
+        guard isCurrentCapture(operationID), ensureScreenRecordingPermission() else { return }
         collapse()
 
         var request = CaptureRequest(
@@ -279,6 +382,7 @@ public final class AppCoordinator {
 
         if intent.needsSelection {
             guard let selection = await runSelection(for: intent) else { return }
+            guard isCurrentCapture(operationID) else { return }
             switch selection {
             case .area(let rect, let displayID):
                 request.rect = rect
@@ -305,20 +409,28 @@ public final class AppCoordinator {
             guard await runCountdown(seconds: timer.rawValue, intent: intent) else { return }
         }
 
-        guard !Task.isCancelled else { return }
-        await executeCapture(request, intent: intent, clipboardOnly: clipboardOnly)
+        guard isCurrentCapture(operationID) else { return }
+        await executeCapture(
+            request,
+            intent: intent,
+            clipboardOnly: clipboardOnly,
+            operationID: operationID
+        )
     }
 
     private func executeCapture(
         _ request: CaptureRequest,
         intent: CaptureIntent,
-        clipboardOnly: Bool = false
+        clipboardOnly: Bool = false,
+        operationID: UUID
     ) async {
         arbiter.isProcessing = "Capturing"
         refreshActivity()
         defer {
-            arbiter.isProcessing = nil
-            refreshActivity()
+            if captureOperationID == operationID {
+                arbiter.isProcessing = nil
+                refreshActivity()
+            }
         }
 
         // The exclusion set must be read *now*: panels come and go.
@@ -327,9 +439,10 @@ public final class AppCoordinator {
 
         do {
             let image = try await CaptureService.shared.capture(request, excludedWindows: excluded)
+            guard isCurrentCapture(operationID) else { return }
 
             if intent == .ocr {
-                await handleTextCapture(image)
+                await handleTextCapture(image, operationID: operationID)
                 return
             }
 
@@ -340,19 +453,22 @@ public final class AppCoordinator {
                 sourceApplication: frontmost,
                 warnings: [],
                 seams: [],
-                clipboardOnly: clipboardOnly
+                clipboardOnly: clipboardOnly,
+                operationID: operationID
             )
         } catch {
+            guard isCurrentCapture(operationID), !(error is CancellationError) else { return }
             present(error: error)
         }
     }
 
     /// OCR captures never touch the shelf as an image: the point is the text.
-    private func handleTextCapture(_ image: CapturedImage) async {
+    private func handleTextCapture(_ image: CapturedImage, operationID: UUID) async {
         arbiter.isProcessing = "Reading text"
         refreshActivity()
         do {
             let result = try await OCRService.shared.recognizeText(in: image)
+            guard isCurrentCapture(operationID) else { return }
             guard !result.isEmpty else {
                 present(error: NotchShotError.captureFailed("No text found in that area"))
                 return
@@ -367,6 +483,10 @@ public final class AppCoordinator {
                 kind: .text,
                 sourceApplication: NSWorkspace.shared.frontmostApplication
             )
+            guard isCurrentCapture(operationID) else {
+                removeCancelledArtifactIfOwned(asset)
+                return
+            }
             let item = ShelfItem(
                 asset: asset,
                 thumbnail: ImageExport.makeThumbnail(from: image.cgImage).map {
@@ -378,6 +498,7 @@ public final class AppCoordinator {
             history.record(asset: asset, image: image.cgImage, recognizedText: result.fullText)
             push(item)
         } catch {
+            guard isCurrentCapture(operationID), !(error is CancellationError) else { return }
             present(error: error)
         }
     }
@@ -388,9 +509,11 @@ public final class AppCoordinator {
         sourceApplication: NSRunningApplication?,
         warnings: [String],
         seams: [StitchSeam],
-        clipboardOnly: Bool = false
+        clipboardOnly: Bool = false,
+        operationID: UUID? = nil
     ) async {
         do {
+            guard operationID.map(isCurrentCapture) ?? true else { return }
             let recipe = CaptureRecipeStore.shared.activeRecipe
             let prepared = try CaptureRecipeRenderer.render(image, recipe: recipe)
             let asset = try await persist(
@@ -400,6 +523,10 @@ public final class AppCoordinator {
                 recipe: recipe,
                 clipboardOnly: clipboardOnly
             )
+            guard operationID.map(isCurrentCapture) ?? true else {
+                removeCancelledArtifactIfOwned(asset)
+                return
+            }
 
             if clipboardOnly
                 || Preferences.shared.copyToClipboardAfterCapture
@@ -430,8 +557,20 @@ public final class AppCoordinator {
                 openPrivacyReview(for: item)
             }
         } catch {
+            if let operationID {
+                guard isCurrentCapture(operationID), !(error is CancellationError) else { return }
+            }
             present(error: error)
         }
+    }
+
+    private func isCurrentCapture(_ operationID: UUID) -> Bool {
+        !Task.isCancelled && captureOperationID == operationID
+    }
+
+    private func removeCancelledArtifactIfOwned(_ asset: CaptureAsset) {
+        guard asset.canBeAutomaticallyRemoved else { return }
+        try? FileManager.default.removeItem(at: asset.url)
     }
 
     /// Writes the capture to its destination (or the app's own store when
@@ -451,6 +590,7 @@ public final class AppCoordinator {
 
         let format = recipe.imageFormat ?? preferences.imageFormat
         let url: URL
+        let ownership: CaptureAssetOwnership
         // A clipboard-only capture keeps its file in the app's store so it stays
         // recoverable from History, without dropping a file the user did not ask
         // for into their output folder.
@@ -459,12 +599,14 @@ public final class AppCoordinator {
             let folder = recipe.id == "standard" && !preferences.saveToDiskAfterCapture
                 ? AppPaths.captures : preferences.outputFolder
             url = AppPaths.uniqueURL(in: folder, name: name, extension: format.fileExtension)
+            ownership = AppPaths.owns(url) ? .managedTemporary : .userDocument
         case .clipboardOnly:
             url = AppPaths.uniqueURL(
                 in: AppPaths.captures,
                 name: name,
                 extension: format.fileExtension
             )
+            ownership = .managedTemporary
         case .askEveryTime:
             let panel = NSSavePanel()
             panel.allowedContentTypes = [ImageExport.utType(for: format)]
@@ -472,6 +614,7 @@ public final class AppCoordinator {
             panel.directoryURL = preferences.outputFolder
             if panel.runModal() == .OK, let chosen = panel.url {
                 url = chosen
+                ownership = .userDocument
             } else {
                 // Cancelling the destination dialog must not destroy the pixels
                 // the user just captured; retain them in the app's local store.
@@ -480,6 +623,7 @@ public final class AppCoordinator {
                     name: name,
                     extension: format.fileExtension
                 )
+                ownership = .managedTemporary
             }
         }
         let written = try ImageExport.write(
@@ -513,7 +657,8 @@ public final class AppCoordinator {
             pixelSize: image.pixelSize,
             scale: image.scale,
             sourceApplication: sourceApplication?.bundleIdentifier,
-            sourceApplicationName: appName
+            sourceApplicationName: appName,
+            ownership: ownership
         )
     }
 
@@ -586,33 +731,67 @@ public final class AppCoordinator {
     }
 
     public func cancelCurrentOperation() {
+        cancelPendingRecordingStart()
+        cancelCaptureWorkflow()
+        refreshActivity()
+    }
+
+    private func cancelCaptureWorkflow() {
+        let hadCaptureWorkflow = captureOperationID != nil
+            || arbiter.countdown != nil
+            || scrollingSession != nil
         if SelectionOverlayController.shared.isPresenting {
             SelectionOverlayController.shared.cancel()
         }
-        if arbiter.countdown != nil {
-            countdownTask?.cancel()
-            countdownTask = nil
-            captureOperationID = nil
-            arbiter.countdown = nil
-        }
+        countdownTask?.cancel()
+        countdownTask = nil
+        captureOperationID = nil
+        arbiter.countdown = nil
         if let scrollingSession {
             scrollingSession.cancel()
             self.scrollingSession = nil
+            scrollingSessionID = nil
+            scrollingFrameCount = 0
         }
-        refreshActivity()
+        if hadCaptureWorkflow {
+            arbiter.isProcessing = nil
+        }
+    }
+
+    private func cancelPendingRecordingStart() {
+        guard recordingStartTask != nil else { return }
+        recordingStartOperationID = nil
+        recordingStartTask?.cancel()
+        recordingStartTask = nil
+        if SelectionOverlayController.shared.isPresenting {
+            SelectionOverlayController.shared.cancel()
+        }
+        Task {
+            await RecordingService.shared.cancel()
+        }
     }
 
     // MARK: Scrolling capture
 
     private func beginScrollingCapture(region: CGRect) async {
+        scrollingSession?.cancel()
+
+        let sessionID = UUID()
         let session = ScrollingCaptureSession(region: region) { [weak self] event in
-            Task { @MainActor in self?.handleScrollingEvent(event) }
+            Task { @MainActor in
+                self?.handleScrollingEvent(event, sessionID: sessionID)
+            }
         }
         scrollingSession = session
+        scrollingSessionID = sessionID
         scrollingFrameCount = 0
         arbiter.isProcessing = "Scroll to capture · Return when done"
         refreshActivity()
         await session.start()
+        guard scrollingSessionID == sessionID else {
+            session.cancel()
+            return
+        }
     }
 
     public func captureScrollingFrame() {
@@ -623,7 +802,12 @@ public final class AppCoordinator {
         Task { await scrollingSession?.finish() }
     }
 
-    private func handleScrollingEvent(_ event: ScrollingCaptureSession.Event) {
+    private func handleScrollingEvent(
+        _ event: ScrollingCaptureSession.Event,
+        sessionID: UUID
+    ) {
+        guard scrollingSessionID == sessionID else { return }
+
         switch event {
         case .frameCaptured(let count):
             scrollingFrameCount = count
@@ -636,6 +820,7 @@ public final class AppCoordinator {
 
         case .finished(let output):
             scrollingSession = nil
+            scrollingSessionID = nil
             arbiter.isProcessing = nil
             let image = CapturedImage(
                 cgImage: output.image,
@@ -655,12 +840,15 @@ public final class AppCoordinator {
 
         case .failedButFramesKept(let reason, let folder):
             scrollingSession = nil
+            scrollingSessionID = nil
             arbiter.isProcessing = nil
             present(error: NotchShotError.stitchFailed(reason))
             NSWorkspace.shared.activateFileViewerSelecting([folder])
 
         case .cancelled:
             scrollingSession = nil
+            scrollingSessionID = nil
+            scrollingFrameCount = 0
             arbiter.isProcessing = nil
             refreshActivity()
         }
@@ -669,16 +857,31 @@ public final class AppCoordinator {
     // MARK: Recording
 
     public func startRecording(target: RecordingTarget? = nil) {
-        Task { await beginRecording(target: target) }
+        guard recordingStartTask == nil,
+              recordingCompletionTask == nil,
+              !RecordingService.shared.hasActiveSession else { return }
+        cancelCaptureWorkflow()
+        refreshActivity()
+
+        let operationID = UUID()
+        recordingStartOperationID = operationID
+        recordingStartTask = Task { [weak self] in
+            await self?.beginRecording(target: target, operationID: operationID)
+            guard let self, self.recordingStartOperationID == operationID else { return }
+            self.recordingStartTask = nil
+            self.recordingStartOperationID = nil
+        }
     }
 
-    private func beginRecording(target: RecordingTarget?) async {
+    private func beginRecording(target: RecordingTarget?, operationID: UUID) async {
+        guard isCurrentRecordingStart(operationID) else { return }
         guard ensureScreenRecordingPermission() else { return }
         collapse()
 
         var resolvedTarget = target
         if resolvedTarget == nil {
             guard let selection = await runSelection(for: .area) else { return }
+            guard isCurrentRecordingStart(operationID) else { return }
             switch selection {
             case .area(let rect, let displayID):
                 resolvedTarget = .area(rect, displayID)
@@ -689,6 +892,7 @@ public final class AppCoordinator {
             }
         }
         guard let resolvedTarget else { return }
+        guard isCurrentRecordingStart(operationID) else { return }
 
         let preferences = Preferences.shared
         let configuration = RecordingConfiguration(
@@ -709,15 +913,31 @@ public final class AppCoordinator {
 
         do {
             try await RecordingService.shared.start(configuration)
+            guard isCurrentRecordingStart(operationID) else {
+                await RecordingService.shared.cancel()
+                return
+            }
             arbiter.isRecording = true
             refreshActivity()
         } catch {
+            guard isCurrentRecordingStart(operationID), !(error is CancellationError) else { return }
             present(error: error)
         }
     }
 
+    private func isCurrentRecordingStart(_ operationID: UUID) -> Bool {
+        !Task.isCancelled && recordingStartOperationID == operationID
+    }
+
     public func stopRecording() {
-        guard recordingCompletionTask == nil else { return }
+        if recordingStartTask != nil {
+            cancelPendingRecordingStart()
+            refreshActivity()
+            return
+        }
+        guard RecordingService.shared.isRecording,
+              recordingCompletionTask == nil,
+              !isPresentingRecordingCancellation else { return }
         recordingCompletionTask = Task { [weak self] in
             await self?.finishRecording()
         }
@@ -748,8 +968,21 @@ public final class AppCoordinator {
                     let transcript = try await OnDeviceTranscriptionService.shared.transcribe(
                         recordingURL: asset.url
                     )
-                    let captionURL = asset.url.deletingPathExtension().appendingPathExtension("srt")
-                    try transcript.srt.write(to: captionURL, atomically: true, encoding: .utf8)
+                    let preferredCaptionURL = asset.url.deletingPathExtension().appendingPathExtension("srt")
+                    let captionURL: URL
+                    if FileManager.default.fileExists(atPath: preferredCaptionURL.path) {
+                        captionURL = AppPaths.uniqueURL(
+                            in: preferredCaptionURL.deletingLastPathComponent(),
+                            name: preferredCaptionURL.deletingPathExtension().lastPathComponent,
+                            extension: "srt"
+                        )
+                    } else {
+                        captionURL = preferredCaptionURL
+                    }
+                    try Data(transcript.srt.utf8).write(
+                        to: captionURL,
+                        options: [.atomic, .withoutOverwriting]
+                    )
                     asset.recognizedText = transcript.text
                     asset.captionURL = captionURL
                 } catch {
@@ -777,10 +1010,46 @@ public final class AppCoordinator {
     }
 
     public func cancelRecording() {
-        Task {
-            await RecordingService.shared.cancel()
-            arbiter.isRecording = false
-            refreshActivity()
+        guard RecordingService.shared.isRecording,
+              recordingCompletionTask == nil,
+              !isPresentingRecordingCancellation else { return }
+        isPresentingRecordingCancellation = true
+        defer { isPresentingRecordingCancellation = false }
+
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "Discard this recording?"
+        alert.informativeText = "The partial recording will be moved to the Trash, where it can still be recovered."
+        alert.addButton(withTitle: "Keep Recording")
+        alert.addButton(withTitle: "Move to Trash")
+        NSApp.activate(ignoringOtherApps: true)
+        guard alert.runModal() == .alertSecondButtonReturn else { return }
+
+        arbiter.isRecording = false
+        arbiter.isProcessing = "Discarding recording"
+        refreshActivity()
+        recordingCompletionTask = Task { [weak self] in
+            let retainedURL = await RecordingService.shared.cancel()
+            guard let self else { return }
+            self.recordingCompletionTask = nil
+            self.arbiter.isProcessing = nil
+            self.refreshActivity()
+            if let retainedURL {
+                self.presentRetainedDiscard(at: retainedURL)
+            }
+        }
+    }
+
+    private func presentRetainedDiscard(at url: URL) {
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "The recording could not be moved to Trash"
+        alert.informativeText = "NotchShot kept the partial recording at \(url.path) so it would not be silently lost. It will not be offered as crash recovery."
+        alert.addButton(withTitle: "Reveal in Finder")
+        alert.addButton(withTitle: "OK")
+        NSApp.activate(ignoringOtherApps: true)
+        if alert.runModal() == .alertFirstButtonReturn {
+            NSWorkspace.shared.activateFileViewerSelecting([url])
         }
     }
 
@@ -791,9 +1060,14 @@ public final class AppCoordinator {
         arbiter.isRecording = false
         // Recover this exact session. Picking the newest global orphan could
         // move an unrelated file left by an older crash.
-        if let recoveryURL,
-           RecordingService.isRecoverableRecording(recoveryURL),
-           let asset = try? await RecordingService.shared.recover(recoveryURL) {
+        guard let recoveryURL,
+              RecordingService.isRecoverableRecording(recoveryURL) else {
+            present(error: error)
+            return
+        }
+
+        do {
+            let asset = try await RecordingService.shared.recover(recoveryURL)
             history.record(asset: asset, image: nil)
             history.save()
             let thumbnail = await VideoThumbnail.make(for: asset.url)
@@ -803,8 +1077,15 @@ public final class AppCoordinator {
             )
             push(ShelfItem(asset: asset, thumbnail: thumbnail, image: nil))
             present(error: NotchShotError.recordingFailed("Recording stopped early — the partial file was kept"))
-        } else {
-            present(error: error)
+        } catch {
+            Log.recording.error(
+                "Could not recover interrupted recording \(recoveryURL.lastPathComponent): \(error.localizedDescription)"
+            )
+            presentRecoveryFiles(
+                title: "An interrupted recording needs attention",
+                urls: [recoveryURL],
+                explanation: "NotchShot could not safely validate or move this recording, so it remains in the recovery folder."
+            )
         }
     }
 
@@ -812,18 +1093,65 @@ public final class AppCoordinator {
     public func recoverOrphanedRecordings() {
         let orphans = RecordingService.orphanedRecordings()
         guard !orphans.isEmpty else { return }
+        guard Preferences.shared.historyEnabled
+                || Preferences.shared.saveToDiskAfterCapture else {
+            presentRecoveryFiles(
+                title: "Interrupted recordings need a save destination",
+                urls: orphans,
+                explanation: "History and automatic saving are both off, so NotchShot left these files in its recovery folder instead of recovering and later deleting them as untracked data."
+            )
+            return
+        }
         Task {
-            for orphan in orphans.prefix(3) {
-                guard let asset = try? await RecordingService.shared.recover(orphan) else { continue }
-                history.record(asset: asset, image: nil)
-                history.save()
-                let thumbnail = await VideoThumbnail.make(for: asset.url)
-                history.record(
-                    asset: asset,
-                    image: thumbnail?.cgImage(forProposedRect: nil, context: nil, hints: nil)
-                )
-                push(ShelfItem(asset: asset, thumbnail: thumbnail, image: nil))
+            var recoveredCount = 0
+            var failed: [URL] = []
+            for orphan in orphans {
+                guard recoveredCount < 3 else {
+                    failed.append(orphan)
+                    continue
+                }
+                do {
+                    let asset = try await RecordingService.shared.recover(orphan)
+                    recoveredCount += 1
+                    history.record(asset: asset, image: nil)
+                    history.save()
+                    let thumbnail = await VideoThumbnail.make(for: asset.url)
+                    history.record(
+                        asset: asset,
+                        image: thumbnail?.cgImage(forProposedRect: nil, context: nil, hints: nil)
+                    )
+                    push(ShelfItem(asset: asset, thumbnail: thumbnail, image: nil))
+                } catch {
+                    failed.append(orphan)
+                    Log.recording.error(
+                        "Could not recover \(orphan.lastPathComponent): \(error.localizedDescription)"
+                    )
+                }
             }
+            if !failed.isEmpty {
+                presentRecoveryFiles(
+                    title: "Some interrupted recordings need attention",
+                    urls: failed,
+                    explanation: "They remain in NotchShot’s recovery folder because validation or export did not complete."
+                )
+            }
+        }
+    }
+
+    private func presentRecoveryFiles(
+        title: String,
+        urls: [URL],
+        explanation: String
+    ) {
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = title
+        alert.informativeText = "\(explanation) \(urls.count) file(s) are still present."
+        alert.addButton(withTitle: "Reveal in Finder")
+        alert.addButton(withTitle: "Later")
+        NSApp.activate(ignoringOtherApps: true)
+        if alert.runModal() == .alertFirstButtonReturn {
+            NSWorkspace.shared.activateFileViewerSelecting(urls)
         }
     }
 
@@ -834,6 +1162,11 @@ public final class AppCoordinator {
         // multi-step flow can be grabbed without touching the UI between shots.
         if stack.isCollecting, item.asset.kind != .recording {
             stack.add(item.asset)
+        }
+        // Keep a full-resolution bitmap only for the newest item. Older shelf
+        // entries can be reloaded from their file when edited or OCR'd.
+        for existing in shelfItems {
+            existing.image = nil
         }
         shelfItems.insert(item, at: 0)
         if shelfItems.count > Self.maximumShelfItems {
@@ -866,6 +1199,9 @@ public final class AppCoordinator {
         lastDismissed = shelfItems.first
         arbiter.hasResult = false
         shelfTimer?.invalidate()
+        for item in shelfItems {
+            item.image = nil
+        }
         refreshActivity()
     }
 
@@ -873,6 +1209,16 @@ public final class AppCoordinator {
         lastDismissed = item
         shelfItems.removeAll { $0.id == item.id }
         selectedShelfIndex = 0
+        arbiter.hasResult = !shelfItems.isEmpty
+        refreshActivity()
+    }
+
+    private func removeShelfItemPermanently(_ item: ShelfItem) {
+        if lastDismissed?.id == item.id {
+            lastDismissed = nil
+        }
+        shelfItems.removeAll { $0.id == item.id }
+        selectedShelfIndex = min(selectedShelfIndex, max(0, shelfItems.count - 1))
         arbiter.hasResult = !shelfItems.isEmpty
         refreshActivity()
     }
@@ -916,6 +1262,12 @@ public final class AppCoordinator {
             if let image = item.image {
                 ImageExport.copyToPasteboard(image.cgImage)
             } else {
+                guard SafeAssetFile.isCurrentAndSafe(item.asset) else {
+                    present(error: NotchShotError.exportFailed(
+                        "That file changed or is no longer safely readable"
+                    ))
+                    return
+                }
                 ImageExport.copyToPasteboard(fileURL: item.asset.url)
             }
 
@@ -944,16 +1296,21 @@ public final class AppCoordinator {
             NSWorkspace.shared.activateFileViewerSelecting([item.asset.url])
 
         case .delete:
+            if item.asset.ownership == .externalReference {
+                removeShelfItemPermanently(item)
+                return
+            }
             do {
                 if history.entry(id: item.asset.id) != nil {
                     try history.delete(id: item.asset.id, includingFile: true)
                 } else {
                     try HistoryRepository.trashCaptureAndCaption(
                         at: item.asset.url,
-                        captionURL: item.asset.captionURL
+                        captionURL: item.asset.captionURL,
+                        projectURL: item.asset.projectURL
                     )
                 }
-                dismissShelfItem(item)
+                removeShelfItemPermanently(item)
             } catch {
                 present(error: NotchShotError.destinationUnwritable(item.asset.url.path))
             }
@@ -970,7 +1327,7 @@ public final class AppCoordinator {
             .appendingPathComponent(".notchshot-copy-\(UUID().uuidString)")
         defer { try? fileManager.removeItem(at: stagingURL) }
         do {
-            try fileManager.copyItem(at: item.asset.url, to: stagingURL)
+            try SafeAssetFile.copy(item.asset, to: stagingURL)
             if fileManager.fileExists(atPath: url.path) {
                 _ = try fileManager.replaceItemAt(url, withItemAt: stagingURL)
             } else {
@@ -986,7 +1343,11 @@ public final class AppCoordinator {
             ImageExport.copyToPasteboard(text: existing.fullText)
             return
         }
-        guard let image = item.image else { return }
+        let image = item.image ?? SafeImageFile.capturedImage(for: item.asset)
+        guard let image else {
+            present(error: NotchShotError.captureFailed("That image could not be read safely"))
+            return
+        }
         arbiter.isProcessing = "Reading text"
         refreshActivity()
         defer {
@@ -1011,7 +1372,7 @@ public final class AppCoordinator {
         if let captured = item.image {
             image = captured.makeNSImage()
         } else {
-            image = NSImage(contentsOf: item.asset.url)
+            image = SafeImageFile.nsImage(for: item.asset)
         }
         guard let image else { return }
         FloatingCaptureManager.shared.pin(asset: item.asset, image: image)
@@ -1022,7 +1383,8 @@ public final class AppCoordinator {
             present(error: NotchShotError.exportFailed("AirDrop isn't available"))
             return
         }
-        guard service.canPerform(withItems: [item.asset.url]) else {
+        guard SafeAssetFile.isCurrentAndSafe(item.asset),
+              service.canPerform(withItems: [item.asset.url]) else {
             present(error: NotchShotError.exportFailed("AirDrop can't send that file"))
             return
         }
@@ -1039,8 +1401,7 @@ public final class AppCoordinator {
             controller = opened
         } else if let image = item.image {
             controller = AnnotationDocumentController(image: image, asset: item.asset)
-        } else if let loaded = NSImage(contentsOf: item.asset.url),
-                  let cgImage = loaded.cgImage(forProposedRect: nil, context: nil, hints: nil) {
+        } else if let cgImage = SafeImageFile.cgImage(for: item.asset) {
             let document = AnnotationDocument(
                 sourcePixelSize: CGSize(width: cgImage.width, height: cgImage.height),
                 sourceScale: item.asset.scale
@@ -1078,6 +1439,20 @@ public final class AppCoordinator {
         editorExportActions.removeValue(forKey: key)?(asset)
     }
 
+    public func handleEditorProjectSaved(
+        from controller: AnnotationDocumentController,
+        projectURL: URL
+    ) {
+        guard let assetID = controller.asset?.id else { return }
+        history.updateProject(for: assetID, projectURL: projectURL)
+        if let item = shelfItems.first(where: { $0.asset.id == assetID }) {
+            item.asset.projectURL = projectURL
+        }
+        if lastDismissed?.asset.id == assetID {
+            lastDismissed?.asset.projectURL = projectURL
+        }
+    }
+
     public func discardEditorExportAction(for controller: AnnotationDocumentController) {
         editorExportActions.removeValue(forKey: ObjectIdentifier(controller))
     }
@@ -1087,8 +1462,7 @@ public final class AppCoordinator {
         if let image = item.image {
             source = image.cgImage
         } else {
-            source = NSImage(contentsOf: item.asset.url)?
-                .cgImage(forProposedRect: nil, context: nil, hints: nil)
+            source = SafeImageFile.cgImage(for: item.asset)
         }
         guard let source else {
             present(error: NotchShotError.exportFailed("Can't review that capture"))
@@ -1168,8 +1542,7 @@ public final class AppCoordinator {
             let options = StackExportOptions(style: style, numbersSteps: numbersSteps)
             _ = try stack.export(to: url, options: options)
 
-            let image = NSImage(contentsOf: url)
-            let cgImage = image?.cgImage(forProposedRect: nil, context: nil, hints: nil)
+            let cgImage = SafeImageFile.cgImage(at: url, limits: .generated)
             let asset = CaptureAsset(
                 url: url,
                 kind: .screenshot,
@@ -1218,22 +1591,78 @@ public final class AppCoordinator {
     /// staging area for AirDrop and drag-out as well as for captures.
     public func acceptDroppedFiles(_ urls: [URL]) {
         guard !urls.isEmpty else { return }
+        var rejected = 0
         for url in urls.prefix(Self.maximumShelfItems) {
-            let image = NSImage(contentsOf: url)
-            let cgImage = image?.cgImage(forProposedRect: nil, context: nil, hints: nil)
+            guard let dropped = Self.validatedDroppedFile(at: url) else {
+                rejected += 1
+                continue
+            }
             let asset = CaptureAsset(
-                url: url,
-                kind: url.pathExtension.lowercased() == "mp4" ? .recording : .screenshot,
-                pixelSize: cgImage.map { CGSize(width: $0.width, height: $0.height) } ?? .zero,
-                scale: 1
+                url: dropped.url,
+                kind: dropped.kind,
+                pixelSize: dropped.image.map { CGSize(width: $0.width, height: $0.height) } ?? .zero,
+                scale: 1,
+                ownership: .externalReference,
+                externalFileIdentity: dropped.identity
             )
-            let thumbnail = cgImage
+            let thumbnail = dropped.image
                 .flatMap { ImageExport.makeThumbnail(from: $0) }
                 .map { NSImage(cgImage: $0, size: NSSize(width: $0.width, height: $0.height)) }
-            push(ShelfItem(asset: asset, thumbnail: thumbnail ?? image, image: nil))
+            push(ShelfItem(asset: asset, thumbnail: thumbnail, image: nil))
+        }
+        if rejected > 0 {
+            present(error: NotchShotError.exportFailed(
+                "Only regular image and movie files under 500 MB can be added to the shelf"
+            ))
         }
         arbiter.isDraggingFiles = false
         refreshActivity()
+    }
+
+    private struct ValidatedDrop {
+        var url: URL
+        var kind: CaptureAssetKind
+        var image: CGImage?
+        var identity: ExternalFileIdentity
+    }
+
+    private static func validatedDroppedFile(at url: URL) -> ValidatedDrop? {
+        guard url.isFileURL else { return nil }
+        let resolved = url.standardizedFileURL
+        let keys: Set<URLResourceKey> = [
+            .isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey, .contentTypeKey,
+        ]
+        guard let values = try? resolved.resourceValues(forKeys: keys),
+              values.isRegularFile == true,
+              values.isSymbolicLink != true,
+              let byteCount = values.fileSize,
+              byteCount >= 0,
+              byteCount <= 500_000_000,
+              let type = values.contentType
+        else { return nil }
+        guard let identity = SafeAssetFile.identity(
+            at: resolved,
+            maximumBytes: SafeAssetFile.maximumExternalBytes
+        ) else { return nil }
+
+        if type.conforms(to: .image),
+           let image = SafeImageFile.cgImage(at: resolved, limits: .external) {
+            return ValidatedDrop(
+                url: resolved,
+                kind: .screenshot,
+                image: image,
+                identity: identity
+            )
+        }
+        if type.conforms(to: .movie) {
+            return ValidatedDrop(
+                url: resolved,
+                kind: .recording,
+                image: nil,
+                identity: identity
+            )
+        }
+        return nil
     }
 
     public func setDraggingFiles(_ dragging: Bool) {
@@ -1266,6 +1695,7 @@ public final class AppCoordinator {
         let message = (error as? NotchShotError)?.notchMessage
             ?? error.localizedDescription
         Log.app.error("\(message)")
+        announceForAccessibility(message, priority: .high)
 
         errorTask?.cancel()
         arbiter.error = message
@@ -1284,6 +1714,21 @@ public final class AppCoordinator {
         errorTask?.cancel()
         arbiter.error = nil
         refreshActivity()
+    }
+
+    private func announceForAccessibility(
+        _ message: String,
+        priority: NSAccessibilityPriorityLevel
+    ) {
+        guard NSWorkspace.shared.isVoiceOverEnabled else { return }
+        NSAccessibility.post(
+            element: NSApplication.shared,
+            notification: .announcementRequested,
+            userInfo: [
+                .announcement: message,
+                .priority: priority.rawValue,
+            ]
+        )
     }
 
     private func playCaptureSound() {

@@ -28,6 +28,40 @@ public struct StitchSettings: Sendable {
     public init() {}
 }
 
+/// Memory and dimension guard rails for untrusted or unusually large capture
+/// input. A scrolling capture holds every source frame plus a decoded composite,
+/// so frame count alone is not a sufficient bound.
+public struct StitchLimits: Sendable, Equatable {
+    public var maximumFrames: Int
+    public var maximumFrameDimension: Int
+    public var maximumFramePixels: Int
+    public var maximumInputPixels: Int
+    public var maximumInputBytes: Int
+    public var maximumCompositeDimension: Int
+    public var maximumCompositePixels: Int
+    public var maximumCompositeBytes: Int
+
+    public init(
+        maximumFrames: Int = 120,
+        maximumFrameDimension: Int = 16_384,
+        maximumFramePixels: Int = 64 * 1_024 * 1_024,
+        maximumInputPixels: Int = 192 * 1_024 * 1_024,
+        maximumInputBytes: Int = 768 * 1_024 * 1_024,
+        maximumCompositeDimension: Int = 65_535,
+        maximumCompositePixels: Int = 128 * 1_024 * 1_024,
+        maximumCompositeBytes: Int = 512 * 1_024 * 1_024
+    ) {
+        self.maximumFrames = maximumFrames
+        self.maximumFrameDimension = maximumFrameDimension
+        self.maximumFramePixels = maximumFramePixels
+        self.maximumInputPixels = maximumInputPixels
+        self.maximumInputBytes = maximumInputBytes
+        self.maximumCompositeDimension = maximumCompositeDimension
+        self.maximumCompositePixels = maximumCompositePixels
+        self.maximumCompositeBytes = maximumCompositeBytes
+    }
+}
+
 public struct StitchOutput: @unchecked Sendable {
     public let image: CGImage
     public let seams: [StitchSeam]
@@ -48,12 +82,39 @@ public enum ScrollingStitcher {
     public static func stitch(
         frames: [CGImage],
         settings: StitchSettings = StitchSettings(),
+        limits: StitchLimits = StitchLimits(),
         progress: (@Sendable (Double) -> Void)? = nil
     ) throws -> StitchOutput {
+        try Task.checkCancellation()
+        try validate(settings: settings, limits: limits)
+        progress?(0)
+
         guard let first = frames.first else {
             throw NotchShotError.stitchFailed("No frames were captured")
         }
+        guard frames.count <= limits.maximumFrames else {
+            throw NotchShotError.stitchFailed(
+                "Too many frames (\(frames.count)); the limit is \(limits.maximumFrames)"
+            )
+        }
+
+        var inputPixels = 0
+        var inputBytes = 0
+        for frame in frames {
+            try Task.checkCancellation()
+            let cost = try validateFrame(
+                frame,
+                aggregatePixels: inputPixels,
+                aggregateBytes: inputBytes,
+                limits: limits
+            )
+            inputPixels += cost.pixels
+            inputBytes += cost.decodedBytes
+        }
+
+        try validateComposite(width: first.width, height: first.height, limits: limits)
         guard frames.count > 1 else {
+            progress?(1)
             return StitchOutput(image: first, seams: [], warnings: [], droppedFrameIndices: [])
         }
 
@@ -64,17 +125,20 @@ public enum ScrollingStitcher {
 
         var buffers: [GrayBuffer] = []
         buffers.reserveCapacity(frames.count)
-        for frame in frames {
+        for (index, frame) in frames.enumerated() {
+            try Task.checkCancellation()
             guard let buffer = GrayBuffer(image: frame, columnStride: settings.columnStride) else {
                 throw NotchShotError.stitchFailed("Could not read frame pixels")
             }
             buffers.append(buffer)
+            progress?(0.05 + (0.20 * Double(index + 1) / Double(frames.count)))
         }
 
         // Regions that never move between frames — sticky headers, toolbars,
         // floating footers — are excluded from matching, otherwise they anchor
         // every comparison to a false zero-scroll answer.
-        let sticky = detectStickyBands(buffers: buffers)
+        let sticky = try detectStickyBandsCancellable(buffers: buffers)
+        progress?(0.28)
         var warnings: [String] = []
         if sticky.top > 0 {
             warnings.append("Ignored a \(sticky.top)px fixed header while matching.")
@@ -91,9 +155,9 @@ public enum ScrollingStitcher {
         var previousIndex = 0
 
         for index in 1 ..< frames.count {
-            progress?(Double(index) / Double(frames.count))
+            try Task.checkCancellation()
 
-            let match = bestMatch(
+            let match = try bestMatchCancellable(
                 previous: buffers[previousIndex],
                 next: buffers[index],
                 sticky: sticky,
@@ -105,17 +169,24 @@ public enum ScrollingStitcher {
                 // changed too much to correlate. Dropping is safer than
                 // guessing an offset and producing a torn image.
                 dropped.append(index)
+                progress?(0.30 + (0.60 * Double(index) / Double(frames.count - 1)))
                 continue
             }
 
+            let (nextHeight, heightOverflow) = totalHeight.addingReportingOverflow(match.addedRows)
+            guard !heightOverflow else {
+                throw NotchShotError.stitchFailed("The composite height overflowed")
+            }
+            try validateComposite(width: width, height: nextHeight, limits: limits)
             segments.append((index, match.sourceTop, match.addedRows))
             seams.append(StitchSeam(
                 y: totalHeight,
                 confidence: match.confidence,
                 addedRows: match.addedRows
             ))
-            totalHeight += match.addedRows
+            totalHeight = nextHeight
             previousIndex = index
+            progress?(0.30 + (0.60 * Double(index) / Double(frames.count - 1)))
         }
 
         guard seams.count > 0 else {
@@ -130,6 +201,8 @@ public enum ScrollingStitcher {
             warnings.append("Some joins are uncertain — check the marked seams before sharing.")
         }
 
+        try Task.checkCancellation()
+        progress?(0.92)
         let composite = try compose(frames: frames, segments: segments, width: width, height: totalHeight)
         progress?(1)
         return StitchOutput(
@@ -157,6 +230,20 @@ public enum ScrollingStitcher {
         sticky: StickyBands,
         settings: StitchSettings
     ) -> Match? {
+        try? bestMatchCancellable(
+            previous: previous,
+            next: next,
+            sticky: sticky,
+            settings: settings
+        )
+    }
+
+    private static func bestMatchCancellable(
+        previous: GrayBuffer,
+        next: GrayBuffer,
+        sticky: StickyBands,
+        settings: StitchSettings
+    ) throws -> Match? {
         let usableBottom = previous.height - sticky.bottom
         let usableTop = sticky.top
         guard usableBottom - usableTop > settings.templateHeight else { return nil }
@@ -172,7 +259,12 @@ public enum ScrollingStitcher {
         let searchUpperBound = min(templateTop, next.height - sticky.bottom - templateHeight)
         guard searchUpperBound >= usableTop else { return nil }
 
+        var positionsChecked = 0
         for position in stride(from: searchUpperBound, through: usableTop, by: -1) {
+            if positionsChecked.isMultiple(of: 32) {
+                try Task.checkCancellation()
+            }
+            positionsChecked += 1
             let score = previous.meanAbsoluteDifference(
                 templateTop: templateTop,
                 templateHeight: templateHeight,
@@ -211,6 +303,10 @@ public enum ScrollingStitcher {
 
     /// Counts leading/trailing rows that are identical across every frame.
     static func detectStickyBands(buffers: [GrayBuffer]) -> StickyBands {
+        (try? detectStickyBandsCancellable(buffers: buffers)) ?? StickyBands(top: 0, bottom: 0)
+    }
+
+    private static func detectStickyBandsCancellable(buffers: [GrayBuffer]) throws -> StickyBands {
         guard let first = buffers.first, buffers.count > 1 else {
             return StickyBands(top: 0, bottom: 0)
         }
@@ -219,6 +315,9 @@ public enum ScrollingStitcher {
 
         var top = 0
         outerTop: while top < limit {
+            if top.isMultiple(of: 64) {
+                try Task.checkCancellation()
+            }
             for buffer in buffers.dropFirst() where !buffer.rowsMatch(first, row: top, tolerance: 3) {
                 break outerTop
             }
@@ -227,6 +326,9 @@ public enum ScrollingStitcher {
 
         var bottom = 0
         outerBottom: while bottom < limit {
+            if bottom.isMultiple(of: 64) {
+                try Task.checkCancellation()
+            }
             let row = height - 1 - bottom
             for buffer in buffers.dropFirst() where !buffer.rowsMatch(first, row: row, tolerance: 3) {
                 break outerBottom
@@ -238,6 +340,105 @@ public enum ScrollingStitcher {
         // it as no sticky content so the caller sees a normal failure instead.
         if top + bottom >= height { return StickyBands(top: 0, bottom: 0) }
         return StickyBands(top: top, bottom: bottom)
+    }
+
+    // MARK: Resource limits
+
+    struct FrameCost: Sendable, Equatable {
+        let pixels: Int
+        let decodedBytes: Int
+    }
+
+    /// Validates one frame and its aggregate contribution. Kept internal so
+    /// the capture session can reject oversized input before retaining it.
+    static func validateFrame(
+        _ image: CGImage,
+        aggregatePixels: Int,
+        aggregateBytes: Int,
+        limits: StitchLimits
+    ) throws -> FrameCost {
+        guard image.width <= limits.maximumFrameDimension,
+              image.height <= limits.maximumFrameDimension else {
+            throw NotchShotError.stitchFailed(
+                "A frame is \(image.width)×\(image.height)px; each dimension is limited to \(limits.maximumFrameDimension)px"
+            )
+        }
+
+        let pixels = try checkedProduct(image.width, image.height, subject: "frame pixel count")
+        guard pixels <= limits.maximumFramePixels else {
+            throw NotchShotError.stitchFailed(
+                "A frame contains \(pixels) pixels; the per-frame limit is \(limits.maximumFramePixels)"
+            )
+        }
+
+        let bytesPerPixel = max(4, (image.bitsPerPixel + 7) / 8)
+        let decodedPixelBytes = try checkedProduct(pixels, bytesPerPixel, subject: "frame byte count")
+        let rowBytes = try checkedProduct(image.bytesPerRow, image.height, subject: "frame row-byte count")
+        let decodedBytes = max(decodedPixelBytes, rowBytes)
+
+        let (newPixels, pixelOverflow) = aggregatePixels.addingReportingOverflow(pixels)
+        guard !pixelOverflow, newPixels <= limits.maximumInputPixels else {
+            throw NotchShotError.stitchFailed(
+                "Captured frames exceed the \(limits.maximumInputPixels)-pixel input budget"
+            )
+        }
+        let (newBytes, byteOverflow) = aggregateBytes.addingReportingOverflow(decodedBytes)
+        guard !byteOverflow, newBytes <= limits.maximumInputBytes else {
+            throw NotchShotError.stitchFailed(
+                "Captured frames exceed the \(limits.maximumInputBytes)-byte decoded input budget"
+            )
+        }
+
+        return FrameCost(pixels: pixels, decodedBytes: decodedBytes)
+    }
+
+    private static func validate(settings: StitchSettings, limits: StitchLimits) throws {
+        guard settings.templateHeight > 0,
+              settings.columnStride > 0,
+              settings.maximumMeanDifference.isFinite,
+              settings.maximumMeanDifference > 0,
+              settings.minimumAdvance > 0 else {
+            throw NotchShotError.stitchFailed("Invalid stitch settings")
+        }
+        guard limits.maximumFrames > 0,
+              limits.maximumFrameDimension > 0,
+              limits.maximumFramePixels > 0,
+              limits.maximumInputPixels > 0,
+              limits.maximumInputBytes > 0,
+              limits.maximumCompositeDimension > 0,
+              limits.maximumCompositePixels > 0,
+              limits.maximumCompositeBytes > 0 else {
+            throw NotchShotError.stitchFailed("Invalid stitch resource limits")
+        }
+    }
+
+    private static func validateComposite(width: Int, height: Int, limits: StitchLimits) throws {
+        guard width <= limits.maximumCompositeDimension,
+              height <= limits.maximumCompositeDimension else {
+            throw NotchShotError.stitchFailed(
+                "The composite would be \(width)×\(height)px; each dimension is limited to \(limits.maximumCompositeDimension)px"
+            )
+        }
+        let pixels = try checkedProduct(width, height, subject: "composite pixel count")
+        guard pixels <= limits.maximumCompositePixels else {
+            throw NotchShotError.stitchFailed(
+                "The composite would contain \(pixels) pixels; the limit is \(limits.maximumCompositePixels)"
+            )
+        }
+        let bytes = try checkedProduct(pixels, 4, subject: "composite byte count")
+        guard bytes <= limits.maximumCompositeBytes else {
+            throw NotchShotError.stitchFailed(
+                "The composite would require about \(bytes) bytes; the limit is \(limits.maximumCompositeBytes)"
+            )
+        }
+    }
+
+    private static func checkedProduct(_ lhs: Int, _ rhs: Int, subject: String) throws -> Int {
+        let (value, overflow) = lhs.multipliedReportingOverflow(by: rhs)
+        guard !overflow else {
+            throw NotchShotError.stitchFailed("The \(subject) overflowed")
+        }
+        return value
     }
 
     // MARK: Composition
@@ -263,9 +464,12 @@ public enum ScrollingStitcher {
         context.interpolationQuality = .none
         var y = 0
         for segment in segments {
+            try Task.checkCancellation()
             guard segment.rows > 0 else { continue }
             let cropRect = CGRect(x: 0, y: segment.top, width: width, height: segment.rows)
-            guard let slice = frames[segment.frame].cropping(to: cropRect) else { continue }
+            guard let slice = frames[segment.frame].cropping(to: cropRect) else {
+                throw NotchShotError.stitchFailed("Could not crop a frame segment for composition")
+            }
             // CGContext draws bottom-up, so the first segment goes at the top.
             let destination = CGRect(
                 x: 0,
@@ -277,6 +481,10 @@ public enum ScrollingStitcher {
             y += segment.rows
         }
 
+        guard y == height else {
+            throw NotchShotError.stitchFailed("The composed segments did not fill the output image")
+        }
+        try Task.checkCancellation()
         guard let image = context.makeImage() else {
             throw NotchShotError.stitchFailed("Could not render the composite image")
         }

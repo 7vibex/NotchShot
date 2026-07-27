@@ -6,6 +6,7 @@ let package = Package(
     platforms: [.macOS(.v26)],
     products: [
         .executable(name: "NotchShot", targets: ["NotchShot"]),
+        .executable(name: "NotchShotOSDRecovery", targets: ["NotchShotOSDRecovery"]),
         .executable(name: "notchshot-diagnostics", targets: ["NotchShotDiagnostics"]),
         .library(name: "NotchShotKit", targets: ["NotchShotKit"]),
     ],
@@ -14,6 +15,14 @@ let package = Package(
             name: "NotchShot",
             dependencies: ["NotchShotKit"],
             path: "Sources/NotchShot",
+            swiftSettings: [.swiftLanguageMode(.v6)]
+        ),
+        // A tiny lease watchdog. If the main process crashes while it has
+        // paused OSDUIHelper, stdin closes and this process immediately resumes
+        // the validated Apple helper.
+        .executableTarget(
+            name: "NotchShotOSDRecovery",
+            path: "Sources/NotchShotOSDRecovery",
             swiftSettings: [.swiftLanguageMode(.v6)]
         ),
         // Headless smoke test for the capture pipeline: tells you whether a

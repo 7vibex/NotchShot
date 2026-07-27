@@ -163,6 +163,7 @@ struct ShelfContent: View {
     private func actions(for item: ShelfItem) -> some View {
         HStack(spacing: 6) {
             ForEach(ShareAction.allCases.filter { $0.isAvailable(for: item.asset) }) { action in
+                let title = action.title(for: item.asset)
                 Button {
                     coordinator.perform(action, on: item)
                 } label: {
@@ -173,8 +174,8 @@ struct ShelfContent: View {
                         .glassEffect(.regular, in: .rect(cornerRadius: 7))
                 }
                 .buttonStyle(.plain)
-                .help(action.title)
-                .accessibilityLabel(action.title)
+                .help(title)
+                .accessibilityLabel(title)
             }
         }
     }
@@ -204,6 +205,16 @@ struct ShelfContent: View {
                 }
                 .buttonStyle(.plain)
                 .help("Move earlier")
+                .accessibilityLabel(index == 0
+                    ? "\(item.asset.displayName), first stack item"
+                    : "Move \(item.asset.displayName) earlier")
+                .accessibilityValue("Item \(index + 1) of \(coordinator.stack.count)")
+                .accessibilityAction(named: Text("Move later")) {
+                    coordinator.stack.moveItem(id: item.id, by: 1)
+                }
+                .accessibilityAction(named: Text("Remove from stack")) {
+                    coordinator.stack.remove(id: item.id)
+                }
                 .contextMenu {
                     Button("Move Earlier") { coordinator.stack.moveItem(id: item.id, by: -1) }
                     Button("Move Later") { coordinator.stack.moveItem(id: item.id, by: 1) }
@@ -258,6 +269,10 @@ struct ShelfContent: View {
             .help(coordinator.stack.isCollecting
                   ? "Stop adding new captures to the stack"
                   : "Add every new capture to the stack")
+            .accessibilityLabel(coordinator.stack.isCollecting
+                ? "Stop collecting captures"
+                : "Collect new captures")
+            .accessibilityValue(coordinator.stack.isCollecting ? "On" : "Off")
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 5)

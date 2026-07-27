@@ -25,7 +25,8 @@ public final class NotchWindowController {
 
     private var entries: [CGDirectDisplayID: PanelEntry] = [:]
     private var mouseMonitors: [Any] = []
-    private var observers: [NSObjectProtocol] = []
+    private var applicationObservers: [NSObjectProtocol] = []
+    private var workspaceObservers: [NSObjectProtocol] = []
     private var rebuildWorkItem: DispatchWorkItem?
     private var presenceTimer: Timer?
     /// Whether the pointer is inside any panel's interactive rect, and so
@@ -40,6 +41,9 @@ public final class NotchWindowController {
     /// pixels for SwiftUI to hit-test, so AppKit must bridge this deliberate
     /// action into the coordinator.
     public var onTriggerClick: ((CGDirectDisplayID) -> Void)?
+    /// Lets the coordinator fail open whenever no notch panel can render the
+    /// custom replacement for a suppressed system OSD.
+    public var onPanelAvailabilityChange: ((Bool) -> Void)?
 
     /// Display the pointer is currently over the island of.
     public private(set) var hoveredDisplayID: CGDirectDisplayID?
@@ -47,14 +51,23 @@ public final class NotchWindowController {
     /// Display that should own transient UI — the hovered one, else the one
     /// with the pointer, else the main screen.
     public var activeDisplayID: CGDirectDisplayID? {
-        if let hoveredDisplayID { return hoveredDisplayID }
+        if let hoveredDisplayID, entries[hoveredDisplayID] != nil {
+            return hoveredDisplayID
+        }
         let mouse = NSEvent.mouseLocation
         if let screen = ScreenLookup.screen(containingCocoaPoint: mouse),
-           let id = ScreenLookup.displayID(for: screen) {
+           let id = ScreenLookup.displayID(for: screen),
+           entries[id] != nil {
             return id
         }
-        return NSScreen.main.flatMap { ScreenLookup.displayID(for: $0) }
+        if let main = NSScreen.main.flatMap({ ScreenLookup.displayID(for: $0) }),
+           entries[main] != nil {
+            return main
+        }
+        return entries.keys.sorted().first
     }
+
+    public var hasRenderablePanel: Bool { !entries.isEmpty }
 
     private var currentActivity: NotchActivity = .idle
     private var isPeeking = false
@@ -74,23 +87,31 @@ public final class NotchWindowController {
     }
 
     public func stop() {
+        rebuildWorkItem?.cancel()
+        rebuildWorkItem = nil
         presenceTimer?.invalidate()
         presenceTimer = nil
         for monitor in mouseMonitors { NSEvent.removeMonitor(monitor) }
         mouseMonitors.removeAll()
-        for observer in observers { NotificationCenter.default.removeObserver(observer) }
-        NSWorkspace.shared.notificationCenter.removeObserver(self)
-        observers.removeAll()
+        for observer in applicationObservers {
+            NotificationCenter.default.removeObserver(observer)
+        }
+        applicationObservers.removeAll()
+        for observer in workspaceObservers {
+            NSWorkspace.shared.notificationCenter.removeObserver(observer)
+        }
+        workspaceObservers.removeAll()
         for entry in entries.values {
             WindowExclusionRegistry.shared.unregister(entry.panel)
             entry.panel.orderOut(nil)
         }
         entries.removeAll()
+        onPanelAvailabilityChange?(false)
     }
 
     private func installObservers() {
         let center = NotificationCenter.default
-        observers.append(center.addObserver(
+        applicationObservers.append(center.addObserver(
             forName: NSApplication.didChangeScreenParametersNotification,
             object: nil,
             queue: .main
@@ -104,7 +125,7 @@ public final class NotchWindowController {
             NSWorkspace.activeSpaceDidChangeNotification,
             NSWorkspace.screensDidWakeNotification,
         ] {
-            observers.append(workspace.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+            workspaceObservers.append(workspace.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
                 MainActor.assumeIsolated { self?.scheduleRebuild() }
             })
         }
@@ -124,6 +145,12 @@ public final class NotchWindowController {
     // MARK: Panels
 
     public func rebuildPanels() {
+        let previouslyAvailable = hasRenderablePanel
+        defer {
+            if hasRenderablePanel != previouslyAvailable {
+                onPanelAvailabilityChange?(hasRenderablePanel)
+            }
+        }
         guard Preferences.shared.notchEnabled else {
             for entry in entries.values {
                 WindowExclusionRegistry.shared.unregister(entry.panel)

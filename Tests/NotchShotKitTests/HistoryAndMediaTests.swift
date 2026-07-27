@@ -47,7 +47,14 @@ struct HistoryRetentionTests {
 
     @Test("A row whose file has vanished is dropped regardless of age")
     func missingFileDropped() {
-        let entries = [entry(ageDays: 0.1)]
+        let asset = CaptureAsset(
+            url: AppPaths.captures.appendingPathComponent("missing.png"),
+            kind: .screenshot,
+            pixelSize: .zero,
+            createdAt: Date().addingTimeInterval(-0.1 * 86_400),
+            ownership: .managedTemporary
+        )
+        let entries = [HistoryEntry(asset: asset, thumbnailFilename: nil, indexedText: nil)]
         let result = HistoryRepository.partitionByRetention(
             entries,
             retentionDays: 30,
@@ -58,10 +65,41 @@ struct HistoryRetentionTests {
         #expect(result.removed.count == 1)
     }
 
-    @Test("Retention never deletes the capture files themselves")
-    func retentionKeepsFiles() {
-        // The row and its thumbnail are ours; the capture belongs to the user.
-        #expect(HistoryRepository.retentionDeletesFiles == false)
+    @Test("A recent unavailable user document remains retryable")
+    func unavailableUserDocumentKept() {
+        let entries = [entry(ageDays: 0.1)]
+        let result = HistoryRepository.partitionByRetention(
+            entries,
+            retentionDays: 30,
+            now: Date(),
+            fileExists: { _ in false }
+        )
+        #expect(result.kept.count == 1)
+        #expect(result.removed.isEmpty)
+    }
+
+    @Test("Retention deletes only hidden managed captures")
+    func retentionRespectsOwnership() {
+        let managed = CaptureAsset(
+            url: AppPaths.captures.appendingPathComponent("managed.png"),
+            kind: .screenshot,
+            pixelSize: .zero,
+            ownership: .managedTemporary
+        )
+        let document = CaptureAsset(
+            url: URL(fileURLWithPath: "/tmp/user-document.png"),
+            kind: .screenshot,
+            pixelSize: .zero,
+            ownership: .userDocument
+        )
+
+        #expect(HistoryRepository.retentionDeletesFiles)
+        #expect(HistoryRepository.retentionDeletesManagedFiles(
+            for: HistoryEntry(asset: managed, thumbnailFilename: nil, indexedText: nil)
+        ))
+        #expect(!HistoryRepository.retentionDeletesManagedFiles(
+            for: HistoryEntry(asset: document, thumbnailFilename: nil, indexedText: nil)
+        ))
     }
 
     @Test("An entry exactly at the boundary is kept")
@@ -124,6 +162,117 @@ struct HistoryRetentionTests {
 
         #expect(decoded.captionPath == captionURL.path)
         #expect(decoded.asset.captionURL == captionURL)
+    }
+
+    @Test("History round-trips primary-file provenance")
+    func provenanceRoundTrip() throws {
+        let asset = CaptureAsset(
+            url: AppPaths.captures.appendingPathComponent("private.png"),
+            kind: .screenshot,
+            pixelSize: .zero,
+            ownership: .managedTemporary
+        )
+        let original = HistoryEntry(asset: asset, thumbnailFilename: nil, indexedText: nil)
+        let decoded = try JSONDecoder().decode(
+            HistoryEntry.self,
+            from: JSONEncoder().encode(original)
+        )
+        #expect(decoded.asset.ownership == .managedTemporary)
+    }
+
+    @Test("Deletion includes managed projects but preserves external projects")
+    func projectDeletionOwnership() {
+        let caption = URL(fileURLWithPath: "/tmp/captions.srt")
+        let managedProject = AppPaths.projects.appendingPathComponent("private.notchshot")
+        let externalProject = URL(fileURLWithPath: "/tmp/user.notchshot")
+
+        #expect(HistoryRepository.deletableSidecars(
+            captionURL: caption,
+            projectURL: managedProject
+        ) == [caption, managedProject])
+        #expect(HistoryRepository.deletableSidecars(
+            captionURL: caption,
+            projectURL: externalProject
+        ) == [caption])
+    }
+
+    @Test("Moving a missing primary to Trash fails instead of deleting its retry row")
+    func missingPrimaryTrashFails() {
+        let missing = FileManager.default.temporaryDirectory
+            .appendingPathComponent("notchshot-missing-\(UUID().uuidString).png")
+        #expect(throws: CocoaError.self) {
+            try HistoryRepository.trashCaptureAndCaption(at: missing)
+        }
+    }
+
+    @Test("Retention removes a managed project beside a preserved user document")
+    func retentionRemovesManagedProjectOnly() {
+        let primary = URL(fileURLWithPath: "/tmp/user-capture.png")
+        let managedProject = AppPaths.projects.appendingPathComponent("private.notchshot")
+        let asset = CaptureAsset(
+            url: primary,
+            kind: .screenshot,
+            pixelSize: .zero,
+            projectURL: managedProject,
+            ownership: .userDocument
+        )
+        let entry = HistoryEntry(asset: asset, thumbnailFilename: nil, indexedText: nil)
+
+        #expect(HistoryRepository.managedArtifactsForRetention(for: entry) == [managedProject])
+    }
+
+    @Test("Untracked cleanup stays inside managed storage and preserves known files")
+    func untrackedManagedCleanupScope() {
+        let knownURL = AppPaths.captures.appendingPathComponent("known.png")
+        let orphanURL = AppPaths.recordings.appendingPathComponent("orphan.mp4")
+        let outsideURL = URL(fileURLWithPath: "/tmp/user.png")
+        let known = HistoryEntry(
+            asset: CaptureAsset(
+                url: knownURL,
+                kind: .screenshot,
+                pixelSize: .zero,
+                ownership: .managedTemporary
+            ),
+            thumbnailFilename: nil,
+            indexedText: nil
+        )
+
+        #expect(HistoryRepository.untrackedManagedArtifacts(
+            candidates: [knownURL, orphanURL, outsideURL],
+            entries: [known]
+        ) == [orphanURL])
+    }
+
+    @Test("Duplicate primary paths coalesce without losing sidecar ownership")
+    func duplicatePrimaryPathsCoalesce() {
+        let primary = URL(fileURLWithPath: "/tmp/shared-export.png")
+        let project = AppPaths.projects.appendingPathComponent("shared.notchshot")
+        let newer = HistoryEntry(
+            asset: CaptureAsset(
+                url: primary,
+                kind: .screenshot,
+                pixelSize: .zero,
+                createdAt: Date()
+            ),
+            thumbnailFilename: nil,
+            indexedText: nil
+        )
+        let older = HistoryEntry(
+            asset: CaptureAsset(
+                url: primary,
+                kind: .screenshot,
+                pixelSize: .zero,
+                createdAt: Date().addingTimeInterval(-10),
+                projectURL: project
+            ),
+            thumbnailFilename: nil,
+            indexedText: nil
+        )
+
+        let result = HistoryRepository.coalesceDuplicatePrimaryPaths([newer, older])
+        #expect(result.entries.count == 1)
+        #expect(result.duplicates.map(\.id) == [older.id])
+        #expect(result.entries.first?.projectPath == project.path)
     }
 }
 
@@ -318,6 +467,43 @@ struct AdapterPayloadTests {
     func badArtwork() throws {
         let result = try #require(snapshot(#"{"title":"Song","artworkData":"!!!not base64!!!"}"#))
         #expect(result.title == "Song")
+    }
+}
+
+@Suite("Adapter command process safety")
+struct AdapterCommandProcessTests {
+    @Test("A successful command returns its bounded output")
+    func successfulCommand() async {
+        let data = await MediaRemoteAdapterSource.runOnce(
+            executableURL: URL(fileURLWithPath: "/bin/echo"),
+            arguments: ["ready"]
+        )
+        #expect(data == Data("ready\n".utf8))
+    }
+
+    @Test("A hung command is terminated at the deadline")
+    func commandTimeout() async {
+        let started = ContinuousClock.now
+        let data = await MediaRemoteAdapterSource.runOnce(
+            executableURL: URL(fileURLWithPath: "/usr/bin/tail"),
+            arguments: ["-f", "/dev/null"],
+            timeout: 0.1
+        )
+        let elapsed = started.duration(to: .now)
+
+        #expect(data == nil)
+        #expect(elapsed < .seconds(1))
+    }
+
+    @Test("Unbounded command output is rejected")
+    func commandOutputLimit() async {
+        let data = await MediaRemoteAdapterSource.runOnce(
+            executableURL: URL(fileURLWithPath: "/usr/bin/yes"),
+            arguments: [],
+            timeout: 1,
+            maximumOutputBytes: 1_024
+        )
+        #expect(data == nil)
     }
 }
 

@@ -1,4 +1,5 @@
 import AppKit
+import Darwin
 import Foundation
 
 /// Bridges to the third-party `mediaremote-adapter` helper (BSD-licensed),
@@ -12,8 +13,8 @@ import Foundation
 ///
 /// Because it rides on undocumented system behaviour, three guards apply:
 ///
-/// * the adapter path and its expected version are pinned in preferences,
-/// * a compatibility check runs on first launch and after every macOS build
+/// * the adapter path is explicitly selected by the user,
+/// * a compatibility check runs after every macOS build
 ///   change (`AdapterCompatibility`),
 /// * everything sits behind `MediaSource`, so an App Store build can drop this
 ///   file entirely and lose nothing but universal-app support.
@@ -21,8 +22,6 @@ public actor MediaRemoteAdapterSource: MediaSource {
 
     public nonisolated let kind: MediaSourceKind = .mediaRemote
 
-    /// The adapter release this integration was written against.
-    public static let pinnedAdapterVersion = "1.0"
     /// Kept with the binary as required by the adapter's BSD licence.
     public static let licenseNotice = """
     NotchShot optionally uses mediaremote-adapter, distributed under the \
@@ -37,6 +36,27 @@ public actor MediaRemoteAdapterSource: MediaSource {
     private var continuation: AsyncStream<MediaSnapshot>.Continuation?
     private var buffer = Data()
 
+    private final class CancellationFlag: @unchecked Sendable {
+        private let lock = NSLock()
+        private var value = false
+
+        var isCancelled: Bool {
+            lock.withLock { value }
+        }
+
+        func cancel() {
+            lock.withLock { value = true }
+        }
+    }
+
+    private enum AdapterCommandError: LocalizedError {
+        case failed
+
+        var errorDescription: String? {
+            "The Now Playing adapter command failed or timed out."
+        }
+    }
+
     public init(executableURL: URL, arguments: [String] = ["stream"]) {
         self.executableURL = executableURL
         self.arguments = arguments
@@ -48,9 +68,9 @@ public actor MediaRemoteAdapterSource: MediaSource {
     public static func configured() -> MediaRemoteAdapterSource? {
         guard let path = Preferences.shared.mediaRemoteAdapterPath, !path.isEmpty else { return nil }
         let url = URL(fileURLWithPath: path)
-        var isDirectory: ObjCBool = false
-        guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory),
-              !isDirectory.boolValue,
+        let values = try? url.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
+        guard values?.isRegularFile == true,
+              values?.isSymbolicLink != true,
               FileManager.default.isExecutableFile(atPath: url.path)
         else {
             Log.media.notice("Adapter path is missing or not executable: \(path)")
@@ -64,18 +84,11 @@ public actor MediaRemoteAdapterSource: MediaSource {
     /// Runs the adapter once with a short timeout. Anything other than a clean,
     /// parseable response counts as unhealthy.
     public func healthCheck() async -> Bool {
-        await withTaskGroup(of: Bool.self) { group in
-            group.addTask { [executableURL] in
-                await Self.runOnce(executableURL: executableURL, arguments: ["get"]) != nil
-            }
-            group.addTask {
-                try? await Task.sleep(for: .seconds(3))
-                return false
-            }
-            let result = await group.next() ?? false
-            group.cancelAll()
-            return result
-        }
+        guard let data = await Self.runOnce(
+            executableURL: executableURL,
+            arguments: ["get"]
+        ) else { return false }
+        return AdapterPayload.snapshot(from: data) != nil
     }
 
     public func updates() -> AsyncStream<MediaSnapshot> {
@@ -98,7 +111,9 @@ public actor MediaRemoteAdapterSource: MediaSource {
         case .previousTrack: arguments = ["send", "previousTrack"]
         case .seek(let position): arguments = ["send", "seek", String(Int(position))]
         }
-        _ = await Self.runOnce(executableURL: executableURL, arguments: arguments)
+        guard await Self.runOnce(executableURL: executableURL, arguments: arguments) != nil else {
+            throw AdapterCommandError.failed
+        }
     }
 
     public func stop() async {
@@ -118,6 +133,7 @@ public actor MediaRemoteAdapterSource: MediaSource {
         let process = Process()
         process.executableURL = executableURL
         process.arguments = arguments
+        process.environment = Self.sanitizedEnvironment
 
         let output = Pipe()
         process.standardOutput = output
@@ -178,29 +194,129 @@ public actor MediaRemoteAdapterSource: MediaSource {
         }
     }
 
-    private static func runOnce(executableURL: URL, arguments: [String]) async -> Data? {
-        await withCheckedContinuation { continuation in
-            let process = Process()
-            process.executableURL = executableURL
-            process.arguments = arguments
-            let output = Pipe()
-            process.standardOutput = output
-            process.standardError = FileHandle.nullDevice
+    /// Runs an untrusted, user-selected adapter with hard time and output caps.
+    ///
+    /// A Foundation Process does not inherit Swift task cancellation. The old
+    /// task-group timeout therefore waited forever if the helper hung because a
+    /// cancelled child still had to finish. This runner polls a nonblocking
+    /// pipe, terminates on timeout/cancellation, and bounds retained output.
+    static func runOnce(
+        executableURL: URL,
+        arguments: [String],
+        timeout: TimeInterval = 3,
+        maximumOutputBytes: Int = 1_000_000
+    ) async -> Data? {
+        let cancellation = CancellationFlag()
+        return await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                let process = Process()
+                process.executableURL = executableURL
+                process.arguments = arguments
+                process.environment = Self.sanitizedEnvironment
+                process.standardInput = FileHandle.nullDevice
+                let output = Pipe()
+                process.standardOutput = output
+                process.standardError = FileHandle.nullDevice
 
-            do {
-                try process.run()
-            } catch {
-                continuation.resume(returning: nil)
-                return
-            }
+                do {
+                    try process.run()
+                } catch {
+                    continuation.resume(returning: nil)
+                    return
+                }
 
-            DispatchQueue.global(qos: .utility).async {
-                let data = output.fileHandleForReading.readDataToEndOfFile()
-                process.waitUntilExit()
-                let succeeded = process.terminationStatus == 0 && !data.isEmpty
-                continuation.resume(returning: succeeded ? data : nil)
+                DispatchQueue.global(qos: .utility).async {
+                    let descriptor = output.fileHandleForReading.fileDescriptor
+                    let existingFlags = fcntl(descriptor, F_GETFL)
+                    if existingFlags >= 0 {
+                        _ = fcntl(descriptor, F_SETFL, existingFlags | O_NONBLOCK)
+                    }
+
+                    let limit = max(1, maximumOutputBytes)
+                    let deadline = ProcessInfo.processInfo.systemUptime + max(0.05, timeout)
+                    var data = Data()
+                    var exceededLimit = false
+                    var timedOut = false
+                    var readBuffer = [UInt8](repeating: 0, count: 16_384)
+
+                    func drainAvailableOutput() {
+                        while !exceededLimit {
+                            let count = readBuffer.withUnsafeMutableBytes { bytes in
+                                Darwin.read(descriptor, bytes.baseAddress, bytes.count)
+                            }
+                            if count > 0 {
+                                let remaining = limit - data.count
+                                guard count <= remaining else {
+                                    if remaining > 0 {
+                                        data.append(contentsOf: readBuffer.prefix(remaining))
+                                    }
+                                    exceededLimit = true
+                                    return
+                                }
+                                data.append(contentsOf: readBuffer.prefix(count))
+                                continue
+                            }
+                            if count == 0 { return }
+                            if errno == EINTR { continue }
+                            if errno == EAGAIN || errno == EWOULDBLOCK { return }
+                            exceededLimit = true
+                        }
+                    }
+
+                    while process.isRunning {
+                        drainAvailableOutput()
+                        if exceededLimit || cancellation.isCancelled {
+                            break
+                        }
+                        if ProcessInfo.processInfo.systemUptime >= deadline {
+                            timedOut = true
+                            break
+                        }
+                        var pollDescriptor = pollfd(
+                            fd: descriptor,
+                            events: Int16(POLLIN | POLLHUP),
+                            revents: 0
+                        )
+                        _ = poll(&pollDescriptor, 1, 25)
+                    }
+
+                    let mustStop = process.isRunning
+                        && (exceededLimit || timedOut || cancellation.isCancelled)
+                    if mustStop {
+                        process.terminate()
+                        let graceDeadline = ProcessInfo.processInfo.systemUptime + 0.2
+                        while process.isRunning,
+                              ProcessInfo.processInfo.systemUptime < graceDeadline {
+                            usleep(10_000)
+                        }
+                        if process.isRunning {
+                            _ = kill(process.processIdentifier, SIGKILL)
+                        }
+                    }
+
+                    process.waitUntilExit()
+                    drainAvailableOutput()
+                    output.fileHandleForReading.closeFile()
+
+                    let succeeded = process.terminationStatus == 0
+                        && !timedOut
+                        && !exceededLimit
+                        && !cancellation.isCancelled
+                    continuation.resume(returning: succeeded ? data : nil)
+                }
             }
+        } onCancel: {
+            cancellation.cancel()
         }
+    }
+
+    private static var sanitizedEnvironment: [String: String] {
+        [
+            "PATH": "/usr/bin:/bin",
+            "LANG": "en_US.UTF-8",
+            "LC_ALL": "en_US.UTF-8",
+            "TMPDIR": NSTemporaryDirectory(),
+        ]
     }
 }
 

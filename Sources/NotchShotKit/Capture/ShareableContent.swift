@@ -88,12 +88,22 @@ public actor ShareableContentProvider {
             return cached
         }
 
-        let content: SCShareableContent
+        var content: SCShareableContent
         do {
-            content = try await SCShareableContent.excludingDesktopWindows(
-                false,
-                onScreenWindowsOnly: true
-            )
+            // Fetch the complete public inventory, then perform the small
+            // on-screen/layer/app exclusions in `selectableWindows`. On macOS
+            // 26 the older filtered query can return an empty display list for
+            // an accessory app despite a valid TCC grant.
+            content = try await SCShareableContent.current
+            if content.displays.isEmpty {
+                Log.capture.notice(
+                    "ScreenCaptureKit returned no displays for the full inventory; retrying the filtered query"
+                )
+                content = try await SCShareableContent.excludingDesktopWindows(
+                    false,
+                    onScreenWindowsOnly: true
+                )
+            }
         } catch {
             // The most common failure here is a missing TCC grant, which SCK
             // reports as a generic stream error.
@@ -101,6 +111,10 @@ public actor ShareableContentProvider {
             if !CGPreflightScreenCaptureAccess() {
                 throw NotchShotError.screenRecordingPermissionDenied
             }
+            throw NotchShotError.noShareableContent
+        }
+        guard !content.displays.isEmpty else {
+            Log.capture.error("ScreenCaptureKit returned no displays after retry")
             throw NotchShotError.noShareableContent
         }
 

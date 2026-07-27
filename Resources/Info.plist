@@ -25,6 +25,8 @@
 	     The Dock icon can be turned on at runtime via setActivationPolicy. -->
 	<key>LSUIElement</key>
 	<true/>
+	<key>LSMultipleInstancesProhibited</key>
+	<true/>
 	<key>NSHighResolutionCapable</key>
 	<true/>
 	<key>NSSupportsAutomaticTermination</key>
@@ -32,14 +34,19 @@
 	<key>NSSupportsSuddenTermination</key>
 	<false/>
 
-	<!-- Screen Recording has no usage-description key; macOS uses the app name.
-	     These two are requested lazily, only when the feature is first used. -->
+	<!-- Sensitive capabilities are requested lazily when their feature is used. -->
+	<key>NSScreenCaptureUsageDescription</key>
+	<string>NotchShot captures the screen only when you start a screenshot, text capture, or screen recording.</string>
+	<key>NSAudioCaptureUsageDescription</key>
+	<string>NotchShot captures system audio only while you record the screen with system audio switched on.</string>
+	<key>NSDesktopFolderUsageDescription</key>
+	<string>NotchShot saves captures to the Desktop only when it is your selected output folder.</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>NotchShot records your microphone only while you have microphone recording switched on for a screen recording.</string>
 	<key>NSSpeechRecognitionUsageDescription</key>
 	<string>NotchShot can create an optional on-device transcript and caption file from a recording you make.</string>
 	<key>NSAppleEventsUsageDescription</key>
-	<string>NotchShot asks Music and Spotify what is playing, only as a fallback when the system Now Playing bridge is unavailable.</string>
+	<string>NotchShot reads playback details from and sends playback controls to Music or Spotify when you enable the Apple Events fallback.</string>
 
 	<key>CFBundleDocumentTypes</key>
 	<array>

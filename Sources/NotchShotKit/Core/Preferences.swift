@@ -104,15 +104,15 @@ public final class Preferences {
     /// Include brightness. Off leaves volume mirroring alone — useful when
     /// auto-brightness is on and the display adapts on its own all day.
     public var mirrorsBrightnessChanges = true { didSet { write(mirrorsBrightnessChanges, .mirrorsBrightness) } }
-    /// Pause macOS's own overlay so the change is only shown in the notch.
-    /// On by default: two HUDs for one keypress is the thing people notice.
-    public var suppressesSystemOSD = true { didSet { write(suppressesSystemOSD, .suppressesSystemOSD) } }
+    /// Experimental direct-build option that pauses macOS's shared OSD helper.
+    /// New installs must opt in after reading the warning in Settings.
+    public var suppressesSystemOSD = false { didSet { write(suppressesSystemOSD, .suppressesSystemOSD) } }
     /// Take ⇧⌘4 and ⇧⌘5 from macOS and point them at NotchShot.
-    public var usesSystemScreenshotShortcuts = true {
+    public var usesSystemScreenshotShortcuts = false {
         didSet { write(usesSystemScreenshotShortcuts, .usesSystemShortcuts) }
     }
     public var mediaIntegrationEnabled = true { didSet { write(mediaIntegrationEnabled, .mediaEnabled) } }
-    public var appleEventsFallbackEnabled = true { didSet { write(appleEventsFallbackEnabled, .appleEventsFallback) } }
+    public var appleEventsFallbackEnabled = false { didSet { write(appleEventsFallbackEnabled, .appleEventsFallback) } }
     /// Path to the user-installed mediaremote-adapter bundle, if present.
     public var mediaRemoteAdapterPath: String? { didSet { write(mediaRemoteAdapterPath, .adapterPath) } }
 
@@ -127,6 +127,11 @@ public final class Preferences {
     public var launchesAtLogin = false { didSet { write(launchesAtLogin, .launchAtLogin) } }
     public var showsDockIcon = false { didSet { write(showsDockIcon, .showsDockIcon) } }
     public var hasCompletedFirstRun = false { didSet { write(hasCompletedFirstRun, .firstRun) } }
+    /// One-time migration from builds that could suspend OSDUIHelper without a
+    /// crash watchdog. Kept separate from the user's replacement preference.
+    public var hasRecoveredLegacySystemOSD = false {
+        didSet { write(hasRecoveredLegacySystemOSD, .recoveredLegacySystemOSD) }
+    }
     /// macOS build the adapter compatibility test last passed against.
     public var lastAdapterCheckBuild: String? { didSet { write(lastAdapterCheckBuild, .adapterCheckBuild) } }
 
@@ -209,7 +214,7 @@ public final class Preferences {
         case mirrorsBrightness, suppressesSystemOSD, usesSystemShortcuts
         case mediaEnabled, appleEventsFallback, adapterPath
         case backgroundPreset, annotationColor, annotationLineWidth
-        case launchAtLogin, showsDockIcon, firstRun, adapterCheckBuild
+        case launchAtLogin, showsDockIcon, firstRun, recoveredLegacySystemOSD, adapterCheckBuild
     }
 
     private func write(_ value: Any?, _ key: Key) {
@@ -267,10 +272,25 @@ public final class Preferences {
         hoverPeekDelay = double(.hoverPeekDelay, 0.35)
         systemLevelHUDEnabled = bool(.systemLevelHUD, true)
         mirrorsBrightnessChanges = bool(.mirrorsBrightness, true)
-        suppressesSystemOSD = bool(.suppressesSystemOSD, true)
-        usesSystemScreenshotShortcuts = bool(.usesSystemShortcuts, true)
+        // Every install without an explicit choice fails open, including
+        // upgrades from the earlier build that enabled this by default.
+        // Persist the migration result immediately. If the key stayed absent,
+        // first-run completion would make a fresh install look "existing" on
+        // launch two and silently enable this experimental integration.
+        let osdKey = "notchshot.\(Key.suppressesSystemOSD.rawValue)"
+        if let stored = defaults.object(forKey: osdKey) as? Bool {
+            suppressesSystemOSD = stored
+        } else {
+            // The old build enabled this private integration by default. A
+            // completed first run is not informed consent to the new
+            // direct-distribution warning, so every missing-key migration is
+            // fail-open and requires an explicit opt-in.
+            suppressesSystemOSD = false
+            defaults.set(suppressesSystemOSD, forKey: osdKey)
+        }
+        usesSystemScreenshotShortcuts = bool(.usesSystemShortcuts, false)
         mediaIntegrationEnabled = bool(.mediaEnabled, true)
-        appleEventsFallbackEnabled = bool(.appleEventsFallback, true)
+        appleEventsFallbackEnabled = bool(.appleEventsFallback, false)
         mediaRemoteAdapterPath = string(.adapterPath)
 
         defaultBackgroundPresetID = string(.backgroundPreset) ?? "none"
@@ -280,6 +300,7 @@ public final class Preferences {
         launchesAtLogin = bool(.launchAtLogin, false)
         showsDockIcon = bool(.showsDockIcon, false)
         hasCompletedFirstRun = bool(.firstRun, false)
+        hasRecoveredLegacySystemOSD = bool(.recoveredLegacySystemOSD, false)
         lastAdapterCheckBuild = string(.adapterCheckBuild)
     }
 }
@@ -297,20 +318,55 @@ public enum AppPaths {
     public static var projects: URL { support.appendingPathComponent("Projects", isDirectory: true) }
     public static var recordings: URL { support.appendingPathComponent("Recordings", isDirectory: true) }
     public static var inProgress: URL { support.appendingPathComponent("InProgress", isDirectory: true) }
+    /// Partial recordings the user explicitly discarded when macOS could not
+    /// move them to Trash. Keeping these outside `InProgress` prevents the
+    /// crash-recovery flow from resurrecting a deliberate discard.
+    public static var discardedRecordings: URL {
+        support.appendingPathComponent("Discarded Recordings", isDirectory: true)
+    }
     public static var historyStore: URL { support.appendingPathComponent("history.json") }
 
+    /// True only for files inside NotchShot's own Application Support tree.
+    /// Standardising both paths prevents a sibling prefix such as
+    /// "NotchShot-old" from being mistaken for owned storage.
+    public static func owns(_ url: URL) -> Bool {
+        let root = support.standardizedFileURL.path
+        let candidate = url.standardizedFileURL.path
+        return candidate == root || candidate.hasPrefix(root + "/")
+    }
+
     public static func ensureDirectories() {
-        for url in [support, captures, thumbnails, projects, recordings, inProgress] {
+        for url in [
+            support,
+            captures,
+            thumbnails,
+            projects,
+            recordings,
+            inProgress,
+            discardedRecordings,
+        ] {
             try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
         }
     }
 
     /// Appends " 2", " 3", … until the name is free.
-    public static func uniqueURL(in directory: URL, name: String, extension ext: String) -> URL {
+    public static func uniqueURL(
+        in directory: URL,
+        name: String,
+        extension ext: String,
+        alsoAvoiding companionExtensions: [String] = []
+    ) -> URL {
         let fm = FileManager.default
         var candidate = directory.appendingPathComponent(name).appendingPathExtension(ext)
         var counter = 2
-        while fm.fileExists(atPath: candidate.path) {
+        let allExtensions = [ext] + companionExtensions
+        func hasCollision(_ primary: URL) -> Bool {
+            let base = primary.deletingPathExtension()
+            return allExtensions.contains { candidateExtension in
+                fm.fileExists(atPath: base.appendingPathExtension(candidateExtension).path)
+            }
+        }
+        while hasCollision(candidate) {
             candidate = directory
                 .appendingPathComponent("\(name) \(counter)")
                 .appendingPathExtension(ext)

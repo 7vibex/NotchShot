@@ -19,8 +19,8 @@ public final class ScrollingCaptureSession {
         case cancelled
     }
 
-    /// Guard rail: 120 frames of a 1200px-tall region is a ~50k pixel image,
-    /// well past what anything downstream will happily open.
+    /// A count guard complements the decoded-byte and composite-pixel budgets
+    /// enforced below and by `ScrollingStitcher`.
     public static let maximumFrames = 120
 
     public private(set) var frames: [CGImage] = []
@@ -28,87 +28,231 @@ public final class ScrollingCaptureSession {
 
     private let region: CGRect
     private let onEvent: (Event) -> Void
+    private let limits: StitchLimits
+    private let frameProvider: FrameProvider
     private var scrollMonitors: [Any] = []
     private var settleWorkItem: DispatchWorkItem?
-    private var isCapturingFrame = false
     private var hasPendingScroll = false
+    private var scrollRevision: UInt64 = 0
+    private var captureTask: Task<Void, Never>?
+    private var captureTaskID: UInt64 = 0
+    private var stitchTask: Task<StitchOutput, Error>?
+    private var stitchTaskID: UInt64 = 0
+    private var generation: UInt64 = 0
+    private var terminalGeneration: UInt64?
+    private var isFinishing = false
+    private var capturedPixels = 0
+    private var capturedBytes = 0
+    private var lastStitchProgress = 0.0
+    private var hasEmittedStitchProgress = false
 
-    public init(region: CGRect, onEvent: @escaping (Event) -> Void) {
+    typealias FrameProvider = @MainActor @Sendable () async throws -> CGImage
+
+    public convenience init(region: CGRect, onEvent: @escaping (Event) -> Void) {
+        self.init(region: region, onEvent: onEvent, limits: StitchLimits()) {
+            let excluded = WindowExclusionRegistry.shared.excludedWindowNumbers
+            return try await CaptureService.shared.captureArea(
+                region,
+                excludedWindows: excluded,
+                showsCursor: false
+            ).cgImage
+        }
+    }
+
+    /// Internal injection point used by deterministic lifecycle tests. The app
+    /// always uses the public initializer above.
+    init(
+        region: CGRect,
+        onEvent: @escaping (Event) -> Void,
+        limits: StitchLimits,
+        frameProvider: @escaping FrameProvider
+    ) {
         self.region = region
         self.onEvent = onEvent
+        self.limits = limits
+        self.frameProvider = frameProvider
     }
 
     // MARK: Lifecycle
 
     public func start() async {
-        guard !isRunning else { return }
+        guard !isRunning, !isFinishing else { return }
+        generation &+= 1
+        terminalGeneration = nil
+        frames.removeAll(keepingCapacity: true)
+        capturedPixels = 0
+        capturedBytes = 0
+        hasPendingScroll = false
+        scrollRevision = 0
+        lastStitchProgress = 0
+        hasEmittedStitchProgress = false
         isRunning = true
-        await captureFrame()
+        let activeGeneration = generation
+        await captureFrame(for: activeGeneration, whileFinishing: false)
+        guard canEmit(for: activeGeneration), isRunning else { return }
         installScrollMonitors()
     }
 
     /// Explicit "grab now", for content that doesn't emit scroll events.
     public func captureFrameManually() async {
-        await captureFrame()
+        guard isRunning else { return }
+        await captureFrame(for: generation, whileFinishing: false)
     }
 
     public func finish() async {
         guard isRunning else { return }
-        teardown()
+        let activeGeneration = generation
+        isRunning = false
+        isFinishing = true
+        stopMonitoring()
+
+        // ScreenCaptureKit does not guarantee immediate cooperative
+        // cancellation. Await the already-started grab so a press of Return at
+        // exactly the wrong moment cannot omit the last visible position.
+        await awaitCurrentCapture()
+        guard canEmit(for: activeGeneration), isFinishing else { return }
 
         // A scroll that hadn't settled yet still has useful content in it.
         if hasPendingScroll {
-            await captureFrame()
+            await captureFrame(for: activeGeneration, whileFinishing: true)
         }
+        guard canEmit(for: activeGeneration), isFinishing else { return }
 
         let captured = frames
         guard captured.count > 1 else {
-            onEvent(.failedButFramesKept(
+            emitTerminal(.failedButFramesKept(
                 reason: "Only one frame was captured — nothing to stitch.",
                 folder: (try? preserveFrames(captured)) ?? AppPaths.captures
-            ))
+            ), for: activeGeneration)
             return
         }
 
-        onEvent(.stitching(progress: 0))
+        emitStitchProgress(0, for: activeGeneration)
         let box = FrameBox(frames: captured)
-        let result: Result<StitchOutput, Error> = await Task.detached(priority: .userInitiated) {
-            do {
-                let output = try ScrollingStitcher.stitch(frames: box.frames) { progress in
-                    Task { @MainActor in
-                        // Progress only; the session is already off the hot path.
-                        _ = progress
-                    }
+        let stitchLimits = limits
+        let progressTarget = self
+        stitchTaskID &+= 1
+        let taskID = stitchTaskID
+        let task = Task.detached(priority: .userInitiated) {
+            try ScrollingStitcher.stitch(
+                frames: box.frames,
+                limits: stitchLimits
+            ) { progress in
+                Task { @MainActor in
+                    progressTarget.emitStitchProgress(progress, for: activeGeneration)
                 }
-                return .success(output)
-            } catch {
-                return .failure(error)
             }
-        }.value
+        }
+        stitchTask = task
 
-        switch result {
-        case .success(let output):
-            onEvent(.finished(output))
-        case .failure(let error):
-            let reason = (error as? NotchShotError)?.errorDescription ?? error.localizedDescription
-            do {
-                let folder = try preserveFrames(captured)
-                onEvent(.failedButFramesKept(reason: reason, folder: folder))
-            } catch {
-                onEvent(.failedButFramesKept(reason: reason, folder: AppPaths.captures))
+        do {
+            let output = try await task.value
+            if stitchTaskID == taskID {
+                stitchTask = nil
             }
+            guard canEmit(for: activeGeneration), isFinishing else { return }
+            emitStitchProgress(1, for: activeGeneration)
+            emitTerminal(.finished(output), for: activeGeneration)
+        } catch is CancellationError {
+            if stitchTaskID == taskID {
+                stitchTask = nil
+            }
+            // `cancel()` owns the sole terminal event for an intentional
+            // cancellation. A superseded generation is likewise silent.
+            guard canEmit(for: activeGeneration), isFinishing else { return }
+            failAndPreserveFrames(
+                captured,
+                reason: "Stitching was interrupted before it could finish.",
+                generation: activeGeneration
+            )
+        } catch {
+            if stitchTaskID == taskID {
+                stitchTask = nil
+            }
+            guard canEmit(for: activeGeneration), isFinishing else { return }
+            failAndPreserveFrames(
+                captured,
+                reason: stitchFailureReason(error),
+                generation: activeGeneration
+            )
         }
     }
 
     public func cancel() {
-        guard isRunning else { return }
-        teardown()
+        guard isRunning || isFinishing else { return }
+        let activeGeneration = generation
+        isRunning = false
+        isFinishing = false
+        stopMonitoring()
+        captureTask?.cancel()
+        stitchTask?.cancel()
+        captureTask = nil
+        stitchTask = nil
+        captureTaskID &+= 1
+        stitchTaskID &+= 1
         frames.removeAll()
-        onEvent(.cancelled)
+        capturedPixels = 0
+        capturedBytes = 0
+        hasPendingScroll = false
+        emitTerminal(.cancelled, for: activeGeneration)
     }
 
-    private func teardown() {
+    private func failAndPreserveFrames(
+        _ captured: [CGImage],
+        reason: String,
+        generation activeGeneration: UInt64
+    ) {
+        guard canEmit(for: activeGeneration) else { return }
         isRunning = false
+        isFinishing = false
+        stopMonitoring()
+        do {
+            let folder = try preserveFrames(captured)
+            emitTerminal(.failedButFramesKept(reason: reason, folder: folder), for: activeGeneration)
+        } catch {
+            emitTerminal(
+                .failedButFramesKept(reason: reason, folder: AppPaths.captures),
+                for: activeGeneration
+            )
+        }
+    }
+
+    private func stitchFailureReason(_ error: Error) -> String {
+        if let error = error as? NotchShotError {
+            if case .stitchFailed(let reason) = error {
+                return reason
+            }
+        }
+        return error.localizedDescription
+    }
+
+    private func canEmit(for activeGeneration: UInt64) -> Bool {
+        generation == activeGeneration && terminalGeneration != activeGeneration
+    }
+
+    private func emit(_ event: Event, for activeGeneration: UInt64) {
+        guard canEmit(for: activeGeneration) else { return }
+        onEvent(event)
+    }
+
+    private func emitTerminal(_ event: Event, for activeGeneration: UInt64) {
+        guard canEmit(for: activeGeneration) else { return }
+        terminalGeneration = activeGeneration
+        isRunning = false
+        isFinishing = false
+        onEvent(event)
+    }
+
+    private func emitStitchProgress(_ progress: Double, for activeGeneration: UInt64) {
+        guard canEmit(for: activeGeneration), isFinishing else { return }
+        let clamped = min(max(progress, 0), 1)
+        guard !hasEmittedStitchProgress || clamped > lastStitchProgress else { return }
+        hasEmittedStitchProgress = true
+        lastStitchProgress = clamped
+        emit(.stitching(progress: clamped), for: activeGeneration)
+    }
+
+    private func stopMonitoring() {
         settleWorkItem?.cancel()
         settleWorkItem = nil
         for monitor in scrollMonitors { NSEvent.removeMonitor(monitor) }
@@ -134,13 +278,16 @@ public final class ScrollingCaptureSession {
     }
 
     private func scrollDidChange() {
-        guard isRunning, frames.count < Self.maximumFrames else { return }
+        guard isRunning,
+              frames.count < min(Self.maximumFrames, limits.maximumFrames) else { return }
         hasPendingScroll = true
+        scrollRevision &+= 1
+        let activeGeneration = generation
         settleWorkItem?.cancel()
         let item = DispatchWorkItem { [weak self] in
             MainActor.assumeIsolated {
                 guard let self else { return }
-                Task { await self.captureFrame() }
+                Task { await self.captureFrame(for: activeGeneration, whileFinishing: false) }
             }
         }
         settleWorkItem = item
@@ -148,23 +295,81 @@ public final class ScrollingCaptureSession {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.28, execute: item)
     }
 
-    private func captureFrame() async {
-        guard !isCapturingFrame, frames.count < Self.maximumFrames else { return }
-        isCapturingFrame = true
-        defer { isCapturingFrame = false }
+    private func captureFrame(for activeGeneration: UInt64, whileFinishing: Bool) async {
+        guard canCapture(for: activeGeneration, whileFinishing: whileFinishing) else { return }
+        if captureTask != nil {
+            await awaitCurrentCapture()
+            // A settled scroll that arrived during the previous grab still
+            // needs its own frame. Concurrent manual requests, which do not
+            // set this flag, continue to coalesce onto the in-flight task.
+            guard hasPendingScroll,
+                  canCapture(for: activeGeneration, whileFinishing: whileFinishing) else { return }
+        }
 
-        let excluded = WindowExclusionRegistry.shared.excludedWindowNumbers
-        do {
-            let image = try await CaptureService.shared.captureArea(
-                region,
-                excludedWindows: excluded,
-                showsCursor: false
-            )
-            frames.append(image.cgImage)
-            hasPendingScroll = false
-            onEvent(.frameCaptured(count: frames.count))
-        } catch {
-            Log.capture.error("Scrolling frame capture failed: \(error.localizedDescription)")
+        captureTaskID &+= 1
+        let taskID = captureTaskID
+        let revisionAtStart = scrollRevision
+        let task = Task { @MainActor [weak self] in
+            guard let self else { return }
+            do {
+                let image = try await self.frameProvider()
+                try Task.checkCancellation()
+                guard self.canCompleteCapture(for: activeGeneration) else { return }
+
+                do {
+                    let cost = try ScrollingStitcher.validateFrame(
+                        image,
+                        aggregatePixels: self.capturedPixels,
+                        aggregateBytes: self.capturedBytes,
+                        limits: self.limits
+                    )
+                    self.frames.append(image)
+                    self.capturedPixels += cost.pixels
+                    self.capturedBytes += cost.decodedBytes
+                } catch {
+                    self.failAndPreserveFrames(
+                        self.frames,
+                        reason: self.stitchFailureReason(error),
+                        generation: activeGeneration
+                    )
+                    return
+                }
+
+                if self.scrollRevision == revisionAtStart {
+                    self.hasPendingScroll = false
+                }
+                self.emit(.frameCaptured(count: self.frames.count), for: activeGeneration)
+            } catch is CancellationError {
+                // `cancel()` emits the terminal event and invalidates this task.
+            } catch {
+                Log.capture.error("Scrolling frame capture failed: \(error.localizedDescription)")
+            }
+        }
+        captureTask = task
+        await task.value
+        if captureTaskID == taskID {
+            captureTask = nil
+        }
+    }
+
+    private func canCapture(for activeGeneration: UInt64, whileFinishing: Bool) -> Bool {
+        guard canEmit(for: activeGeneration),
+              frames.count < min(Self.maximumFrames, limits.maximumFrames) else { return false }
+        return isRunning || (whileFinishing && isFinishing)
+    }
+
+    private func canCompleteCapture(for activeGeneration: UInt64) -> Bool {
+        guard canEmit(for: activeGeneration),
+              frames.count < min(Self.maximumFrames, limits.maximumFrames) else { return false }
+        return isRunning || isFinishing
+    }
+
+    private func awaitCurrentCapture() async {
+        guard let task = captureTask else { return }
+        let taskID = captureTaskID
+        await task.value
+        if captureTaskID == taskID {
+            captureTask = nil
         }
     }
 

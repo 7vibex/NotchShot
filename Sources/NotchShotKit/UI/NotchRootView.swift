@@ -28,17 +28,55 @@ public struct NotchRootView: View {
 
     /// A non-active display shows media at most, never a capture UI.
     private var effectiveActivity: NotchActivity {
+        if case .systemLevel(let level) = coordinator.activity,
+           let displayID = level.displayID {
+            return displayID == context.displayID ? coordinator.activity : .idle
+        }
         guard !isActiveDisplay else { return coordinator.activity }
         return coordinator.activity == .media ? .media : .idle
     }
 
-    private var layout: NotchLayout {
+    private var baseLayout: NotchLayout {
         NotchLayout.layout(
             for: effectiveActivity,
             metrics: context.metrics,
             isPeeking: coordinator.isPeeking && isActiveDisplay,
             resultCount: coordinator.shelfItems.count,
             hasStack: coordinator.stack.isCollecting || !coordinator.stack.isEmpty
+        )
+    }
+
+    /// When capture, recording, a result, or an error outranks systemLevel in
+    /// the activity arbiter, keep that UI in place and append a dedicated HUD
+    /// strip. Native OSD is never suppressed without visible replacement.
+    private var overlaidSystemLevel: SystemLevel? {
+        if case .systemLevel = effectiveActivity { return nil }
+        guard let level = coordinator.arbiter.systemLevel else { return nil }
+        if let displayID = level.displayID {
+            return displayID == context.displayID ? level : nil
+        }
+        return isActiveDisplay ? level : nil
+    }
+
+    private var layout: NotchLayout {
+        let base = baseLayout
+        guard overlaidSystemLevel != nil else { return base }
+        let hud = NotchLayout.layout(
+            for: .systemLevel(SystemLevel(kind: .volume, value: 0, isMuted: false)),
+            metrics: context.metrics,
+            isPeeking: false,
+            resultCount: 0
+        )
+        return NotchLayout(
+            size: CGSize(
+                width: max(base.size.width, hud.size.width),
+                height: min(
+                    NotchLayout.maximumSize.height,
+                    max(hud.size.height, base.size.height + 54)
+                )
+            ),
+            cornerRadius: max(base.cornerRadius, 20),
+            contentTopInset: base.contentTopInset
         )
     }
 
@@ -88,23 +126,37 @@ public struct NotchRootView: View {
 
             content
                 .frame(
-                    width: layout.size.width,
-                    height: max(1, layout.size.height - layout.contentTopInset)
+                    width: baseLayout.size.width,
+                    height: max(1, baseLayout.size.height - baseLayout.contentTopInset)
                 )
-                .offset(y: layout.contentTopInset)
+                .offset(y: baseLayout.contentTopInset)
                 .frame(
-                    width: layout.size.width,
-                    height: layout.size.height,
+                    width: baseLayout.size.width,
+                    height: baseLayout.size.height,
                     alignment: .top
                 )
-                .clipShape(shape)
                 // Content fades in a beat after the shape has started growing,
                 // so text never appears outside the island it belongs to.
                 .transition(contentTransition)
+
+            if let level = overlaidSystemLevel {
+                VStack(spacing: 0) {
+                    Spacer(minLength: 0)
+                    SystemLevelContent(level: level)
+                        .frame(height: 46)
+                        .padding(.horizontal, 8)
+                        .padding(.bottom, 5)
+                }
+                .frame(width: layout.size.width, height: layout.size.height)
+                .transition(.opacity.combined(with: .move(edge: .bottom)))
+                .accessibilityElement(children: .combine)
+            }
         }
+        .clipShape(shape)
         .frame(width: layout.size.width, height: layout.size.height)
         .animation(shapeAnimation, value: layout.size)
         .animation(contentAnimation, value: effectiveActivity)
+        .animation(contentAnimation, value: overlaidSystemLevel)
         .accessibilityElement(children: .contain)
         .accessibilityLabel("NotchShot")
         .accessibilityValue(accessibilityDescription)
@@ -178,7 +230,13 @@ public struct NotchRootView: View {
     }
 
     private var accessibilityDescription: String {
-        switch effectiveActivity {
+        if let level = overlaidSystemLevel {
+            if level.kind == .volume, level.isMuted {
+                return "Muted"
+            }
+            return "\(level.kind.title) \(Int(level.value * 100)) percent"
+        }
+        return switch effectiveActivity {
         case .idle: "Idle"
         case .media: coordinator.media.snapshot.title.map { "Playing \($0)" } ?? "Media"
         case .expanded: "Capture menu"
@@ -187,7 +245,10 @@ public struct NotchRootView: View {
         case .recording: "Recording, \(coordinator.recordingStatus.elapsedDescription)"
         case .processing(let message): message
         case .result: "\(coordinator.shelfItems.count) recent captures"
-        case .systemLevel(let level): "\(level.kind.title) \(Int(level.value * 100)) percent"
+        case .systemLevel(let level):
+            level.kind == .volume && level.isMuted
+                ? "Muted"
+                : "\(level.kind.title) \(Int(level.value * 100)) percent"
         case .error(let message): "Error: \(message)"
         }
     }
@@ -448,6 +509,14 @@ private struct MediaScrubber: View {
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("Playback position")
         .accessibilityValue(accessibilityValue)
+        .accessibilityHint(canSeek ? "Adjust up or down to seek" : "Seeking is unavailable")
+        .accessibilityAdjustableAction { direction in
+            guard canSeek, let duration else { return }
+            let step = max(5, duration * 0.05)
+            let target = min(max((elapsed ?? 0) + (direction == .increment ? step : -step), 0), duration)
+            pending = (target / duration, Date())
+            onSeek(target)
+        }
     }
 
     @ViewBuilder

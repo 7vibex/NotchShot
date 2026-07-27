@@ -14,6 +14,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     private var settingsWindow: NSWindow?
     private var historyWindow: NSWindow?
     private var editorWindows: [ObjectIdentifier: NSWindow] = [:]
+    private var editorControllers: [ObjectIdentifier: AnnotationDocumentController] = [:]
     private var privacyReviewWindows: [ObjectIdentifier: NSWindow] = [:]
     private var bugReportWindows: [ObjectIdentifier: NSWindow] = [:]
     private var comparisonWindows: [ObjectIdentifier: NSWindow] = [:]
@@ -62,6 +63,9 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         controller.start()
+        controller.onPanelAvailabilityChange = { [weak self] _ in
+            self?.coordinator.reconcileSystemLevelIntegration()
+        }
         coordinator.start()
 
         HotKeyController.shared.handler = { [weak self] action in
@@ -89,14 +93,23 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         SystemOSDSuppressor.shared.stop()
         HotKeyController.shared.stop()
         coordinator.history.save()
+        coordinator.history.removeUntrackedManagedFiles()
         windowController?.stop()
         FloatingCaptureManager.shared.closeAll()
     }
 
     public func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        guard RecordingService.shared.hasActiveSession else { return .terminateNow }
         guard !isFinalizingForTermination else { return .terminateLater }
+        guard resolveUnsavedEditorsBeforeTermination() else { return .terminateCancel }
+        guard RecordingService.shared.hasActiveSession else { return .terminateNow }
         isFinalizingForTermination = true
+
+        // The save/discard decisions above are now final. Hide editor windows
+        // while the recording writer drains so no late edit can land after its
+        // document was saved but before AppKit completes termination.
+        for window in editorWindows.values {
+            window.orderOut(nil)
+        }
 
         Task { [weak self, weak sender] in
             guard let self, let sender else { return }
@@ -114,6 +127,41 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             sender.reply(toApplicationShouldTerminate: true)
         }
         return .terminateLater
+    }
+
+    private func resolveUnsavedEditorsBeforeTermination() -> Bool {
+        for (key, documentController) in editorControllers
+            where documentController.hasUnsavedChanges {
+            let alert = NSAlert()
+            alert.alertStyle = .warning
+            alert.messageText = "Save \(editorWindows[key]?.title ?? "annotation") before quitting?"
+            alert.informativeText = "Your annotation changes will be lost if you discard them."
+            alert.addButton(withTitle: "Save Project")
+            alert.addButton(withTitle: "Discard")
+            alert.addButton(withTitle: "Cancel Quit")
+            if let window = editorWindows[key] {
+                NSApp.activate(ignoringOtherApps: true)
+                window.makeKeyAndOrderFront(nil)
+            }
+            switch alert.runModal() {
+            case .alertFirstButtonReturn:
+                do {
+                    let url = try documentController.saveProject()
+                    coordinator.handleEditorProjectSaved(
+                        from: documentController,
+                        projectURL: url
+                    )
+                } catch {
+                    NSAlert(error: error).runModal()
+                    return false
+                }
+            case .alertSecondButtonReturn:
+                continue
+            default:
+                return false
+            }
+        }
+        return true
     }
 
     public func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows: Bool) -> Bool {
@@ -282,6 +330,12 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             onExported: { [weak self] asset in
                 self?.coordinator.history.record(asset: asset, image: nil)
                 self?.coordinator.handleEditorExport(from: documentController, asset: asset)
+            },
+            onProjectSaved: { [weak self] url in
+                self?.coordinator.handleEditorProjectSaved(
+                    from: documentController,
+                    projectURL: url
+                )
             }
         )
         let window = makeWindow(
@@ -292,7 +346,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         windowBox.window = window
         attachCloseHandler(
             to: window,
-            shouldClose: { [weak documentController, weak window] in
+            shouldClose: { [weak self, weak documentController, weak window] in
                 guard let documentController, documentController.hasUnsavedChanges else { return true }
                 let alert = NSAlert()
                 alert.alertStyle = .warning
@@ -308,7 +362,11 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
                 switch alert.runModal() {
                 case .alertFirstButtonReturn:
                     do {
-                        _ = try documentController.saveProject()
+                        let url = try documentController.saveProject()
+                        self?.coordinator.handleEditorProjectSaved(
+                            from: documentController,
+                            projectURL: url
+                        )
                         return true
                     } catch {
                         let errorAlert = NSAlert(error: error)
@@ -323,10 +381,12 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             },
             handler: { [weak self] in
                 self?.editorWindows.removeValue(forKey: key)
+                self?.editorControllers.removeValue(forKey: key)
                 self?.coordinator.discardEditorExportAction(for: documentController)
             }
         )
         editorWindows[key] = window
+        editorControllers[key] = documentController
         bringToFront(window)
     }
 

@@ -131,6 +131,16 @@ struct StackLayoutTests {
         #expect(sheet.height == Int(canvas.height))
     }
 
+    @Test("A stack canvas beyond the allocation budget is rejected")
+    func oversizedCanvasRejected() {
+        #expect(throws: NotchShotError.self) {
+            try StackRenderer.render(
+                images: [TestImage.solid(width: 1, height: 1)],
+                options: StackExportOptions(style: .longImage, spacing: 0, margin: 50_000)
+            )
+        }
+    }
+
     @Test("The first capture is drawn at the top of a long image")
     func drawOrder() throws {
         let images = [
@@ -228,6 +238,28 @@ struct CaptureStackTests {
         #expect(stack.isEmpty)
         #expect(!stack.isCollecting)
     }
+
+    @Test("Export fails instead of silently omitting an unreadable item")
+    func unreadableItemFailsExport() {
+        let stack = CaptureStack()
+        stack.add(asset("missing-stack-item-\(UUID().uuidString)"))
+        let output = FileManager.default.temporaryDirectory
+            .appendingPathComponent("missing-stack-output-\(UUID().uuidString).png")
+        #expect(throws: NotchShotError.self) {
+            try stack.export(to: output, options: StackExportOptions())
+        }
+        #expect(!FileManager.default.fileExists(atPath: output.path))
+    }
+}
+
+@Suite("Comparison memory budget")
+struct ComparisonMemoryBudgetTests {
+    @Test("Comparison pixel limits reject multi-buffer memory spikes")
+    func limits() {
+        #expect(ImageComparisonRenderer.isWithinOperationBudget(width: 5_000, height: 5_000))
+        #expect(!ImageComparisonRenderer.isWithinOperationBudget(width: 5_001, height: 5_000))
+        #expect(!ImageComparisonRenderer.isWithinOperationBudget(width: 0, height: 5_000))
+    }
 }
 
 @Suite("System level HUD")
@@ -322,6 +354,17 @@ struct SystemLevelTests {
 
 @Suite("Brightness change classification")
 struct BrightnessChangeClassifierTests {
+    @Test("Brightness publication requires a recent key event")
+    func brightnessKeyIntentWindow() {
+        var gate = BrightnessKeyIntentGate()
+        #expect(!gate.allowsPublication(at: 10))
+        gate.noteKeyEvent(at: 10)
+        #expect(gate.allowsPublication(at: 10.2))
+        #expect(!gate.allowsPublication(at: 11))
+        gate.reset()
+        #expect(!gate.allowsPublication(at: 10.3))
+    }
+
 
     /// Drives a sequence of readings at the monitor's real 5 Hz sample rate.
     private func run(
@@ -450,6 +493,17 @@ struct BrightnessChangeClassifierTests {
         classifier.reset(to: 0.5)
         classifier.reset(to: 0.2)
         #expect(classifier.classify(0.2, at: 1) == .ignore)
+    }
+
+    @Test("An ambient ramp accumulated during a sampling stall is ignored")
+    func delayedAmbientSampleIsIgnored() {
+        var classifier = BrightnessChangeClassifier()
+        classifier.reset(to: 0.40)
+        #expect(classifier.classify(0.406, at: 1.0) == .ignore)
+        // This large off-grid jump represents several seconds of samples that
+        // the main run loop could not deliver individually.
+        #expect(classifier.classify(0.49, at: 2.0) == .ignore)
+        #expect(classifier.classify(0.49, at: 2.2) == .ignore)
     }
 }
 

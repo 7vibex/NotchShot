@@ -89,6 +89,36 @@ struct PreferencesTests {
         #expect(!makePreferences().indexesCaptureText)
     }
 
+    @Test("Private system integrations require opt-in on a new install")
+    func privateIntegrationsDefaultOff() {
+        let preferences = makePreferences()
+        #expect(!preferences.suppressesSystemOSD)
+        #expect(!preferences.usesSystemScreenshotShortcuts)
+        #expect(!preferences.appleEventsFallbackEnabled)
+    }
+
+    @Test("A new install keeps OSD replacement off after first-run completion")
+    func osdDefaultIsPersistedBeforeFirstRunChanges() {
+        let suiteName = "notchshot.tests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        let first = Preferences(defaults: defaults)
+        #expect(!first.suppressesSystemOSD)
+
+        first.hasCompletedFirstRun = true
+        let second = Preferences(defaults: defaults)
+        #expect(!second.suppressesSystemOSD)
+    }
+
+    @Test("An upgraded install must explicitly opt into private OSD replacement")
+    func legacyOSDDefaultDoesNotBecomeConsent() {
+        let suiteName = "notchshot.tests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defaults.set(true, forKey: "firstRun")
+
+        let preferences = Preferences(defaults: defaults)
+        #expect(!preferences.suppressesSystemOSD)
+    }
+
     @Test("Audio source flags follow the recording toggles")
     func audioSourceFlags() {
         let preferences = makePreferences()
@@ -129,6 +159,25 @@ struct PreferencesTests {
         let third = AppPaths.uniqueURL(in: directory, name: "Shot", extension: "png")
         #expect(third.lastPathComponent == "Shot 3.png")
     }
+
+    @Test("Recording names reserve their caption sidecar too")
+    func companionNaming() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try Data("existing captions".utf8).write(
+            to: directory.appendingPathComponent("Recording.srt")
+        )
+
+        let result = AppPaths.uniqueURL(
+            in: directory,
+            name: "Recording",
+            extension: "mp4",
+            alsoAvoiding: ["srt"]
+        )
+        #expect(result.lastPathComponent == "Recording 2.mp4")
+    }
 }
 
 @Suite("Capture assets")
@@ -158,6 +207,24 @@ struct CaptureAssetTests {
         #expect(!ShareAction.pin.isAvailable(for: recording))
         #expect(ShareAction.copy.isAvailable(for: recording))
         #expect(ShareAction.airDrop.isAvailable(for: recording))
+    }
+
+    @Test("Only app-owned temporary files qualify for automatic removal")
+    func automaticRemovalOwnership() {
+        let managed = CaptureAsset(
+            url: AppPaths.captures.appendingPathComponent("managed.png"),
+            kind: .screenshot,
+            pixelSize: .zero,
+            ownership: .managedTemporary
+        )
+        var userDocument = managed
+        userDocument.ownership = .userDocument
+        var forgedManaged = managed
+        forgedManaged.url = URL(fileURLWithPath: "/tmp/not-owned.png")
+
+        #expect(managed.canBeAutomaticallyRemoved)
+        #expect(!userDocument.canBeAutomaticallyRemoved)
+        #expect(!forgedManaged.canBeAutomaticallyRemoved)
     }
 
     @Test("Intents that need an overlay are marked as such")

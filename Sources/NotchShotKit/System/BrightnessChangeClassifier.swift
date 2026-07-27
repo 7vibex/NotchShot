@@ -1,5 +1,29 @@
 import Foundation
 
+/// A conservative source gate for brightness UI. macOS does not label a
+/// sampled brightness value as keyboard, slider, or ambient-sensor driven, but
+/// it does deliver brightness-key system events. Requiring a recent key event
+/// deliberately trades silent Control Centre changes for never opening the
+/// notch merely because the room lighting changed.
+struct BrightnessKeyIntentGate {
+    private(set) var lastKeyEventAt: TimeInterval?
+    let validityWindow: TimeInterval = 0.8
+
+    mutating func noteKeyEvent(at time: TimeInterval) {
+        lastKeyEventAt = time
+    }
+
+    mutating func reset() {
+        lastKeyEventAt = nil
+    }
+
+    func allowsPublication(at time: TimeInterval) -> Bool {
+        guard let lastKeyEventAt else { return false }
+        let elapsed = time - lastKeyEventAt
+        return elapsed >= 0 && elapsed <= validityWindow
+    }
+}
+
 /// Decides whether a brightness reading is a change the *user* made or the
 /// ambient light sensor adapting on its own.
 ///
@@ -56,20 +80,35 @@ struct BrightnessChangeClassifier {
     }
 
     private var last: Double?
+    private var lastSampleAt: TimeInterval?
     private var burst: Burst?
 
     /// Adopts `value` as the baseline without reporting anything. Used at start
     /// and after a display wake, where the value legitimately jumps.
     mutating func reset(to value: Double?) {
         last = value
+        lastSampleAt = nil
         burst = nil
     }
 
     mutating func classify(_ value: Double, at time: TimeInterval) -> Outcome {
         guard let previous = last else {
             last = value
+            lastSampleAt = time
             return .ignore
         }
+
+        // A blocked main run loop can collapse several seconds of a slow
+        // ambient ramp into one apparently large sample. Re-baseline after a
+        // sampling gap instead of turning that accumulated movement into a
+        // false user gesture.
+        if let lastSampleAt, time - lastSampleAt > 0.45 {
+            last = value
+            self.lastSampleAt = time
+            burst = nil
+            return .ignore
+        }
+        lastSampleAt = time
 
         let delta = value - previous
         guard abs(delta) > noiseFloor else {

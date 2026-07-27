@@ -208,6 +208,8 @@ private struct CaptureSettings: View {
 private struct RecordingSettings: View {
     @Bindable var preferences: Preferences
     @State private var microphones: [AVCaptureDevice] = []
+    @State private var retainedDiscardCount = 0
+    @State private var retainedDiscardMessage: String?
 
     var body: some View {
         Form {
@@ -256,10 +258,43 @@ private struct RecordingSettings: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
+
+            Section("Interrupted and discarded recordings") {
+                if retainedDiscardCount > 0 {
+                    Text("\(retainedDiscardCount) partial recording(s) were retained because macOS could not move them to Trash.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    HStack {
+                        Button("Reveal") {
+                            let urls = RecordingService.retainedDiscardedRecordings()
+                            if !urls.isEmpty {
+                                NSWorkspace.shared.activateFileViewerSelecting(urls)
+                            }
+                        }
+                        Button("Retry Trash", role: .destructive) {
+                            let failed = RecordingService.retryTrashRetainedDiscards()
+                            retainedDiscardCount = failed.count
+                            retainedDiscardMessage = failed.isEmpty
+                                ? "All retained partials were moved to Trash."
+                                : "\(failed.count) partial recording(s) still could not be moved to Trash."
+                        }
+                    }
+                } else {
+                    Text("No retained discarded recordings.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                if let retainedDiscardMessage {
+                    Text(retainedDiscardMessage)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
         }
         .formStyle(.grouped)
         .task {
             microphones = PermissionCenter.shared.availableMicrophones()
+            retainedDiscardCount = RecordingService.retainedDiscardedRecordings().count
         }
     }
 }
@@ -275,10 +310,7 @@ private struct NotchSettings: View {
             Section {
                 Toggle("Show the notch interface", isOn: Binding(
                     get: { preferences.notchEnabled },
-                    set: { newValue in
-                        preferences.notchEnabled = newValue
-                        coordinator.windowController?.rebuildPanels()
-                    }
+                    set: { coordinator.setNotchEnabled($0) }
                 ))
                 Toggle("Show an island on other displays", isOn: Binding(
                     get: { preferences.showsIslandOnExternalDisplays },
@@ -300,7 +332,7 @@ private struct NotchSettings: View {
                     set: { coordinator.setBrightnessMirroringEnabled($0) }
                 ))
                 .disabled(!preferences.systemLevelHUDEnabled)
-                Text("Brightness the display adjusts by itself is ignored — only changes you make with the keys or the slider appear. Turn this off to leave brightness out entirely and keep volume.")
+                Text("Only a recent brightness-key press arms the notch HUD. Automatic changes from the ambient-light sensor stay silent; Control Centre or third-party brightness changes may stay silent too because macOS does not publish their source.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
@@ -309,9 +341,14 @@ private struct NotchSettings: View {
                     set: { coordinator.setSystemOSDSuppressed($0) }
                 ))
                 .disabled(!preferences.systemLevelHUDEnabled)
-                Text("Pauses the system's own volume and brightness overlay while NotchShot runs, so the change is shown in the notch only. It is restored when NotchShot quits or this is switched off.")
+                Text("Experimental, direct-distribution only. This pauses Apple's shared OSD helper, which can also hide unrelated system overlays. A signed recovery watchdog restores it on quit or crash; VoiceOver always keeps Apple's native feedback.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                if !coordinator.osd.isCrashRecoveryAvailable {
+                    Text("Recovery helper missing — NotchShot will refuse to suppress the native overlay.")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                }
             }
 
             Section("Hover") {
@@ -389,6 +426,9 @@ private struct MediaSettings: View {
                 Text(MediaRemoteAdapterSource.licenseNotice)
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                Text("The selected executable runs with your macOS account's permissions. Choose only a copy you built yourself or obtained from a source you trust; NotchShot limits its runtime and output but cannot sandbox it.")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
             }
 
             Section("Fallback") {
@@ -412,8 +452,25 @@ private struct MediaSettings: View {
         panel.canChooseFiles = true
         panel.canChooseDirectories = false
         panel.allowsMultipleSelection = false
-        panel.message = "Choose the mediaremote-adapter executable."
+        panel.resolvesAliases = false
+        panel.message = "Choose a trusted mediaremote-adapter executable. It will run with your account's permissions."
         guard panel.runModal() == .OK, let url = panel.url else { return }
+        let values = try? url.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
+        guard values?.isRegularFile == true,
+              values?.isSymbolicLink != true,
+              FileManager.default.isExecutableFile(atPath: url.path) else {
+            coordinator.present(error: NotchShotError.exportFailed(
+                "Choose a regular executable file, not a folder, alias, or symbolic link"
+            ))
+            return
+        }
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "Run this external executable?"
+        alert.informativeText = "\(url.path)\n\nIt will run with your macOS account's permissions. Continue only if you trust its source."
+        alert.addButton(withTitle: "Cancel")
+        alert.addButton(withTitle: "Use Executable")
+        guard alert.runModal() == .alertSecondButtonReturn else { return }
         preferences.mediaRemoteAdapterPath = url.path
         coordinator.media.restart()
     }
@@ -558,7 +615,7 @@ private struct ShortcutSettings: View {
                         bindings = HotKeyController.shared.bindings
                     }
                 ))
-                Text("Switches off the matching macOS shortcuts so ⇧⌘3 captures the screen, ⇧⌘4 captures an area, ⇧⌘5 starts a recording, and the ⌃⇧⌘ variants copy to the clipboard instead of saving. Every one is handed back to macOS when this is off or NotchShot quits.")
+                Text("Experimental, direct-distribution only. Switches off only matching shortcuts that macOS currently owns, records each claim, and restores exactly those keys when this is off, on quit, or after a relaunch following a crash.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 if !SystemScreenshotHotKeys.shared.isAvailable {

@@ -32,7 +32,7 @@ gets re-prompted or silently denied every launch.
 
 ```bash
 swift build          # library + executable
-swift test           # 167 tests
+swift test           # full unit and lifecycle suite
 ```
 
 The app bundle build now stops if it cannot find a stable signing identity. That protects
@@ -69,7 +69,9 @@ Sources/NotchShotKit/
 **State priority.** `ActivityArbiter` resolves one activity from every live source, in the
 order `error → selecting → countdown → recording → processing → result → file drop →
 expanded → media → idle`. A track change or a stray pointer can never disturb a capture in
-flight. `ActivityPriorityTests` pins the whole ordering.
+flight. `ActivityPriorityTests` pins the whole ordering. A compact volume/brightness strip
+is composited independently when the experimental native-overlay replacement is active,
+so an in-flight result cannot swallow the only visible level feedback.
 
 **Coordinate spaces.** Cocoa is bottom-left origin, ScreenCaptureKit is top-left, and
 displays sit at arbitrary offsets. Every conversion goes through `ScreenGeometry`, which is
@@ -91,6 +93,24 @@ sanitised.
 - Panels are `sharingType = .none` *and* excluded by window id from every capture, so
   NotchShot never appears in its own output.
 - Survives Space switches, fullscreen apps, display hot-plug, resolution change, and wake.
+
+## System volume and brightness HUD
+
+NotchShot can mirror volume changes and brightness-key changes in the notch. macOS does not
+publish whether a sampled brightness value came from a slider or the ambient-light
+controller, so brightness publication is conservatively armed only by a recent brightness-key
+system event and then checked against the sampled value. Automatic brightness therefore stays
+silent; Control Centre and third-party brightness changes may stay silent too. Brightness
+mirroring can be switched off independently.
+
+The optional **Replace the macOS overlay** setting is experimental and for direct
+distribution only. Apple provides no supported API for suppressing the shared system OSD,
+so this mode pauses `OSDUIHelper` only after arming the bundled recovery process. The helper
+holds a kernel-backed lease: normal quit, crash, or force-quit closes it and restores the
+native overlay. NotchShot refuses to suppress without recovery, fails open if recovery dies,
+and leaves the native OSD running whenever the notch/HUD cannot render or VoiceOver is on.
+Because the integration controls another process, it is off for new installs, can hide
+unrelated Apple overlays, is incompatible with App Sandbox, and is not an App Store feature.
 
 ## What is in V1
 
@@ -125,10 +145,13 @@ transforms remain out of the default product so the capture workflow stays focus
 
 1. **MediaRemote bridge** — covers Spotify, Music, Safari and Chrome. Requires the
    BSD-licensed `mediaremote-adapter`, which is **not bundled**: point NotchShot at your own
-   copy in Settings → Media. It rides on undocumented system behaviour, so a compatibility
-   check runs on first launch and after every macOS build change, and any failure degrades
-   silently to the next source.
-2. **Apple Events** — Music and Spotify only, needs Automation permission.
+   trusted copy in Settings → Media. The selected executable runs with your account's
+   permissions; NotchShot rejects links/non-files, applies a strict timeout and output cap,
+   and still cannot sandbox an external binary. It rides on undocumented system behaviour,
+   so a compatibility check runs on first launch and after every macOS build change, and
+   any failure degrades silently to the next source.
+2. **Apple Events** — Music and Spotify only, needs Automation permission and is off by
+   default.
 3. **Disabled** — the notch simply drops its media layout.
 
 The whole thing sits behind the protocol so an App Store build could delete
@@ -140,8 +163,8 @@ fallback makes one HTTPS request per track and caches the result in memory.
 ## Permissions
 
 Requested when the feature needs them. Screen Recording and Microphone are never requested
-at launch; Automation can be requested when the enabled Apple Events media fallback finds
-Music or Spotify already running:
+at launch. Automation is requested only after the user enables the Apple Events media
+fallback and it finds Music or Spotify already running:
 
 | Permission | When |
 |---|---|
@@ -159,10 +182,21 @@ The next signed launch can capture immediately.
 Captures, recordings, transcripts, OCR text, projects and history all stay in
 `~/Library/Application Support/NotchShot` or wherever you choose to save. Recognised text
 enters the search index only if you switch on "Search capture text", and switching it back
-off deletes the text already stored. History retention removes rows and thumbnails; it
-never deletes your capture files. Privacy Review runs with Vision on the Mac and only
-suggests regions. Bug packages never include logs, serial numbers, account data, system
-details or an editable unredacted project unless the corresponding choice is explicit.
+off deletes the text already stored. History retention removes rows, thumbnails and hidden
+app-managed working files (including clipboard-only captures and their managed projects).
+It never deletes captures saved to a user-selected folder or files dragged in from Finder.
+An explicit destructive history action can still move a user document to Trash. Privacy
+Review runs with Vision on the Mac and only suggests regions. Bug packages never include
+logs, serial numbers, account data, system details or an editable unredacted project unless
+the corresponding choice is explicit.
+
+## Distribution boundary
+
+The current bundle is a hardened-runtime, directly distributed Mac app. It is deliberately
+not sandboxed because its opt-in OSD replacement, system-shortcut takeover and external
+Now Playing helper conflict with App Sandbox and public-API-only App Store requirements.
+An App Store variant must remove those integrations, enable App Sandbox, and complete the
+normal archive, notarization/review, privacy and real-device validation gates.
 
 ## Notes
 

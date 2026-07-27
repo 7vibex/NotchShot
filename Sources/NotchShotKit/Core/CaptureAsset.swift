@@ -26,6 +26,16 @@ public enum CaptureAssetKind: String, Sendable, Codable, CaseIterable {
     }
 }
 
+/// Who owns the primary URL, which determines whether NotchShot may delete it.
+public enum CaptureAssetOwnership: String, Sendable, Codable {
+    /// Hidden working files in Application Support. Retention may remove these.
+    case managedTemporary
+    /// A file NotchShot created in a user-visible/user-selected destination.
+    case userDocument
+    /// An existing file dragged in from Finder. The shelf only references it.
+    case externalReference
+}
+
 /// A finished capture on disk, plus the metadata the shelf and history need.
 public struct CaptureAsset: Sendable, Identifiable, Equatable {
     public let id: UUID
@@ -48,6 +58,12 @@ public struct CaptureAsset: Sendable, Identifiable, Equatable {
     public var captionURL: URL?
     /// Sidecar `.notchshot` project, when the asset has been annotated.
     public var projectURL: URL?
+    /// Explicit provenance prevents a shelf action from deleting a dragged-in
+    /// original and lets retention clean up only hidden app-managed files.
+    public var ownership: CaptureAssetOwnership
+    /// Present for Finder imports so later raw-file actions can reject a path
+    /// that was replaced after the original drop.
+    public var externalFileIdentity: ExternalFileIdentity?
 
     public init(
         id: UUID = UUID(),
@@ -61,7 +77,9 @@ public struct CaptureAsset: Sendable, Identifiable, Equatable {
         duration: TimeInterval? = nil,
         recognizedText: String? = nil,
         captionURL: URL? = nil,
-        projectURL: URL? = nil
+        projectURL: URL? = nil,
+        ownership: CaptureAssetOwnership = .userDocument,
+        externalFileIdentity: ExternalFileIdentity? = nil
     ) {
         self.id = id
         self.url = url
@@ -75,6 +93,8 @@ public struct CaptureAsset: Sendable, Identifiable, Equatable {
         self.recognizedText = recognizedText
         self.captionURL = captionURL
         self.projectURL = projectURL
+        self.ownership = ownership
+        self.externalFileIdentity = externalFileIdentity
     }
 
     public var pointSize: CGSize {
@@ -93,6 +113,12 @@ public struct CaptureAsset: Sendable, Identifiable, Equatable {
 
     public var fileSizeDescription: String {
         ByteCountFormatter.string(fromByteCount: fileSize, countStyle: .file)
+    }
+
+    /// Cancellation and automatic retention may unlink only private working
+    /// files, never a path the user selected or dragged in.
+    public var canBeAutomaticallyRemoved: Bool {
+        ownership == .managedTemporary && AppPaths.owns(url)
     }
 }
 
@@ -124,6 +150,13 @@ public enum ShareAction: String, Sendable, CaseIterable, Identifiable {
         case .reveal: "Reveal in Finder"
         case .delete: "Delete"
         }
+    }
+
+    public func title(for asset: CaptureAsset) -> String {
+        if self == .delete, asset.ownership == .externalReference {
+            return "Remove from Shelf"
+        }
+        return title
     }
 
     public var symbolName: String {

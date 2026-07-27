@@ -91,6 +91,8 @@ public final class CaptureStack {
 
     /// Beyond this the exported sheet stops being useful anyway.
     public static let maximumItems = 24
+    /// Bounds simultaneous decoded input memory for one export operation.
+    public static let maximumDecodedPixels = 60_000_000
 
     public init() {}
 
@@ -135,13 +137,7 @@ public final class CaptureStack {
     /// Renders the stack and writes it to `url`.
     @discardableResult
     public func export(to url: URL, options: StackExportOptions) throws -> URL {
-        let images = items.compactMap { item -> CGImage? in
-            guard let nsImage = NSImage(contentsOf: item.asset.url) else { return nil }
-            return nsImage.cgImage(forProposedRect: nil, context: nil, hints: nil)
-        }
-        guard !images.isEmpty else {
-            throw NotchShotError.exportFailed("None of the stacked captures could be read")
-        }
+        let images = try loadImagesForExport()
 
         if options.style == .pdf {
             try StackRenderer.writePDF(images: images, options: options, to: url)
@@ -155,19 +151,41 @@ public final class CaptureStack {
 
     /// Rendered preview of what export would produce.
     public func renderPreview(options: StackExportOptions) -> CGImage? {
-        let images = items.compactMap { item -> CGImage? in
-            guard let nsImage = NSImage(contentsOf: item.asset.url) else { return nil }
-            return nsImage.cgImage(forProposedRect: nil, context: nil, hints: nil)
-        }
-        guard !images.isEmpty else { return nil }
+        guard let images = try? loadImagesForExport() else { return nil }
         var preview = options
         if preview.style == .pdf { preview.style = .longImage }
         return try? StackRenderer.render(images: images, options: preview)
+    }
+
+    private func loadImagesForExport() throws -> [CGImage] {
+        guard !items.isEmpty else {
+            throw NotchShotError.exportFailed("The capture stack is empty")
+        }
+        var images: [CGImage] = []
+        var decodedPixels = 0
+        for item in items {
+            guard let image = SafeImageFile.cgImage(for: item.asset) else {
+                throw NotchShotError.exportFailed(
+                    "Could not safely read stacked capture \(item.asset.displayName)"
+                )
+            }
+            guard image.height > 0,
+                  image.width <= (Self.maximumDecodedPixels - decodedPixels) / image.height else {
+                throw NotchShotError.exportFailed(
+                    "The stacked captures are too large to decode safely in one operation"
+                )
+            }
+            decodedPixels += image.width * image.height
+            images.append(image)
+        }
+        return images
     }
 }
 
 /// Lays out and draws a stack sheet. Pure, so the geometry is testable.
 public enum StackRenderer {
+    static let maximumCanvasDimension = 32_768
+    static let maximumCanvasPixels = 80_000_000
 
     /// Where each capture sits on the sheet, and how big the sheet is.
     ///
@@ -249,10 +267,18 @@ public enum StackRenderer {
     public static func render(images: [CGImage], options: StackExportOptions) throws -> CGImage {
         let sizes = images.map { CGSize(width: $0.width, height: $0.height) }
         let (canvas, frames) = layout(sizes: sizes, options: options)
-        guard canvas.width >= 1, canvas.height >= 1,
+        let width = Int(canvas.width.rounded())
+        let height = Int(canvas.height.rounded())
+        guard canvas.width.isFinite,
+              canvas.height.isFinite,
+              width >= 1,
+              height >= 1,
+              width <= maximumCanvasDimension,
+              height <= maximumCanvasDimension,
+              width <= maximumCanvasPixels / height,
               let context = AnnotationRenderer.makeContext(
-                width: Int(canvas.width.rounded()),
-                height: Int(canvas.height.rounded())
+                width: width,
+                height: height
               )
         else {
             throw NotchShotError.exportFailed("Could not allocate the stack canvas")

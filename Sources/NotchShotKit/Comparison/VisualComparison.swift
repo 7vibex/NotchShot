@@ -4,10 +4,14 @@ import Observation
 import SwiftUI
 
 public enum ImageComparisonRenderer {
+    public static let maximumPixels = 25_000_000
+
     public static func normalizedPair(
         before: CGImage,
         after: CGImage
     ) throws -> (CGImage, CGImage) {
+        try validateOperationSize(before)
+        try validateOperationSize(after)
         let size = CGSize(width: before.width, height: before.height)
         return (before, try fit(after, to: size))
     }
@@ -74,6 +78,18 @@ public enum ImageComparisonRenderer {
         return image
     }
 
+    private static func validateOperationSize(_ image: CGImage) throws {
+        guard isWithinOperationBudget(width: image.width, height: image.height) else {
+            throw NotchShotError.exportFailed(
+                "That image is too large for a safe in-memory comparison"
+            )
+        }
+    }
+
+    static func isWithinOperationBudget(width: Int, height: Int) -> Bool {
+        width > 0 && height > 0 && width <= maximumPixels / height
+    }
+
     private static func fit(_ image: CGImage, to size: CGSize) throws -> CGImage {
         guard let context = AnnotationRenderer.makeContext(
             width: Int(size.width),
@@ -113,10 +129,8 @@ public final class VisualComparisonSession {
     public var errorMessage: String?
 
     public init(beforeAsset: CaptureAsset, afterAsset: CaptureAsset) throws {
-        guard let before = NSImage(contentsOf: beforeAsset.url)?
-            .cgImage(forProposedRect: nil, context: nil, hints: nil),
-              let after = NSImage(contentsOf: afterAsset.url)?
-            .cgImage(forProposedRect: nil, context: nil, hints: nil) else {
+        guard let before = SafeImageFile.cgImage(for: beforeAsset),
+              let after = SafeImageFile.cgImage(for: afterAsset) else {
             throw NotchShotError.exportFailed("Both captures must be readable images")
         }
         let pair = try ImageComparisonRenderer.normalizedPair(before: before, after: after)

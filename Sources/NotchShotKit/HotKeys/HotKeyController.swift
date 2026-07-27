@@ -93,6 +93,18 @@ public struct HotKeyBinding: Codable, Sendable, Equatable, Hashable {
         self.modifiers = modifiers
     }
 
+    private static let supportedCarbonModifierMask = UInt32(
+        cmdKey | shiftKey | optionKey | controlKey
+    )
+
+    /// `RegisterEventHotKey` only understands Carbon's command, shift, option,
+    /// and control masks. Caps Lock and Fn are visible to AppKit but disappear
+    /// during conversion; accepting either alone would therefore register the
+    /// selected key globally with no modifier at all.
+    public var isValidGlobalShortcut: Bool {
+        modifiers != 0 && modifiers & ~Self.supportedCarbonModifierMask == 0
+    }
+
     public static func carbonModifiers(from flags: NSEvent.ModifierFlags) -> UInt32 {
         var carbon: UInt32 = 0
         if flags.contains(.command) { carbon |= UInt32(cmdKey) }
@@ -158,9 +170,9 @@ public final class HotKeyController {
     // MARK: Lifecycle
 
     public func start() {
-        // Any shortcut a previous crash left switched off comes back first, so a
-        // stale state can never cost the user ⇧⌘4 permanently.
-        SystemScreenshotHotKeys.shared.restoreAll(includingUnknown: true)
+        // Restore only the exact shortcuts this app persisted as its own before
+        // a previous crash. Never enable a shortcut the user disabled in macOS.
+        SystemScreenshotHotKeys.shared.restoreAll()
         applySystemShortcutTakeover()
         installEventHandler()
         registerAll()
@@ -209,6 +221,10 @@ public final class HotKeyController {
     // MARK: Bindings
 
     public func setBinding(_ binding: HotKeyBinding?, for action: HotKeyAction) {
+        if let binding, !binding.isValidGlobalShortcut {
+            Log.app.notice("Ignored shortcut with invalid Carbon modifiers for \(action.rawValue)")
+            return
+        }
         // A duplicate would leave one of the two silently dead, so the newer
         // assignment wins and the older one is cleared.
         if let binding {
@@ -239,7 +255,11 @@ public final class HotKeyController {
             }
             return
         }
-        bindings = decoded
+        // Older builds could persist Caps Lock/Fn-only captures as a binding
+        // with a zero Carbon modifier mask. Keep valid custom shortcuts exactly
+        // as they are, but do not turn an invalid legacy entry into a bare
+        // system-wide key.
+        bindings = decoded.filter { $0.value.isValidGlobalShortcut }
     }
 
     private func saveBindings() {
@@ -257,6 +277,10 @@ public final class HotKeyController {
     }
 
     private func register(action: HotKeyAction, binding: HotKeyBinding) {
+        guard binding.isValidGlobalShortcut else {
+            Log.app.notice("Refused to register shortcut with invalid Carbon modifiers for \(action.rawValue)")
+            return
+        }
         let identifier = nextIdentifier
         nextIdentifier += 1
 

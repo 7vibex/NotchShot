@@ -40,8 +40,8 @@ public enum BugReportPackager {
         to destination: URL
     ) throws -> URL {
         let fileManager = FileManager.default
-        guard fileManager.fileExists(atPath: asset.url.path) else {
-            throw NotchShotError.exportFailed("The capture file no longer exists")
+        guard SafeAssetFile.isCurrentAndSafe(asset) else {
+            throw NotchShotError.exportFailed("The capture file changed or is no longer safely readable")
         }
         guard !fileManager.fileExists(atPath: destination.path) else {
             throw NotchShotError.destinationUnwritable(
@@ -54,16 +54,18 @@ public enum BugReportPackager {
         try fileManager.createDirectory(at: temporary, withIntermediateDirectories: true)
         do {
             let attachmentName = "Capture.\(asset.url.pathExtension.isEmpty ? "bin" : asset.url.pathExtension)"
-            try fileManager.copyItem(
-                at: asset.url,
+            try SafeAssetFile.copy(
+                asset,
                 to: temporary.appendingPathComponent(attachmentName)
             )
 
             var includedProject = false
             if options.includesEditableProject, let project = asset.projectURL,
                fileManager.fileExists(atPath: project.path) {
-                try fileManager.copyItem(
-                    at: project,
+                let contents = try NotchShotPackage.read(from: project)
+                _ = try NotchShotPackage.write(
+                    document: contents.document,
+                    source: contents.source,
                     to: temporary.appendingPathComponent("Editable.notchshot", isDirectory: true)
                 )
                 includedProject = true

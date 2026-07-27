@@ -1,56 +1,95 @@
 import AppKit
+import Darwin
 import Foundation
+import Security
 
-/// Hides macOS's own volume and brightness overlay so only the notch shows it.
+/// Experimental direct-distribution replacement for the shared macOS OSD.
 ///
-/// The system overlay is drawn by `OSDUIHelper`, a launch-on-demand agent. There
-/// is no API or preference for turning it off, so it is paused with `SIGSTOP`:
-/// a stopped process cannot draw, and `SIGCONT` restores it exactly as it was.
-/// Nothing is patched, deleted, or reconfigured, and the helper is relaunched by
-/// launchd on demand regardless of what happens to this app.
-///
-/// The agent is launched deliberately and paused before anything asks it to
-/// draw. Pausing one that is mid-animation would leave that frame on screen.
-///
-/// Because a paused process stays paused, `resume()` must run before the app
-/// goes away — `start()` therefore resumes any helper a previous crash left
-/// stopped, so the worst case self-heals on the next launch rather than needing
-/// a restart.
+/// Apple exposes no supported suppression API. Every SIGSTOP is therefore
+/// leased to a separately signed watchdog. If NotchShot quits, crashes, or is
+/// force-killed, the kernel closes the lease and the watchdog sends SIGCONT.
 @MainActor
 public final class SystemOSDSuppressor {
     public static let shared = SystemOSDSuppressor()
 
     nonisolated private static let bundleIdentifier = "com.apple.OSDUIHelper"
-    private static let bundleURL = URL(
+    nonisolated private static let bundleURL = URL(
         fileURLWithPath: "/System/Library/CoreServices/OSDUIHelper.app"
     )
+    nonisolated private static let executablePath = bundleURL
+        .appendingPathComponent("Contents/MacOS/OSDUIHelper")
+        .standardizedFileURL.path
+    private static let recoveryExecutableName = "NotchShotOSDRecovery"
+
+    private struct Watchdog {
+        var token: UUID
+        var process: Process
+        var lease: Pipe
+    }
+
+    private struct ProcessIdentity: Equatable {
+        var processID: pid_t
+        var startSeconds: UInt64
+        var startMicroseconds: UInt64
+        var status: UInt32
+    }
 
     private var isEnabled = false
     private var observers: [NSObjectProtocol] = []
     private var pausedProcessIDs: Set<pid_t> = []
+    private var watchdogs: [pid_t: Watchdog] = [:]
     private var launchTask: Task<Void, Never>?
 
     public init() {}
 
-    /// Whether the system overlay is currently being held back.
-    public var isSuppressing: Bool { isEnabled && !pausedProcessIDs.isEmpty }
+    public var isSuppressing: Bool {
+        isEnabled && !pausedProcessIDs.isEmpty
+    }
 
-    // MARK: Lifecycle
+    public var isCrashRecoveryAvailable: Bool {
+        recoveryExecutableURL != nil
+    }
 
-    /// Applies the stored preference, first undoing anything left behind by a
-    /// crash so a stale paused helper can never outlive the app that paused it.
+    public var hasStoppedSystemOSD: Bool {
+        runningHelpers().contains { application in
+            Self.processIdentity(for: application.processIdentifier)?.status == UInt32(SSTOP)
+        }
+    }
+
     public func start() {
-        resumeAll()
+        guard !isEnabled else {
+            if pausedProcessIDs.isEmpty { pauseHelper() }
+            return
+        }
         setEnabled(Preferences.shared.suppressesSystemOSD)
     }
 
+    /// One-time migration for pre-watchdog builds. This deliberately operates
+    /// only on Apple's exact helper identity and is never part of normal stop,
+    /// quit, or setting changes.
+    public func recoverLegacySuspension() {
+        for application in runningHelpers() {
+            _ = kill(application.processIdentifier, SIGCONT)
+        }
+    }
+
     public func setEnabled(_ enabled: Bool) {
-        guard enabled != isEnabled else { return }
-        isEnabled = enabled
         if enabled {
+            guard !isEnabled else {
+                if pausedProcessIDs.isEmpty { pauseHelper() }
+                return
+            }
+            guard isCrashRecoveryAvailable else {
+                Log.app.error("System OSD replacement unavailable: recovery helper is missing")
+                isEnabled = false
+                return
+            }
+            isEnabled = true
             installLaunchObserver()
             pauseHelper()
         } else {
+            guard isEnabled || !pausedProcessIDs.isEmpty || !watchdogs.isEmpty else { return }
+            isEnabled = false
             removeLaunchObserver()
             launchTask?.cancel()
             launchTask = nil
@@ -58,16 +97,13 @@ public final class SystemOSDSuppressor {
         }
     }
 
-    /// Restores the system overlay. Safe to call more than once.
     public func stop() {
+        isEnabled = false
         removeLaunchObserver()
         launchTask?.cancel()
         launchTask = nil
-        isEnabled = false
         resumeAll()
     }
-
-    // MARK: Pausing
 
     private func pauseHelper() {
         let running = runningHelpers()
@@ -80,8 +116,6 @@ public final class SystemOSDSuppressor {
         }
     }
 
-    /// Starts the agent hidden so it can be paused before the system ever asks
-    /// it to draw an overlay.
     private func launchThenPause() {
         guard launchTask == nil else { return }
         let configuration = NSWorkspace.OpenConfiguration()
@@ -100,53 +134,298 @@ public final class SystemOSDSuppressor {
                 self.pause(application.processIdentifier)
             } catch {
                 Log.app.notice(
-                    "Could not start the system overlay helper to pause it: \(error.localizedDescription)"
+                    "Could not start the system overlay helper: \(error.localizedDescription)"
                 )
             }
         }
     }
 
     private func pause(_ processID: pid_t) {
-        guard processID > 0, !pausedProcessIDs.contains(processID) else { return }
+        guard processID > 1, !pausedProcessIDs.contains(processID) else { return }
+        guard let application = NSRunningApplication(processIdentifier: processID),
+              Self.isExpectedHelper(application) else {
+            Log.app.error("Refusing to pause a process that is not Apple's OSD helper")
+            return
+        }
+        guard let identity = Self.processIdentity(for: processID) else {
+            Log.app.error("Refusing to pause an OSD helper whose process identity is unavailable")
+            return
+        }
+        // SIGSTOP is idempotent. Claiming a helper another utility already
+        // stopped would make our later SIGCONT violate that utility's lease.
+        guard identity.status != UInt32(SSTOP) else {
+            Log.app.notice("OSD helper is already stopped; leaving its existing owner untouched")
+            return
+        }
+        guard let watchdog = armWatchdog(for: identity) else {
+            Log.app.error("Refusing to pause system OSD without crash recovery")
+            failOpen()
+            return
+        }
+        watchdogs[processID] = watchdog
+
         guard kill(processID, SIGSTOP) == 0 else {
             Log.app.notice("Could not pause the system overlay (errno \(errno))")
+            disarmWatchdog(for: processID)
+            return
+        }
+        guard let stopped = NSRunningApplication(processIdentifier: processID),
+              Self.isExpectedHelper(stopped),
+              Self.processIdentity(for: processID).map({ current in
+                  current.processID == identity.processID
+                      && current.startSeconds == identity.startSeconds
+                      && current.startMicroseconds == identity.startMicroseconds
+              }) == true else {
+            // We issued the stop, so if identity changed in the narrow signal
+            // race, immediately undo our own action rather than abandoning an
+            // unrelated process in a suspended state.
+            _ = kill(processID, SIGCONT)
+            disarmWatchdog(for: processID)
             return
         }
         pausedProcessIDs.insert(processID)
     }
 
     private func resumeAll() {
-        // Anything this app paused, plus any live helper — after a crash the
-        // stopped process is not in `pausedProcessIDs` any more.
-        for processID in pausedProcessIDs.union(runningHelpers().map(\.processIdentifier)) {
-            _ = kill(processID, SIGCONT)
+        for processID in pausedProcessIDs {
+            if let application = NSRunningApplication(processIdentifier: processID),
+               Self.isExpectedHelper(application) {
+                _ = kill(processID, SIGCONT)
+            }
         }
         pausedProcessIDs.removeAll()
+
+        // Remove ownership before closing leases so expected helper exits do
+        // not look like watchdog failures.
+        let armed = watchdogs
+        watchdogs.removeAll()
+        for watchdog in armed.values {
+            watchdog.process.terminationHandler = nil
+            try? watchdog.lease.fileHandleForWriting.close()
+        }
+    }
+
+    private var recoveryExecutableURL: URL? {
+        let url = Bundle.main.bundleURL
+            .appendingPathComponent("Contents/MacOS", isDirectory: true)
+            .appendingPathComponent(Self.recoveryExecutableName)
+        guard FileManager.default.isExecutableFile(atPath: url.path),
+              Self.hasMatchingValidSignature(helperURL: url) else {
+            Log.app.error("OSD recovery helper is missing or has an invalid signature")
+            return nil
+        }
+        return url
+    }
+
+    nonisolated private static func hasMatchingValidSignature(
+        helperURL: URL
+    ) -> Bool {
+        guard let appCode = staticCode(at: Bundle.main.bundleURL),
+              let helperCode = staticCode(at: helperURL) else { return false }
+
+        let strict = SecCSFlags(rawValue:
+            kSecCSCheckAllArchitectures | kSecCSStrictValidate
+        )
+        let appFlags = SecCSFlags(rawValue:
+            strict.rawValue | kSecCSCheckNestedCode
+        )
+        guard SecStaticCodeCheckValidity(appCode, appFlags, nil) == errSecSuccess,
+              SecStaticCodeCheckValidity(helperCode, strict, nil) == errSecSuccess else {
+            return false
+        }
+        // Apple Development / Developer ID builds must share a Team ID. Ad-hoc
+        // local builds have nil for both and are still internally consistent.
+        return signingTeam(for: appCode) == signingTeam(for: helperCode)
+    }
+
+    nonisolated private static func staticCode(at url: URL) -> SecStaticCode? {
+        var code: SecStaticCode?
+        guard SecStaticCodeCreateWithPath(
+            url as CFURL,
+            SecCSFlags(),
+            &code
+        ) == errSecSuccess else { return nil }
+        return code
+    }
+
+    nonisolated private static func signingTeam(
+        for code: SecStaticCode
+    ) -> String? {
+        var information: CFDictionary?
+        guard SecCodeCopySigningInformation(
+            code,
+            SecCSFlags(rawValue: kSecCSSigningInformation),
+            &information
+        ) == errSecSuccess,
+            let dictionary = information as? [String: Any]
+        else { return nil }
+        return dictionary[kSecCodeInfoTeamIdentifier as String] as? String
+    }
+
+    private func armWatchdog(for identity: ProcessIdentity) -> Watchdog? {
+        guard let executableURL = recoveryExecutableURL else { return nil }
+        let processID = identity.processID
+        let process = Process()
+        process.executableURL = executableURL
+        process.arguments = [
+            String(processID),
+            String(identity.startSeconds),
+            String(identity.startMicroseconds),
+        ]
+        let lease = Pipe()
+        process.standardInput = lease
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        let token = UUID()
+        process.terminationHandler = { [weak self] _ in
+            Task { @MainActor in
+                self?.watchdogExited(for: processID, token: token)
+            }
+        }
+        do {
+            try process.run()
+        } catch {
+            Log.app.error("Could not arm OSD recovery watchdog: \(error.localizedDescription)")
+            return nil
+        }
+
+        // `Process.run()` returns as soon as the child has been spawned, but
+        // the kernel's dynamic-code registry and proc path can lag that return
+        // by a few scheduling quanta. Validate for a tightly bounded 200 ms
+        // window instead of spuriously failing open on a healthy signed child.
+        var isValidatedChild = false
+        for _ in 0..<20 where process.isRunning {
+            if Self.isExpectedRecoveryProcess(
+                processID: process.processIdentifier,
+                executableURL: executableURL
+            ) {
+                isValidatedChild = true
+                break
+            }
+            usleep(10_000)
+        }
+        guard process.isRunning, isValidatedChild else {
+            try? lease.fileHandleForWriting.close()
+            if process.isRunning { process.terminate() }
+            Log.app.error("OSD recovery watchdog failed live code-signature validation")
+            return nil
+        }
+        let watchdog = Watchdog(token: token, process: process, lease: lease)
+        return watchdog
+    }
+
+    nonisolated private static func isExpectedRecoveryProcess(
+        processID: pid_t,
+        executableURL: URL
+    ) -> Bool {
+        var pathBuffer = [CChar](repeating: 0, count: Int(PROC_PIDPATHINFO_SIZE))
+        let pathLength = proc_pidpath(
+            processID,
+            &pathBuffer,
+            UInt32(pathBuffer.count)
+        )
+        guard pathLength > 0 else { return false }
+        let path = String(
+            decoding: pathBuffer.prefix(Int(pathLength)).map { UInt8(bitPattern: $0) },
+            as: UTF8.self
+        )
+        guard URL(fileURLWithPath: path).standardizedFileURL.path
+                == executableURL.standardizedFileURL.path else { return false }
+
+        var dynamicCode: SecCode?
+        let attributes = [kSecGuestAttributePid as String: NSNumber(value: processID)] as CFDictionary
+        guard SecCodeCopyGuestWithAttributes(
+            nil,
+            attributes,
+            SecCSFlags(),
+            &dynamicCode
+        ) == errSecSuccess,
+            let dynamicCode
+        else { return false }
+        // `kSecCSCheckAllArchitectures` is valid for `SecStaticCode` but
+        // Security.framework rejects it for a live `SecCode` with
+        // errSecCSInvalidFlags. Strictly validate the running architecture;
+        // the enclosing bundle's all-architecture check already ran before
+        // this child was spawned.
+        let strict = SecCSFlags(rawValue: kSecCSStrictValidate)
+        guard SecCodeCheckValidity(dynamicCode, strict, nil) == errSecSuccess else { return false }
+
+        var childStaticCode: SecStaticCode?
+        guard SecCodeCopyStaticCode(dynamicCode, SecCSFlags(), &childStaticCode) == errSecSuccess,
+              let childStaticCode,
+              let appCode = staticCode(at: Bundle.main.bundleURL) else { return false }
+        return signingTeam(for: childStaticCode) == signingTeam(for: appCode)
+    }
+
+    nonisolated private static func processIdentity(for processID: pid_t) -> ProcessIdentity? {
+        var info = proc_bsdinfo()
+        let expectedSize = Int32(MemoryLayout<proc_bsdinfo>.size)
+        guard proc_pidinfo(
+            processID,
+            PROC_PIDTBSDINFO,
+            0,
+            &info,
+            expectedSize
+        ) == expectedSize else { return nil }
+        return ProcessIdentity(
+            processID: processID,
+            startSeconds: UInt64(info.pbi_start_tvsec),
+            startMicroseconds: UInt64(info.pbi_start_tvusec),
+            status: info.pbi_status
+        )
+    }
+
+    private func disarmWatchdog(for processID: pid_t) {
+        guard let watchdog = watchdogs.removeValue(forKey: processID) else { return }
+        watchdog.process.terminationHandler = nil
+        try? watchdog.lease.fileHandleForWriting.close()
+    }
+
+    private func watchdogExited(for processID: pid_t, token: UUID) {
+        guard watchdogs[processID]?.token == token else { return }
+        watchdogs.removeValue(forKey: processID)
+        Log.app.error("OSD recovery watchdog exited unexpectedly; restoring native OSD")
+        failOpen()
+    }
+
+    private func failOpen() {
+        isEnabled = false
+        removeLaunchObserver()
+        launchTask?.cancel()
+        launchTask = nil
+        resumeAll()
     }
 
     private func runningHelpers() -> [NSRunningApplication] {
-        NSRunningApplication.runningApplications(withBundleIdentifier: Self.bundleIdentifier)
+        NSRunningApplication.runningApplications(
+            withBundleIdentifier: Self.bundleIdentifier
+        ).filter(Self.isExpectedHelper)
     }
 
-    // MARK: Relaunch
+    nonisolated private static func isExpectedHelper(
+        _ application: NSRunningApplication
+    ) -> Bool {
+        application.bundleIdentifier == Self.bundleIdentifier
+            && application.executableURL?.standardizedFileURL.path == Self.executablePath
+    }
 
-    /// launchd starts a fresh helper whenever something needs an overlay, so a
-    /// new one has to be paused as it appears. A helper that goes away has to be
-    /// forgotten just as promptly: the kernel reuses process IDs, and a stale
-    /// entry would eventually send `SIGCONT` to an unrelated process.
     private func installLaunchObserver() {
         guard observers.isEmpty else { return }
-        observers.append(observe(NSWorkspace.didLaunchApplicationNotification) { [weak self] processID in
+        observers.append(observe(
+            NSWorkspace.didLaunchApplicationNotification
+        ) { [weak self] processID in
             guard let self, self.isEnabled else { return }
             self.pause(processID)
         })
-        observers.append(observe(NSWorkspace.didTerminateApplicationNotification) { [weak self] processID in
-            self?.pausedProcessIDs.remove(processID)
+        observers.append(observe(
+            NSWorkspace.didTerminateApplicationNotification
+        ) { [weak self] processID in
+            guard let self else { return }
+            self.pausedProcessIDs.remove(processID)
+            self.disarmWatchdog(for: processID)
         })
     }
 
-    /// Reduces a workspace notification to the helper's process ID, which is the
-    /// only part of it that may cross into the main actor.
     private func observe(
         _ name: Notification.Name,
         handler: @escaping @MainActor (pid_t) -> Void
@@ -156,12 +435,10 @@ public final class SystemOSDSuppressor {
             object: nil,
             queue: .main
         ) { notification in
-            // Reduced to plain values here: the notification and the running
-            // application it carries cannot cross into the isolated block.
             guard let application = notification.userInfo?[
                 NSWorkspace.applicationUserInfoKey
             ] as? NSRunningApplication,
-                application.bundleIdentifier == Self.bundleIdentifier
+                Self.isExpectedHelper(application)
             else { return }
             let processID = application.processIdentifier
             MainActor.assumeIsolated { handler(processID) }

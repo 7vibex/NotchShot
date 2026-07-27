@@ -1,6 +1,55 @@
 import CoreGraphics
+import Foundation
 import Testing
 @testable import NotchShotKit
+
+private final class LockedValues<Element: Sendable>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var values: [Element] = []
+
+    func append(_ value: Element) {
+        lock.lock()
+        values.append(value)
+        lock.unlock()
+    }
+
+    func snapshot() -> [Element] {
+        lock.lock()
+        defer { lock.unlock() }
+        return values
+    }
+}
+
+private struct SendableFrames: @unchecked Sendable {
+    let values: [CGImage]
+}
+
+@MainActor
+private final class ControlledFrameProvider {
+    private var continuation: CheckedContinuation<CGImage, any Error>?
+
+    var isWaiting: Bool { continuation != nil }
+
+    func capture() async throws -> CGImage {
+        try await withCheckedThrowingContinuation { continuation in
+            self.continuation = continuation
+        }
+    }
+
+    func waitUntilWaiting() async -> Bool {
+        for _ in 0 ..< 2_000 {
+            if isWaiting { return true }
+            await Task.yield()
+        }
+        return isWaiting
+    }
+
+    func resume(returning image: CGImage) {
+        let continuation = continuation
+        self.continuation = nil
+        continuation?.resume(returning: image)
+    }
+}
 
 /// Scrolling capture is the feature most likely to produce a silently wrong
 /// result, so the matcher is tested against synthetic frames where the correct
@@ -135,6 +184,169 @@ struct StitchingTests {
         // Identical frames match at the template's own position, leaving zero
         // new rows, which the caller treats as a duplicate.
         #expect(match == nil || match!.addedRows < StitchSettings().minimumAdvance)
+    }
+
+    @Test("Progress is monotonic and reaches completion")
+    func progressReporting() throws {
+        let observed = LockedValues<Double>()
+        _ = try ScrollingStitcher.stitch(frames: frames(count: 4, step: 40)) { progress in
+            observed.append(progress)
+        }
+
+        let values = observed.snapshot()
+        #expect(values.first == 0)
+        #expect(values.last == 1)
+        #expect(values.contains { $0 > 0 && $0 < 1 })
+        #expect(zip(values, values.dropFirst()).allSatisfy { pair in pair.0 <= pair.1 })
+    }
+
+    @Test("Frame dimensions are bounded before pixel conversion")
+    func frameDimensionBudget() {
+        var limits = StitchLimits()
+        limits.maximumFrameDimension = 50
+        let oversized = TestImage.page(width: 60, height: 40, offset: 0)
+
+        #expect(throws: NotchShotError.self) {
+            _ = try ScrollingStitcher.stitch(frames: [oversized], limits: limits)
+        }
+    }
+
+    @Test("Aggregate decoded frame bytes are bounded")
+    func decodedInputByteBudget() {
+        var limits = StitchLimits()
+        limits.maximumInputBytes = 2_000
+        let list = frames(count: 2, width: 20, height: 20, step: 5)
+
+        #expect(throws: NotchShotError.self) {
+            _ = try ScrollingStitcher.stitch(frames: list, limits: limits)
+        }
+    }
+
+    @Test("Composite growth is rejected before allocation")
+    func compositePixelBudget() {
+        var limits = StitchLimits()
+        limits.maximumCompositePixels = 20_000
+        let list = frames(count: 3, width: 80, height: 240, step: 40)
+
+        #expect(throws: NotchShotError.self) {
+            _ = try ScrollingStitcher.stitch(frames: list, limits: limits)
+        }
+    }
+
+    @Test("Direct stitch callers cannot bypass the frame-count cap")
+    func directFrameCountBudget() {
+        var limits = StitchLimits()
+        limits.maximumFrames = 2
+
+        #expect(throws: NotchShotError.self) {
+            _ = try ScrollingStitcher.stitch(frames: frames(count: 3, step: 40), limits: limits)
+        }
+    }
+
+    @Test("Stitching cooperatively reports task cancellation")
+    func cancellation() async {
+        let list = SendableFrames(values: frames(count: 3, step: 40))
+        let task = Task.detached {
+            withUnsafeCurrentTask { task in
+                task?.cancel()
+            }
+            return try ScrollingStitcher.stitch(frames: list.values)
+        }
+
+        do {
+            _ = try await task.value
+            Issue.record("Expected stitching to throw CancellationError")
+        } catch {
+            #expect(error is CancellationError)
+        }
+    }
+
+    @Test("Finish includes a capture already in flight and emits one terminal event")
+    @MainActor
+    func finishIncludesInFlightFrame() async {
+        let list = frames(count: 2, step: 40)
+        let provider = ControlledFrameProvider()
+        var events: [ScrollingCaptureSession.Event] = []
+        let session = ScrollingCaptureSession(
+            region: CGRect(x: 0, y: 0, width: 80, height: 240),
+            onEvent: { events.append($0) },
+            limits: StitchLimits(),
+            frameProvider: { try await provider.capture() }
+        )
+
+        let startTask = Task { await session.start() }
+        #expect(await provider.waitUntilWaiting())
+        provider.resume(returning: list[0])
+        await startTask.value
+
+        let captureTask = Task { await session.captureFrameManually() }
+        #expect(await provider.waitUntilWaiting())
+        let finishTask = Task { await session.finish() }
+        while session.isRunning {
+            await Task.yield()
+        }
+        provider.resume(returning: list[1])
+        await captureTask.value
+        await finishTask.value
+
+        #expect(session.frames.count == 2)
+        #expect(events.contains { event in
+            if case .frameCaptured(count: 2) = event { return true }
+            return false
+        })
+        #expect(terminalCount(in: events) == 1)
+        #expect(events.contains { event in
+            if case .finished = event { return true }
+            return false
+        })
+    }
+
+    @Test("Cancel suppresses a late in-flight frame and stale terminal results")
+    @MainActor
+    func cancelSuppressesInFlightResult() async {
+        let list = frames(count: 2, step: 40)
+        let provider = ControlledFrameProvider()
+        var events: [ScrollingCaptureSession.Event] = []
+        let session = ScrollingCaptureSession(
+            region: CGRect(x: 0, y: 0, width: 80, height: 240),
+            onEvent: { events.append($0) },
+            limits: StitchLimits(),
+            frameProvider: { try await provider.capture() }
+        )
+
+        let startTask = Task { await session.start() }
+        #expect(await provider.waitUntilWaiting())
+        provider.resume(returning: list[0])
+        await startTask.value
+
+        let captureTask = Task { await session.captureFrameManually() }
+        #expect(await provider.waitUntilWaiting())
+        session.cancel()
+        provider.resume(returning: list[1])
+        await captureTask.value
+        await Task.yield()
+
+        #expect(session.frames.isEmpty)
+        #expect(terminalCount(in: events) == 1)
+        #expect(events.contains { event in
+            if case .cancelled = event { return true }
+            return false
+        })
+        #expect(!events.contains { event in
+            if case .frameCaptured(count: 2) = event { return true }
+            return false
+        })
+    }
+
+    private func terminalCount(in events: [ScrollingCaptureSession.Event]) -> Int {
+        events.reduce(into: 0) { count, event in
+            switch event {
+            case .finished, .failedButFramesKept, .cancelled:
+                count += 1
+            case .frameCaptured, .stitching:
+                break
+            }
+        }
     }
 
     @Test("The session caps how many frames a capture can accumulate")

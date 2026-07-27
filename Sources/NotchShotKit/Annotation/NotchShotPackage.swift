@@ -102,9 +102,20 @@ public enum NotchShotPackage {
         // the user later moves or deletes the original file.
         if case .image(let path) = document.background.fill,
            !path.isEmpty,
-           !path.hasPrefix(Entry.assets),
-           let data = FileManager.default.contents(atPath: path) {
-            let name = URL(fileURLWithPath: path).lastPathComponent
+           !path.hasPrefix(Entry.assets) {
+            guard let backgroundImage = SafeImageFile.cgImage(
+                at: URL(fileURLWithPath: path),
+                limits: .background
+            ) else {
+                throw NotchShotError.exportFailed("The custom background is unsafe or no longer readable")
+            }
+            let (data, _) = try ImageExport.encode(
+                backgroundImage,
+                format: .png,
+                quality: 1,
+                dpiScale: 1
+            )
+            let name = "background.png"
             let assets = FileWrapper(directoryWithFileWrappers: [
                 name: FileWrapper(regularFileWithContents: data),
             ])

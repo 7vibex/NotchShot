@@ -26,6 +26,8 @@ public final class MediaCoordinator {
 
     private var source: (any MediaSource)?
     private var streamTask: Task<Void, Never>?
+    private var selectionTask: Task<Void, Never>?
+    private var selectionGeneration: UInt = 0
     private var lastSelection: Date?
     private let reselectCooldown: TimeInterval = 8
     private var observers: [NSObjectProtocol] = []
@@ -40,11 +42,14 @@ public final class MediaCoordinator {
             snapshot = .empty
             return
         }
-        Task { await selectSource() }
+        scheduleSelection()
         installObservers()
     }
 
     public func stop() {
+        selectionGeneration &+= 1
+        selectionTask?.cancel()
+        selectionTask = nil
         streamTask?.cancel()
         streamTask = nil
         let current = source
@@ -82,23 +87,46 @@ public final class MediaCoordinator {
 
     private func reselectIfAllowed() {
         if let lastSelection, Date().timeIntervalSince(lastSelection) < reselectCooldown { return }
-        Task { await selectSource() }
+        scheduleSelection()
     }
 
-    private func selectSource() async {
+    private func scheduleSelection() {
+        selectionGeneration &+= 1
+        let generation = selectionGeneration
+        selectionTask?.cancel()
+        selectionTask = Task { [weak self] in
+            await self?.selectSource(generation: generation)
+            guard let self, self.selectionGeneration == generation else { return }
+            self.selectionTask = nil
+        }
+    }
+
+    private func isCurrentSelection(_ generation: UInt) -> Bool {
+        !Task.isCancelled
+            && selectionGeneration == generation
+            && Preferences.shared.mediaIntegrationEnabled
+    }
+
+    private func selectSource(generation: UInt) async {
+        guard isCurrentSelection(generation) else { return }
         lastSelection = Date()
         streamTask?.cancel()
         let previous = source
         source = nil
         await previous?.stop()
+        guard isCurrentSelection(generation) else { return }
 
         lastFailureReason = nil
 
         if let adapter = MediaRemoteAdapterSource.configured() {
             let healthy = await adapter.healthCheck()
+            guard isCurrentSelection(generation) else {
+                await adapter.stop()
+                return
+            }
             if healthy {
                 AdapterCompatibility.recordSuccessfulCheck()
-                await attach(adapter)
+                await attach(adapter, generation: generation)
                 return
             }
             AdapterCompatibility.recordFailedCheck()
@@ -110,21 +138,34 @@ public final class MediaCoordinator {
 
         if Preferences.shared.appleEventsFallbackEnabled {
             let appleEvents = AppleEventsMediaSource()
-            if await appleEvents.healthCheck() {
-                await attach(appleEvents)
+            let healthy = await appleEvents.healthCheck()
+            guard isCurrentSelection(generation) else {
+                await appleEvents.stop()
+                return
+            }
+            if healthy {
+                await attach(appleEvents, generation: generation)
                 return
             }
         }
 
-        await attach(DisabledMediaSource())
+        await attach(DisabledMediaSource(), generation: generation)
     }
 
-    private func attach(_ newSource: any MediaSource) async {
+    private func attach(_ newSource: any MediaSource, generation: UInt) async {
+        guard isCurrentSelection(generation) else {
+            await newSource.stop()
+            return
+        }
         source = newSource
         activeSource = newSource.kind
         Log.media.info("Media source: \(newSource.kind.rawValue)")
 
         let stream = await newSource.updates()
+        guard isCurrentSelection(generation), source?.kind == newSource.kind else {
+            await newSource.stop()
+            return
+        }
         streamTask = Task { [weak self] in
             for await update in stream {
                 guard !Task.isCancelled else { break }
@@ -133,7 +174,10 @@ public final class MediaCoordinator {
             // The stream ending means the backend gave up; try the next one
             // down the chain rather than sitting on stale metadata.
             guard !Task.isCancelled else { return }
-            await MainActor.run { self?.handleStreamEnded(kind: newSource.kind) }
+            await MainActor.run {
+                guard self?.selectionGeneration == generation else { return }
+                self?.handleStreamEnded(kind: newSource.kind)
+            }
         }
     }
 

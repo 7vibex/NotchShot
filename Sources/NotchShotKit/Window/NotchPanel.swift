@@ -31,6 +31,10 @@ public final class NotchPanel: NSPanel {
         isMovable = false
         isMovableByWindowBackground = false
         hidesOnDeactivate = false
+        // The panel is the visible replacement for an optionally suppressed
+        // native OSD. Command-H may hide auxiliary app windows, but it must
+        // never hide this feedback surface while suppression remains active.
+        canHide = false
         animationBehavior = .none
 
         // Visible on every Space, over fullscreen apps, and never cycled to.

@@ -34,6 +34,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 APP_NAME="NotchShot"
+RECOVERY_NAME="NotchShotOSDRecovery"
 APP_DIR="$ROOT/dist/$APP_NAME.app"
 CONTENTS="$APP_DIR/Contents"
 MACOS_DIR="$CONTENTS/MacOS"
@@ -96,10 +97,16 @@ fi
 
 echo "==> Building ($CONFIGURATION)"
 swift build -c "$CONFIGURATION" --product "$APP_NAME"
+swift build -c "$CONFIGURATION" --product "$RECOVERY_NAME"
 BINARY="$(swift build -c "$CONFIGURATION" --product "$APP_NAME" --show-bin-path)/$APP_NAME"
+RECOVERY_BINARY="$(swift build -c "$CONFIGURATION" --product "$RECOVERY_NAME" --show-bin-path)/$RECOVERY_NAME"
 
 if [[ ! -x "$BINARY" ]]; then
     echo "Build produced no executable at $BINARY" >&2
+    exit 1
+fi
+if [[ ! -x "$RECOVERY_BINARY" ]]; then
+    echo "Build produced no recovery executable at $RECOVERY_BINARY" >&2
     exit 1
 fi
 
@@ -108,6 +115,7 @@ rm -rf "$APP_DIR"
 mkdir -p "$MACOS_DIR" "$RESOURCES_DIR"
 
 cp "$BINARY" "$MACOS_DIR/$APP_NAME"
+cp "$RECOVERY_BINARY" "$MACOS_DIR/$RECOVERY_NAME"
 cp "$ROOT/Resources/Info.plist" "$CONTENTS/Info.plist"
 cp "$ROOT/Resources/PrivacyInfo.xcprivacy" "$RESOURCES_DIR/PrivacyInfo.xcprivacy"
 printf 'APPL????' > "$CONTENTS/PkgInfo"
@@ -126,6 +134,12 @@ if [[ "$IDENTITY" == "Developer ID Application:"* ]]; then
     # self-signed and ad-hoc identities cannot obtain one.
     TIMESTAMP_OPTION=(--timestamp)
 fi
+codesign \
+    --force \
+    --sign "$IDENTITY" \
+    --options runtime \
+    "${TIMESTAMP_OPTION[@]}" \
+    "$MACOS_DIR/$RECOVERY_NAME"
 codesign \
     --force \
     --sign "$IDENTITY" \
