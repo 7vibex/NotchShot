@@ -10,6 +10,12 @@ struct ProductivitySuiteTests {
         var keywords: [String]
     }
 
+    @Test("Settings keep the full recording title while the sidebar label fits")
+    func recordingSettingsLabels() {
+        #expect(SettingsSection.recording.title == "Recording")
+        #expect(SettingsSection.recording.sidebarTitle == "Record")
+    }
+
     @Test("Settings search matches every term across titles and synonyms")
     func settingsSearch() {
         let sections = [

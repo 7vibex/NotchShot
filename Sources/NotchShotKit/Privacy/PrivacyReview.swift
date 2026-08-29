@@ -222,6 +222,18 @@ private extension CGRect {
     }
 }
 
+enum PrivacyReviewPresentation {
+    static func title(
+        isReviewing: Bool,
+        errorMessage: String?,
+        findingCount: Int
+    ) -> String {
+        if isReviewing { return "Checking Privacy" }
+        if errorMessage != nil { return "Review Incomplete" }
+        return findingCount == 0 ? "Share Ready" : "Review Private Details"
+    }
+}
+
 @MainActor
 @Observable
 public final class PrivacyReviewSession {
@@ -324,7 +336,11 @@ public struct PrivacyReviewView: View {
 
     private var sidebar: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Share Ready")
+            Text(PrivacyReviewPresentation.title(
+                isReviewing: session.isReviewing,
+                errorMessage: session.errorMessage,
+                findingCount: session.findings.count
+            ))
                 .font(.title2.weight(.semibold))
             Text("NotchShot checks locally for likely private details. Detection is not perfect, so inspect the whole capture before sharing.")
                 .font(.callout)

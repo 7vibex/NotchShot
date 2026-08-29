@@ -104,7 +104,7 @@ public struct SettingsView: View {
     }
 }
 
-private enum SettingsSection: String, CaseIterable, Identifiable {
+enum SettingsSection: String, CaseIterable, Identifiable {
     case general
     case capture
     case presets
@@ -123,7 +123,7 @@ private enum SettingsSection: String, CaseIterable, Identifiable {
         case .general: "General"
         case .capture: "Capture & Export"
         case .presets: "Presets"
-        case .recording: "Record"
+        case .recording: "Recording"
         case .dictation: "Dictation"
         case .appearance: "Appearance & Displays"
         case .integrations: "Integrations"
@@ -138,7 +138,7 @@ private enum SettingsSection: String, CaseIterable, Identifiable {
         case .general: "General"
         case .capture: "Capture"
         case .presets: "Presets"
-        case .recording: "Recording"
+        case .recording: "Record"
         case .dictation: "Dictation"
         case .appearance: "Display"
         case .integrations: "Media"
@@ -1747,6 +1747,7 @@ private struct PrivacySettings: View {
                     .foregroundStyle(.secondary)
 
                 Button("Clear History…", role: .destructive) { confirmClear = true }
+                    .foregroundStyle(.red)
                     .accessibilityIdentifier("clearCaptureHistory")
                     .confirmationDialog(
                         "Clear all capture history?",
@@ -1804,6 +1805,7 @@ private struct PrivacySettings: View {
                     Button("Clear Clipboard", role: .destructive) {
                         coordinator.clipboard.clear()
                     }
+                    .foregroundStyle(.red)
                     .disabled(coordinator.clipboard.entries.isEmpty)
                 }
             }

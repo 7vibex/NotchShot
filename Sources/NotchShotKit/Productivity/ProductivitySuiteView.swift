@@ -80,6 +80,7 @@ private struct NotesToolView: View {
             }
             .padding()
             .frame(minWidth: 250, idealWidth: 290)
+            .frame(maxHeight: .infinity, alignment: .top)
 
             if let note = selectedNote {
                 VStack(alignment: .leading, spacing: 12) {
@@ -105,11 +106,14 @@ private struct NotesToolView: View {
                 }
                 .padding()
                 .frame(minWidth: 400)
+                .frame(maxHeight: .infinity, alignment: .top)
             } else {
                 ContentUnavailableView("Select a Note", systemImage: "note.text")
                     .frame(minWidth: 400)
+                    .frame(maxHeight: .infinity)
             }
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .onAppear { selectedID = selectedID ?? store.notes.first?.id }
     }
 

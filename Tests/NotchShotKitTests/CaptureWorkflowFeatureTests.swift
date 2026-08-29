@@ -73,6 +73,30 @@ struct CapturePreviewRoutingTests {
 
 @Suite("Privacy suggestions")
 struct PrivacySuggestionTests {
+    @Test("Privacy review does not claim sharing is ready before scanning finishes")
+    func presentationTitleTracksReviewState() {
+        #expect(PrivacyReviewPresentation.title(
+            isReviewing: true,
+            errorMessage: nil,
+            findingCount: 0
+        ) == "Checking Privacy")
+        #expect(PrivacyReviewPresentation.title(
+            isReviewing: false,
+            errorMessage: "Vision failed",
+            findingCount: 0
+        ) == "Review Incomplete")
+        #expect(PrivacyReviewPresentation.title(
+            isReviewing: false,
+            errorMessage: nil,
+            findingCount: 0
+        ) == "Share Ready")
+        #expect(PrivacyReviewPresentation.title(
+            isReviewing: false,
+            errorMessage: nil,
+            findingCount: 2
+        ) == "Review Private Details")
+    }
+
     @Test("Known token formats are suggested without storing the value")
     func tokenDetection() {
         #expect(PrivacyReviewService.containsAccessToken("Authorization: Bearer abcdefghijklmnopqrstuvwxyz"))
