@@ -197,8 +197,9 @@ struct NotchMetricsTests {
             isPeeking: false,
             resultCount: 0
         )
-        #expect(layout.size == CGSize(width: 480, height: 227))
+        #expect(layout.size == CGSize(width: 432, height: 201))
         #expect(layout.contentTopInset == 37)
+        #expect(layout.cornerRadius == 32)
     }
 
     @Test("Expanded AI activity uses a compact workbench")
