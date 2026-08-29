@@ -62,6 +62,7 @@ public final class AppCoordinator {
     public let history = HistoryRepository.shared
     public let clipboard = ClipboardStore.shared
     public let clipboardMonitor = ClipboardMonitor.shared
+    public let notifications = ProductivityNotificationStore.shared
     public let permissions = PermissionCenter.shared
     public let systemLevels = SystemLevelMonitor.shared
     public let osd = SystemOSDSuppressor.shared
@@ -107,6 +108,7 @@ public final class AppCoordinator {
     public var onOpenSettings: (() -> Void)?
     public var onOpenHistory: (() -> Void)?
     public var onOpenClipboard: (() -> Void)?
+    public var onOpenProductivity: (() -> Void)?
 
     /// Up to five results stay in the notch; older ones live in History.
     public static let maximumShelfItems = 5
@@ -122,6 +124,9 @@ public final class AppCoordinator {
         }
         Preferences.shared.refreshOutputFolderBookmarkIfStale()
         media.start()
+        notifications.onChange = { [weak self] in
+            self?.refreshActivity()
+        }
         context.onSnapshotChange = { [weak self] snapshot in
             guard let self else { return }
             self.arbiter.context = snapshot
@@ -413,7 +418,9 @@ public final class AppCoordinator {
             isPeeking: isPeeking,
             resultCount: shelfItems.count,
             hasStack: stack.isCollecting || !stack.isEmpty,
-            hasMediaContent: media.snapshot.hasContent
+            hasMediaContent: media.snapshot.hasContent,
+            hasLockedActivityContent: !notifications.activeItems.isEmpty
+                || context.timer.current != nil
         )
     }
 
@@ -1816,6 +1823,15 @@ public final class AppCoordinator {
         case .airDrop:
             sendViaAirDrop(item.asset)
 
+        case .localSend:
+            guard SafeAssetFile.isCurrentAndSafe(item.asset) else {
+                present(error: NotchShotError.exportFailed(
+                    "That file changed or is no longer safely readable"
+                ))
+                return
+            }
+            openProductivity(tool: .localSend, localSendFiles: [item.asset.url])
+
         case .reveal:
             NSWorkspace.shared.activateFileViewerSelecting([item.asset.url])
 
@@ -2739,6 +2755,8 @@ public final class AppCoordinator {
             sendViaAirDrop(assets)
         case .share:
             share(assets)
+        case .localSend:
+            openProductivity(tool: .localSend, localSendFiles: assets.map(\.url))
         case .compress:
             compress(assets)
         }
@@ -3117,6 +3135,13 @@ public final class AppCoordinator {
     }
 
     public func openClipboard() { onOpenClipboard?() }
+    public func openProductivity(
+        tool: ProductivityTool = .notes,
+        localSendFiles: [URL] = []
+    ) {
+        ProductivityCenterRouter.shared.route(to: tool, localSendFiles: localSendFiles)
+        onOpenProductivity?()
+    }
 
     public func setContextExpanded(_ expanded: Bool) {
         context.setExpanded(expanded)

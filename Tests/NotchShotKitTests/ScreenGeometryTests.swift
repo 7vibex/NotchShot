@@ -281,45 +281,71 @@ struct NotchMetricsTests {
         #expect(NotchWindowController.idlePresencePollInterval < 0.35)
     }
 
-    @Test("A locked session can show only opted-in media and never accepts input")
+    @Test("A locked session shows only opted-in app-owned content and never accepts input")
     @MainActor
     func lockedMediaPresentationPolicy() {
         #expect(LockedMediaPresentationPolicy.shouldShowPanel(
             sessionIsActive: true,
             activity: .result,
-            isOptedIn: false,
+            mediaOptedIn: false,
             hasMediaContent: false
         ))
         #expect(LockedMediaPresentationPolicy.shouldShowPanel(
             sessionIsActive: false,
             activity: .media,
-            isOptedIn: true,
+            mediaOptedIn: true,
             hasMediaContent: true
         ))
         #expect(LockedMediaPresentationPolicy.shouldShowPanel(
             sessionIsActive: false,
             activity: .result,
-            isOptedIn: true,
+            mediaOptedIn: true,
             hasMediaContent: true
         ))
         #expect(!LockedMediaPresentationPolicy.shouldShowPanel(
             sessionIsActive: false,
             activity: .media,
-            isOptedIn: false,
+            mediaOptedIn: false,
             hasMediaContent: true
         ))
         #expect(LockedMediaPresentationPolicy.effectiveActivity(
             sessionIsActive: false,
             currentActivity: .result,
-            isOptedIn: true,
+            mediaOptedIn: true,
             hasMediaContent: true
         ) == .media)
         #expect(LockedMediaPresentationPolicy.effectiveActivity(
             sessionIsActive: false,
             currentActivity: .media,
-            isOptedIn: true,
+            mediaOptedIn: true,
             hasMediaContent: false
         ) == .idle)
+        #expect(LockedMediaPresentationPolicy.content(
+            mediaOptedIn: false,
+            hasMediaContent: false,
+            activityStackOptedIn: true,
+            hasActivityContent: true
+        ) == .activityStack)
+        #expect(LockedMediaPresentationPolicy.effectiveActivity(
+            sessionIsActive: false,
+            currentActivity: .idle,
+            mediaOptedIn: false,
+            hasMediaContent: false,
+            activityStackOptedIn: true,
+            hasActivityContent: true
+        ) == .media)
+        #expect(!LockedMediaPresentationPolicy.shouldShowPanel(
+            sessionIsActive: false,
+            activity: .idle,
+            mediaOptedIn: false,
+            hasMediaContent: false,
+            activityStackOptedIn: false,
+            hasActivityContent: true
+        ))
+        #expect(LockedMediaPresentationPolicy.canBecomeVisibleWithoutLogin(
+            mediaOptedIn: false,
+            activityStackOptedIn: true
+        ))
         #expect(!LockedMediaPresentationPolicy.acceptsInput(sessionIsActive: false))
         #expect(LockedMediaPresentationPolicy.acceptsInput(sessionIsActive: true))
         #expect(NotchPanel.level(sessionIsActive: true) == NotchPanel.notchLevel)

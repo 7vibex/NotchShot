@@ -330,6 +330,7 @@ struct ShelfContent: View {
             menuAction(.save, item: item)
             menuAction(.share, item: item)
             menuAction(.airDrop, item: item)
+            menuAction(.localSend, item: item)
         }
 
         Section("Create & transform") {

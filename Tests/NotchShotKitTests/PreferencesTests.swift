@@ -184,9 +184,12 @@ struct PreferencesTests {
 
         let first = Preferences(defaults: defaults)
         #expect(!first.showsMediaWhileLocked)
+        #expect(!first.showsActivityStackWhileLocked)
         first.showsMediaWhileLocked = true
+        first.showsActivityStackWhileLocked = true
 
         #expect(Preferences(defaults: defaults).showsMediaWhileLocked)
+        #expect(Preferences(defaults: defaults).showsActivityStackWhileLocked)
     }
 
     @Test("Context modules use privacy-safe defaults and persist explicit choices")

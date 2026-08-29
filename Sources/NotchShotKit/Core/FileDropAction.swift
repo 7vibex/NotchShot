@@ -8,6 +8,7 @@ public enum FileDropAction: String, Sendable, CaseIterable, Identifiable {
     case shelf
     case airDrop
     case share
+    case localSend
     case compress
 
     public var id: String { rawValue }
@@ -17,6 +18,7 @@ public enum FileDropAction: String, Sendable, CaseIterable, Identifiable {
         case .shelf: "Shelf"
         case .airDrop: "AirDrop"
         case .share: "Share"
+        case .localSend: "LocalSend"
         case .compress: "ZIP"
         }
     }
@@ -26,6 +28,7 @@ public enum FileDropAction: String, Sendable, CaseIterable, Identifiable {
         case .shelf: "Keep here"
         case .airDrop: "Send nearby"
         case .share: "Choose an app"
+        case .localSend: "Send on LAN"
         case .compress: "Make archive"
         }
     }
@@ -35,6 +38,7 @@ public enum FileDropAction: String, Sendable, CaseIterable, Identifiable {
         case .shelf: "tray.and.arrow.down.fill"
         case .airDrop: "airplayaudio"
         case .share: "square.and.arrow.up"
+        case .localSend: "paperplane.fill"
         case .compress: "doc.zipper"
         }
     }

@@ -9,6 +9,7 @@ public struct SettingsView: View {
     @Bindable var coordinator: AppCoordinator
     @Bindable private var preferences = Preferences.shared
     @State private var selection: SettingsSection? = .general
+    @State private var searchText = ""
 
     public init(coordinator: AppCoordinator) {
         self.coordinator = coordinator
@@ -16,42 +17,90 @@ public struct SettingsView: View {
 
     public var body: some View {
         NavigationSplitView {
-            List(SettingsSection.allCases, selection: $selection) { section in
-                Label(section.title, systemImage: section.symbolName)
-                    .tag(section)
-                    .accessibilityLabel(section.title)
-            }
-            .navigationTitle("Settings")
-            .navigationSplitViewColumnWidth(min: 190, ideal: 210, max: 250)
-        } detail: {
-            Group {
-                switch selection ?? .general {
-                case .general:
-                    GeneralSettings(coordinator: coordinator, preferences: preferences)
-                case .capture:
-                    CaptureSettings(preferences: preferences)
-                case .presets:
-                    RecipeSettings()
-                case .recording:
-                    RecordingSettings(preferences: preferences)
-                case .dictation:
-                    DictationSettings(coordinator: coordinator, preferences: preferences)
-                case .appearance:
-                    NotchSettings(coordinator: coordinator, preferences: preferences)
-                case .integrations:
-                    MediaSettings(coordinator: coordinator, preferences: preferences)
-                case .context:
-                    ContextModuleSettings(coordinator: coordinator, preferences: preferences)
-                case .privacy:
-                    PrivacySettings(coordinator: coordinator, preferences: preferences)
-                case .shortcuts:
-                    ShortcutSettings()
+            List(selection: $selection) {
+                Section {
+                    ForEach(filteredSections) { section in
+                        SettingsSidebarLabel(
+                            section: section,
+                            isSelected: selection == section
+                        )
+                        .tag(section)
+                        .accessibilityLabel(section.title)
+                    }
+                } header: {
+                    Text("Workspace")
                 }
             }
-            .notchShotContentSwap(id: selection ?? .general)
-            .navigationTitle((selection ?? .general).title)
+            .listStyle(.sidebar)
+            .scrollContentBackground(.hidden)
+            .background(SettingsWorkbenchStyle.sidebarBackground)
+            .navigationTitle("NotchShot")
+            .navigationSplitViewColumnWidth(min: 210, ideal: 228, max: 260)
+            .searchable(text: $searchText, prompt: "Search settings")
+            .safeAreaInset(edge: .bottom, spacing: 0) {
+                SettingsSidebarFooter()
+            }
+            .onChange(of: searchText) { _, _ in
+                guard selection.map(filteredSections.contains) != true else { return }
+                selection = filteredSections.first
+            }
+        } detail: {
+            ZStack {
+                SettingsWorkbenchStyle.detailBackground
+                    .ignoresSafeArea()
+
+                if let selection {
+                    VStack(spacing: 0) {
+                        SettingsPaneHeader(section: selection)
+                        Divider().opacity(0.55)
+                        settingsPane(for: selection)
+                    }
+                    .notchShotContentSwap(id: selection)
+                } else {
+                    ContentUnavailableView.search(text: searchText)
+                        .notchShotContentSwap(id: "empty-\(searchText)")
+                }
+            }
+            .navigationTitle(selection?.title ?? "Settings")
         }
-        .frame(minWidth: 760, idealWidth: 820, minHeight: 520, idealHeight: 580)
+        .tint(SettingsWorkbenchStyle.accent)
+        .frame(minWidth: 800, idealWidth: 880, minHeight: 560, idealHeight: 620)
+    }
+
+    @ViewBuilder
+    private func settingsPane(for section: SettingsSection) -> some View {
+        switch section {
+        case .general:
+            GeneralSettings(coordinator: coordinator, preferences: preferences)
+        case .capture:
+            CaptureSettings(preferences: preferences)
+        case .presets:
+            RecipeSettings()
+        case .recording:
+            RecordingSettings(preferences: preferences)
+        case .dictation:
+            DictationSettings(coordinator: coordinator, preferences: preferences)
+        case .appearance:
+            NotchSettings(coordinator: coordinator, preferences: preferences)
+        case .integrations:
+            MediaSettings(coordinator: coordinator, preferences: preferences)
+        case .context:
+            ContextModuleSettings(coordinator: coordinator, preferences: preferences)
+        case .privacy:
+            PrivacySettings(coordinator: coordinator, preferences: preferences)
+        case .shortcuts:
+            ShortcutSettings()
+        }
+    }
+
+    private var filteredSections: [SettingsSection] {
+        SettingsSearchPolicy.matchingSections(
+            query: searchText,
+            sections: SettingsSection.allCases,
+            id: \SettingsSection.rawValue,
+            title: \SettingsSection.title,
+            keywords: \SettingsSection.searchKeywords
+        )
     }
 }
 
@@ -84,6 +133,21 @@ private enum SettingsSection: String, CaseIterable, Identifiable {
         }
     }
 
+    var sidebarTitle: String {
+        switch self {
+        case .general: "General"
+        case .capture: "Capture"
+        case .presets: "Presets"
+        case .recording: "Recording"
+        case .dictation: "Dictation"
+        case .appearance: "Appearance"
+        case .integrations: "Integrations"
+        case .context: "Context"
+        case .privacy: "Privacy"
+        case .shortcuts: "Shortcuts"
+        }
+    }
+
     var symbolName: String {
         switch self {
         case .general: "gearshape"
@@ -96,6 +160,201 @@ private enum SettingsSection: String, CaseIterable, Identifiable {
         case .context: "rectangle.topthird.inset.filled"
         case .privacy: "hand.raised"
         case .shortcuts: "command"
+        }
+    }
+
+    var summary: String {
+        switch self {
+        case .general:
+            "Startup, storage, updates, and the everyday defaults for NotchShot."
+        case .capture:
+            "Choose how screenshots are selected, saved, copied, and surfaced."
+        case .presets:
+            "Build reusable capture recipes for the workflows you repeat most."
+        case .recording:
+            "Tune video quality, audio, captions, pointer effects, and export."
+        case .dictation:
+            "Configure private voice input, language, cleanup, and insertion."
+        case .appearance:
+            "Shape how the notch, displays, system HUD, and floating basket behave."
+        case .integrations:
+            "Control trusted media bridges and Now Playing fallbacks."
+        case .context:
+            "Bring focused calendar, timer, agent, and voice-note context to the notch."
+        case .privacy:
+            "Review permissions, local history, clipboard access, and retention."
+        case .shortcuts:
+            "Set global hotkeys and automation entry points for fast capture."
+        }
+    }
+
+    var searchKeywords: [String] {
+        switch self {
+        case .general:
+            ["launch", "login", "dock", "storage", "folder", "updates", "version"]
+        case .capture:
+            ["screenshot", "image", "export", "format", "jpeg", "heic", "shelf", "quick actions", "cursor"]
+        case .presets:
+            ["recipe", "github", "app store", "documentation", "social", "bug report"]
+        case .recording:
+            ["video", "screen", "microphone", "audio", "captions", "frame rate", "resolution", "cursor", "click"]
+        case .dictation:
+            ["voice", "speech", "transcription", "push to talk", "language", "insert", "filler words"]
+        case .appearance:
+            ["notch", "display", "hover", "brightness", "volume", "hud", "basket", "jiggle", "liquid glass"]
+        case .integrations:
+            ["music", "spotify", "now playing", "airplay", "audio route", "adapter", "automation", "notification center", "lock screen", "activity stack", "reply"]
+        case .context:
+            ["calendar", "reminders", "planner", "pomodoro", "focus timer", "voice notes", "agents", "ai activity", "charging"]
+        case .privacy:
+            ["permissions", "clipboard", "history", "ocr", "screen recording", "microphone", "accessibility", "retention"]
+        case .shortcuts:
+            ["hotkey", "keyboard", "automation", "url", "finder services", "alfred", "raycast"]
+        }
+    }
+}
+
+private enum SettingsWorkbenchStyle {
+    static let accent = Color.accentColor
+    static let sidebarBackground = Color(nsColor: .underPageBackgroundColor)
+        .opacity(0.92)
+    static let detailBackground = Color(nsColor: .windowBackgroundColor)
+}
+
+private struct SettingsSidebarLabel: View {
+    let section: SettingsSection
+    let isSelected: Bool
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Image(systemName: section.symbolName)
+                .font(.system(size: 13, weight: .semibold))
+                .symbolRenderingMode(.monochrome)
+                .foregroundStyle(isSelected ? .white : SettingsWorkbenchStyle.accent)
+                .frame(width: 26, height: 26)
+                .background {
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .fill(isSelected
+                            ? SettingsWorkbenchStyle.accent
+                            : SettingsWorkbenchStyle.accent.opacity(0.12))
+                }
+
+            Text(section.sidebarTitle)
+                .font(.system(size: 13, weight: isSelected ? .semibold : .medium))
+                .lineLimit(1)
+
+            Spacer(minLength: 4)
+        }
+        .padding(.vertical, 3)
+        .contentShape(.rect)
+    }
+}
+
+private struct SettingsSidebarFooter: View {
+    var body: some View {
+        HStack(spacing: 10) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .fill(SettingsWorkbenchStyle.accent.gradient)
+                Image(systemName: "camera.aperture")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(.white)
+            }
+            .frame(width: 32, height: 32)
+
+            VStack(alignment: .leading, spacing: 1) {
+                Text("NotchShot")
+                    .font(.system(size: 12, weight: .semibold))
+                Text("Local-first capture")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .background(.bar)
+        .overlay(alignment: .top) {
+            Divider().opacity(0.55)
+        }
+    }
+}
+
+private struct SettingsPaneHeader: View {
+    let section: SettingsSection
+
+    var body: some View {
+        HStack(spacing: 14) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 13, style: .continuous)
+                    .fill(SettingsWorkbenchStyle.accent.opacity(0.13))
+                RoundedRectangle(cornerRadius: 13, style: .continuous)
+                    .stroke(SettingsWorkbenchStyle.accent.opacity(0.18), lineWidth: 1)
+                Image(systemName: section.symbolName)
+                    .font(.system(size: 19, weight: .semibold))
+                    .foregroundStyle(SettingsWorkbenchStyle.accent)
+            }
+            .frame(width: 44, height: 44)
+            .accessibilityHidden(true)
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text(section.title)
+                    .font(.title2.weight(.semibold))
+                Text(section.summary)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+            }
+
+            Spacer(minLength: 12)
+
+            Label("On this Mac", systemImage: "lock.fill")
+                .font(.caption.weight(.medium))
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                .background(.quaternary, in: Capsule())
+                .accessibilityLabel("Settings are stored on this Mac")
+        }
+        .padding(.horizontal, 26)
+        .padding(.vertical, 18)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.bar)
+    }
+}
+
+private extension View {
+    func settingsWorkbenchFormStyle() -> some View {
+        formStyle(.grouped)
+            .scrollContentBackground(.hidden)
+            .background(SettingsWorkbenchStyle.detailBackground)
+    }
+}
+
+/// Pure matching logic so Settings search can be regression-tested without
+/// constructing a SwiftUI navigation hierarchy.
+public enum SettingsSearchPolicy {
+    public static func matchingSections<Section>(
+        query: String,
+        sections: [Section],
+        id: KeyPath<Section, String>,
+        title: KeyPath<Section, String>,
+        keywords: KeyPath<Section, [String]>
+    ) -> [Section] {
+        let terms = query
+            .lowercased()
+            .split(whereSeparator: { $0.isWhitespace })
+            .map(String.init)
+        guard !terms.isEmpty else { return sections }
+        return sections.filter { section in
+            let haystack = ([
+                section[keyPath: id],
+                section[keyPath: title],
+            ] + section[keyPath: keywords])
+                .joined(separator: " ")
+                .lowercased()
+            return terms.allSatisfy(haystack.contains)
         }
     }
 }
@@ -331,7 +590,7 @@ private struct ContextModuleSettings: View {
                 Button("Choose Document…") { chooseDocument() }
             }
         }
-        .notchShotFormStyle()
+        .settingsWorkbenchFormStyle()
         .onAppear {
             if preferences.calendarGlanceEnabled { calendar.start() }
         }
@@ -522,7 +781,7 @@ private struct RecipeSettings: View {
                     .foregroundStyle(.secondary)
             }
         }
-        .notchShotFormStyle()
+        .settingsWorkbenchFormStyle()
     }
 
     private func recipeBinding<Value>(_ keyPath: WritableKeyPath<CaptureRecipe, Value>) -> Binding<Value> {
@@ -649,7 +908,7 @@ private struct GeneralSettings: View {
                     .foregroundStyle(.secondary)
             }
         }
-        .notchShotFormStyle()
+        .settingsWorkbenchFormStyle()
     }
 
     private func setLaunchAtLogin(_ enabled: Bool) {
@@ -738,7 +997,7 @@ private struct CaptureSettings: View {
                     .foregroundStyle(.secondary)
             }
         }
-        .notchShotFormStyle()
+        .settingsWorkbenchFormStyle()
     }
 }
 
@@ -835,7 +1094,7 @@ private struct RecordingSettings: View {
                 }
             }
         }
-        .notchShotFormStyle()
+        .settingsWorkbenchFormStyle()
         .task {
             microphones = PermissionCenter.shared.availableMicrophones()
             retainedDiscardCount = RecordingService.retainedDiscardedRecordings().count
@@ -1034,7 +1293,7 @@ private struct DictationSettings: View {
                     .foregroundStyle(.secondary)
             }
         }
-        .notchShotFormStyle()
+        .settingsWorkbenchFormStyle()
     }
 
     /// Availability plus the action that resolves it. The old pane could only
@@ -1254,7 +1513,7 @@ private struct NotchSettings: View {
                 }
             }
         }
-        .notchShotFormStyle()
+        .settingsWorkbenchFormStyle()
     }
 
     private func displayName(for context: NotchDisplayContext) -> String {
@@ -1284,11 +1543,21 @@ private struct MediaSettings: View {
                     get: { preferences.showsMediaWhileLocked },
                     set: { newValue in
                         preferences.showsMediaWhileLocked = newValue
-                        coordinator.windowController?.refreshLockedMediaPresentation()
+                        coordinator.windowController?.refreshLockedPresentation()
                     }
                 ))
                 .disabled(!preferences.mediaIntegrationEnabled)
                 Text("Experimental and off by default. The locked view is display-only: no title, controls, captures, history, settings, or pointer interaction.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Toggle("Show activity stack while Mac is locked", isOn: Binding(
+                    get: { preferences.showsActivityStackWhileLocked },
+                    set: { newValue in
+                        preferences.showsActivityStackWhileLocked = newValue
+                        coordinator.windowController?.refreshLockedPresentation()
+                    }
+                ))
+                Text("Separate privacy opt-in. Shows current track details, Focus state, and the latest NotchShot-owned alert in a display-only card stack. Replies and controls remain disabled until unlock.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 LabeledContent("Active source", value: coordinator.media.activeSource.displayName)
@@ -1350,7 +1619,7 @@ private struct MediaSettings: View {
                     .foregroundStyle(.secondary)
             }
         }
-        .notchShotFormStyle()
+        .settingsWorkbenchFormStyle()
     }
 
     private func chooseAdapter() {
@@ -1539,7 +1808,7 @@ private struct PrivacySettings: View {
                 }
             }
         }
-        .notchShotFormStyle()
+        .settingsWorkbenchFormStyle()
         .onAppear { coordinator.permissions.refresh() }
         .onReceive(NotificationCenter.default.publisher(
             for: NSApplication.didBecomeActiveNotification
@@ -1633,7 +1902,7 @@ private struct ShortcutSettings: View {
                 }
             }
         }
-        .notchShotFormStyle()
+        .settingsWorkbenchFormStyle()
         .background(
             ShortcutRecorder(isRecording: recording != nil) { binding in
                 guard let action = recording else { return }

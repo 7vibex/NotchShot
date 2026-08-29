@@ -9,8 +9,10 @@ capture launcher, the recording HUD, and the post-capture shelf.
 No account, no backend, no telemetry, no subscription. Captures, recordings, transcripts,
 OCR text, projects and history stay on the Mac. If the Spotify Apple Events fallback is
 enabled, NotchShot fetches the current track's artwork from Spotify's HTTPS CDN; it never
-uploads capture content. Configured public builds also contact their HTTPS Sparkle feed to
-check for signed updates.
+uploads capture content. Weather coordinates are sent to Open-Meteo only after an explicit
+Refresh, and LocalSend sends only the files the user selects directly to a private-network
+receiver. Configured public builds also contact their HTTPS Sparkle feed to check for signed
+updates.
 
 ## Build and run
 
@@ -65,6 +67,8 @@ Sources/NotchShotKit/
   Clipboard/    opt-in local clipboard history, monitor and store
   Media/        MediaSource protocol, MediaRemote bridge, Apple Events fallback
   Context/      AI activity, calendar, document summary, power and audio-route modules
+  Productivity/ local notes and lyrics, weather, stats, terminal, app launcher,
+                window snapping, pointer locator, camera preview and LocalSend client
   Permissions/  staged requests and remediation
   HotKeys/      Carbon global shortcuts
   UI/           notch views, shelf, settings, history browser
@@ -180,15 +184,28 @@ fallback state and keeps the saved audio available in Finder.
 The app-owned Focus Timer and natural-language Planner are also live: Planner writes only the
 Calendar event or Reminder the user confirms. The Focus Timer deliberately does not claim to
 sync with Apple's Clock app, whose timers are not part of EventKit's public calendar/reminder API.
+The Productivity Center adds searchable local notes, user-supplied per-track lyrics, manually
+refreshed weather, public system statistics, a bounded local terminal, an installed-app launcher,
+Accessibility-authorized window snapping, a temporary pointer locator, and a camera preview.
+The app-owned Notification Center schedules local alerts, reconciles only NotchShot's delivered
+and pending requests, and supports Mark Done plus a bounded **Reply in NotchShot** action stored
+locally against the alert. It still does not read, dismiss, or reply to another app's notifications.
+An independently opted-in, display-only locked-session activity stack presents media, the latest
+due NotchShot alert, and Focus in translucent cards; it is an AppKit panel, not a WidgetKit Lock
+Screen widget. The public API boundary and runtime proof requirements are documented in
+[`Documentation/NOTIFICATIONS_AND_LOCK_SCREEN.md`](Documentation/NOTIFICATIONS_AND_LOCK_SCREEN.md).
+LocalSend v2 transfers are available from the shelf and the Finder drop tray. HTTPS receivers
+require the user to compare and approve the receiver certificate's SHA-256 fingerprint before any
+file bytes are uploaded; public internet destinations are rejected.
 The hardware-connected island shell stays opaque black. Expanded capture, shelf, Now Playing,
 and AI activity place native macOS Liquid Glass only on interactive control chrome inside that
 shell, while Reduce Transparency and Increase Contrast use solid, outlined controls instead.
 Recording, processing, errors, and dense context content remain stable and opaque.
 
-Later (not built): horizontal and automatic scrolling, GIF, webcam, presenter mode,
-post-process click zoom and cursor smoothing, live audio-source changes, keystroke overlay,
-window snapping, and a universal launcher. They remain out of the default product so the
-capture workflow stays focused.
+Later (not built): horizontal and automatic scrolling, GIF, camera compositing/presenter mode,
+post-process click zoom and cursor smoothing, live audio-source changes, and keystroke overlay.
+The Productivity Center now provides a standalone camera preview, window snapping, and an
+installed-app launcher; none is allowed to interfere with an in-flight capture or recording.
 
 Droppy parity stops at public, consented integrations. NotchShot does not read another app's
 Notification Center history or inject replies into WhatsApp/iMessage, control an unrelated

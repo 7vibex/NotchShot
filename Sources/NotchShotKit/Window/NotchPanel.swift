@@ -61,10 +61,10 @@ public final class NotchPanel: NSPanel {
     }
 
     /// The secure lock experience is hosted at the screen-saver layer, above
-    /// ordinary menu-bar panels. The opted-in locked media surface is already
+    /// ordinary menu-bar panels. The opted-in locked activity surface is
     /// display-only and mouse-transparent; moving it to this public AppKit
-    /// level lets the cover/wave participate in that layer without ever
-    /// exceeding the system shielding level or covering password controls.
+    /// level lets its cards participate in that layer without ever exceeding
+    /// the system shielding level or covering password controls.
     static let lockedMediaLevel = NSWindow.Level.screenSaver
 
     static func level(sessionIsActive: Bool) -> NSWindow.Level {

@@ -7,24 +7,25 @@ import Testing
 struct FileDropActionTests {
     @Test("The tray keeps a stable left-to-right action order")
     func actionOrder() {
-        #expect(FileDropAction.allCases == [.shelf, .airDrop, .share, .compress])
+        #expect(FileDropAction.allCases == [.shelf, .airDrop, .share, .localSend, .compress])
     }
 
-    @Test("Each quarter of the tray selects its visible destination")
+    @Test("Each fifth of the tray selects its visible destination")
     func horizontalSelection() {
-        let width: CGFloat = 400
+        let width: CGFloat = 500
         #expect(FileDropActionSelection.action(atX: 0, width: width) == .shelf)
         #expect(FileDropActionSelection.action(atX: 99.9, width: width) == .shelf)
         #expect(FileDropActionSelection.action(atX: 100, width: width) == .airDrop)
         #expect(FileDropActionSelection.action(atX: 200, width: width) == .share)
-        #expect(FileDropActionSelection.action(atX: 300, width: width) == .compress)
+        #expect(FileDropActionSelection.action(atX: 300, width: width) == .localSend)
         #expect(FileDropActionSelection.action(atX: 400, width: width) == .compress)
+        #expect(FileDropActionSelection.action(atX: 500, width: width) == .compress)
     }
 
     @Test("Out-of-bounds and malformed geometry fall back safely")
     func selectionFallbacks() {
         #expect(FileDropActionSelection.action(atX: -20, width: 400) == .shelf)
-        #expect(FileDropActionSelection.action(atX: 900, width: 400) == .compress)
+        #expect(FileDropActionSelection.action(atX: 900, width: 500) == .compress)
         #expect(FileDropActionSelection.action(atX: .nan, width: 400) == .shelf)
         #expect(FileDropActionSelection.action(atX: 40, width: 0) == .shelf)
         #expect(FileDropActionSelection.action(atX: 40, width: .infinity) == .shelf)
@@ -35,6 +36,7 @@ struct FileDropActionTests {
         #expect(FileDropActionSelection.adjacent(to: .shelf, delta: -1) == .shelf)
         #expect(FileDropActionSelection.adjacent(to: .shelf, delta: 1) == .airDrop)
         #expect(FileDropActionSelection.adjacent(to: .airDrop, delta: 1) == .share)
+        #expect(FileDropActionSelection.adjacent(to: .share, delta: 1) == .localSend)
         #expect(FileDropActionSelection.adjacent(to: .compress, delta: 1) == .compress)
     }
 

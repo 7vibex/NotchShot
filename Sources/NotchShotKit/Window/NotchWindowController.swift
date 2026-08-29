@@ -3,28 +3,67 @@ import Combine
 import SwiftUI
 
 enum LockedMediaPresentationPolicy {
+    enum Content: Equatable {
+        case none
+        case compactMedia
+        case activityStack
+    }
+
+    static func content(
+        mediaOptedIn: Bool,
+        hasMediaContent: Bool,
+        activityStackOptedIn: Bool,
+        hasActivityContent: Bool
+    ) -> Content {
+        if activityStackOptedIn, hasMediaContent || hasActivityContent {
+            return .activityStack
+        }
+        if mediaOptedIn, hasMediaContent {
+            return .compactMedia
+        }
+        return .none
+    }
+
     static func effectiveActivity(
         sessionIsActive: Bool,
         currentActivity: NotchActivity,
-        isOptedIn: Bool,
-        hasMediaContent: Bool
+        mediaOptedIn: Bool,
+        hasMediaContent: Bool,
+        activityStackOptedIn: Bool = false,
+        hasActivityContent: Bool = false
     ) -> NotchActivity {
         guard !sessionIsActive else { return currentActivity }
-        return isOptedIn && hasMediaContent ? .media : .idle
+        return content(
+            mediaOptedIn: mediaOptedIn,
+            hasMediaContent: hasMediaContent,
+            activityStackOptedIn: activityStackOptedIn,
+            hasActivityContent: hasActivityContent
+        ) == .none ? .idle : .media
     }
 
     static func shouldShowPanel(
         sessionIsActive: Bool,
         activity: NotchActivity,
-        isOptedIn: Bool,
-        hasMediaContent: Bool
+        mediaOptedIn: Bool,
+        hasMediaContent: Bool,
+        activityStackOptedIn: Bool = false,
+        hasActivityContent: Bool = false
     ) -> Bool {
         sessionIsActive || effectiveActivity(
             sessionIsActive: false,
             currentActivity: activity,
-            isOptedIn: isOptedIn,
-            hasMediaContent: hasMediaContent
+            mediaOptedIn: mediaOptedIn,
+            hasMediaContent: hasMediaContent,
+            activityStackOptedIn: activityStackOptedIn,
+            hasActivityContent: hasActivityContent
         ) == .media
+    }
+
+    static func canBecomeVisibleWithoutLogin(
+        mediaOptedIn: Bool,
+        activityStackOptedIn: Bool
+    ) -> Bool {
+        mediaOptedIn || activityStackOptedIn
     }
 
     static func acceptsInput(sessionIsActive: Bool) -> Bool { sessionIsActive }
@@ -131,6 +170,7 @@ public final class NotchWindowController {
     private var resultCount = 0
     private var hasStack = false
     private var hasMediaContent = false
+    private var hasLockedActivityContent = false
 
     public init(makeContent: @escaping (NotchDisplayContext) -> AnyView) {
         self.makeContent = makeContent
@@ -274,7 +314,7 @@ public final class NotchWindowController {
                 entries[displayID] = entry
             } else {
                 let panel = NotchPanel(contentRect: panelFrame(for: metrics))
-                panel.canBecomeVisibleWithoutLogin = Preferences.shared.showsMediaWhileLocked
+                panel.canBecomeVisibleWithoutLogin = allowsLockedPresentation
                 let hosting = NSHostingView(rootView: makeContent(context))
                 hosting.translatesAutoresizingMaskIntoConstraints = true
                 hosting.autoresizingMask = [.width, .height]
@@ -340,13 +380,15 @@ public final class NotchWindowController {
         isPeeking: Bool,
         resultCount: Int,
         hasStack: Bool,
-        hasMediaContent: Bool
+        hasMediaContent: Bool,
+        hasLockedActivityContent: Bool
     ) {
         self.currentActivity = activity
         self.isPeeking = isPeeking
         self.resultCount = resultCount
         self.hasStack = hasStack
         self.hasMediaContent = hasMediaContent
+        self.hasLockedActivityContent = hasLockedActivityContent
         applyLayout()
     }
 
@@ -371,7 +413,7 @@ public final class NotchWindowController {
             presenceTimerInterval = nil
             for entry in entries.values {
                 entry.panel.level = NotchPanel.level(sessionIsActive: false)
-                entry.panel.canBecomeVisibleWithoutLogin = Preferences.shared.showsMediaWhileLocked
+                entry.panel.canBecomeVisibleWithoutLogin = allowsLockedPresentation
                 entry.panel.setInteractiveRectFromScreenRect(.zero)
                 entry.panel.ignoresMouseEvents = true
                 applyVisibilityPolicy(to: entry.panel)
@@ -380,7 +422,7 @@ public final class NotchWindowController {
         }
         for entry in entries.values {
             entry.panel.level = NotchPanel.level(sessionIsActive: true)
-            entry.panel.canBecomeVisibleWithoutLogin = Preferences.shared.showsMediaWhileLocked
+            entry.panel.canBecomeVisibleWithoutLogin = allowsLockedPresentation
             applyVisibilityPolicy(to: entry.panel)
             entry.panel.setInteractiveRectFromScreenRect(
                 interactiveRect(for: entry.context)
@@ -460,8 +502,10 @@ public final class NotchWindowController {
             return LockedMediaPresentationPolicy.effectiveActivity(
                 sessionIsActive: false,
                 currentActivity: currentActivity,
-                isOptedIn: Preferences.shared.showsMediaWhileLocked,
-                hasMediaContent: hasMediaContent
+                mediaOptedIn: Preferences.shared.showsMediaWhileLocked,
+                hasMediaContent: hasMediaContent,
+                activityStackOptedIn: Preferences.shared.showsActivityStackWhileLocked,
+                hasActivityContent: hasLockedActivityContent
             )
         }
         if case .dictation(let snap) = currentActivity, let did = snap.displayID {
@@ -713,25 +757,36 @@ public final class NotchWindowController {
     }
 
     /// Re-applies the lock-window opt-in immediately after Settings changes.
-    public func refreshLockedMediaPresentation() {
+    public func refreshLockedPresentation() {
         for entry in entries.values {
             entry.panel.level = NotchPanel.level(sessionIsActive: isSessionActive)
-            entry.panel.canBecomeVisibleWithoutLogin = Preferences.shared.showsMediaWhileLocked
+            entry.panel.canBecomeVisibleWithoutLogin = allowsLockedPresentation
         }
         applyLayout()
     }
+
+    public func refreshLockedMediaPresentation() { refreshLockedPresentation() }
 
     private func applyVisibilityPolicy(to panel: NotchPanel) {
         if LockedMediaPresentationPolicy.shouldShowPanel(
             sessionIsActive: isSessionActive,
             activity: currentActivity,
-            isOptedIn: Preferences.shared.showsMediaWhileLocked,
-            hasMediaContent: hasMediaContent
+            mediaOptedIn: Preferences.shared.showsMediaWhileLocked,
+            hasMediaContent: hasMediaContent,
+            activityStackOptedIn: Preferences.shared.showsActivityStackWhileLocked,
+            hasActivityContent: hasLockedActivityContent
         ) {
             panel.orderFrontRegardless()
         } else {
             panel.orderOut(nil)
         }
+    }
+
+    private var allowsLockedPresentation: Bool {
+        LockedMediaPresentationPolicy.canBecomeVisibleWithoutLogin(
+            mediaOptedIn: Preferences.shared.showsMediaWhileLocked,
+            activityStackOptedIn: Preferences.shared.showsActivityStackWhileLocked
+        )
     }
 
     public func resignFocus() {

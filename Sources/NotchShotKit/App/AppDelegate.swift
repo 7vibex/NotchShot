@@ -18,6 +18,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     private var onboardingWindow: NSWindow?
     private var historyWindow: NSWindow?
     private var clipboardWindow: NSWindow?
+    private var productivityWindow: NSWindow?
     private var editorWindows: [ObjectIdentifier: NSWindow] = [:]
     private var editorControllers: [ObjectIdentifier: AnnotationDocumentController] = [:]
     private var privacyReviewWindows: [ObjectIdentifier: NSWindow] = [:]
@@ -70,6 +71,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         coordinator.onOpenSettings = { [weak self] in self?.showSettings() }
         coordinator.onOpenHistory = { [weak self] in self?.showHistory() }
         coordinator.onOpenClipboard = { [weak self] in self?.showClipboard() }
+        coordinator.onOpenProductivity = { [weak self] in self?.showProductivity() }
         coordinator.onOpenEditor = { [weak self] documentController in
             self?.showEditor(documentController)
         }
@@ -103,6 +105,9 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.coordinator.reconcileSystemLevelIntegration()
         }
         coordinator.start()
+        ProductivityNotificationCenter.shared.configure { [weak self] in
+            self?.coordinator.openProductivity(tool: .notifications)
+        }
 
         HotKeyController.shared.handler = { [weak self] action in
             self?.handle(action)
@@ -472,6 +477,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(.separator())
         add(menu, title: "History…", action: #selector(showHistoryFromMenu))
         add(menu, title: "Clipboard History…", action: #selector(showClipboardFromMenu))
+        add(menu, title: "Productivity Center…", action: #selector(showProductivityFromMenu))
         add(menu, title: "Summarize Document…", action: #selector(summarizeDocumentFromMenu))
         add(menu, title: "Restore Last Capture", action: #selector(restoreLastCapture))
         add(menu, title: "Unlock All Pinned Captures", action: #selector(unlockPins))
@@ -508,6 +514,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func showSettingsFromMenu() { showSettings() }
     @objc private func showHistoryFromMenu() { showHistory() }
     @objc private func showClipboardFromMenu() { showClipboard() }
+    @objc private func showProductivityFromMenu() { showProductivity() }
     @objc private func summarizeDocumentFromMenu() {
         let panel = NSOpenPanel()
         panel.canChooseFiles = true
@@ -610,6 +617,21 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         )
         attachCloseHandler(to: window) { [weak self] in self?.clipboardWindow = nil }
         clipboardWindow = window
+        bringToFront(window)
+    }
+
+    private func showProductivity() {
+        if let productivityWindow {
+            bringToFront(productivityWindow)
+            return
+        }
+        let window = makeWindow(
+            title: "NotchShot Productivity Center",
+            content: ProductivitySuiteView(coordinator: coordinator),
+            size: CGSize(width: 940, height: 640)
+        )
+        attachCloseHandler(to: window) { [weak self] in self?.productivityWindow = nil }
+        productivityWindow = window
         bringToFront(window)
     }
 

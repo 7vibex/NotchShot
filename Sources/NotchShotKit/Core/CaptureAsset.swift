@@ -215,6 +215,7 @@ public enum ShareAction: String, Sendable, CaseIterable, Identifiable {
     case moveTo
     case compress
     case airDrop
+    case localSend
     case reveal
     case delete
 
@@ -226,7 +227,7 @@ public enum ShareAction: String, Sendable, CaseIterable, Identifiable {
     public static let customizableShelfCases: [ShareAction] = [
         .copy, .open, .save, .share, .annotate, .trim, .privacyReview,
         .removeBackground, .ocr, .pin, .inspect, .optimize, .convert,
-        .quickLook, .compress, .airDrop, .reveal,
+        .quickLook, .compress, .airDrop, .localSend, .reveal,
     ]
 
     public static let defaultShelfQuickActions: [ShareAction] = [
@@ -268,6 +269,7 @@ public enum ShareAction: String, Sendable, CaseIterable, Identifiable {
         case .moveTo: "Move To…"
         case .compress: "Create ZIP…"
         case .airDrop: "AirDrop…"
+        case .localSend: "LocalSend…"
         case .reveal: "Reveal in Finder"
         case .delete: "Delete"
         }
@@ -301,6 +303,7 @@ public enum ShareAction: String, Sendable, CaseIterable, Identifiable {
         case .moveTo: "folder.badge.gearshape"
         case .compress: "doc.zipper"
         case .airDrop: "airplayaudio"
+        case .localSend: "paperplane"
         case .reveal: "folder"
         case .delete: "trash"
         }

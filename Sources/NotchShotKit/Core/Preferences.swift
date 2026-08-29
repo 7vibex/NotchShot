@@ -207,6 +207,12 @@ public final class Preferences {
     /// Privacy-sensitive opt-in. The lock-window presentation is media-only,
     /// compact, and non-interactive; capture results and metadata never use it.
     public var showsMediaWhileLocked = false { didSet { write(showsMediaWhileLocked, .mediaWhileLocked) } }
+    /// More revealing lock-session presentation. Off by default and separate
+    /// from compact media because it may show track metadata, Focus state, and
+    /// the content of NotchShot-owned alerts.
+    public var showsActivityStackWhileLocked = false {
+        didSet { write(showsActivityStackWhileLocked, .activityStackWhileLocked) }
+    }
     public var appleEventsFallbackEnabled = false { didSet { write(appleEventsFallbackEnabled, .appleEventsFallback) } }
     /// Path to the user-installed mediaremote-adapter bundle, if present.
     public var mediaRemoteAdapterPath: String? { didSet { write(mediaRemoteAdapterPath, .adapterPath) } }
@@ -425,7 +431,8 @@ public final class Preferences {
         case clipboardEnabled, clipboardRetentionDays, clipboardClearsOnQuit, clipboardExcluded
         case notchEnabled, notchDisplayPlacement, islandOnExternal, mirrorPassiveContext, hoverPeek, hoverPeekDelay, systemLevelHUD
         case mirrorsBrightness, suppressesSystemOSD, usesSystemShortcuts
-        case mediaEnabled, mediaWhileLocked, appleEventsFallback, adapterPath, adapterIdentity
+        case mediaEnabled, mediaWhileLocked, activityStackWhileLocked
+        case appleEventsFallback, adapterPath, adapterIdentity
         case calendarGlance, selectedCalendars, hiddenTitleCalendars, calendarTitles, calendarOverMedia
         case customCalendarSelection
         case powerStatus, audioRouteStatus, aiActivity, aiActivityOverMedia, enabledAISources
@@ -560,6 +567,7 @@ public final class Preferences {
         usesSystemScreenshotShortcuts = bool(.usesSystemShortcuts, false)
         mediaIntegrationEnabled = bool(.mediaEnabled, true)
         showsMediaWhileLocked = bool(.mediaWhileLocked, false)
+        showsActivityStackWhileLocked = bool(.activityStackWhileLocked, false)
         appleEventsFallbackEnabled = bool(.appleEventsFallback, false)
         mediaRemoteAdapterPath = string(.adapterPath)
         mediaRemoteAdapterIdentity = defaults.data(

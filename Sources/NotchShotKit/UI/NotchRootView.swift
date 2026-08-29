@@ -9,6 +9,7 @@ import UniformTypeIdentifiers
 /// island rather than resizing a window.
 public struct NotchRootView: View {
     @Bindable var coordinator: AppCoordinator
+    @Bindable private var notificationStore = ProductivityNotificationStore.shared
     let context: NotchDisplayContext
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -31,14 +32,27 @@ public struct NotchRootView: View {
 
     private var isLockedSession: Bool { !coordinator.media.isSessionActive }
 
+    private var lockedPresentationContent: LockedMediaPresentationPolicy.Content {
+        LockedMediaPresentationPolicy.content(
+            mediaOptedIn: Preferences.shared.showsMediaWhileLocked,
+            hasMediaContent: coordinator.media.snapshot.hasContent,
+            activityStackOptedIn: Preferences.shared.showsActivityStackWhileLocked,
+            hasActivityContent: !notificationStore.activeItems.isEmpty
+                || coordinator.context.timer.current != nil
+        )
+    }
+
     /// A non-active display shows media at most, never a capture UI.
     private var effectiveActivity: NotchActivity {
         if isLockedSession {
             return LockedMediaPresentationPolicy.effectiveActivity(
                 sessionIsActive: false,
                 currentActivity: coordinator.activity,
-                isOptedIn: Preferences.shared.showsMediaWhileLocked,
-                hasMediaContent: coordinator.media.snapshot.hasContent
+                mediaOptedIn: Preferences.shared.showsMediaWhileLocked,
+                hasMediaContent: coordinator.media.snapshot.hasContent,
+                activityStackOptedIn: Preferences.shared.showsActivityStackWhileLocked,
+                hasActivityContent: !notificationStore.activeItems.isEmpty
+                    || coordinator.context.timer.current != nil
             )
         }
         if case .systemLevel(let level) = coordinator.activity,
@@ -113,7 +127,16 @@ public struct NotchRootView: View {
     /// 5pt it is lifted off the bottom edge, rounded up for the shape's curve.
     private static let overlaidHUDHeight: CGFloat = 54
 
+    @ViewBuilder
     public var body: some View {
+        if isLockedSession, lockedPresentationContent == .activityStack {
+            lockedActivityStack
+        } else {
+            standardPresentation
+        }
+    }
+
+    private var standardPresentation: some View {
         VStack(spacing: 0) {
             Color.clear
                 .frame(height: layout.topInset)
@@ -129,6 +152,26 @@ public struct NotchRootView: View {
         .onChange(of: isTargetedForDrop) { _, targeted in
             coordinator.setDraggingFiles(targeted)
         }
+    }
+
+    private var lockedActivityStack: some View {
+        VStack(spacing: 0) {
+            Color.clear
+                .frame(height: max(context.metrics.notchSize.height + 12, 44))
+                .accessibilityHidden(true)
+            NotchActivityCardStack(
+                coordinator: coordinator,
+                store: notificationStore,
+                isLocked: true,
+                showsPlaceholders: false
+            )
+            .padding(.horizontal, 16)
+            Spacer(minLength: 0)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .allowsHitTesting(false)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("NotchShot Lock Screen activities")
     }
 
     private var shape: NotchShape {
@@ -640,6 +683,7 @@ private struct FileDropActionTray: View {
         case .shelf: .cyan
         case .airDrop: .blue
         case .share: .purple
+        case .localSend: .green
         case .compress: .orange
         }
     }
@@ -1703,6 +1747,12 @@ private struct CaptureMenuContent: View {
                         coordinator.startVoiceNote()
                     } label: {
                         Label("Voice Note", systemImage: "waveform.and.mic")
+                    }
+                    Divider()
+                    Button {
+                        coordinator.openProductivity()
+                    } label: {
+                        Label("Productivity Center", systemImage: "square.grid.2x2")
                     }
                     Divider()
                     Button {
