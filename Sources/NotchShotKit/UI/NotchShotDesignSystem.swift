@@ -20,6 +20,26 @@ enum NotchShotDesignSystem {
     }
 }
 
+/// Optical rules for the small activity stack that floats over the desktop or
+/// lock-screen wallpaper. These cards are transient chrome with short labels,
+/// so they can reveal the scene behind them; accessibility appearances replace
+/// refraction with a stable opaque surface using the same geometry.
+enum NotchActivityGlassPolicy {
+    static let tintOpacity = 0.10
+    static let highlightOpacity = 0.30
+    static let shadowOpacity = 0.18
+
+    static func usesLiquidGlass(
+        reduceTransparency: Bool,
+        increaseContrast: Bool
+    ) -> Bool {
+        NotchShotDesignSystem.usesLiquidGlass(
+            reduceTransparency: reduceTransparency,
+            increaseContrast: increaseContrast
+        )
+    }
+}
+
 /// Contrast rules shared by every colour drawn on the black island.
 ///
 /// Album artwork already enforced a measured contrast floor, but calendar and
@@ -205,6 +225,27 @@ extension View {
     func notchShotContentSwap<Identity: Hashable>(id: Identity) -> some View {
         modifier(NotchShotContentSwapModifier(identity: id))
     }
+
+    /// Coordinates the separate activity cards as one native Liquid Glass
+    /// family while keeping their individual rounded silhouettes.
+    func notchShotActivityGlassGroup(spacing: CGFloat) -> some View {
+        GlassEffectContainer(spacing: spacing) {
+            self
+        }
+    }
+
+    /// Native macOS 26 Liquid Glass for wallpaper-level activity chrome. There
+    /// is intentionally no opaque dark wash over the glass: the adaptive system
+    /// material owns refraction and legibility.
+    func notchShotActivityGlassSurface(
+        cornerRadius: CGFloat,
+        reduceTransparency: Bool
+    ) -> some View {
+        modifier(NotchShotActivityGlassSurfaceModifier(
+            cornerRadius: cornerRadius,
+            reduceTransparency: reduceTransparency
+        ))
+    }
 }
 
 private struct NotchShotFlatFormStyle: FormStyle {
@@ -336,5 +377,69 @@ private struct NotchShotContentSwapModifier<Identity: Hashable>: ViewModifier {
             .id(identity)
             .transition(NotchShotMotion.contentTransition(reduceMotion: reduceMotion))
             .animation(NotchShotMotion.content(reduceMotion: reduceMotion), value: identity)
+    }
+}
+
+private struct NotchShotActivityGlassSurfaceModifier: ViewModifier {
+    var cornerRadius: CGFloat
+    var reduceTransparency: Bool
+
+    @Environment(\.colorSchemeContrast) private var colorSchemeContrast
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+        if usesLiquidGlass {
+            content
+                .glassEffect(
+                    .regular.tint(.black.opacity(NotchActivityGlassPolicy.tintOpacity)),
+                    in: shape
+                )
+                .overlay {
+                    shape
+                        .strokeBorder(
+                            LinearGradient(
+                                colors: [
+                                    .white.opacity(NotchActivityGlassPolicy.highlightOpacity),
+                                    .white.opacity(0.08),
+                                    .white.opacity(0.18),
+                                ],
+                                startPoint: .topLeading,
+                                endPoint: .bottomTrailing
+                            ),
+                            lineWidth: 0.75
+                        )
+                        .allowsHitTesting(false)
+                        .accessibilityHidden(true)
+                }
+                .shadow(
+                    color: .black.opacity(NotchActivityGlassPolicy.shadowOpacity),
+                    radius: 12,
+                    y: 5
+                )
+        } else {
+            content
+                .background {
+                    shape
+                        .fill(Color(nsColor: .windowBackgroundColor))
+                        .overlay {
+                            shape.strokeBorder(
+                                .white.opacity(increaseContrast ? 0.46 : 0.24),
+                                lineWidth: increaseContrast ? 1.5 : 1
+                            )
+                        }
+                }
+        }
+    }
+
+    private var increaseContrast: Bool {
+        colorSchemeContrast == .increased
+    }
+
+    private var usesLiquidGlass: Bool {
+        NotchActivityGlassPolicy.usesLiquidGlass(
+            reduceTransparency: reduceTransparency,
+            increaseContrast: increaseContrast
+        )
     }
 }

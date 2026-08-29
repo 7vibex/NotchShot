@@ -47,14 +47,16 @@ extension View {
         reduceTransparency: Bool,
         tint: Color? = nil,
         emphasized: Bool = false,
-        allowsLiquidGlass: Bool = true
+        allowsLiquidGlass: Bool = true,
+        interactive: Bool = true
     ) -> some View {
         modifier(NotchControlSurfaceModifier(
             shape: shape,
             reduceTransparency: reduceTransparency,
             tint: tint,
             emphasized: emphasized,
-            allowsLiquidGlass: allowsLiquidGlass
+            allowsLiquidGlass: allowsLiquidGlass,
+            interactive: interactive
         ))
     }
 }
@@ -65,6 +67,7 @@ private struct NotchControlSurfaceModifier<S: Shape>: ViewModifier {
     var tint: Color?
     var emphasized: Bool
     var allowsLiquidGlass: Bool
+    var interactive: Bool
 
     @Environment(\.colorSchemeContrast) private var colorSchemeContrast
 
@@ -116,7 +119,10 @@ private struct NotchControlSurfaceModifier<S: Shape>: ViewModifier {
     }
 
     private var liquidGlass: Glass {
-        var glass = Glass.regular.interactive()
+        var glass = Glass.regular
+        if interactive {
+            glass = glass.interactive()
+        }
         if let tint {
             glass = glass.tint(tint.opacity(emphasized ? 0.82 : 0.32))
         }

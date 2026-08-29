@@ -65,16 +65,7 @@ struct ProductivityNotificationCenterView: View {
             .padding(16)
             .background {
                 RoundedRectangle(cornerRadius: 24, style: .continuous)
-                    .fill(
-                        LinearGradient(
-                            colors: [
-                                Color(nsColor: .underPageBackgroundColor),
-                                Color(nsColor: .windowBackgroundColor),
-                            ],
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
-                        )
-                    )
+                    .fill(activityPreviewBackdrop)
             }
             .overlay {
                 RoundedRectangle(cornerRadius: 24, style: .continuous)
@@ -82,6 +73,19 @@ struct ProductivityNotificationCenterView: View {
             }
         }
         .frame(maxWidth: 430, alignment: .leading)
+    }
+
+    private var activityPreviewBackdrop: LinearGradient {
+        LinearGradient(
+            stops: [
+                .init(color: Color(red: 0.42, green: 0.36, blue: 0.20), location: 0),
+                .init(color: Color(red: 0.24, green: 0.32, blue: 0.25), location: 0.42),
+                .init(color: Color(red: 0.08, green: 0.25, blue: 0.32), location: 0.72),
+                .init(color: Color(red: 0.04, green: 0.14, blue: 0.20), location: 1),
+            ],
+            startPoint: .topLeading,
+            endPoint: .bottomTrailing
+        )
     }
 
     private var composer: some View {
@@ -256,7 +260,7 @@ struct NotchActivityCardStack: View {
 
     var body: some View {
         TimelineView(.periodic(from: .now, by: 1)) { timeline in
-            VStack(spacing: 10) {
+            VStack(spacing: 12) {
                 if coordinator.media.snapshot.hasContent || showsPlaceholders {
                     mediaCard(now: timeline.date)
                 }
@@ -279,7 +283,8 @@ struct NotchActivityCardStack: View {
                     )
                 }
             }
-            .frame(maxWidth: 390)
+            .frame(maxWidth: 344)
+            .notchShotActivityGlassGroup(spacing: 12)
         }
         .allowsHitTesting(!isLocked)
         .accessibilityElement(children: .contain)
@@ -296,7 +301,7 @@ struct NotchActivityCardStack: View {
         let accent = Color(nsColor: coordinator.media.artworkAccentColor)
         return VStack(spacing: 10) {
             HStack(spacing: 12) {
-                artwork(size: 70)
+                artwork(size: 64)
                 VStack(alignment: .leading, spacing: 4) {
                     Text(snapshot.title ?? "Nothing playing")
                         .font(.system(size: 15, weight: .semibold, design: .rounded))
@@ -332,7 +337,7 @@ struct NotchActivityCardStack: View {
             }
         }
         .padding(14)
-        .activityCardSurface(cornerRadius: 22, reduceTransparency: reduceTransparency)
+        .notchShotActivityGlassSurface(cornerRadius: 22, reduceTransparency: reduceTransparency)
     }
 
     private func notificationCard(_ item: ProductivityNotificationItem) -> some View {
@@ -364,8 +369,9 @@ struct NotchActivityCardStack: View {
                 .accessibilityLabel("Mark \(item.title) done")
             }
         }
-        .padding(12)
-        .activityCardSurface(cornerRadius: 18, reduceTransparency: reduceTransparency)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 14)
+        .notchShotActivityGlassSurface(cornerRadius: 18, reduceTransparency: reduceTransparency)
     }
 
     private func focusCard(_ timer: FocusTimerSnapshot) -> some View {
@@ -399,8 +405,9 @@ struct NotchActivityCardStack: View {
                 .monospacedDigit()
                 .foregroundStyle(.orange)
         }
-        .padding(12)
-        .activityCardSurface(cornerRadius: 18, reduceTransparency: reduceTransparency)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 14)
+        .notchShotActivityGlassSurface(cornerRadius: 18, reduceTransparency: reduceTransparency)
     }
 
     private func emptyCard(symbol: String, title: String, subtitle: String) -> some View {
@@ -412,9 +419,10 @@ struct NotchActivityCardStack: View {
             }
             Spacer()
         }
-        .padding(12)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 14)
         .opacity(0.72)
-        .activityCardSurface(cornerRadius: 18, reduceTransparency: reduceTransparency)
+        .notchShotActivityGlassSurface(cornerRadius: 18, reduceTransparency: reduceTransparency)
     }
 
     @ViewBuilder
@@ -455,7 +463,12 @@ struct NotchActivityCardStack: View {
             .font(.system(size: 13, weight: .bold))
             .foregroundStyle(tint)
             .frame(width: 34, height: 34)
-            .background(.white.opacity(0.09), in: Circle())
+            .notchControlSurface(
+                in: Circle(),
+                reduceTransparency: reduceTransparency,
+                tint: tint,
+                interactive: !isLocked
+            )
     }
 
     private func progress(_ snapshot: MediaSnapshot, now: Date) -> Double {
@@ -491,25 +504,5 @@ private struct MiniPlaybackWave: View {
             .frame(width: 28, height: 24)
         }
         .accessibilityLabel(isPlaying ? "Playing" : "Paused")
-    }
-}
-
-private extension View {
-    func activityCardSurface(cornerRadius: CGFloat, reduceTransparency: Bool) -> some View {
-        background {
-            let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-            if reduceTransparency {
-                shape.fill(Color.black.opacity(0.94))
-            } else {
-                shape
-                    .fill(.ultraThinMaterial)
-                    .overlay { shape.fill(Color.black.opacity(0.50)) }
-            }
-        }
-        .overlay {
-            RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                .strokeBorder(.white.opacity(reduceTransparency ? 0.22 : 0.14))
-        }
-        .foregroundStyle(.white)
     }
 }

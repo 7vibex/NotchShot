@@ -43,7 +43,7 @@ struct DesignSystemTests {
         let sourceRoot = packageRoot.appending(path: "Sources/NotchShotKit")
         let allowedFilesByToken: [String: Set<String>] = [
             "glassEffect(": ["NotchShape.swift", "NotchShotDesignSystem.swift"],
-            "GlassEffectContainer": ["NotchRootView.swift"],
+            "GlassEffectContainer": ["NotchRootView.swift", "NotchShotDesignSystem.swift"],
             ".glassProminent": ["NotchShotDesignSystem.swift"],
         ]
 
@@ -59,6 +59,35 @@ struct DesignSystemTests {
                 #expect(allowedFiles.contains(fileURL.lastPathComponent))
             }
         }
+    }
+
+    @Test("Activity cards use native glass without an opaque black wash")
+    func activityCardsUseNativeGlass() throws {
+        #expect(NotchActivityGlassPolicy.usesLiquidGlass(
+            reduceTransparency: false,
+            increaseContrast: false
+        ))
+        #expect(!NotchActivityGlassPolicy.usesLiquidGlass(
+            reduceTransparency: true,
+            increaseContrast: false
+        ))
+        #expect(!NotchActivityGlassPolicy.usesLiquidGlass(
+            reduceTransparency: false,
+            increaseContrast: true
+        ))
+        #expect(NotchActivityGlassPolicy.tintOpacity <= 0.12)
+
+        let packageRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let sourceURL = packageRoot.appending(
+            path: "Sources/NotchShotKit/Productivity/ProductivityNotificationCenterView.swift"
+        )
+        let source = try String(contentsOf: sourceURL, encoding: .utf8)
+        #expect(source.contains(".notchShotActivityGlassSurface("))
+        #expect(!source.contains(".fill(.ultraThinMaterial)"))
+        #expect(!source.contains("Color.black.opacity(0.50)"))
     }
 
     @Test("Accessibility appearances replace Liquid Glass with stable chrome")
