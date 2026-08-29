@@ -21,7 +21,7 @@ private final class SingleInstanceLease {
     }
 
     static func acquire() -> Acquisition {
-        AppPaths.ensureDirectories()
+        guard AppPaths.ensureDirectories() else { return .failed(EACCES) }
         let lockURL = AppPaths.support.appendingPathComponent("gui-instance.lock")
         let descriptor = Darwin.open(
             lockURL.path,
@@ -46,7 +46,52 @@ private final class SingleInstanceLease {
     }
 }
 
-if CommandLine.arguments.contains("--self-test") {
+/// Waits for the process that spawned it to exit, then reopens this exact
+/// bundle.
+///
+/// A relaunch cannot overlap: `LSMultipleInstancesProhibited` makes Launch
+/// Services return the *running* instance rather than starting a second one,
+/// and the `flock` lease below would send a second instance straight back out
+/// even if it did start. So the only correct order is quit first, launch after
+/// — which needs a process that outlives the quit. This binary is that process,
+/// re-entered through a flag, so nothing unsigned or unvalidated is involved.
+private func relaunchAfterParentExit(arguments: [String]) -> Never {
+    guard arguments.count == 2,
+          let parentProcessID = pid_t(arguments[0]), parentProcessID > 1 else {
+        exit(64)
+    }
+    // The only bundle this waiter is ever allowed to open is its own. It takes
+    // a path purely so a mismatch is a hard failure rather than a silent one.
+    let bundlePath = URL(fileURLWithPath: arguments[1]).standardizedFileURL.path
+    guard bundlePath == Bundle.main.bundleURL.standardizedFileURL.path else { exit(77) }
+
+    // Bounded: if the parent never exits, reopening would hand the user a
+    // second instance the lease then kills, which is worse than doing nothing.
+    let deadline = ProcessInfo.processInfo.systemUptime + 30
+    while kill(parentProcessID, 0) == 0 || errno == EPERM {
+        guard ProcessInfo.processInfo.systemUptime < deadline else { exit(75) }
+        usleep(50_000)
+    }
+
+    let open = Process()
+    open.executableURL = URL(fileURLWithPath: "/usr/bin/open")
+    open.arguments = [bundlePath]
+    open.standardOutput = FileHandle.nullDevice
+    open.standardError = FileHandle.nullDevice
+    do {
+        try open.run()
+        open.waitUntilExit()
+        exit(open.terminationStatus)
+    } catch {
+        exit(126)
+    }
+}
+
+if let flagIndex = CommandLine.arguments.firstIndex(of: "--relaunch-after") {
+    relaunchAfterParentExit(
+        arguments: Array(CommandLine.arguments.dropFirst(flagIndex + 1))
+    )
+} else if CommandLine.arguments.contains("--self-test") {
     // Exercise ScreenCaptureKit through a fully launched AppKit application.
     // A bare run loop can be enough on older macOS releases, but macOS 26 may
     // return an empty shareable-content inventory before launch completes.

@@ -1,5 +1,194 @@
 import SwiftUI
 
+/// Shared Liquid Glass policy for controls inside the black notch shell.
+///
+/// Only compact controls use glass. The shell and its media, status, warning,
+/// and file content stay optically stable; accessibility appearances replace
+/// refraction with a solid surface using the same shape.
+enum NotchControlSurfacePolicy {
+    static let usesLiquidGlass = true
+
+    static func shouldUseLiquidGlass(
+        reduceTransparency: Bool,
+        increaseContrast: Bool,
+        allowsLiquidGlass: Bool = true
+    ) -> Bool {
+        usesLiquidGlass
+            && allowsLiquidGlass
+            && NotchShotDesignSystem.usesLiquidGlass(
+                reduceTransparency: reduceTransparency,
+                increaseContrast: increaseContrast
+            )
+    }
+
+    static func usesOpaqueSurface(
+        reduceTransparency: Bool,
+        increaseContrast: Bool
+    ) -> Bool {
+        reduceTransparency || increaseContrast
+    }
+
+    static func fillOpacity(increaseContrast: Bool, emphasized: Bool) -> Double {
+        if increaseContrast { return emphasized ? 0.34 : 0.26 }
+        return emphasized ? 0.18 : 0.10
+    }
+
+    static func strokeOpacity(increaseContrast: Bool, emphasized: Bool) -> Double {
+        if increaseContrast { return emphasized ? 0.56 : 0.42 }
+        return emphasized ? 0.28 : 0.16
+    }
+}
+
+/// Dictation is itself transient system chrome, so its expanding software shell
+/// may use Liquid Glass. The transcript remains on an opaque reading surface and
+/// the physical camera core is restored to optical black by `NotchRootView`.
+enum NotchDictationShellPolicy {
+    static func shouldUseLiquidGlass(
+        isActive: Bool,
+        reduceTransparency: Bool,
+        increaseContrast: Bool
+    ) -> Bool {
+        isActive && NotchShotDesignSystem.usesLiquidGlass(
+            reduceTransparency: reduceTransparency,
+            increaseContrast: increaseContrast
+        )
+    }
+
+    static func fillOpacity(
+        isActive: Bool,
+        reduceTransparency: Bool,
+        increaseContrast: Bool
+    ) -> Double {
+        shouldUseLiquidGlass(
+            isActive: isActive,
+            reduceTransparency: reduceTransparency,
+            increaseContrast: increaseContrast
+        ) ? 0.58 : 1
+    }
+}
+
+extension View {
+    /// Stable control grouping for the notch. Increase Contrast is read here so
+    /// individual call sites cannot accidentally omit its opaque treatment.
+    func notchControlSurface<S: Shape>(
+        in shape: S,
+        reduceTransparency: Bool,
+        tint: Color? = nil,
+        emphasized: Bool = false,
+        allowsLiquidGlass: Bool = true
+    ) -> some View {
+        modifier(NotchControlSurfaceModifier(
+            shape: shape,
+            reduceTransparency: reduceTransparency,
+            tint: tint,
+            emphasized: emphasized,
+            allowsLiquidGlass: allowsLiquidGlass
+        ))
+    }
+
+    func notchDictationShell<S: Shape>(
+        in shape: S,
+        isActive: Bool,
+        reduceTransparency: Bool
+    ) -> some View {
+        modifier(NotchDictationShellModifier(
+            shape: shape,
+            isActive: isActive,
+            reduceTransparency: reduceTransparency
+        ))
+    }
+}
+
+private struct NotchDictationShellModifier<S: Shape>: ViewModifier {
+    var shape: S
+    var isActive: Bool
+    var reduceTransparency: Bool
+
+    @Environment(\.colorSchemeContrast) private var colorSchemeContrast
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if NotchDictationShellPolicy.shouldUseLiquidGlass(
+            isActive: isActive,
+            reduceTransparency: reduceTransparency,
+            increaseContrast: colorSchemeContrast == .increased
+        ) {
+            content
+                .glassEffect(.regular.tint(.black.opacity(0.40)), in: shape)
+                .overlay {
+                    shape.stroke(.white.opacity(0.12), lineWidth: 0.75)
+                }
+        } else {
+            content
+        }
+    }
+}
+
+private struct NotchControlSurfaceModifier<S: Shape>: ViewModifier {
+    var shape: S
+    var reduceTransparency: Bool
+    var tint: Color?
+    var emphasized: Bool
+    var allowsLiquidGlass: Bool
+
+    @Environment(\.colorSchemeContrast) private var colorSchemeContrast
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if NotchControlSurfacePolicy.shouldUseLiquidGlass(
+            reduceTransparency: reduceTransparency,
+            increaseContrast: increaseContrast,
+            allowsLiquidGlass: allowsLiquidGlass
+        ) {
+            content.glassEffect(liquidGlass, in: shape)
+        } else {
+            content.background {
+                shape
+                    .fill(surfaceColor)
+                    .overlay {
+                        shape.stroke(
+                            .white.opacity(NotchControlSurfacePolicy.strokeOpacity(
+                                increaseContrast: increaseContrast,
+                                emphasized: emphasized
+                            )),
+                            lineWidth: increaseContrast ? 1.25 : 1
+                        )
+                    }
+            }
+        }
+    }
+
+    private var increaseContrast: Bool {
+        colorSchemeContrast == .increased
+    }
+
+    private var surfaceColor: Color {
+        if let tint, emphasized {
+            return tint.opacity(increaseContrast ? 1 : 0.86)
+        }
+        if !allowsLiquidGlass || NotchControlSurfacePolicy.usesOpaqueSurface(
+            reduceTransparency: reduceTransparency,
+            increaseContrast: increaseContrast
+        ) {
+            return Color(
+                white: emphasized ? (increaseContrast ? 0.32 : 0.24) : (increaseContrast ? 0.24 : 0.18)
+            )
+        }
+        return .white.opacity(NotchControlSurfacePolicy.fillOpacity(
+            increaseContrast: false,
+            emphasized: emphasized
+        ))
+    }
+
+    private var liquidGlass: Glass {
+        var glass = Glass.regular.interactive()
+        if let tint {
+            glass = glass.tint(tint.opacity(emphasized ? 0.82 : 0.32))
+        }
+        return glass
+    }
+}
+
 /// The island outline: square at the top edge (it meets the bezel), rounded at
 /// the bottom, with small inverted fillets on the top corners so it flows out of
 /// the surrounding black rather than sitting on it as a separate rectangle.
@@ -75,7 +264,7 @@ struct AudioLevelBar: View {
             if isEnabled, !isAvailable {
                 Label("Meter unavailable", systemImage: "exclamationmark.triangle.fill")
                     .labelStyle(.titleAndIcon)
-                    .font(.system(size: 8, weight: .medium))
+                    .font(.system(size: 9, weight: .medium))
                     .foregroundStyle(.orange)
                     .lineLimit(1)
                     .frame(height: 14)
@@ -144,30 +333,79 @@ struct AudioLevelBar: View {
 
 /// Small circular control used throughout the notch.
 struct NotchIconButton: View {
+    static let minimumHitSize = NotchShotDesignSystem.minimumControlTarget
+    static let visualDiameter: CGFloat = 30
+    static let disabledOpacity = 0.38
+    static let usesLiquidGlass = true
+
     var systemName: String
     var label: String
     var tint: Color = .white
     var isProminent = false
+    var visualScale: CGFloat = 1
     var action: () -> Void
 
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+    @Environment(\.isEnabled) private var isEnabled
+    @State private var isHovered = false
 
     var body: some View {
         Button(action: action) {
             Image(systemName: systemName)
                 .font(.system(size: 13, weight: .semibold))
                 .foregroundStyle(isProminent ? Color.black : tint)
-                .frame(width: 30, height: 30)
-                .background {
-                    Circle()
-                        .fill(isProminent ? AnyShapeStyle(tint) : AnyShapeStyle(
-                            reduceTransparency ? AnyShapeStyle(Color.white.opacity(0.22))
-                                               : AnyShapeStyle(.thinMaterial)
-                        ))
-                }
+                .frame(width: Self.visualDiameter, height: Self.visualDiameter)
+                .notchControlSurface(
+                    in: Circle(),
+                    reduceTransparency: reduceTransparency,
+                    tint: isProminent ? tint : nil,
+                    emphasized: isProminent || isHovered
+                )
+                .scaleEffect(
+                    visualScale * NotchShotMotion.activeScale(
+                        isActive: isHovered && isEnabled,
+                        reduceMotion: reduceMotion,
+                        activeScale: 1.07
+                    )
+                )
+                .offset(y: NotchShotMotion.activeOffset(
+                    isActive: isHovered && isEnabled,
+                    reduceMotion: reduceMotion,
+                    activeOffset: -1
+                ))
+                .frame(width: Self.minimumHitSize, height: Self.minimumHitSize)
+                .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
-        .help(label)
+        .buttonStyle(NotchPressButtonStyle())
+        // Plain buttons do not receive AppKit's standard disabled appearance.
+        // Without this, an unavailable media command looks clickable but does
+        // nothing, which reads as a broken hit target.
+        .opacity(isEnabled ? 1 : Self.disabledOpacity)
+        .onHover { isHovered = $0 }
+        .animation(NotchShotMotion.interaction(reduceMotion: reduceMotion), value: isHovered)
+        .help(isEnabled ? label : "\(label) unavailable")
         .accessibilityLabel(label)
+    }
+
+}
+
+/// Gives the notch's plain controls immediate pointer feedback without adding
+/// layout movement or persistent decoration.
+struct NotchPressButtonStyle: ButtonStyle {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .scaleEffect(NotchShotMotion.activeScale(
+                isActive: configuration.isPressed,
+                reduceMotion: reduceMotion,
+                activeScale: NotchShotMotion.pressedScale
+            ))
+            .opacity(configuration.isPressed ? 0.72 : 1)
+            .animation(
+                NotchShotMotion.press(reduceMotion: reduceMotion),
+                value: configuration.isPressed
+            )
     }
 }

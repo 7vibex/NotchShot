@@ -31,16 +31,16 @@ public enum RecipeAnnotationMode: String, Sendable, Codable, CaseIterable {
     }
 }
 
-public struct CaptureRecipe: Sendable, Identifiable, Equatable {
-    public let id: String
-    public let name: String
-    public let detail: String
-    public let outputPixelSize: CGSize?
-    public let background: BackgroundConfiguration
-    public let annotationMode: RecipeAnnotationMode
-    public let filenameTemplate: String
-    public let destination: RecipeDestination
-    public let imageFormat: ImageFormat?
+public struct CaptureRecipe: Sendable, Identifiable, Equatable, Codable {
+    public var id: String
+    public var name: String
+    public var detail: String
+    public var outputPixelSize: CGSize?
+    public var background: BackgroundConfiguration
+    public var annotationMode: RecipeAnnotationMode
+    public var filenameTemplate: String
+    public var destination: RecipeDestination
+    public var imageFormat: ImageFormat?
 
     public var sizeDescription: String {
         guard let outputPixelSize else { return "Original size" }
@@ -56,7 +56,7 @@ public struct CaptureRecipe: Sendable, Identifiable, Equatable {
             background: .none,
             annotationMode: .none,
             filenameTemplate: "NotchShot {date} at {time}",
-            destination: .configuredFolder,
+            destination: .clipboardOnly,
             imageFormat: nil
         ),
         CaptureRecipe(
@@ -67,7 +67,7 @@ public struct CaptureRecipe: Sendable, Identifiable, Equatable {
             background: BackgroundPreset.preset(id: "graphite")?.configuration ?? .none,
             annotationMode: .openEditor,
             filenameTemplate: "GitHub Issue {date} {app}",
-            destination: .configuredFolder,
+            destination: .clipboardOnly,
             imageFormat: .png
         ),
         CaptureRecipe(
@@ -85,7 +85,7 @@ public struct CaptureRecipe: Sendable, Identifiable, Equatable {
             ),
             annotationMode: .none,
             filenameTemplate: "App Store {date} {app}",
-            destination: .askEveryTime,
+            destination: .clipboardOnly,
             imageFormat: .png
         ),
         CaptureRecipe(
@@ -96,7 +96,7 @@ public struct CaptureRecipe: Sendable, Identifiable, Equatable {
             background: BackgroundPreset.preset(id: "paper")?.configuration ?? .none,
             annotationMode: .openEditor,
             filenameTemplate: "Documentation {date} {app}",
-            destination: .configuredFolder,
+            destination: .clipboardOnly,
             imageFormat: .png
         ),
         CaptureRecipe(
@@ -107,7 +107,7 @@ public struct CaptureRecipe: Sendable, Identifiable, Equatable {
             background: BackgroundPreset.preset(id: "social")?.configuration ?? .none,
             annotationMode: .openEditor,
             filenameTemplate: "Social Post {date} {app}",
-            destination: .askEveryTime,
+            destination: .clipboardOnly,
             imageFormat: .png
         ),
         CaptureRecipe(
@@ -118,7 +118,7 @@ public struct CaptureRecipe: Sendable, Identifiable, Equatable {
             background: .none,
             annotationMode: .privacyReview,
             filenameTemplate: "Bug Report {date} {app}",
-            destination: .configuredFolder,
+            destination: .clipboardOnly,
             imageFormat: .png
         ),
     ]
@@ -132,15 +132,56 @@ public final class CaptureRecipeStore {
     public var activeRecipeID: String {
         didSet { UserDefaults.standard.set(activeRecipeID, forKey: "notchshot.captureRecipe") }
     }
+    public private(set) var customRecipes: [CaptureRecipe] = []
+
+    private static let customRecipesKey = "notchshot.customCaptureRecipes"
 
     public init() {
+        let loadedCustomRecipes: [CaptureRecipe]
+        if let data = UserDefaults.standard.data(forKey: Self.customRecipesKey),
+           let decoded = try? JSONDecoder().decode([CaptureRecipe].self, from: data) {
+            loadedCustomRecipes = decoded.filter { $0.id.hasPrefix("custom-") }
+        } else {
+            loadedCustomRecipes = []
+        }
+        customRecipes = loadedCustomRecipes
         let stored = UserDefaults.standard.string(forKey: "notchshot.captureRecipe")
-        activeRecipeID = CaptureRecipe.all.contains(where: { $0.id == stored })
+        activeRecipeID = (CaptureRecipe.all + loadedCustomRecipes).contains(where: { $0.id == stored })
             ? (stored ?? "standard") : "standard"
     }
 
+    public var recipes: [CaptureRecipe] { CaptureRecipe.all + customRecipes }
+
     public var activeRecipe: CaptureRecipe {
-        CaptureRecipe.all.first(where: { $0.id == activeRecipeID }) ?? CaptureRecipe.all[0]
+        recipes.first(where: { $0.id == activeRecipeID }) ?? CaptureRecipe.all[0]
+    }
+
+    @discardableResult
+    public func duplicate(_ recipe: CaptureRecipe) -> CaptureRecipe {
+        var copy = recipe
+        copy.id = "custom-\(UUID().uuidString)"
+        copy.name = "\(recipe.name) Copy"
+        customRecipes.append(copy)
+        activeRecipeID = copy.id
+        saveCustomRecipes()
+        return copy
+    }
+
+    public func update(_ recipe: CaptureRecipe) {
+        guard let index = customRecipes.firstIndex(where: { $0.id == recipe.id }) else { return }
+        customRecipes[index] = recipe
+        saveCustomRecipes()
+    }
+
+    public func deleteCustomRecipe(id: String) {
+        customRecipes.removeAll { $0.id == id }
+        if activeRecipeID == id { activeRecipeID = "standard" }
+        saveCustomRecipes()
+    }
+
+    private func saveCustomRecipes() {
+        guard let data = try? JSONEncoder().encode(customRecipes) else { return }
+        UserDefaults.standard.set(data, forKey: Self.customRecipesKey)
     }
 }
 

@@ -389,6 +389,139 @@ public final class SystemLevelMonitor {
         return status == noErr ? value : nil
     }
 
+    /// Applies a hardware-key action after the event tap has claimed it. A
+    /// false result tells the tap to pass the original event through so the key
+    /// never becomes inert on an unsupported output device or display.
+    func applyInterceptedKey(_ action: SystemMediaKeyAction) -> Bool {
+        guard isRunning else { return false }
+        switch action {
+        case .volumeUp(let fine):
+            return adjustVolume(increasing: true, fine: fine)
+        case .volumeDown(let fine):
+            return adjustVolume(increasing: false, fine: fine)
+        case .mute:
+            return toggleMute()
+        case .brightnessUp(let fine):
+            return adjustBrightness(increasing: true, fine: fine)
+        case .brightnessDown(let fine):
+            return adjustBrightness(increasing: false, fine: fine)
+        }
+    }
+
+    private func adjustVolume(increasing: Bool, fine: Bool) -> Bool {
+        guard let current = readVolume() else { return false }
+        let target = SystemMediaKeyAction.adjustedLevel(
+            current: current,
+            increasing: increasing,
+            fine: fine
+        )
+        guard writeVolume(Float32(target)) else { return false }
+        if readMuted() == true { _ = writeMuted(false) }
+        let actualVolume = readVolume() ?? target
+        let actualMuted = readMuted() ?? false
+        lastVolume = actualVolume
+        lastMuted = actualMuted
+        publish(SystemLevel(kind: .volume, value: actualVolume, isMuted: actualMuted))
+        return true
+    }
+
+    private func toggleMute() -> Bool {
+        guard let muted = readMuted(), writeMuted(!muted) else { return false }
+        let actualVolume = readVolume() ?? 0
+        let actualMuted = readMuted() ?? !muted
+        lastVolume = actualVolume
+        lastMuted = actualMuted
+        publish(SystemLevel(kind: .volume, value: actualVolume, isMuted: actualMuted))
+        return true
+    }
+
+    private func writeVolume(_ value: Float32) -> Bool {
+        if writeFloat32(
+            value,
+            selector: kAudioHardwareServiceDeviceProperty_VirtualMainVolume,
+            element: kAudioObjectPropertyElementMain
+        ) || writeFloat32(
+            value,
+            selector: kAudioDevicePropertyVolumeScalar,
+            element: kAudioObjectPropertyElementMain
+        ) {
+            return true
+        }
+        var wroteAnyChannel = false
+        for element in 1 ... 32 {
+            wroteAnyChannel = writeFloat32(
+                value,
+                selector: kAudioDevicePropertyVolumeScalar,
+                element: UInt32(element)
+            ) || wroteAnyChannel
+        }
+        return wroteAnyChannel
+    }
+
+    private func writeMuted(_ muted: Bool) -> Bool {
+        let value: UInt32 = muted ? 1 : 0
+        if writeUInt32(
+            value,
+            selector: kAudioDevicePropertyMute,
+            element: kAudioObjectPropertyElementMain
+        ) {
+            return true
+        }
+        var wroteAnyChannel = false
+        for element in 1 ... 32 {
+            wroteAnyChannel = writeUInt32(
+                value,
+                selector: kAudioDevicePropertyMute,
+                element: UInt32(element)
+            ) || wroteAnyChannel
+        }
+        return wroteAnyChannel
+    }
+
+    private func writeFloat32(
+        _ value: Float32,
+        selector: AudioObjectPropertySelector,
+        element: AudioObjectPropertyElement
+    ) -> Bool {
+        var value = value
+        var address = AudioObjectPropertyAddress(
+            mSelector: selector,
+            mScope: kAudioDevicePropertyScopeOutput,
+            mElement: element
+        )
+        let status = AudioObjectSetPropertyData(
+            audioDeviceID,
+            &address,
+            0,
+            nil,
+            UInt32(MemoryLayout<Float32>.size),
+            &value
+        )
+        return status == noErr
+    }
+
+    private func writeUInt32(
+        _ value: UInt32,
+        selector: AudioObjectPropertySelector,
+        element: AudioObjectPropertyElement
+    ) -> Bool {
+        var value = value
+        var address = AudioObjectPropertyAddress(
+            mSelector: selector,
+            mScope: kAudioDevicePropertyScopeOutput,
+            mElement: element
+        )
+        let status = AudioObjectSetPropertyData(
+            audioDeviceID,
+            &address,
+            0,
+            nil,
+            UInt32(MemoryLayout<UInt32>.size),
+            &value
+        )
+        return status == noErr
+    }
+
     // MARK: Brightness
 
     private func startBrightnessSampling() {
@@ -428,6 +561,29 @@ public final class SystemLevelMonitor {
             isMuted: false,
             displayID: reading.displayID
         ))
+    }
+
+    private func adjustBrightness(increasing: Bool, fine: Bool) -> Bool {
+        guard Preferences.shared.mirrorsBrightnessChanges,
+              let reading = BrightnessReader.shared.reading() else { return false }
+        let target = SystemMediaKeyAction.adjustedLevel(
+            current: reading.value,
+            increasing: increasing,
+            fine: fine
+        )
+        guard BrightnessReader.shared.setBrightness(target, displayID: reading.displayID) else {
+            return false
+        }
+        brightnessDisplayID = reading.displayID
+        brightness.reset(to: target)
+        brightnessIntent.noteKeyEvent(at: ProcessInfo.processInfo.systemUptime)
+        publish(SystemLevel(
+            kind: .brightness,
+            value: target,
+            isMuted: false,
+            displayID: reading.displayID
+        ))
+        return true
     }
 
     private func rebaselineBrightness() {
@@ -489,6 +645,10 @@ public final class SystemLevelMonitor {
             queue: .main
         ) { [weak self] _ in
             MainActor.assumeIsolated {
+                // Unconditional: the resolved display must not survive a layout
+                // change even while mirroring is off, or turning it back on
+                // would keep reading a display that is no longer the best one.
+                BrightnessReader.shared.invalidateDisplayCache()
                 guard let self,
                       self.isRunning,
                       Preferences.shared.mirrorsBrightnessChanges else { return }
@@ -553,9 +713,16 @@ final class BrightnessReader: @unchecked Sendable {
     static let shared = BrightnessReader()
 
     private typealias GetBrightness = @convention(c) (CGDirectDisplayID, UnsafeMutablePointer<Float>) -> Int32
+    private typealias SetBrightness = @convention(c) (CGDirectDisplayID, Float) -> Int32
 
     private let handle: UnsafeMutableRawPointer?
     private let getBrightness: GetBrightness?
+    private let setBrightnessFunction: SetBrightness?
+
+    /// The display `reading()` last resolved, so the steady state is one shim
+    /// read rather than a full enumeration.
+    private var resolvedDisplayID: CGDirectDisplayID?
+    private let cacheLock = NSLock()
 
     var isAvailable: Bool { getBrightness != nil }
 
@@ -574,12 +741,57 @@ final class BrightnessReader: @unchecked Sendable {
         } else {
             getBrightness = nil
         }
+        if let handle, let symbol = dlsym(handle, "DisplayServicesSetBrightness") {
+            setBrightnessFunction = unsafeBitCast(symbol, to: SetBrightness.self)
+        } else {
+            setBrightnessFunction = nil
+        }
+    }
+
+    /// Reads the display resolved last time, enumerating again only when that
+    /// display stops answering.
+    ///
+    /// This runs five times a second for as long as the app is open, and the
+    /// enumeration below — two `CGGetActiveDisplayList` calls, an allocation and
+    /// three passes to rank the candidates — dwarfs the one shim read it exists
+    /// to set up. The answer changes only when displays do, so it is cached
+    /// until something says otherwise. A display that goes away simply fails its
+    /// read, which re-resolves without needing to have been told.
+    func reading() -> Reading? {
+        if let cached = cachedDisplayID(), let value = brightness(displayID: cached) {
+            return Reading(displayID: cached, value: value)
+        }
+        guard let resolved = resolveReading() else {
+            setCachedDisplayID(nil)
+            return nil
+        }
+        setCachedDisplayID(resolved.displayID)
+        return resolved
+    }
+
+    /// Forgets the resolved display. Called when the display layout changes, so
+    /// that plugging in — or opening the lid on — a better candidate is noticed
+    /// even though the old one still answers.
+    func invalidateDisplayCache() {
+        setCachedDisplayID(nil)
+    }
+
+    private func cachedDisplayID() -> CGDirectDisplayID? {
+        cacheLock.lock()
+        defer { cacheLock.unlock() }
+        return resolvedDisplayID
+    }
+
+    private func setCachedDisplayID(_ displayID: CGDirectDisplayID?) {
+        cacheLock.lock()
+        resolvedDisplayID = displayID
+        cacheLock.unlock()
     }
 
     /// Prefer an active built-in display because that is the one controlled by
     /// a MacBook's ambient sensor and brightness keys. Fall back to the main or
     /// any other active display that implements DisplayServices brightness.
-    func reading() -> Reading? {
+    private func resolveReading() -> Reading? {
         var count: UInt32 = 0
         guard CGGetActiveDisplayList(0, nil, &count) == .success, count > 0 else {
             return brightness(displayID: CGMainDisplayID()).map {
@@ -610,5 +822,10 @@ final class BrightnessReader: @unchecked Sendable {
         guard getBrightness(displayID, &value) == 0 else { return nil }
         guard value.isFinite else { return nil }
         return Double(min(max(value, 0), 1))
+    }
+
+    func setBrightness(_ value: Double, displayID: CGDirectDisplayID) -> Bool {
+        guard let setBrightnessFunction else { return false }
+        return setBrightnessFunction(displayID, Float(min(max(value, 0), 1))) == 0
     }
 }

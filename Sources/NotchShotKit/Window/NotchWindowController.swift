@@ -2,11 +2,40 @@ import AppKit
 import Combine
 import SwiftUI
 
+enum LockedMediaPresentationPolicy {
+    static func effectiveActivity(
+        sessionIsActive: Bool,
+        currentActivity: NotchActivity,
+        isOptedIn: Bool,
+        hasMediaContent: Bool
+    ) -> NotchActivity {
+        guard !sessionIsActive else { return currentActivity }
+        return isOptedIn && hasMediaContent ? .media : .idle
+    }
+
+    static func shouldShowPanel(
+        sessionIsActive: Bool,
+        activity: NotchActivity,
+        isOptedIn: Bool,
+        hasMediaContent: Bool
+    ) -> Bool {
+        sessionIsActive || effectiveActivity(
+            sessionIsActive: false,
+            currentActivity: activity,
+            isOptedIn: isOptedIn,
+            hasMediaContent: hasMediaContent
+        ) == .media
+    }
+
+    static func acceptsInput(sessionIsActive: Bool) -> Bool { sessionIsActive }
+}
+
 /// One display's notch, from the UI's point of view.
 public struct NotchDisplayContext: Sendable, Equatable, Identifiable {
     public var displayID: CGDirectDisplayID
     public var metrics: NotchMetrics
     public var isPrimary: Bool
+    public var isBuiltIn: Bool
 
     public var id: CGDirectDisplayID { displayID }
 }
@@ -16,6 +45,30 @@ public struct NotchDisplayContext: Sendable, Equatable, Identifiable {
 /// hover state back to the app.
 @MainActor
 public final class NotchWindowController {
+
+    /// Keeps the click-through panel in sync with fast pointer movement. At
+    /// 150 ms a click could land before the panel noticed that the pointer had
+    /// re-entered the expanded island; 50 ms closes that practical race while
+    /// the poll still runs only during interaction at the top of the display.
+    static let presencePollInterval: TimeInterval = 0.05
+
+    /// Cadence for the same poll while the pointer is nowhere near the notch.
+    ///
+    /// Media alone arms the poll, and media plays for hours, so the fast rate
+    /// was sampling the pointer twenty times a second all day to keep concluding
+    /// it is still at the bottom of the screen. Out there the global mouse
+    /// monitor is doing the real work — it only goes blind once the pointer is
+    /// over one of our own panels — so this rate is a backstop, not the
+    /// mechanism, and an approach is noticed by the monitor long before the
+    /// pointer arrives.
+    static let idlePresencePollInterval: TimeInterval = 0.25
+
+    /// How close to the notch counts as an approach, in points. Sized to cover
+    /// the widest island comfortably: the deadlock this poll exists to break
+    /// happens when the pointer is already inside the island's interactive rect
+    /// without having acquired hover, and that is exactly where both monitors
+    /// stop reporting.
+    static let presenceApproachBand: CGFloat = 160
 
     private struct PanelEntry {
         var panel: NotchPanel
@@ -29,9 +82,13 @@ public final class NotchWindowController {
     private var workspaceObservers: [NSObjectProtocol] = []
     private var rebuildWorkItem: DispatchWorkItem?
     private var presenceTimer: Timer?
+    /// Cadence the live timer was created with, so a tick that changes nothing
+    /// does not tear the timer down and build it again.
+    private var presenceTimerInterval: TimeInterval?
     /// Whether the pointer is inside any panel's interactive rect, and so
     /// whether that panel is currently swallowing mouse events.
     private var isPointerOverIsland = false
+    private var isSessionActive = true
 
     private let makeContent: (NotchDisplayContext) -> AnyView
 
@@ -73,6 +130,7 @@ public final class NotchWindowController {
     private var isPeeking = false
     private var resultCount = 0
     private var hasStack = false
+    private var hasMediaContent = false
 
     public init(makeContent: @escaping (NotchDisplayContext) -> AnyView) {
         self.makeContent = makeContent
@@ -91,6 +149,7 @@ public final class NotchWindowController {
         rebuildWorkItem = nil
         presenceTimer?.invalidate()
         presenceTimer = nil
+        presenceTimerInterval = nil
         for monitor in mouseMonitors { NSEvent.removeMonitor(monitor) }
         mouseMonitors.removeAll()
         for observer in applicationObservers {
@@ -129,6 +188,33 @@ public final class NotchWindowController {
                 MainActor.assumeIsolated { self?.scheduleRebuild() }
             })
         }
+        workspaceObservers.append(workspace.addObserver(
+            forName: NSWorkspace.sessionDidResignActiveNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.setSessionActive(false) }
+        })
+        workspaceObservers.append(workspace.addObserver(
+            forName: NSWorkspace.sessionDidBecomeActiveNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.setSessionActive(true) }
+        })
+    }
+
+    private func setSessionActive(_ active: Bool) {
+        guard active != isSessionActive else { return }
+        isSessionActive = active
+        if !active {
+            hoveredDisplayID = nil
+            isPointerOverIsland = false
+            isPeeking = false
+            onHoverChange?(nil)
+        }
+        applyLayout()
+        if active { scheduleRebuild() }
     }
 
     /// Screen-parameter notifications arrive in bursts while a display wakes or
@@ -160,23 +246,25 @@ public final class NotchWindowController {
             return
         }
 
-        let showExternal = Preferences.shared.showsIslandOnExternalDisplays
+        let placement = Preferences.shared.notchDisplayPlacement
         let mainDisplayID = NSScreen.main.flatMap { ScreenLookup.displayID(for: $0) }
 
         var seen = Set<CGDirectDisplayID>()
         for screen in NSScreen.screens {
             guard let displayID = ScreenLookup.displayID(for: screen) else { continue }
             let metrics = NotchMetrics.metrics(for: screen)
+            let isBuiltIn = CGDisplayIsBuiltin(displayID) != 0
 
-            // A notchless secondary display only gets an island if the user
-            // asked for one; the built-in notch always gets one.
-            if !metrics.hasPhysicalNotch && !showExternal && displayID != mainDisplayID { continue }
+            // Hardware identity, not the user's Main Display arrangement,
+            // determines whether this is the MacBook's own panel.
+            guard placement.includesDisplay(isBuiltIn: isBuiltIn) else { continue }
 
             seen.insert(displayID)
             let context = NotchDisplayContext(
                 displayID: displayID,
                 metrics: metrics,
-                isPrimary: displayID == mainDisplayID
+                isPrimary: displayID == mainDisplayID,
+                isBuiltIn: isBuiltIn
             )
 
             if var entry = entries[displayID] {
@@ -186,12 +274,13 @@ public final class NotchWindowController {
                 entries[displayID] = entry
             } else {
                 let panel = NotchPanel(contentRect: panelFrame(for: metrics))
+                panel.canBecomeVisibleWithoutLogin = Preferences.shared.showsMediaWhileLocked
                 let hosting = NSHostingView(rootView: makeContent(context))
                 hosting.translatesAutoresizingMaskIntoConstraints = true
                 hosting.autoresizingMask = [.width, .height]
                 hosting.frame = CGRect(origin: .zero, size: panel.frame.size)
                 panel.contentView = hosting
-                panel.orderFrontRegardless()
+                applyVisibilityPolicy(to: panel)
                 WindowExclusionRegistry.shared.register(panel)
                 entries[displayID] = PanelEntry(panel: panel, hosting: hosting, context: context)
                 Log.window.info("Created notch panel for display \(displayID), notch: \(metrics.hasPhysicalNotch)")
@@ -237,31 +326,32 @@ public final class NotchWindowController {
         // Re-assert the level: a Space change or fullscreen transition can drop
         // a panel behind the menu bar.
         panel.level = NotchPanel.notchLevel
-        panel.orderFrontRegardless()
+        applyVisibilityPolicy(to: panel)
     }
 
     // MARK: Layout / hit testing
 
-    public func update(activity: NotchActivity, isPeeking: Bool, resultCount: Int, hasStack: Bool) {
+    public func update(
+        activity: NotchActivity,
+        isPeeking: Bool,
+        resultCount: Int,
+        hasStack: Bool,
+        hasMediaContent: Bool
+    ) {
         self.currentActivity = activity
         self.isPeeking = isPeeking
         self.resultCount = resultCount
         self.hasStack = hasStack
+        self.hasMediaContent = hasMediaContent
         applyLayout()
     }
 
     /// The island a display should currently draw.
     private func currentLayout(for context: NotchDisplayContext) -> NotchLayout {
-        // Only the display the user is working on expands; the rest stay in
-        // their closed state so a second monitor doesn't grow a panel.
-        let isActive = context.displayID == activeDisplayID
-        let effectiveActivity: NotchActivity = isActive
-            ? currentActivity
-            : (currentActivity == .media ? .media : .idle)
-        return NotchLayout.layout(
-            for: effectiveActivity,
+        NotchLayout.layout(
+            for: effectiveActivity(for: context),
             metrics: context.metrics,
-            isPeeking: isPeeking && isActive,
+            isPeeking: isPeeking && context.displayID == activeDisplayID,
             resultCount: resultCount,
             hasStack: hasStack
         )
@@ -271,7 +361,23 @@ public final class NotchWindowController {
     /// hover: hover changes drive layout, so evaluating hover from here closes
     /// a feedback loop that makes the notch flap open on its own.
     private func applyLayout() {
+        if !LockedMediaPresentationPolicy.acceptsInput(sessionIsActive: isSessionActive) {
+            presenceTimer?.invalidate()
+            presenceTimer = nil
+            presenceTimerInterval = nil
+            for entry in entries.values {
+                entry.panel.level = NotchPanel.level(sessionIsActive: false)
+                entry.panel.canBecomeVisibleWithoutLogin = Preferences.shared.showsMediaWhileLocked
+                entry.panel.setInteractiveRectFromScreenRect(.zero)
+                entry.panel.ignoresMouseEvents = true
+                applyVisibilityPolicy(to: entry.panel)
+            }
+            return
+        }
         for entry in entries.values {
+            entry.panel.level = NotchPanel.level(sessionIsActive: true)
+            entry.panel.canBecomeVisibleWithoutLogin = Preferences.shared.showsMediaWhileLocked
+            applyVisibilityPolicy(to: entry.panel)
             entry.panel.setInteractiveRectFromScreenRect(
                 interactiveRect(for: entry.context)
             )
@@ -284,17 +390,87 @@ public final class NotchWindowController {
     /// zone so the closed notch is always clickable.
     private func interactiveRect(for context: NotchDisplayContext) -> CGRect {
         let island = currentLayout(for: context).islandRect(in: context.metrics)
-        return island.union(triggerZone(for: context.metrics))
+        return island.union(triggerZone(for: context))
     }
 
-    /// The zone that *starts* a hover.
+    /// The zone that *starts* a hover: the closed notch, plus whatever the notch
+    /// is drawing beside it while at rest.
     ///
-    /// Fixed to the closed notch regardless of what the notch is currently
-    /// showing. Deriving it from the live island instead means an expanded
-    /// island keeps re-triggering its own hover, which reads to the user as the
-    /// notch opening when they never went near it.
-    private func triggerZone(for metrics: NotchMetrics) -> CGRect {
-        metrics.notchRect.insetBy(dx: -6, dy: -4)
+    /// It cannot be derived from the *live* island, because an expanded island
+    /// would keep re-triggering its own hover — the notch would read as opening
+    /// on its own when the user never went near it. But pinning it to the bare
+    /// notch was wrong in the other direction: compact media draws artwork and a
+    /// playback wave in wings 38 pt beyond the notch on each side, and only the
+    /// first 6 pt of that could start a hover. The remaining band was visible,
+    /// looked live, and did nothing — and because the wings are inside
+    /// `interactiveRect`, the panel there stops ignoring mouse events, which
+    /// blinds the global monitor (the pointer is over our own window) while the
+    /// local one stays silent (a nonactivating panel is never key). Reaching for
+    /// the wave was the one approach that could not open the notch.
+    ///
+    /// So the trigger follows the *resting* island — what the user is actually
+    /// looking at when they reach for it — and falls back to the bare notch
+    /// whenever that resting layout is itself an opened one.
+    private func triggerZone(for context: NotchDisplayContext) -> CGRect {
+        let layout = restingLayout(for: context)
+        return Self.triggerZone(
+            notchRect: context.metrics.notchRect,
+            restingIsland: layout.island.islandRect(in: context.metrics),
+            isExpanded: layout.activity.isExpanded
+        )
+    }
+
+    /// The geometry on its own, so the wings can be shown to be reachable
+    /// without standing up a display.
+    nonisolated static func triggerZone(
+        notchRect: CGRect,
+        restingIsland: CGRect,
+        isExpanded: Bool
+    ) -> CGRect {
+        let base = notchRect.insetBy(dx: -6, dy: -4)
+        return isExpanded ? base : base.union(restingIsland)
+    }
+
+    /// The island as drawn when nothing is hovering it, paired with the activity
+    /// that produced it so callers can tell a resting island from an open one.
+    private func restingLayout(
+        for context: NotchDisplayContext
+    ) -> (island: NotchLayout, activity: NotchActivity) {
+        let activity = effectiveActivity(for: context)
+        return (
+            NotchLayout.layout(
+                for: activity,
+                metrics: context.metrics,
+                isPeeking: false,
+                resultCount: resultCount,
+                hasStack: hasStack
+            ),
+            activity
+        )
+    }
+
+    /// Only the display the user is working on expands; the rest stay in their
+    /// closed state so a second monitor doesn't grow a panel.
+    private func effectiveActivity(for context: NotchDisplayContext) -> NotchActivity {
+        if !isSessionActive {
+            return LockedMediaPresentationPolicy.effectiveActivity(
+                sessionIsActive: false,
+                currentActivity: currentActivity,
+                isOptedIn: Preferences.shared.showsMediaWhileLocked,
+                hasMediaContent: hasMediaContent
+            )
+        }
+        if case .dictation(let snap) = currentActivity, let did = snap.displayID {
+            return context.displayID == did ? currentActivity : .idle
+        }
+        let isActive = context.displayID == activeDisplayID
+        if isActive { return currentActivity }
+        if currentActivity == .media { return .media }
+        if Preferences.shared.mirrorsPassiveContextOnAllDisplays,
+           case .context = currentActivity {
+            return currentActivity
+        }
+        return .idle
     }
 
     /// The zone that *sustains* an existing hover — the island as drawn, with a
@@ -304,7 +480,7 @@ public final class NotchWindowController {
         currentLayout(for: context)
             .islandRect(in: context.metrics)
             .insetBy(dx: -8, dy: -8)
-            .union(triggerZone(for: context.metrics))
+            .union(triggerZone(for: context))
     }
 
     private func installMouseMonitors() {
@@ -327,13 +503,29 @@ public final class NotchWindowController {
     }
 
     private func handleMouseEvent(_ event: NSEvent, at screenPoint: CGPoint) {
+        guard LockedMediaPresentationPolicy.acceptsInput(sessionIsActive: isSessionActive) else { return }
         updateHover(at: screenPoint)
         guard event.type == .leftMouseDown else { return }
-        guard !isPeeking, currentActivity == .idle || currentActivity == .media else { return }
-        for (displayID, entry) in entries where triggerZone(for: entry.context.metrics).contains(screenPoint) {
+        let acceptsTriggerClick: Bool = switch currentActivity {
+        case .idle, .media, .context: true
+        default: false
+        }
+        guard !isPeeking, acceptsTriggerClick else { return }
+        // Normal visible pixels are handled by SwiftUI. Bridging those here as
+        // well would deliver one click twice and toggle the notch open and then
+        // immediately closed. Only the physical camera cutout has no view that
+        // can receive the click, so only that exact region needs AppKit help.
+        for (displayID, entry) in entries where Self.shouldBridgeTriggerClick(
+            at: screenPoint,
+            metrics: entry.context.metrics
+        ) {
             onTriggerClick?(displayID)
             return
         }
+    }
+
+    static func shouldBridgeTriggerClick(at point: CGPoint, metrics: NotchMetrics) -> Bool {
+        metrics.hasPhysicalNotch && metrics.notchRect.contains(point)
     }
 
     /// Resolves which display's island the pointer is over, with hysteresis so
@@ -341,9 +533,23 @@ public final class NotchWindowController {
     private func updateHover(at screenPoint: CGPoint) {
         var newHover: CGDirectDisplayID?
         for (displayID, entry) in entries {
+            // Hover zones are all anchored to the top centre and never extend
+            // more than ~450 pt below the menu bar (440 pt max island + 8 pt
+            // keep-alive slack). A point on the bottom half of the screen can't
+            // be hover, so avoid building a NotchLayout for it at all.
+            let topStripMaxY = entry.context.metrics.screenFrame.maxY
+            if screenPoint.y < topStripMaxY - 500 { continue }
+            // If the point isn't even on this display, its top strip can't
+            // contain it either.
+            if !entry.context.metrics.screenFrame.contains(screenPoint) {
+                // Allow a 8 pt slack beyond the frame edge for keep-alive hysteresis
+                // before dismissing outright.
+                let slackFrame = entry.context.metrics.screenFrame.insetBy(dx: -8, dy: -8)
+                if !slackFrame.contains(screenPoint) { continue }
+            }
             let zone = hoveredDisplayID == displayID
                 ? keepAliveZone(for: entry.context)
-                : triggerZone(for: entry.context.metrics)
+                : triggerZone(for: entry.context)
             if zone.contains(screenPoint) {
                 newHover = displayID
                 break
@@ -393,24 +599,83 @@ public final class NotchWindowController {
     /// the pointer reaching the notch, so hover never began. Approaching across
     /// that band is what made it look intermittent and side-dependent.
     ///
-    /// Runs only while the pointer is at the very top of the screen, so an idle
-    /// notch still costs nothing.
-    private func updatePresencePoll() {
-        let needsPoll = hoveredDisplayID != nil
-            || currentActivity.isExpanded
-            || isPointerOverIsland
-        if needsPoll, presenceTimer == nil {
-            // Fast enough to feel like hover, not a poll: the peek delay alone is
-            // 0.35s, so this must not be the slower of the two.
-            let timer = Timer(timeInterval: 0.15, repeats: true) { [weak self] _ in
-                MainActor.assumeIsolated { self?.updateHover(at: NSEvent.mouseLocation) }
-            }
-            RunLoop.main.add(timer, forMode: .common)
-            presenceTimer = timer
-        } else if !needsPoll, let presenceTimer {
-            presenceTimer.invalidate()
-            self.presenceTimer = nil
+    /// An idle notch does not poll at all, and a notch showing media polls
+    /// slowly until the pointer comes near.
+    private func updatePresencePoll(pointerLocation: CGPoint? = nil) {
+        let needsPoll = Self.shouldPollPresence(
+            activity: currentActivity,
+            isPeeking: isPeeking,
+            isPointerOverIsland: isPointerOverIsland,
+            hasHoveredDisplay: hoveredDisplayID != nil
+        )
+        guard needsPoll else {
+            presenceTimer?.invalidate()
+            presenceTimer = nil
+            presenceTimerInterval = nil
+            return
         }
+
+        // Fast enough to feel like hover, not a poll: the peek delay alone is
+        // 0.35s, so this must not be the slower of the two — but only where that
+        // responsiveness is capable of mattering.
+        let interval = Self.presencePollInterval(
+            isEngaged: hoveredDisplayID != nil
+                || currentActivity.isExpanded
+                || isPeeking
+                || isPointerOverIsland,
+            isPointerNearNotch: isPointerNearNotch(pointerLocation ?? NSEvent.mouseLocation)
+        )
+        guard presenceTimer == nil || presenceTimerInterval != interval else { return }
+
+        presenceTimer?.invalidate()
+        let timer = Timer(timeInterval: interval, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                let location = NSEvent.mouseLocation
+                self.updateHover(at: location)
+                // Re-evaluated every tick because proximity changes on its own,
+                // without any of the state transitions that call in here.
+                self.updatePresencePoll(pointerLocation: location)
+            }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        presenceTimer = timer
+        presenceTimerInterval = interval
+    }
+
+    /// Full rate while the notch is open or the pointer is close enough to
+    /// reach it before the next slow tick; the backstop rate otherwise.
+    static func presencePollInterval(
+        isEngaged: Bool,
+        isPointerNearNotch: Bool
+    ) -> TimeInterval {
+        isEngaged || isPointerNearNotch ? presencePollInterval : idlePresencePollInterval
+    }
+
+    private func isPointerNearNotch(_ point: CGPoint) -> Bool {
+        entries.values.contains { entry in
+            triggerZone(for: entry.context)
+                .insetBy(dx: -Self.presenceApproachBand, dy: -Self.presenceApproachBand)
+                .contains(point)
+        }
+    }
+
+    /// Media keeps the low-cost pointer poll armed before hover begins. Without
+    /// it, a fast move-and-click can reach a click-through panel before the
+    /// global mouse monitor has switched that panel back to interactive.
+    static func shouldPollPresence(
+        activity: NotchActivity,
+        isPeeking: Bool,
+        isPointerOverIsland: Bool,
+        hasHoveredDisplay: Bool
+    ) -> Bool {
+        let hasCompactContext: Bool = if case .context = activity { true } else { false }
+        return hasHoveredDisplay
+            || activity.isExpanded
+            || activity == .media
+            || hasCompactContext
+            || isPeeking
+            || isPointerOverIsland
     }
 
     // MARK: Access
@@ -438,10 +703,31 @@ public final class NotchWindowController {
     public func reassertPanels() {
         for entry in entries.values {
             entry.panel.level = NotchPanel.notchLevel
-            entry.panel.orderFrontRegardless()
             position(panel: entry.panel, for: entry.context.metrics)
         }
         applyLayout()
+    }
+
+    /// Re-applies the lock-window opt-in immediately after Settings changes.
+    public func refreshLockedMediaPresentation() {
+        for entry in entries.values {
+            entry.panel.level = NotchPanel.level(sessionIsActive: isSessionActive)
+            entry.panel.canBecomeVisibleWithoutLogin = Preferences.shared.showsMediaWhileLocked
+        }
+        applyLayout()
+    }
+
+    private func applyVisibilityPolicy(to panel: NotchPanel) {
+        if LockedMediaPresentationPolicy.shouldShowPanel(
+            sessionIsActive: isSessionActive,
+            activity: currentActivity,
+            isOptedIn: Preferences.shared.showsMediaWhileLocked,
+            hasMediaContent: hasMediaContent
+        ) {
+            panel.orderFrontRegardless()
+        } else {
+            panel.orderOut(nil)
+        }
     }
 
     public func resignFocus() {

@@ -7,7 +7,8 @@ capture launcher, the recording HUD, and the post-capture shelf.
 No account, no backend, no telemetry, no subscription. Captures, recordings, transcripts,
 OCR text, projects and history stay on the Mac. If the Spotify Apple Events fallback is
 enabled, NotchShot fetches the current track's artwork from Spotify's HTTPS CDN; it never
-uploads capture content.
+uploads capture content. Configured public builds also contact their HTTPS Sparkle feed to
+check for signed updates.
 
 ## Build and run
 
@@ -50,14 +51,18 @@ Sources/NotchShotKit/
   Capture/      ScreenCaptureKit service, selection overlay, recipes, capture stack,
                 scrolling stitcher, export
   Recording/    SCRecordingOutput session, audio metering, click zoom, local captions
-  Annotation/   document model, renderer, background composer, .notchshot package, editor
-  OCR/          Vision text recognition and data detectors
+  Annotation/   document model, renderer, background composer, local subject lifting,
+                .notchshot package, editor
+  OCR/          Vision document recognition, tables, lists, data detectors and barcodes
   Privacy/      on-device privacy suggestions and explicit redaction handoff
   Comparison/   before/after slider and pixel-difference rendering
   Reporting/    inspectable, opt-in bug-report packages
   Floating/     pinned always-on-top captures
+  Files/        shelf rename / move / compress, Quick Look presenter
   History/      local JSON-backed history with retention
+  Clipboard/    opt-in local clipboard history, monitor and store
   Media/        MediaSource protocol, MediaRemote bridge, Apple Events fallback
+  Context/      AI activity, calendar, document summary, power and audio-route modules
   Permissions/  staged requests and remediation
   HotKeys/      Carbon global shortcuts
   UI/           notch views, shelf, settings, history browser
@@ -68,8 +73,9 @@ Sources/NotchShotKit/
 
 **State priority.** `ActivityArbiter` resolves one activity from every live source, in the
 order `error → selecting → countdown → recording → processing → result → file drop →
-expanded → media → idle`. A track change or a stray pointer can never disturb a capture in
-flight. `ActivityPriorityTests` pins the whole ordering. A compact volume/brightness strip
+expanded → system/context transition → media → passive calendar → idle`. A track change or
+a stray pointer can never disturb a capture in flight. `ActivityPriorityTests` pins the
+whole ordering. A compact volume/brightness strip
 is composited independently when the experimental native-overlay replacement is active,
 so an in-flight result cannot swallow the only visible level feedback.
 
@@ -119,25 +125,116 @@ magnifier, frozen-screen selection, aspect lock. PNG / JPEG / HEIC. Manual verti
 scrolling capture with overlap stitching, seam confidence and preserved frames on failure.
 H.264 MP4 recording with system audio, microphone, a real live audio-history waveform,
 click highlights and background framing, optional on-device transcript / `.srt` captions,
-sleep prevention, and crash recovery. Recording audio sources are chosen before a take so
+pause/resume, video trimming, sleep prevention, and crash recovery. Recording audio sources are chosen before a take so
 the direct ScreenCaptureKit file cannot be silently finalized by a mid-recording stream
 reconfiguration. Annotation (arrow, rectangle, ellipse, line, text, pencil, highlighter, numbered
 steps, blackout, pixelate) with crop, rotate, undo/redo. Background composer with presets,
 padding, radius, shadow, aspect presets and optical balancing. Editable `.notchshot`
-projects. On-device OCR with link/email/phone detection. Floating pinned captures. Local
+projects. On-device structured OCR with paragraphs, lists, table copy as TSV/Markdown,
+link/email/phone/address detection, and QR/barcode reading. Floating pinned captures. Local
 history with retention and opt-in text search. Now Playing with artwork, progress and
-transport controls. Capture Stack collection with reorder, per-shot annotation, numbered
+transport controls, unlock refresh, and an off-by-default, media-only lock-window cover/wave.
+Capture Stack collection with reorder, per-shot annotation, numbered
 storyboard, long-image, filmstrip and PDF exports. Named GitHub Issue, App Store,
 Documentation, Social Post and Bug Report recipes. On-device privacy suggestions for
 email, phone, token, account ID and faces; nothing is selected or redacted automatically.
-Interactive before/after comparison with an optional difference overlay. Inspectable bug
-report folders where every diagnostic detail is off until selected.
+Interactive before/after comparison with a thresholded difference overlay and share/export.
+Shelf files can be opened normally or with a chosen compatible app, previewed with Quick
+Look, renamed, moved, compressed to a ZIP, or sent straight to AirDrop without going through
+the whole share sheet. Holding Finder files over the notch now opens an AirDrop-style tray:
+release over **Shelf**, **AirDrop**, **Share**, or **ZIP**. AirDrop, Share, and ZIP keep the
+validated multi-file batch together; Shelf retains its visible five-item cap and reports any
+overflow. The Basket-style shelf shows aggregate file count/size, offers
+persistent detail and grid presentations, and separates non-destructive **Remove from Shelf**
+from an explicitly destructive **Move File to Trash**. Four immediate shelf actions are
+user-configurable; the rest stay in a grouped **More** menu. Finder's Services menu can
+park selected regular files in the shelf without copying or moving them. An opt-in local
+clipboard history keeps text, links, colours, images and file copies, with search, type filters,
+user labels, explicit on-device OCR for searching image clippings, pinning, retention,
+optional clear-on-quit, and per-app exclusions. **Remove
+Background** uses Apple's on-device foreground-instance mask
+to lift noticeable subjects into a full-size transparent PNG; it needs no account, network,
+or additional permission.
+Pixel inspection with HEX/RGB/HSL, pixel measurement and WCAG contrast. Outcome-based image
+export presets with dimension, format and estimated-size previews. The system Share Sheet is
+available for results, History, annotations and comparison output. Inspectable bug report
+folders keep every diagnostic detail off until selected.
+
+The expanded Now Playing card also lists the current public Core Audio output and lets the
+user switch among available local, Bluetooth, display, and AirPlay routes. Opt-in Calendar
+Glance adds compact, hover, and expanded agenda/month states without
+persisting event titles. Explicit document drops can be summarized locally through PDFKit,
+Vision OCR, and Apple Intelligence when available, with a visible local extractive fallback
+and copy/open/save/forget controls. Event-driven charging feedback is enabled by default;
+public Core Audio route feedback is optional and never invents accessory battery values.
+An explicit local reporter lets Claude Code, Codex, Cursor, scripts, and build tools show
+working, waiting, finished, failed, step, and measured-progress states in the island. Hook
+events never manufacture a percentage, read private app UI, or leave the Mac. Setup and the
+wire-format boundary are documented in [`Documentation/AI_ACTIVITY.md`](Documentation/AI_ACTIVITY.md).
+Voice Notes show progressive words in the island while the microphone is recording, save the
+complete audio independently, and run a final on-device pass after Stop. A missing local speech
+model or live-analysis failure never uploads or discards the recording; the island shows the
+fallback state and keeps the saved audio available in Finder.
+The app-owned Focus Timer and natural-language Planner are also live: Planner writes only the
+Calendar event or Reminder the user confirms. The Focus Timer deliberately does not claim to
+sync with Apple's Clock app, whose timers are not part of EventKit's public calendar/reminder API.
+The hardware-connected island shell stays opaque black. Expanded capture, shelf, Now Playing,
+and AI activity place native macOS Liquid Glass only on interactive control chrome inside that
+shell, while Reduce Transparency and Increase Contrast use solid, outlined controls instead.
+Recording, processing, errors, and dense context content remain stable and opaque.
 
 Later (not built): horizontal and automatic scrolling, GIF, webcam, presenter mode,
 post-process click zoom and cursor smoothing, live audio-source changes, keystroke overlay,
-pause/resume, video trimming, colour picker, QR reader, URL scheme / Shortcuts / Raycast
-actions. Generic notch modules such as clipboard, timer, AirPods, calendar and file
-transforms remain out of the default product so the capture workflow stays focused.
+window snapping, and a universal launcher. They remain out of the default product so the
+capture workflow stays focused.
+
+Droppy parity stops at public, consented integrations. NotchShot does not read another app's
+Notification Center history or inject replies into WhatsApp/iMessage, control an unrelated
+VPN configuration, switch macOS Low Power Mode, expose another player's private Up Next queue,
+or extract proprietary animated artwork. It can manage its own notifications and explicit AI
+reporter events, manage a VPN it ships under the required Network Extension entitlement, read
+Low Power Mode, and control an app-owned MusicKit queue—but those are not faithful substitutes
+for the cross-app Droppy behaviors, so the UI does not pretend they are.
+
+Two things that were on that list have since moved off it. The shelf already held real
+files, so Quick Look, Rename, Move and Compress were missing from a surface that already
+implied them rather than new modules bolted onto it. And a clipboard history is the one
+"generic module" that the capture workflow genuinely reaches for — copying a capture and
+copying its recognised text are both already core paths. Both are described above; the
+clipboard is off until you switch it on.
+
+The product rationale, privacy boundaries, acceptance criteria, and implementation status
+for calendar, local document summaries, charging/audio-route feedback, and music behavior
+across lock/unlock are documented in [`FEATURE_PROPOSALS.md`](FEATURE_PROPOSALS.md).
+
+## Automation URLs
+
+NotchShot registers a narrow, documented `notchshot://` scheme for Shortcuts, Raycast,
+Alfred and browser launchers:
+
+```text
+notchshot://capture/area?action=copy
+notchshot://capture/display?display=2&preset=bug-report&action=annotate
+notchshot://capture/previous?action=annotate
+notchshot://record/area
+notchshot://ocr?source=clipboard&format=markdown
+notchshot://ocr?source=clipboard&format=tsv
+notchshot://open/latest
+notchshot://pin?file=/absolute/path/to/image.png
+```
+
+Capture actions are `copy`, `save`, or `annotate`. Presets are `standard`,
+`github-issue`, `app-store`, `documentation`, `social-post`, and `bug-report`.
+Clipboard OCR formats are `text`, `markdown`, and `tsv`; TSV returns detected tables only
+and falls back to ordinary recognized text when the image has no table.
+Display 1 is the current main display; the remaining displays are ordered by macOS desktop
+position from left to right, then top to bottom. Selection and measurement coordinates use
+global display points for UI and source-image pixels for exported imagery.
+
+Unknown or repeated parameters are rejected. Requests are rate-limited, file paths are
+canonicalized and inode-validated before use, and every URL request requires foreground
+confirmation. The scheme cannot execute programs, open arbitrary schemes, or change
+experimental/private settings.
 
 ## Media integration
 
@@ -171,6 +268,7 @@ fallback and it finds Music or Spotify already running:
 | Screen Recording | first screenshot or recording |
 | Microphone | first recording with the mic enabled |
 | Automation | only if the Apple Events media fallback is used |
+| Calendar | only after Calendar Glance is enabled in Settings |
 
 Denials surface in the notch with a button that deep-links to the right System Settings
 pane. macOS does not apply a newly granted Screen Recording permission to the process that
@@ -190,6 +288,24 @@ Review runs with Vision on the Mac and only suggests regions. Bug packages never
 logs, serial numbers, account data, system details or an editable unredacted project unless
 the corresponding choice is explicit.
 
+Clipboard history is off until you turn it on, and turning it back off deletes what was
+already kept. It honours the `org.nspasteboard.*` concealed and transient markers that
+password managers set on a copied password, so those clippings are never recorded whatever
+app they came from, and it ships with the common password managers on a per-app exclusion
+list as well. The store lives in `~/Library/Application Support/NotchShot/clipboard.json`
+at owner-only permissions, is never included in a bug report, and pinned items are the only
+ones exempt from retention.
+
+Calendar event titles and unsaved document summaries stay in memory and never enter History
+or diagnostics. Document reading starts only after confirmation; nothing is uploaded, and a
+saved summary contains the visible summary plus source filename and timestamp rather than an
+invisible copy of the full source text.
+
+AI activity is written only after an explicitly connected hook or reporter command. Records
+live in the owner-only `AI Activity` support folder, never enter capture History or bug
+reports, and are ignored after their bounded display lifetime. The hook bridge reads lifecycle
+labels and short task metadata, not transcript files or tool contents.
+
 ## Distribution boundary
 
 The current bundle is a hardened-runtime, directly distributed Mac app. It is deliberately
@@ -197,6 +313,45 @@ not sandboxed because its opt-in OSD replacement, system-shortcut takeover and e
 Now Playing helper conflict with App Sandbox and public-API-only App Store requirements.
 An App Store variant must remove those integrations, enable App Sandbox, and complete the
 normal archive, notarization/review, privacy and real-device validation gates.
+
+Local builds use `./Scripts/build_app.sh`. A public direct-distribution release
+must use the stricter pipeline below; it refuses Apple Development and ad-hoc
+identities, waits for notarization, staples the accepted ticket, and requires a
+successful Gatekeeper assessment before producing `dist/NotchShot.zip`:
+
+```bash
+./Scripts/release_app.sh \
+  --identity "Developer ID Application: Your Name (TEAMID)" \
+  --keychain-profile "notchshot-notary" \
+  --version 1.2.0 \
+  --build 42
+```
+
+Create the named profile once with `xcrun notarytool store-credentials`; never
+put App Store Connect credentials or signing material in this repository.
+
+Public builds use Sparkle 2 only when both release-time values are supplied. The app refuses
+non-HTTPS feeds and malformed public keys, while local builds remain updater-disabled instead
+of contacting a placeholder service:
+
+```bash
+NOTCHSHOT_SPARKLE_FEED_URL="https://updates.example.com/notchshot/appcast.xml" \
+NOTCHSHOT_SPARKLE_PUBLIC_KEY="BASE64_ED25519_PUBLIC_KEY" \
+./Scripts/release_app.sh \
+  --identity "Developer ID Application: Your Name (TEAMID)" \
+  --keychain-profile "notchshot-notary" \
+  --version 1.2.0 \
+  --build 42
+```
+
+Keep the EdDSA private key outside the repository and update host. Publish only notarized,
+stapled, code-signed archives and a signed HTTPS appcast. The app menu exposes **Check for
+Updates…**; configured release builds also enable automatic checks and installation.
+
+The current product UI is intentionally English-only. The bundle declares
+English as its sole supported localization; no translated or RTL-ready release
+is claimed until the UI strings have been moved into a localization catalog and
+tested in those layouts.
 
 ## Notes
 

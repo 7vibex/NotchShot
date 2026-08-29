@@ -14,9 +14,12 @@ public struct AnnotationEditorView: View {
     @State private var showsBackgroundPanel = false
     @State private var editingTextID: UUID?
     @State private var errorMessage: String?
+    @State private var colorEditingTask: Task<Void, Never>?
+    @FocusState private var isEditingSelectedText: Bool
     @FocusState private var isCanvasFocused: Bool
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.colorSchemeContrast) private var colorSchemeContrast
 
     public init(
         controller: AnnotationDocumentController,
@@ -33,7 +36,6 @@ public struct AnnotationEditorView: View {
     public var body: some View {
         VStack(spacing: 0) {
             toolbar
-            Divider()
             HStack(spacing: 0) {
                 canvas
                 if showsBackgroundPanel {
@@ -53,43 +55,40 @@ public struct AnnotationEditorView: View {
         } message: {
             Text(errorMessage ?? "")
         }
+        .onDisappear {
+            finishColorEditing()
+            if isEditingSelectedText { controller.endCoalescing() }
+        }
     }
 
     // MARK: Toolbar
 
     private var toolbar: some View {
-        HStack(spacing: 12) {
-            ForEach(AnnotationKind.allCases) { kind in
-                Button {
-                    controller.selectedTool = kind
-                    isCropping = false
-                } label: {
-                    Image(systemName: kind.symbolName)
-                        .frame(width: 26, height: 22)
-                }
-                .buttonStyle(.accessoryBar)
-                .background(
-                    RoundedRectangle(cornerRadius: 6)
-                        .fill(controller.selectedTool == kind && !isCropping
-                              ? Color.accentColor.opacity(0.22) : .clear)
-                )
-                .help(kind.title)
-                .accessibilityLabel(kind.title)
-                .accessibilityAddTraits(
-                    controller.selectedTool == kind && !isCropping ? [.isSelected] : []
-                )
+        ViewThatFits(in: .horizontal) {
+            toolbarControls(compactToolPicker: false)
+                .fixedSize(horizontal: true, vertical: false)
+            toolbarControls(compactToolPicker: true)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, NotchShotDesignSystem.toolbarHorizontalPadding)
+        .padding(.vertical, 6)
+        .notchShotToolbarSurface()
+    }
+
+    @ViewBuilder
+    private func toolbarControls(compactToolPicker: Bool) -> some View {
+        HStack(spacing: 6) {
+            if compactToolPicker {
+                compactAnnotationToolMenu
+            } else {
+                annotationToolButtons
             }
 
             Divider().frame(height: 20)
 
             ColorPicker("", selection: Binding(
                 get: { Color(nsColor: NSColor(hex: controller.strokeColorHex) ?? .systemRed) },
-                set: { newValue in
-                    let hex = NSColor(newValue).hexString
-                    controller.strokeColorHex = hex
-                    Preferences.shared.annotationColorHex = hex
-                    updateSelectedStyle { $0.colorHex = hex }
-                }
+                set: { newValue in updateStrokeColor(newValue) }
             ))
             .labelsHidden()
             .frame(width: 40)
@@ -103,7 +102,7 @@ public struct AnnotationEditorView: View {
                     Preferences.shared.annotationLineWidth = newValue
                     updateSelectedStyle { $0.lineWidth = newValue }
                 }
-            ), in: 1 ... 24)
+            ), in: 1 ... 24, onEditingChanged: updateContinuousEditing)
             .frame(width: 90)
             .help("Stroke width")
             .accessibilityLabel("Stroke width")
@@ -115,57 +114,177 @@ public struct AnnotationEditorView: View {
                 cropDraft = nil
             } label: {
                 Image(systemName: "crop")
+                    .frame(
+                        width: NotchShotDesignSystem.minimumControlTarget,
+                        height: NotchShotDesignSystem.minimumControlTarget
+                    )
+                    .contentShape(Rectangle())
             }
             .buttonStyle(.accessoryBar)
-            .background(
-                RoundedRectangle(cornerRadius: 6)
-                    .fill(isCropping ? Color.accentColor.opacity(0.22) : .clear)
-            )
+            .background { toolbarSelectionChrome(isSelected: isCropping) }
             .help("Crop")
             .accessibilityLabel("Crop image")
             .accessibilityAddTraits(isCropping ? [.isSelected] : [])
 
-            Button { controller.rotateLeft() } label: { Image(systemName: "rotate.left") }
-                .buttonStyle(.accessoryBar)
-                .help("Rotate left")
-                .accessibilityLabel("Rotate left")
-            Button { controller.rotateRight() } label: { Image(systemName: "rotate.right") }
-                .buttonStyle(.accessoryBar)
-                .help("Rotate right")
-                .accessibilityLabel("Rotate right")
+            Button { controller.rotateLeft() } label: {
+                Image(systemName: "rotate.left")
+                    .frame(
+                        width: NotchShotDesignSystem.minimumControlTarget,
+                        height: NotchShotDesignSystem.minimumControlTarget
+                    )
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.accessoryBar)
+            .help("Rotate left")
+            .accessibilityLabel("Rotate left")
+
+            Button { controller.rotateRight() } label: {
+                Image(systemName: "rotate.right")
+                    .frame(
+                        width: NotchShotDesignSystem.minimumControlTarget,
+                        height: NotchShotDesignSystem.minimumControlTarget
+                    )
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.accessoryBar)
+            .help("Rotate right")
+            .accessibilityLabel("Rotate right")
 
             Button {
                 withAnimation(reduceMotion ? nil : .snappy) { showsBackgroundPanel.toggle() }
             } label: {
                 Image(systemName: "square.on.square.dashed")
+                    .frame(
+                        width: NotchShotDesignSystem.minimumControlTarget,
+                        height: NotchShotDesignSystem.minimumControlTarget
+                    )
+                    .contentShape(Rectangle())
             }
             .buttonStyle(.accessoryBar)
-            .background(
-                RoundedRectangle(cornerRadius: 6)
-                    .fill(showsBackgroundPanel ? Color.accentColor.opacity(0.22) : .clear)
-            )
+            .background { toolbarSelectionChrome(isSelected: showsBackgroundPanel) }
             .help("Background")
             .accessibilityLabel("Background options")
             .accessibilityValue(showsBackgroundPanel ? "Shown" : "Hidden")
             .accessibilityAddTraits(showsBackgroundPanel ? [.isSelected] : [])
 
-            Spacer()
+            Divider().frame(height: 20)
 
-            Button { controller.undo() } label: { Image(systemName: "arrow.uturn.backward") }
-                .buttonStyle(.accessoryBar)
-                .disabled(!controller.canUndo)
-                .keyboardShortcut("z", modifiers: .command)
-                .help("Undo")
-                .accessibilityLabel("Undo")
-            Button { controller.redo() } label: { Image(systemName: "arrow.uturn.forward") }
-                .buttonStyle(.accessoryBar)
-                .disabled(!controller.canRedo)
-                .keyboardShortcut("z", modifiers: [.command, .shift])
-                .help("Redo")
-                .accessibilityLabel("Redo")
+            Button { controller.undo() } label: {
+                Image(systemName: "arrow.uturn.backward")
+                    .frame(
+                        width: NotchShotDesignSystem.minimumControlTarget,
+                        height: NotchShotDesignSystem.minimumControlTarget
+                    )
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.accessoryBar)
+            .disabled(!controller.canUndo)
+            .keyboardShortcut("z", modifiers: .command)
+            .help("Undo")
+            .accessibilityLabel("Undo")
+
+            Button { controller.redo() } label: {
+                Image(systemName: "arrow.uturn.forward")
+                    .frame(
+                        width: NotchShotDesignSystem.minimumControlTarget,
+                        height: NotchShotDesignSystem.minimumControlTarget
+                    )
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.accessoryBar)
+            .disabled(!controller.canRedo)
+            .keyboardShortcut("z", modifiers: [.command, .shift])
+            .help("Redo")
+            .accessibilityLabel("Redo")
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 8)
+        .animation(
+            NotchShotMotion.selection(reduceMotion: reduceMotion),
+            value: controller.selectedTool
+        )
+    }
+
+    private var annotationToolButtons: some View {
+        ForEach(AnnotationKind.allCases) { kind in
+            annotationToolButton(kind)
+        }
+    }
+
+    private var compactAnnotationToolMenu: some View {
+        Menu {
+            ForEach(AnnotationKind.allCases) { kind in
+                Button {
+                    selectAnnotationTool(kind)
+                } label: {
+                    Label(kind.title, systemImage: kind.symbolName)
+                }
+            }
+        } label: {
+            HStack(spacing: 4) {
+                Image(systemName: controller.selectedTool.symbolName)
+                    .contentTransition(.symbolEffect(.replace))
+                Image(systemName: "chevron.down")
+                    .font(.caption2)
+            }
+            .frame(
+                minWidth: NotchShotDesignSystem.minimumControlTarget,
+                minHeight: NotchShotDesignSystem.minimumControlTarget
+            )
+            .contentShape(Rectangle())
+        }
+        .menuStyle(.button)
+        .help("Annotation tool: \(controller.selectedTool.title)")
+        .accessibilityLabel("Annotation tool")
+        .accessibilityValue(controller.selectedTool.title)
+    }
+
+    private func annotationToolButton(_ kind: AnnotationKind) -> some View {
+        Button {
+            selectAnnotationTool(kind)
+        } label: {
+            Image(systemName: kind.symbolName)
+                .frame(
+                    width: NotchShotDesignSystem.minimumControlTarget,
+                    height: NotchShotDesignSystem.minimumControlTarget
+                )
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.accessoryBar)
+        .background {
+            toolbarSelectionChrome(
+                isSelected: controller.selectedTool == kind && !isCropping
+            )
+        }
+        .help(kind.title)
+        .accessibilityLabel(kind.title)
+        .accessibilityAddTraits(
+            controller.selectedTool == kind && !isCropping ? [.isSelected] : []
+        )
+    }
+
+    private func selectAnnotationTool(_ kind: AnnotationKind) {
+        controller.selectedTool = kind
+        isCropping = false
+    }
+
+    private func toolbarSelectionChrome(isSelected: Bool) -> some View {
+        let shape = RoundedRectangle(cornerRadius: 6, style: .continuous)
+        if isSelected {
+            return AnyView(
+                shape
+                    .fill(Color.accentColor.opacity(
+                        colorSchemeContrast == .increased ? 0.30 : 0.18
+                    ))
+                    .overlay {
+                        shape.stroke(
+                            Color.accentColor.opacity(
+                                colorSchemeContrast == .increased ? 1 : 0.72
+                            ),
+                            lineWidth: colorSchemeContrast == .increased ? 1.5 : 1
+                        )
+                    }
+            )
+        }
+        return AnyView(shape.fill(.clear))
     }
 
     // MARK: Canvas
@@ -180,7 +299,7 @@ public struct AnnotationEditorView: View {
             ZStack {
                 Color(nsColor: .underPageBackgroundColor)
 
-                if let preview = basePreview {
+                if let preview = controller.basePreviewImage() {
                     Image(nsImage: preview)
                         .resizable()
                         .interpolation(.high)
@@ -220,8 +339,7 @@ public struct AnnotationEditorView: View {
 
                 if isCropping, let cropDraft {
                     let rect = layout.viewRect(from: cropDraft)
-                    Rectangle()
-                        .strokeBorder(Color.accentColor, lineWidth: 2)
+                    adaptiveSelectionOutline(cornerRadius: 0, dashed: false)
                         .frame(width: rect.width, height: rect.height)
                         .position(x: rect.midX, y: rect.midY)
                 }
@@ -274,11 +392,31 @@ public struct AnnotationEditorView: View {
         layout: AnnotationEditorGeometry
     ) -> some View {
         let rect = layout.viewRect(from: element.hitRect)
-        return RoundedRectangle(cornerRadius: 4)
-            .strokeBorder(Color.accentColor, style: StrokeStyle(lineWidth: 1, dash: [4, 3]))
+        return adaptiveSelectionOutline(cornerRadius: 4, dashed: true)
             .frame(width: rect.width, height: rect.height)
             .position(x: rect.midX, y: rect.midY)
             .allowsHitTesting(false)
+    }
+
+    private func adaptiveSelectionOutline(cornerRadius: CGFloat, dashed: Bool) -> some View {
+        let dash: [CGFloat] = dashed ? [4, 3] : []
+        return ZStack {
+            RoundedRectangle(cornerRadius: cornerRadius)
+                .strokeBorder(
+                    .black.opacity(0.86),
+                    style: StrokeStyle(lineWidth: 5, dash: dash)
+                )
+            RoundedRectangle(cornerRadius: cornerRadius)
+                .strokeBorder(
+                    .white.opacity(0.94),
+                    style: StrokeStyle(lineWidth: 3, dash: dash)
+                )
+            RoundedRectangle(cornerRadius: cornerRadius)
+                .strokeBorder(
+                    Color.accentColor,
+                    style: StrokeStyle(lineWidth: 1.5, dash: dash)
+                )
+        }
     }
 
     private func dragGesture(layout: AnnotationEditorGeometry) -> some Gesture {
@@ -372,6 +510,10 @@ public struct AnnotationEditorView: View {
                 .textFieldStyle(.roundedBorder)
                 .frame(width: 240)
                 .accessibilityLabel("Annotation text")
+                .focused($isEditingSelectedText)
+                .onChange(of: isEditingSelectedText) { _, editing in
+                    updateContinuousEditing(editing)
+                }
             }
 
             if controller.document.hasRedactions {
@@ -393,10 +535,11 @@ public struct AnnotationEditorView: View {
 
             Button("Copy") { performCopy() }
                 .keyboardShortcut("c", modifiers: [.command, .shift])
+            Button("Share…") { performShare() }
             Button("Save Project") { performSaveProject() }
             Button("Export…") { performExport() }
                 .keyboardShortcut("s", modifiers: .command)
-                .buttonStyle(.borderedProminent)
+                .notchShotPrimaryActionStyle()
             Button("Close") { onClose() }
         }
         .padding(.horizontal, 14)
@@ -413,7 +556,21 @@ public struct AnnotationEditorView: View {
         }
     }
 
+    private func performShare() {
+        do {
+            let flattened = try controller.renderFlattened()
+            let image = NSImage(
+                cgImage: flattened,
+                size: NSSize(width: flattened.width, height: flattened.height)
+            )
+            try MacSharePresenter.shared.present(items: [image])
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
     private func performSaveProject() {
+        guard controller.confirmProjectPrivacyBeforeSaving() else { return }
         do {
             let url = try controller.saveProject()
             onProjectSaved(url)
@@ -449,6 +606,40 @@ public struct AnnotationEditorView: View {
         controller.checkpoint()
         mutate(&selected.style)
         controller.update(selected)
+    }
+
+    private func updateContinuousEditing(_ editing: Bool) {
+        if editing {
+            finishColorEditing()
+            controller.beginCoalescing()
+        } else {
+            controller.endCoalescing()
+        }
+    }
+
+    /// SwiftUI's ColorPicker has no begin/end editing callback. A short idle
+    /// boundary turns its rapid intermediate values into one undo gesture.
+    private func updateStrokeColor(_ newValue: Color) {
+        if colorEditingTask == nil { controller.beginCoalescing() }
+        let hex = NSColor(newValue).hexString
+        controller.strokeColorHex = hex
+        Preferences.shared.annotationColorHex = hex
+        updateSelectedStyle { $0.colorHex = hex }
+
+        colorEditingTask?.cancel()
+        colorEditingTask = Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(300))
+            guard !Task.isCancelled else { return }
+            colorEditingTask = nil
+            controller.endCoalescing()
+        }
+    }
+
+    private func finishColorEditing() {
+        guard colorEditingTask != nil else { return }
+        colorEditingTask?.cancel()
+        colorEditingTask = nil
+        controller.endCoalescing()
     }
 
     private func addSelectedToolAtCenter() {
@@ -519,20 +710,6 @@ public struct AnnotationEditorView: View {
         return "\(selected.kind.title) selected"
     }
 
-    // MARK: Geometry
-
-    /// Base image behind the live annotation layer, with crop, rotation and
-    /// background applied. Every annotation is drawn once by the live layer.
-    private var basePreview: NSImage? {
-        var stripped = controller.document
-        stripped.elements = []
-        guard let image = try? AnnotationRenderer.render(
-            document: stripped,
-            source: controller.source,
-            options: AnnotationRenderer.Options(isPreview: true)
-        ) else { return nil }
-        return NSImage(cgImage: image, size: NSSize(width: image.width, height: image.height))
-    }
 }
 
 /// The one coordinate model used by the editor's preview, drawing, selection,
@@ -707,6 +884,7 @@ struct BackgroundPanel: View {
             Section("Preset") {
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 68), spacing: 8)], spacing: 8) {
                     ForEach(BackgroundPreset.all) { preset in
+                        let isSelected = controller.document.background == preset.configuration
                         Button {
                             controller.applyBackgroundPreset(preset)
                         } label: {
@@ -716,9 +894,24 @@ struct BackgroundPanel: View {
                                     .font(.caption2)
                                     .lineLimit(1)
                             }
+                            .padding(3)
+                            .background(
+                                isSelected ? Color.accentColor.opacity(0.16) : .clear,
+                                in: RoundedRectangle(cornerRadius: 8)
+                            )
+                            .overlay(alignment: .topTrailing) {
+                                if isSelected {
+                                    Image(systemName: "checkmark.circle.fill")
+                                        .symbolRenderingMode(.palette)
+                                        .foregroundStyle(.white, Color.accentColor)
+                                        .padding(5)
+                                }
+                            }
                         }
                         .buttonStyle(.plain)
                         .accessibilityLabel("\(preset.title) background")
+                        .accessibilityValue(isSelected ? "Selected" : "")
+                        .accessibilityAddTraits(isSelected ? [.isSelected] : [])
                     }
                 }
             }
@@ -727,14 +920,23 @@ struct BackgroundPanel: View {
                 LabeledContent("Padding") {
                     Slider(
                         value: binding(\.padding, default: 0),
-                        in: 0 ... 200
+                        in: 0 ... 200,
+                        onEditingChanged: updateContinuousEditing
                     )
                 }
                 LabeledContent("Corner radius") {
-                    Slider(value: binding(\.cornerRadius, default: 0), in: 0 ... 48)
+                    Slider(
+                        value: binding(\.cornerRadius, default: 0),
+                        in: 0 ... 48,
+                        onEditingChanged: updateContinuousEditing
+                    )
                 }
                 LabeledContent("Shadow") {
-                    Slider(value: binding(\.shadowRadius, default: 0), in: 0 ... 60)
+                    Slider(
+                        value: binding(\.shadowRadius, default: 0),
+                        in: 0 ... 60,
+                        onEditingChanged: updateContinuousEditing
+                    )
                 }
                 Toggle("Balance automatically", isOn: Binding(
                     get: { controller.document.background.balancesAutomatically },
@@ -780,7 +982,7 @@ struct BackgroundPanel: View {
                 }
             }
         }
-        .formStyle(.grouped)
+        .notchShotFormStyle()
         .alert("Background image unavailable", isPresented: Binding(
             get: { backgroundError != nil },
             set: { if !$0 { backgroundError = nil } }
@@ -803,6 +1005,14 @@ struct BackgroundPanel: View {
                 controller.applyBackground(background)
             }
         )
+    }
+
+    private func updateContinuousEditing(_ editing: Bool) {
+        if editing {
+            controller.beginCoalescing()
+        } else {
+            controller.endCoalescing()
+        }
     }
 
     @ViewBuilder

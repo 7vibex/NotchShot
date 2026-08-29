@@ -74,6 +74,13 @@ public struct StackItem: Identifiable, Sendable, Equatable {
     }
 }
 
+public struct CaptureSessionRecord: Codable, Sendable, Identifiable, Equatable {
+    public var id: UUID
+    public var name: String
+    public var createdAt: Date
+    public var assetIDs: [UUID]
+}
+
 /// Collects several captures so they can be exported as one artefact.
 ///
 /// The point is the workflow people actually have — take three shots of a flow,
@@ -85,6 +92,8 @@ public final class CaptureStack {
     public static let shared = CaptureStack()
 
     public private(set) var items: [StackItem] = []
+    public private(set) var savedSessions: [CaptureSessionRecord] = []
+    public private(set) var lastPersistenceError: String?
     /// While on, every new capture is added to the stack instead of replacing
     /// the shelf's single result.
     public var isCollecting = false
@@ -94,7 +103,16 @@ public final class CaptureStack {
     /// Bounds simultaneous decoded input memory for one export operation.
     public static let maximumDecodedPixels = 60_000_000
 
-    public init() {}
+    private let sessionsURL: URL
+    private let usesManagedStore: Bool
+
+    public init(
+        sessionsURL: URL = AppPaths.support.appendingPathComponent("CaptureSessions.json")
+    ) {
+        self.sessionsURL = sessionsURL
+        usesManagedStore = AppPaths.owns(sessionsURL)
+        loadSessions()
+    }
 
     public var isEmpty: Bool { items.isEmpty }
     public var count: Int { items.count }
@@ -132,6 +150,79 @@ public final class CaptureStack {
     public func clear() {
         items.removeAll()
         isCollecting = false
+    }
+
+    @discardableResult
+    public func saveSession(named proposedName: String) throws -> CaptureSessionRecord? {
+        guard !items.isEmpty else { return nil }
+        let trimmed = proposedName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let session = CaptureSessionRecord(
+            id: UUID(),
+            name: trimmed.isEmpty ? "Capture Session" : trimmed,
+            createdAt: Date(),
+            assetIDs: items.map { $0.asset.id }
+        )
+        var candidate = savedSessions
+        candidate.insert(session, at: 0)
+        do {
+            try persistSessions(candidate)
+            savedSessions = candidate
+            lastPersistenceError = nil
+        } catch {
+            lastPersistenceError = error.localizedDescription
+            throw error
+        }
+        return session
+    }
+
+    @discardableResult
+    public func resume(_ session: CaptureSessionRecord, history: HistoryRepository) -> Int {
+        let assets = session.assetIDs.compactMap { history.entry(id: $0)?.asset }
+            .filter { SafeAssetFile.isCurrentAndSafe($0) }
+        items = Array(assets.prefix(Self.maximumItems)).map { StackItem(asset: $0) }
+        isCollecting = true
+        return items.count
+    }
+
+    public func deleteSession(id: UUID) throws {
+        let candidate = savedSessions.filter { $0.id != id }
+        do {
+            try persistSessions(candidate)
+            savedSessions = candidate
+            lastPersistenceError = nil
+        } catch {
+            lastPersistenceError = error.localizedDescription
+            throw error
+        }
+    }
+
+    private func loadSessions() {
+        guard let values = try? sessionsURL.resourceValues(forKeys: [.fileSizeKey]),
+              let size = values.fileSize, size <= 1_000_000,
+              let data = try? Data(contentsOf: sessionsURL),
+              let decoded = try? JSONDecoder().decode([CaptureSessionRecord].self, from: data) else {
+            return
+        }
+        savedSessions = Array(decoded.prefix(100))
+    }
+
+    private func persistSessions(_ sessions: [CaptureSessionRecord]) throws {
+        guard !usesManagedStore || AppPaths.ensureDirectories() else {
+            throw NotchShotError.destinationUnwritable(sessionsURL.path)
+        }
+        let data = try JSONEncoder().encode(sessions)
+        guard data.count <= 1_000_000 else {
+            throw NotchShotError.exportFailed("Capture sessions exceeded their safe size limit")
+        }
+        try FileManager.default.createDirectory(
+            at: sessionsURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try data.write(to: sessionsURL, options: [.atomic])
+        try? FileManager.default.setAttributes(
+            [.posixPermissions: 0o600],
+            ofItemAtPath: sessionsURL.path
+        )
     }
 
     /// Renders the stack and writes it to `url`.
@@ -265,17 +356,21 @@ public enum StackRenderer {
     }
 
     public static func render(images: [CGImage], options: StackExportOptions) throws -> CGImage {
+        try validate(images: images, options: options)
         let sizes = images.map { CGSize(width: $0.width, height: $0.height) }
         let (canvas, frames) = layout(sizes: sizes, options: options)
-        let width = Int(canvas.width.rounded())
-        let height = Int(canvas.height.rounded())
         guard canvas.width.isFinite,
               canvas.height.isFinite,
-              width >= 1,
-              height >= 1,
-              width <= maximumCanvasDimension,
-              height <= maximumCanvasDimension,
-              width <= maximumCanvasPixels / height,
+              canvas.width >= 1,
+              canvas.height >= 1,
+              canvas.width <= CGFloat(maximumCanvasDimension),
+              canvas.height <= CGFloat(maximumCanvasDimension)
+        else {
+            throw NotchShotError.exportFailed("Could not allocate the stack canvas")
+        }
+        let width = Int(canvas.width.rounded())
+        let height = Int(canvas.height.rounded())
+        guard width <= maximumCanvasPixels / height,
               let context = AnnotationRenderer.makeContext(
                 width: width,
                 height: height
@@ -344,6 +439,18 @@ public enum StackRenderer {
 
     /// One capture per page, each page sized to its capture.
     public static func writePDF(images: [CGImage], options: StackExportOptions, to url: URL) throws {
+        try validate(images: images, options: options)
+        let parent = url.deletingLastPathComponent()
+        let estimatedBytes = try estimatedPDFWorkingBytes(images: images)
+        guard AppPaths.availableCapacity(at: parent) > estimatedBytes else {
+            throw NotchShotError.exportFailed("There is not enough free space to safely export the PDF")
+        }
+
+        let stagingURL = parent.appendingPathComponent(
+            ".\(url.lastPathComponent).\(UUID().uuidString).partial"
+        )
+        defer { try? FileManager.default.removeItem(at: stagingURL) }
+
         let margin = options.margin
         var firstPage = CGRect(
             x: 0,
@@ -351,7 +458,7 @@ public enum StackRenderer {
             width: CGFloat(images[0].width) + margin * 2,
             height: CGFloat(images[0].height) + margin * 2
         )
-        guard let consumer = CGDataConsumer(url: url as CFURL),
+        guard let consumer = CGDataConsumer(url: stagingURL as CFURL),
               let context = CGContext(consumer: consumer, mediaBox: &firstPage, nil)
         else {
             throw NotchShotError.exportFailed("Could not create the PDF")
@@ -385,5 +492,54 @@ public enum StackRenderer {
             context.endPDFPage()
         }
         context.closePDF()
+
+        let attributes = try FileManager.default.attributesOfItem(atPath: stagingURL.path)
+        let byteCount = (attributes[.size] as? NSNumber)?.int64Value ?? 0
+        guard byteCount > 0,
+              let document = CGPDFDocument(stagingURL as CFURL),
+              document.numberOfPages == images.count else {
+            throw NotchShotError.exportFailed("The PDF could not be finalized safely")
+        }
+
+        if FileManager.default.fileExists(atPath: url.path) {
+            _ = try FileManager.default.replaceItemAt(
+                url,
+                withItemAt: stagingURL,
+                backupItemName: nil,
+                options: []
+            )
+        } else {
+            try FileManager.default.moveItem(at: stagingURL, to: url)
+        }
+    }
+
+    private static func validate(images: [CGImage], options: StackExportOptions) throws {
+        guard !images.isEmpty else {
+            throw NotchShotError.exportFailed("The capture stack is empty")
+        }
+        guard options.spacing.isFinite,
+              options.margin.isFinite,
+              options.spacing >= 0,
+              options.margin >= 0,
+              options.spacing <= 4_096,
+              options.margin <= 4_096 else {
+            throw NotchShotError.exportFailed("The stack spacing or margin is invalid")
+        }
+    }
+
+    private static func estimatedPDFWorkingBytes(images: [CGImage]) throws -> Int64 {
+        var bytes: Int64 = 16 * 1_024 * 1_024
+        for image in images {
+            let (pixels, pixelOverflow) = Int64(image.width).multipliedReportingOverflow(
+                by: Int64(image.height)
+            )
+            let (decodedBytes, byteOverflow) = pixels.multipliedReportingOverflow(by: 4)
+            let (sum, sumOverflow) = bytes.addingReportingOverflow(decodedBytes)
+            guard !pixelOverflow, !byteOverflow, !sumOverflow else {
+                throw NotchShotError.exportFailed("The PDF is too large to export safely")
+            }
+            bytes = sum
+        }
+        return bytes
     }
 }

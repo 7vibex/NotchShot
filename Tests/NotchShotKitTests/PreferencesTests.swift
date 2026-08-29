@@ -75,18 +75,152 @@ struct PreferencesTests {
         first.imageFormat = .heic
         first.historyRetentionDays = 7
         first.recordingFrameRate = 30
+        first.recordingTargetMode = .window
+        first.updateChannel = .beta
         first.indexesCaptureText = true
+        first.notchDisplayPlacement = .allDisplays
+        first.clipboardClearsOnQuit = true
+        first.shelfPresentationStyle = .grid
+        first.setShelfQuickAction(.removeBackground, at: 2)
 
         let second = Preferences(defaults: defaults)
         #expect(second.imageFormat == .heic)
         #expect(second.historyRetentionDays == 7)
         #expect(second.recordingFrameRate == 30)
+        #expect(second.recordingTargetMode == .window)
+        #expect(second.updateChannel == .beta)
         #expect(second.indexesCaptureText)
+        #expect(second.notchDisplayPlacement == .allDisplays)
+        #expect(second.clipboardClearsOnQuit)
+        #expect(second.shelfPresentationStyle == .grid)
+        #expect(second.shelfQuickActions[2] == .removeBackground)
+    }
+
+    @Test("Shelf quick actions stay unique, safe, and ordered")
+    func shelfQuickActionsAreSanitized() {
+        let sanitized = ShareAction.sanitizedShelfQuickActions([
+            .airDrop, .airDrop, .delete, .removeBackground,
+        ])
+        #expect(sanitized.count == 4)
+        #expect(sanitized.prefix(2) == [.airDrop, .removeBackground])
+        #expect(Set(sanitized).count == 4)
+        #expect(!sanitized.contains(.delete))
+        #expect(ShareAction.customizableShelfCases.contains(.open))
+
+        let preferences = makePreferences()
+        preferences.setShelfQuickAction(.share, at: 0)
+        #expect(preferences.shelfQuickActions[0] == .share)
+        #expect(preferences.shelfQuickActions[3] == .copy)
+    }
+
+    @Test("The notch defaults to the built-in MacBook display")
+    func notchDisplayPlacementDefaultsToBuiltIn() {
+        let preferences = makePreferences()
+        #expect(preferences.notchDisplayPlacement == .builtInDisplayOnly)
+        #expect(preferences.notchDisplayPlacement.includesDisplay(isBuiltIn: true))
+        #expect(!preferences.notchDisplayPlacement.includesDisplay(isBuiltIn: false))
+        #expect(NotchDisplayPlacement.allDisplays.includesDisplay(isBuiltIn: false))
+    }
+
+    @Test("The old external-display toggle migrates without changing its meaning")
+    func legacyNotchDisplayPlacementMigration() {
+        for (legacyValue, expected) in [
+            (false, NotchDisplayPlacement.builtInDisplayOnly),
+            (true, NotchDisplayPlacement.allDisplays),
+        ] {
+            let suiteName = "notchshot.tests.\(UUID().uuidString)"
+            let defaults = UserDefaults(suiteName: suiteName)!
+            defer { defaults.removePersistentDomain(forName: suiteName) }
+            defaults.set(legacyValue, forKey: "notchshot.islandOnExternal")
+
+            #expect(Preferences(defaults: defaults).notchDisplayPlacement == expected)
+        }
+    }
+
+    @Test("Corrupted recording frame rates are reset to a supported value")
+    func corruptFrameRateIsSanitized() {
+        for value in [-1, 0, Int(Int32.max) + 1, Int.max] {
+            let suiteName = "notchshot.tests.\(UUID().uuidString)"
+            let defaults = UserDefaults(suiteName: suiteName)!
+            defer { defaults.removePersistentDomain(forName: suiteName) }
+            defaults.set(value, forKey: "notchshot.recordingFrameRate")
+
+            let preferences = Preferences(defaults: defaults)
+            #expect(preferences.recordingFrameRate == 60)
+        }
+    }
+
+    @Test("Managed ownership rejects symlink escapes")
+    func managedOwnershipRejectsSymlinkEscape() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let outside = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: outside, withIntermediateDirectories: true)
+        defer {
+            try? FileManager.default.removeItem(at: root)
+            try? FileManager.default.removeItem(at: outside)
+        }
+
+        let link = root.appendingPathComponent("Captures", isDirectory: true)
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: outside)
+        let escaped = link.appendingPathComponent("victim.png")
+
+        #expect(!AppPaths.owns(escaped, within: root))
+        #expect(AppPaths.owns(root.appendingPathComponent("safe.png"), within: root))
     }
 
     @Test("Text indexing is off by default, since it stores screen contents")
     func textIndexingDefaultsOff() {
         #expect(!makePreferences().indexesCaptureText)
+    }
+
+    @Test("Locked-session media is privacy opt-in and persists explicitly")
+    func lockedMediaPreference() {
+        let suiteName = "notchshot.tests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let first = Preferences(defaults: defaults)
+        #expect(!first.showsMediaWhileLocked)
+        first.showsMediaWhileLocked = true
+
+        #expect(Preferences(defaults: defaults).showsMediaWhileLocked)
+    }
+
+    @Test("Context modules use privacy-safe defaults and persist explicit choices")
+    func contextModulePreferences() {
+        let suiteName = "notchshot.tests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let first = Preferences(defaults: defaults)
+        #expect(!first.calendarGlanceEnabled)
+        #expect(first.powerStatusEnabled)
+        #expect(!first.audioRouteStatusEnabled)
+        #expect(first.aiActivityEnabled)
+        #expect(first.showsAIActivityOverMedia)
+        #expect(first.enabledAISources == Set(AISource.allCases))
+        #expect(first.mirrorsPassiveContextOnAllDisplays)
+        first.calendarGlanceEnabled = true
+        first.selectedCalendarIdentifiers = ["work"]
+        first.hiddenTitleCalendarIdentifiers = ["private"]
+        first.audioRouteStatusEnabled = true
+        first.aiActivityEnabled = false
+        first.showsAIActivityOverMedia = false
+        first.setAISource(.cursor, enabled: false)
+        first.mirrorsPassiveContextOnAllDisplays = false
+
+        let second = Preferences(defaults: defaults)
+        #expect(second.calendarGlanceEnabled)
+        #expect(second.selectedCalendarIdentifiers == ["work"])
+        #expect(second.hiddenTitleCalendarIdentifiers == ["private"])
+        #expect(second.audioRouteStatusEnabled)
+        #expect(!second.aiActivityEnabled)
+        #expect(!second.showsAIActivityOverMedia)
+        #expect(!second.enabledAISources.contains(.cursor))
+        #expect(!second.mirrorsPassiveContextOnAllDisplays)
     }
 
     @Test("Private system integrations require opt-in on a new install")
@@ -95,6 +229,34 @@ struct PreferencesTests {
         #expect(!preferences.suppressesSystemOSD)
         #expect(!preferences.usesSystemScreenshotShortcuts)
         #expect(!preferences.appleEventsFallbackEnabled)
+    }
+
+    @Test("Input Monitoring has direct Settings remediation")
+    func inputMonitoringSettingsURL() {
+        #expect(PermissionKind.inputMonitoring.title == "Input Monitoring")
+        #expect(PermissionKind.inputMonitoring.settingsURL?.absoluteString.contains("Privacy_ListenEvent") == true)
+    }
+
+    @Test("Input Monitoring state refreshes when the app becomes active again")
+    func inputMonitoringRefresh() {
+        var granted = false
+        let permissions = PermissionCenter(
+            preflight: { true },
+            request: { true },
+            inputMonitoringPreflight: { granted }
+        )
+        #expect(!permissions.inputMonitoringGranted)
+
+        granted = true
+        permissions.refresh()
+        #expect(permissions.inputMonitoringGranted)
+    }
+
+    @Test("An empty capture-service inventory explains the safe recovery")
+    func emptyCaptureInventoryRecoveryMessage() {
+        let message = NotchShotError.noShareableContent.errorDescription ?? ""
+        #expect(message.contains("capture service"))
+        #expect(message.contains("log out") || message.contains("restart"))
     }
 
     @Test("A new install keeps OSD replacement off after first-run completion")
@@ -107,6 +269,25 @@ struct PreferencesTests {
         first.hasCompletedFirstRun = true
         let second = Preferences(defaults: defaults)
         #expect(!second.suppressesSystemOSD)
+    }
+
+    @Test("A pending first capture survives only as a non-sensitive intent token")
+    func pendingFirstCaptureRoundTrip() {
+        let suiteName = "notchshot.tests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        let first = Preferences(defaults: defaults)
+        first.pendingFirstCaptureIntent = .area
+
+        let second = Preferences(defaults: defaults)
+        #expect(second.pendingFirstCaptureIntent == .area)
+        second.pendingFirstCaptureIntent = nil
+        #expect(Preferences(defaults: defaults).pendingFirstCaptureIntent == nil)
+    }
+
+    @Test("Stable updates exclude prerelease channels and Beta opts in explicitly")
+    func updateChannelsAreExplicit() {
+        #expect(SecureUpdateController.allowedChannels(for: .stable).isEmpty)
+        #expect(SecureUpdateController.allowedChannels(for: .beta) == ["beta"])
     }
 
     @Test("An upgraded install must explicitly opt into private OSD replacement")
@@ -206,7 +387,18 @@ struct CaptureAssetTests {
         #expect(!ShareAction.ocr.isAvailable(for: recording))
         #expect(!ShareAction.pin.isAvailable(for: recording))
         #expect(ShareAction.copy.isAvailable(for: recording))
-        #expect(ShareAction.airDrop.isAvailable(for: recording))
+        #expect(ShareAction.share.isAvailable(for: recording))
+
+        let document = CaptureAsset(
+            url: URL(fileURLWithPath: "/tmp/a.pdf"),
+            kind: .document,
+            pixelSize: .zero
+        )
+        #expect(!ShareAction.annotate.isAvailable(for: document))
+        #expect(!ShareAction.ocr.isAvailable(for: document))
+        #expect(!ShareAction.pin.isAvailable(for: document))
+        #expect(ShareAction.reveal.isAvailable(for: document))
+        #expect(document.dimensionsDescription == "PDF document")
     }
 
     @Test("Only app-owned temporary files qualify for automatic removal")

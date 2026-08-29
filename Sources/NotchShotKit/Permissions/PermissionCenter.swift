@@ -1,13 +1,16 @@
 import AVFoundation
 import AppKit
+@preconcurrency import ApplicationServices
 import CoreGraphics
 import Foundation
 import Observation
+import Security
 
 public enum PermissionKind: String, Sendable, CaseIterable, Identifiable {
     case screenRecording
     case microphone
     case automation
+    case inputMonitoring
     case accessibility
 
     public var id: String { rawValue }
@@ -17,6 +20,7 @@ public enum PermissionKind: String, Sendable, CaseIterable, Identifiable {
         case .screenRecording: "Screen & System Audio Recording"
         case .microphone: "Microphone"
         case .automation: "Automation (Music & Spotify)"
+        case .inputMonitoring: "Input Monitoring"
         case .accessibility: "Accessibility"
         }
     }
@@ -26,7 +30,8 @@ public enum PermissionKind: String, Sendable, CaseIterable, Identifiable {
         case .screenRecording: "Required for every screenshot and recording."
         case .microphone: "Only used when you record your voice."
         case .automation: "Only used if the system Now Playing bridge is unavailable."
-        case .accessibility: "Not used in this version."
+        case .inputMonitoring: "Only used when you choose to replace the macOS volume and brightness overlay."
+        case .accessibility: "Some macOS builds require this, alongside Input Monitoring, before an app may consume the volume and brightness keys."
         }
     }
 
@@ -39,6 +44,8 @@ public enum PermissionKind: String, Sendable, CaseIterable, Identifiable {
             URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone")
         case .automation:
             URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Automation")
+        case .inputMonitoring:
+            URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent")
         case .accessibility:
             URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")
         }
@@ -47,8 +54,8 @@ public enum PermissionKind: String, Sendable, CaseIterable, Identifiable {
 
 public enum PermissionState: String, Sendable, Equatable {
     case granted
-    /// The user may have enabled access, but ScreenCaptureKit only picks up a
-    /// new grant in a freshly launched process.
+    /// The request was handed to macOS, but the current process does not yet
+    /// pass the preflight check. A relaunch may be needed for the grant to land.
     case restartRequired
     case denied
     case notDetermined
@@ -74,6 +81,8 @@ public final class PermissionCenter {
 
     public private(set) var screenRecording: PermissionState = .notDetermined
     public private(set) var microphone: PermissionState = .notDetermined
+    public private(set) var inputMonitoringGranted = false
+    public var accessibilityGranted: Bool { AXIsProcessTrusted() }
 
     /// Set when a permission was denied, so the UI can offer remediation.
     public var pendingRemediation: PermissionKind?
@@ -84,6 +93,46 @@ public final class PermissionCenter {
     /// be reset.
     public private(set) var isScreenRecordingGrantStale = false
 
+    /// True when this bundle carries an ad-hoc signature.
+    ///
+    /// Worth reporting on its own, because it explains a symptom that otherwise
+    /// looks like two unrelated bugs. macOS keys a TCC grant to the app's
+    /// designated requirement; under an ad-hoc signature that requirement *is*
+    /// the code hash, so every rebuild is a different app to TCC. The Privacy
+    /// pane keeps showing NotchShot switched on — that row belongs to the
+    /// build that asked — while `CGPreflightScreenCaptureAccess` and
+    /// `CGPreflightListenEventAccess` both answer false for the build actually
+    /// running. Capture fails, the media-key tap never installs, and the macOS
+    /// volume and brightness overlay reappears with nothing replacing it.
+    /// Toggling the switch cannot fix any of that; only a stable signature can.
+    public let hasUnstableSigningIdentity = PermissionCenter.isAdHocSigned()
+
+    /// Reads the running code's signature rather than the bundle on disk, so it
+    /// describes the process whose permissions are actually being refused.
+    nonisolated static func isAdHocSigned() -> Bool {
+        var code: SecCode?
+        guard SecCodeCopySelf(SecCSFlags(), &code) == errSecSuccess,
+              let code else { return false }
+        var staticCode: SecStaticCode?
+        guard SecCodeCopyStaticCode(code, SecCSFlags(), &staticCode) == errSecSuccess,
+              let staticCode else { return false }
+        var information: CFDictionary?
+        guard SecCodeCopySigningInformation(
+            staticCode,
+            SecCSFlags(rawValue: kSecCSSigningInformation),
+            &information
+        ) == errSecSuccess,
+            let dictionary = information as? [String: Any]
+        else { return false }
+        // `kSecCodeSignatureAdhoc` is the authoritative bit. A missing Team ID
+        // agrees with it in practice but is not decisive on its own, so it is
+        // only the fallback for a build whose flags could not be read.
+        if let flags = dictionary[kSecCodeInfoFlags as String] as? UInt32 {
+            return flags & SecCodeSignatureFlags.adhoc.rawValue != 0
+        }
+        return dictionary[kSecCodeInfoTeamIdentifier as String] == nil
+    }
+
     private var screenRecordingPoll: Timer?
     private var requestedScreenRecordingThisLaunch = false
 
@@ -93,25 +142,27 @@ public final class PermissionCenter {
     /// would assert against whatever the machine happens to be set to.
     private let preflight: () -> Bool
     private let request: () -> Bool
+    private let inputMonitoringPreflight: () -> Bool
 
     public init(
         preflight: @escaping () -> Bool = { CGPreflightScreenCaptureAccess() },
-        request: @escaping () -> Bool = { CGRequestScreenCaptureAccess() }
+        request: @escaping () -> Bool = { CGRequestScreenCaptureAccess() },
+        inputMonitoringPreflight: @escaping () -> Bool = { CGPreflightListenEventAccess() }
     ) {
         self.preflight = preflight
         self.request = request
+        self.inputMonitoringPreflight = inputMonitoringPreflight
         refresh()
     }
 
     public func refresh() {
         if preflight() {
-            // macOS honours the grant again, so whatever was stale no longer is.
-            isScreenRecordingGrantStale = false
-            screenRecording = requestedScreenRecordingThisLaunch ? .restartRequired : .granted
+            markScreenRecordingGranted()
         } else {
             screenRecording = screenRecordingFallbackState()
         }
         microphone = Self.state(for: AVCaptureDevice.authorizationStatus(for: .audio))
+        inputMonitoringGranted = inputMonitoringPreflight()
     }
 
     private func screenRecordingFallbackState() -> PermissionState {
@@ -127,12 +178,7 @@ public final class PermissionCenter {
     @discardableResult
     public func requestScreenRecordingAccess() -> Bool {
         if preflight() {
-            if requestedScreenRecordingThisLaunch {
-                screenRecording = .restartRequired
-                pendingRemediation = .screenRecording
-                return false
-            }
-            screenRecording = .granted
+            markScreenRecordingGranted()
             return true
         }
 
@@ -164,8 +210,17 @@ public final class PermissionCenter {
         hasRequestedScreenRecording = true
         _ = request()
 
-        // Whether or not the call reported the new toggle, ScreenCaptureKit only
-        // honours a fresh grant in a newly launched process.
+        // The preflight API answers for this process. If macOS has already
+        // applied the grant, blocking capture behind a relaunch prompt is a
+        // false denial even when this launch initiated the request.
+        if preflight() {
+            markScreenRecordingGranted()
+            return true
+        }
+
+        // The request has been handed to macOS, but this process still lacks
+        // access. Keep the relaunch path available while the poll watches for an
+        // immediately effective grant.
         screenRecording = .restartRequired
         pendingRemediation = .screenRecording
         // Whether this is a stale grant cannot be decided here: the request API
@@ -183,20 +238,29 @@ public final class PermissionCenter {
     /// matches, and only removing the record fixes it. Scoped to this bundle
     /// identifier — no other app's permissions are touched.
     @discardableResult
-    public func resetScreenRecordingPermission() -> Bool {
+    public func resetScreenRecordingPermission() async -> Bool {
         let identifier = Bundle.main.bundleIdentifier ?? "com.notchshot.app"
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/tccutil")
-        process.arguments = ["reset", "ScreenCapture", identifier]
-        do {
-            try process.run()
-            process.waitUntilExit()
-        } catch {
-            Log.permissions.error("Could not reset Screen Recording: \(error.localizedDescription)")
-            return false
-        }
-        guard process.terminationStatus == 0 else {
-            Log.permissions.error("tccutil exited with \(process.terminationStatus)")
+        // `tccutil` is a subprocess with no bounded runtime, so waiting for it
+        // on the main actor froze the whole UI — including the window holding
+        // the button that started it.
+        let status: Int32? = await Task.detached(priority: .userInitiated) {
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/tccutil")
+            process.arguments = ["reset", "ScreenCapture", identifier]
+            process.standardInput = FileHandle.nullDevice
+            do {
+                try process.run()
+                process.waitUntilExit()
+            } catch {
+                Log.permissions.error("Could not reset Screen Recording: \(error.localizedDescription)")
+                return nil
+            }
+            return process.terminationStatus
+        }.value
+        guard status == 0 else {
+            if let status {
+                Log.permissions.error("tccutil exited with \(status)")
+            }
             return false
         }
         // Start over cleanly: the next capture asks macOS again.
@@ -233,12 +297,7 @@ public final class PermissionCenter {
             Task { @MainActor in
                 guard let self else { return }
                 if self.preflight() {
-                    // Do not mark the current process usable. ScreenCaptureKit
-                    // begins working only after the user relaunches the app.
-                    self.isScreenRecordingGrantStale = false
-                    self.screenRecording = self.requestedScreenRecordingThisLaunch
-                        ? .restartRequired : .granted
-                    self.stopPollingScreenRecording()
+                    self.markScreenRecordingGranted()
                 } else {
                     // Approved once before, asked again, and still refused after
                     // the grace period: the stored record does not match this
@@ -257,6 +316,19 @@ public final class PermissionCenter {
     private func stopPollingScreenRecording() {
         screenRecordingPoll?.invalidate()
         screenRecordingPoll = nil
+    }
+
+    /// A successful preflight is authoritative for the running process. Clear
+    /// stale remediation at the same time so every observer sees one coherent
+    /// state instead of a green status beside an obsolete permission prompt.
+    private func markScreenRecordingGranted() {
+        requestedScreenRecordingThisLaunch = false
+        isScreenRecordingGrantStale = false
+        screenRecording = .granted
+        if pendingRemediation == .screenRecording {
+            pendingRemediation = nil
+        }
+        stopPollingScreenRecording()
     }
 
     // MARK: Microphone
@@ -295,25 +367,41 @@ public final class PermissionCenter {
         if kind == .screenRecording { startPollingScreenRecording() }
     }
 
-    /// Starts a fresh app instance, then terminates this one. This is the
+    /// Quits this instance and reopens the bundle once it is gone. This is the
     /// shortest reliable route from granting Screen Recording to a working
     /// capture, and avoids telling the user to hunt for a menu-bar process.
+    ///
+    /// It deliberately does *not* ask Launch Services for a second instance.
+    /// `LSMultipleInstancesProhibited` makes that request succeed while
+    /// returning the process that is already running, so the old spelling read
+    /// the no-error result as "the replacement is up", terminated, and left the
+    /// user with nothing running and no Dock icon to notice it by. Ordering the
+    /// two halves through a detached waiter is what makes the promise true.
     public func relaunchApplication() {
-        let configuration = NSWorkspace.OpenConfiguration()
-        configuration.createsNewApplicationInstance = true
-        NSWorkspace.shared.openApplication(
-            at: Bundle.main.bundleURL,
-            configuration: configuration
-        ) { _, error in
-            Task { @MainActor in
-                if let error {
-                    Log.permissions.error("Relaunch failed: \(error.localizedDescription)")
-                    self.screenRecording = .restartRequired
-                } else {
-                    NSApp.terminate(nil)
-                }
-            }
+        guard let executableURL = Bundle.main.executableURL else {
+            Log.permissions.error("Relaunch failed: the running executable could not be located")
+            screenRecording = .restartRequired
+            return
         }
+        let waiter = Process()
+        waiter.executableURL = executableURL
+        waiter.arguments = [
+            "--relaunch-after",
+            String(ProcessInfo.processInfo.processIdentifier),
+            Bundle.main.bundleURL.standardizedFileURL.path,
+        ]
+        waiter.standardInput = FileHandle.nullDevice
+        waiter.standardOutput = FileHandle.nullDevice
+        waiter.standardError = FileHandle.nullDevice
+        do {
+            try waiter.run()
+        } catch {
+            // Never terminate on a relaunch that was never armed.
+            Log.permissions.error("Relaunch failed: \(error.localizedDescription)")
+            screenRecording = .restartRequired
+            return
+        }
+        NSApp.terminate(nil)
     }
 
     public func dismissRemediation() {

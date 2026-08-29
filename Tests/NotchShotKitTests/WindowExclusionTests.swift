@@ -6,6 +6,23 @@ import Testing
 @MainActor
 struct WindowExclusionTests {
 
+    @Test("An empty ScreenCaptureKit inventory gets one bounded fresh retry")
+    func captureInventoryRetryPolicy() {
+        #expect(ShareableContentRetryPolicy.shouldRetry(afterAttempt: 1))
+        #expect(!ShareableContentRetryPolicy.shouldRetry(afterAttempt: 2))
+    }
+
+    @Test("The notch panel accepts clicks only inside its interactive region")
+    func panelClickThroughRegion() {
+        let panel = NotchPanel(contentRect: CGRect(x: 100, y: 200, width: 300, height: 160))
+        panel.setInteractiveRectFromScreenRect(CGRect(x: 140, y: 240, width: 100, height: 50))
+
+        #expect(panel.updateMouseTransparency(screenPoint: CGPoint(x: 150, y: 250)))
+        #expect(!panel.ignoresMouseEvents)
+        #expect(!panel.updateMouseTransparency(screenPoint: CGPoint(x: 300, y: 300)))
+        #expect(panel.ignoresMouseEvents)
+    }
+
     /// A window built with `defer: true` has no window device yet, and AppKit
     /// reports its number as -1. Converting that to `CGWindowID` — a `UInt32` —
     /// traps, and this getter runs on the way into every capture, so the trap

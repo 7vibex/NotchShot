@@ -104,7 +104,6 @@ func run() async {
         let configuration = RecordingConfiguration(
             target: .display(display.id),
             audioSources: [.system],
-            quality: .balanced,
             resolution: .p720,
             framesPerSecond: 30,
             showsCursor: true

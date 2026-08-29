@@ -68,6 +68,88 @@ enum RecordingAreaResolver {
     }
 }
 
+enum RecordingCapacityPolicy {
+    static let minimumStartBytes: Int64 = 1_000_000_000
+    static let warningBytes: Int64 = 750_000_000
+    static let automaticStopBytes: Int64 = 500_000_000
+
+    enum Action: Equatable {
+        case continueRecording
+        case warn
+        case stopAndFinalize
+    }
+
+    static func action(for availableBytes: Int64) -> Action {
+        if availableBytes <= automaticStopBytes { return .stopAndFinalize }
+        if availableBytes <= warningBytes { return .warn }
+        return .continueRecording
+    }
+}
+
+/// Retires scratch recordings only after every surviving source has a recovery
+/// exclusion marker. That ordering makes cleanup truthful under partial file
+/// system failure: a committed source is either removed or remains explicitly
+/// excluded from crash recovery.
+struct RecordingScratchRetirement {
+    struct Operations {
+        var fileExists: (URL) -> Bool
+        var writeMarker: (URL) throws -> Void
+        var removeItem: (URL) throws -> Void
+
+        static var live: Operations {
+            Operations(
+                fileExists: { FileManager.default.fileExists(atPath: $0.path) },
+                writeMarker: { try Data().write(to: $0, options: .atomic) },
+                removeItem: { try FileManager.default.removeItem(at: $0) }
+            )
+        }
+    }
+
+    static func marker(for source: URL) -> URL {
+        source.appendingPathExtension("notchshot-ignore")
+    }
+
+    /// Returns sources that could not be deleted but are safely marked. A
+    /// marker failure throws before any source is removed.
+    static func retireCommitted(
+        _ sources: [URL],
+        operations: Operations = .live
+    ) throws -> [URL] {
+        var unique: [URL] = []
+        var seen: Set<String> = []
+        for source in sources.map(\.standardizedFileURL)
+            where seen.insert(source.path).inserted && operations.fileExists(source) {
+            unique.append(source)
+        }
+
+        var newlyCreatedMarkers: [URL] = []
+        do {
+            for source in unique {
+                let marker = marker(for: source)
+                let alreadyExisted = operations.fileExists(marker)
+                try operations.writeMarker(marker)
+                if !alreadyExisted { newlyCreatedMarkers.append(marker) }
+            }
+        } catch {
+            for marker in newlyCreatedMarkers {
+                try? operations.removeItem(marker)
+            }
+            throw error
+        }
+
+        var retained: [URL] = []
+        for source in unique {
+            do {
+                try operations.removeItem(source)
+                try? operations.removeItem(marker(for: source))
+            } catch {
+                retained.append(source)
+            }
+        }
+        return retained
+    }
+}
+
 /// Records the screen to an H.264 MP4 using ScreenCaptureKit's own recording
 /// output, which handles muxing, A/V sync and rotation for us.
 ///
@@ -120,6 +202,7 @@ public final class RecordingService {
     public var onStatusChange: ((RecordingStatus) -> Void)?
     /// Fires if the stream dies on its own (display unplugged, window closed).
     public var onUnexpectedStop: ((NotchShotError, URL?) -> Void)?
+    public var onLowDiskThresholdReached: (() -> Void)?
 
     private var stream: SCStream?
     private var recordingOutput: SCRecordingOutput?
@@ -130,6 +213,9 @@ public final class RecordingService {
     private var temporaryURL: URL?
     private var startedAt: Date?
     private var tickTimer: Timer?
+    private var tickCount = 0
+    private var hasRequestedLowDiskStop = false
+    private let availableCapacity: @MainActor (URL) -> Int64
     private let audioMeterQueue = DispatchQueue(
         label: "com.notchshot.audio-meter",
         qos: .userInitiated
@@ -140,7 +226,11 @@ public final class RecordingService {
     private var stopTask: Task<CaptureAsset, Error>?
     private var stopTaskSessionID: UUID?
 
-    public init() {}
+    public init(
+        availableCapacity: @escaping @MainActor (URL) -> Int64 = { AppPaths.availableCapacity(at: $0) }
+    ) {
+        self.availableCapacity = availableCapacity
+    }
 
     // MARK: Start
 
@@ -149,6 +239,8 @@ public final class RecordingService {
             throw NotchShotError.recordingFailed("A recording operation is already in progress")
         }
         let sessionID = UUID()
+        hasRequestedLowDiskStop = false
+        tickCount = 0
         setLifecycle(.starting(sessionID))
         var scratchURL: URL?
         defer {
@@ -171,7 +263,9 @@ public final class RecordingService {
             try Task.checkCancellation()
         }
 
-        AppPaths.ensureDirectories()
+        guard AppPaths.ensureDirectories(), AppPaths.owns(AppPaths.inProgress) else {
+            throw NotchShotError.destinationUnwritable(AppPaths.inProgress.path)
+        }
         // Recording is written to a scratch file first: if export or the app
         // itself dies, the footage is still on disk and recoverable.
         let temporary = AppPaths.inProgress
@@ -179,7 +273,7 @@ public final class RecordingService {
             .appendingPathExtension("mp4")
         scratchURL = temporary
 
-        guard AppPaths.availableCapacity(at: AppPaths.inProgress) > 500_000_000 else {
+        guard availableCapacity(AppPaths.inProgress) > RecordingCapacityPolicy.minimumStartBytes else {
             throw NotchShotError.diskSpaceUnavailable
         }
 
@@ -486,6 +580,47 @@ public final class RecordingService {
         recoveryCandidateIdentity(for: url) != nil
     }
 
+    /// Finalizes a single paused segment through the same move/copy/rollback
+    /// path as a normal recording stop.
+    public func commitPausedSegment(from source: URL, to destination: URL) throws -> URL {
+        guard Self.isManagedScratchRecording(source) else {
+            throw NotchShotError.recordingFailed("The paused recording segment is not a trusted NotchShot scratch file")
+        }
+        return try moveOrCopy(from: source, to: destination)
+    }
+
+    /// Retires the source segments of an already-committed joined recording.
+    /// Every still-present source is marked before any deletion begins.
+    public static func retireCommittedPausedSegments(_ urls: [URL]) throws {
+        guard urls.allSatisfy(isManagedScratchRecording) else {
+            throw NotchShotError.recordingFailed("A paused recording segment is not a trusted NotchShot scratch file")
+        }
+        let retained = try RecordingScratchRetirement.retireCommitted(urls)
+        for url in retained {
+            Log.recording.error(
+                "Could not remove committed paused segment; excluded it from recovery: \(url.lastPathComponent)"
+            )
+        }
+    }
+
+    /// Returns true when the file is outside crash recovery, absent, or has a
+    /// durable exclusion marker. Used before promising that a failed discard
+    /// will not reappear on the next launch.
+    public static func ensureExcludedFromCrashRecovery(_ url: URL) -> Bool {
+        let resolved = url.standardizedFileURL
+        guard resolved.deletingLastPathComponent() == AppPaths.inProgress.standardizedFileURL,
+              FileManager.default.fileExists(atPath: resolved.path) else { return true }
+        do {
+            try markExcludedFromRecovery(resolved)
+            return true
+        } catch {
+            Log.recording.fault(
+                "Could not exclude retained discard from crash recovery: \(error.localizedDescription)"
+            )
+            return false
+        }
+    }
+
     public func recover(_ url: URL) async throws -> CaptureAsset {
         guard let originalIdentity = Self.recoveryCandidateIdentity(for: url) else {
             throw NotchShotError.recordingFailed("The recovery item is not a trusted NotchShot scratch recording")
@@ -765,7 +900,11 @@ public final class RecordingService {
 
         streamConfiguration.minimumFrameInterval = CMTime(
             value: 1,
-            timescale: CMTimeScale(max(1, configuration.framesPerSecond))
+            timescale: CMTimeScale(
+                RecordingConfiguration.sanitizedFramesPerSecond(
+                    configuration.framesPerSecond
+                )
+            )
         )
         streamConfiguration.showsCursor = configuration.showsCursor
         streamConfiguration.showMouseClicks = configuration.highlightsClicks
@@ -874,6 +1013,23 @@ public final class RecordingService {
         status.isMicrophoneMeterAvailable = levels.microphoneAvailable
         status.appendMeterSnapshot(system: levels.system, microphone: levels.microphone)
         status.fileSizeBytes = Int64(recordingOutput?.recordedFileSize ?? 0)
+        tickCount &+= 1
+        if tickCount % 10 == 0, !hasRequestedLowDiskStop {
+            switch RecordingCapacityPolicy.action(for: availableCapacity(AppPaths.inProgress)) {
+            case .continueRecording:
+                break
+            case .warn:
+                Log.recording.warning("Recording volume is approaching the safety reserve")
+            case .stopAndFinalize:
+                hasRequestedLowDiskStop = true
+                Log.recording.error("Recording reached the disk safety reserve; finalizing early")
+                if let onLowDiskThresholdReached {
+                    onLowDiskThresholdReached()
+                } else {
+                    Task { _ = try? await self.stop() }
+                }
+            }
+        }
         publishStatus()
     }
 
@@ -918,11 +1074,24 @@ public final class RecordingService {
                             "Copied recording but could not remove scratch file; excluded it from recovery: \(removalError.localizedDescription)"
                         )
                     } catch let markerError {
-                        // Do not report a successful export if doing so could
-                        // create a second recovered copy on the next launch.
-                        throw NotchShotError.exportFailed(
-                            "The recording was copied, but its temporary file could not be retired (remove: \(removalError.localizedDescription); marker: \(markerError.localizedDescription))"
-                        )
+                        // Roll back the newly committed destination so the
+                        // scratch recording remains the sole authoritative
+                        // copy. If rollback itself is impossible, return the
+                        // destination as success so it is at least tracked in
+                        // history instead of becoming an invisible duplicate.
+                        do {
+                            try fm.removeItem(at: destination)
+                            throw NotchShotError.exportFailed(
+                                "The recording copy was rolled back because its temporary file could not be retired (remove: \(removalError.localizedDescription); marker: \(markerError.localizedDescription))"
+                            )
+                        } catch let rollbackError as NotchShotError {
+                            throw rollbackError
+                        } catch {
+                            Log.recording.fault(
+                                "Could not retire scratch, write its marker, or roll back the tracked destination: \(error.localizedDescription)"
+                            )
+                            return destination
+                        }
                     }
                 }
                 return destination
@@ -936,7 +1105,7 @@ public final class RecordingService {
     }
 
     private static func recoveryExclusionMarker(for url: URL) -> URL {
-        url.appendingPathExtension("notchshot-ignore")
+        RecordingScratchRetirement.marker(for: url)
     }
 
     private static func isSafeRetainedDiscard(_ url: URL) -> Bool {
@@ -950,6 +1119,13 @@ public final class RecordingService {
 
     private static func markExcludedFromRecovery(_ url: URL) throws {
         try Data().write(to: recoveryExclusionMarker(for: url), options: .atomic)
+    }
+
+    private static func isManagedScratchRecording(_ url: URL) -> Bool {
+        let resolved = url.standardizedFileURL
+        return resolved.deletingLastPathComponent() == AppPaths.inProgress.standardizedFileURL
+            && resolved.pathExtension.lowercased() == "mp4"
+            && AppPaths.owns(resolved)
     }
 
     private struct RecoveryCandidateIdentity: Equatable {
@@ -1131,7 +1307,11 @@ private final class StreamBridge: NSObject, SCStreamDelegate, SCStreamOutput, SC
 private final class RecordingFinalization: @unchecked Sendable {
     private let lock = NSLock()
     private var result: Result<Void, Error>?
-    private var continuation: CheckedContinuation<Void, Error>?
+    /// A list, not a single slot. The lifecycle guards in `RecordingService`
+    /// mean only one waiter is expected, but a single slot turns a second one
+    /// into a stranded continuation — an unresumable hang — rather than an
+    /// extra resume, and that is not a failure mode worth leaving reachable.
+    private var continuations: [CheckedContinuation<Void, Error>] = []
 
     func wait(timeout: TimeInterval) async throws {
         try await withCheckedThrowingContinuation { continuation in
@@ -1141,7 +1321,7 @@ private final class RecordingFinalization: @unchecked Sendable {
                 continuation.resume(with: result)
                 return
             }
-            self.continuation = continuation
+            continuations.append(continuation)
             lock.unlock()
 
             DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + timeout) { [weak self] in
@@ -1159,9 +1339,11 @@ private final class RecordingFinalization: @unchecked Sendable {
             return
         }
         self.result = result
-        let continuation = continuation
-        self.continuation = nil
+        let waiting = continuations
+        continuations.removeAll()
         lock.unlock()
-        continuation?.resume(with: result)
+        for continuation in waiting {
+            continuation.resume(with: result)
+        }
     }
 }

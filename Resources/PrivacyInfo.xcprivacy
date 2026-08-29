@@ -9,6 +9,46 @@
 	<key>NSPrivacyCollectedDataTypes</key>
 	<array/>
 	<key>NSPrivacyAccessedAPITypes</key>
-	<array/>
+	<array>
+		<!-- Preferences, hot-key bindings, and persisted system-shortcut claims. -->
+		<dict>
+			<key>NSPrivacyAccessedAPIType</key>
+			<string>NSPrivacyAccessedAPICategoryUserDefaults</string>
+			<key>NSPrivacyAccessedAPITypeReasons</key>
+			<array>
+				<string>CA92.1</string>
+			</array>
+		</dict>
+		<!-- Verifying a capture file, and the approved media adapter, is still
+		     the exact file that was checked before it is read or executed. -->
+		<dict>
+			<key>NSPrivacyAccessedAPIType</key>
+			<string>NSPrivacyAccessedAPICategoryFileTimestamp</string>
+			<key>NSPrivacyAccessedAPITypeReasons</key>
+			<array>
+				<string>C617.1</string>
+			</array>
+		</dict>
+		<!-- Capture/recording deadlines, media-adapter timeouts, and the
+		     brightness-intent window all measure elapsed time from
+		     ProcessInfo.systemUptime. Nothing derived from it leaves the Mac. -->
+		<dict>
+			<key>NSPrivacyAccessedAPIType</key>
+			<string>NSPrivacyAccessedAPICategorySystemBootTime</string>
+			<key>NSPrivacyAccessedAPITypeReasons</key>
+			<array>
+				<string>35F9.1</string>
+			</array>
+		</dict>
+		<!-- Refusing to start a capture or recording that would fill the disk. -->
+		<dict>
+			<key>NSPrivacyAccessedAPIType</key>
+			<string>NSPrivacyAccessedAPICategoryDiskSpace</string>
+			<key>NSPrivacyAccessedAPITypeReasons</key>
+			<array>
+				<string>E174.1</string>
+			</array>
+		</dict>
+	</array>
 </dict>
 </plist>

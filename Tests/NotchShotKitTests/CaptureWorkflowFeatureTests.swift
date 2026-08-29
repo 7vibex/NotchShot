@@ -4,6 +4,11 @@ import Testing
 
 @Suite("Capture recipes")
 struct CaptureRecipeTests {
+    @Test("Interactive recipes copy first and never open a save panel")
+    func recipesAreClipboardFirst() {
+        #expect(CaptureRecipe.all.allSatisfy { $0.destination == .clipboardOnly })
+    }
+
     @Test("Every named workflow has a unique recipe")
     func namedRecipes() {
         let ids = Set(CaptureRecipe.all.map(\.id))
@@ -28,6 +33,44 @@ struct CaptureRecipeTests {
     }
 }
 
+@Suite("Capture preview routing")
+@MainActor
+struct CapturePreviewRoutingTests {
+    @Test("Clicking an image shelf item opens its preview route")
+    func imageRoutesToPreview() {
+        let coordinator = AppCoordinator()
+        let asset = CaptureAsset(
+            url: URL(fileURLWithPath: "/tmp/notchshot-preview.png"),
+            kind: .screenshot,
+            pixelSize: CGSize(width: 640, height: 480)
+        )
+        let item = ShelfItem(asset: asset, thumbnail: nil, image: nil)
+        var openedID: UUID?
+        coordinator.onOpenCapturePreview = { openedID = $0.id }
+
+        coordinator.openPreview(for: item)
+
+        #expect(openedID == item.id)
+    }
+
+    @Test("Non-image shelf items do not open the image preview")
+    func recordingDoesNotRouteToImagePreview() {
+        let coordinator = AppCoordinator()
+        let asset = CaptureAsset(
+            url: URL(fileURLWithPath: "/tmp/notchshot-preview.mp4"),
+            kind: .recording,
+            pixelSize: .zero
+        )
+        let item = ShelfItem(asset: asset, thumbnail: nil, image: nil)
+        var didOpen = false
+        coordinator.onOpenCapturePreview = { _ in didOpen = true }
+
+        coordinator.openPreview(for: item)
+
+        #expect(!didOpen)
+    }
+}
+
 @Suite("Privacy suggestions")
 struct PrivacySuggestionTests {
     @Test("Known token formats are suggested without storing the value")
@@ -42,6 +85,14 @@ struct PrivacySuggestionTests {
         #expect(PrivacyReviewService.containsAccountIdentifier("Account ID: USER_84920"))
         #expect(PrivacyReviewService.containsAccountIdentifier("@example_account"))
         #expect(!PrivacyReviewService.containsAccountIdentifier("Account settings"))
+    }
+
+    @Test("Payment cards require a valid checksum and IP octets stay in range")
+    func additionalSensitivePatternsAreValidated() {
+        #expect(PrivacyReviewService.containsPaymentCard("Card 4242 4242 4242 4242"))
+        #expect(!PrivacyReviewService.containsPaymentCard("Reference 1234 5678 9012 3456"))
+        #expect(PrivacyReviewService.containsIPAddress("Server 192.168.1.42"))
+        #expect(!PrivacyReviewService.containsIPAddress("Version 999.1.2.3"))
     }
 }
 
@@ -66,6 +117,94 @@ struct VisualComparisonTests {
         #expect(pixel.r < 3)
         #expect(pixel.g < 3)
         #expect(pixel.b < 3)
+    }
+
+    /// The vectorised comparison walks sixteen bytes at a time and finishes the
+    /// remainder one byte at a time. Sizes whose pixel count is not a multiple
+    /// of four exercise that remainder, which is where a hand-written SIMD loop
+    /// goes wrong.
+    @Test("The vectorised difference matches a scalar reference at every threshold")
+    func vectorisedDifferenceMatchesScalarReference() {
+        func scalarReference(
+            _ planes: ImageComparisonRenderer.DifferencePlanes,
+            threshold: UInt8
+        ) -> [UInt8] {
+            var expected = [UInt8](repeating: 255, count: planes.bytesPerRow * planes.height)
+            for offset in stride(from: 0, to: expected.count, by: 4) {
+                for channel in 0 ..< 3 {
+                    let delta = UInt8(
+                        abs(Int(planes.left[offset + channel]) - Int(planes.right[offset + channel]))
+                    )
+                    expected[offset + channel] = delta >= threshold ? delta : 0
+                }
+            }
+            return expected
+        }
+
+        var seed: UInt64 = 0x9E37_79B9_7F4A_7C15
+        func nextByte() -> UInt8 {
+            seed = seed &* 6_364_136_223_846_793_005 &+ 1_442_695_040_888_963_407
+            return UInt8(truncatingIfNeeded: seed >> 33)
+        }
+
+        // 3x3 and 5x7 both leave a partial 16-byte block; 8x4 divides evenly.
+        for (width, height) in [(3, 3), (5, 7), (8, 4), (17, 2)] {
+            let count = width * height * 4
+            let planes = ImageComparisonRenderer.DifferencePlanes(
+                left: (0 ..< count).map { _ in nextByte() },
+                right: (0 ..< count).map { _ in nextByte() },
+                width: width,
+                height: height
+            )
+            for threshold in [UInt8(0), 1, 40, 128, 255] {
+                let actual = ImageComparisonRenderer.absoluteDifference(
+                    planes: planes,
+                    threshold: threshold
+                )
+                #expect(
+                    actual == scalarReference(planes, threshold: threshold),
+                    "mismatch at \(width)x\(height) threshold \(threshold)"
+                )
+            }
+        }
+    }
+
+    @Test("Alpha stays opaque so the difference is not silently transparent")
+    func differenceKeepsAlphaOpaque() {
+        let planes = ImageComparisonRenderer.DifferencePlanes(
+            left: [UInt8](repeating: 10, count: 5 * 3 * 4),
+            right: [UInt8](repeating: 200, count: 5 * 3 * 4),
+            width: 5,
+            height: 3
+        )
+        let output = ImageComparisonRenderer.absoluteDifference(planes: planes, threshold: 0)
+        for offset in stride(from: 3, to: output.count, by: 4) {
+            #expect(output[offset] == 255)
+        }
+    }
+
+    @Test("Reusing decoded planes gives the same image as decoding each time")
+    func cachedPlanesMatchFreshDecode() throws {
+        let before = TestImage.solid(width: 24, height: 18, red: 30, green: 90, blue: 150)
+        let after = TestImage.solid(width: 24, height: 18, red: 180, green: 20, blue: 40)
+        let planes = try ImageComparisonRenderer.differencePlanes(before: before, after: after)
+
+        for threshold in [UInt8(0), 60, 200] {
+            let fromPlanes = try ImageComparisonRenderer.difference(
+                planes: planes,
+                threshold: threshold
+            )
+            let fromImages = try ImageComparisonRenderer.difference(
+                before: before,
+                after: after,
+                threshold: threshold
+            )
+            let cached = TestImage.pixel(fromPlanes, x: 12, y: 9)
+            let fresh = TestImage.pixel(fromImages, x: 12, y: 9)
+            #expect(cached.r == fresh.r)
+            #expect(cached.g == fresh.g)
+            #expect(cached.b == fresh.b)
+        }
     }
 }
 
@@ -129,6 +268,48 @@ struct CaptionTests {
         )
         #expect(transcript.srt.contains("00:00:00,250 --> 00:00:01,750"))
         #expect(transcript.srt.contains("01:01:01,004 --> 01:01:03,004"))
+    }
+}
+
+@Suite("Finder shelf service")
+@MainActor
+struct FinderShelfServiceTests {
+    @Test("Finder can park an arbitrary regular file without moving it")
+    func stagesRegularFile() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("notchshot-service-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let source = directory.appendingPathComponent("Project notes.txt")
+        try Data("Local notes".utf8).write(to: source)
+
+        let coordinator = AppCoordinator()
+        coordinator.acceptFilesFromFinderService([source])
+
+        let item = try #require(coordinator.shelfItems.first)
+        #expect(item.asset.url == source)
+        #expect(item.asset.kind == .document)
+        #expect(item.asset.ownership == .externalReference)
+        #expect(item.asset.dimensionsDescription == "Document")
+        #expect(FileManager.default.fileExists(atPath: source.path))
+        #expect(coordinator.activity == .result)
+    }
+
+    @Test("The bundle advertises the file shelf service")
+    func serviceDeclaration() throws {
+        let repository = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let data = try Data(contentsOf: repository.appendingPathComponent("Resources/Info.plist"))
+        let root = try #require(
+            PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any]
+        )
+        let services = try #require(root["NSServices"] as? [[String: Any]])
+        let service = try #require(services.first)
+        #expect(service["NSMessage"] as? String == "addFilesToShelf")
+        #expect(service["NSSendFileTypes"] as? [String] == ["public.data"])
+        #expect(service["NSSendTypes"] as? [String] == ["public.file-url"])
     }
 }
 

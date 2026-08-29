@@ -57,9 +57,12 @@ public enum OnDeviceTranscriptionError: LocalizedError {
         case .unavailable:
             "On-device transcription is not available on this Mac."
         case .unsupportedLocale:
-            "The current language is not supported for on-device transcription."
+            "There is no on-device model for this language. Choose another in NotchShot Settings → Dictation."
         case .languageModelNotInstalled:
-            "The current language model is not installed. Install it in macOS settings, then try again."
+            // macOS has no pane for this: the model is downloaded by the app
+            // itself, so the old "install it in macOS settings" sent people
+            // looking for a control that does not exist.
+            "The language model for this language isn't installed yet. Install it in NotchShot Settings → Dictation."
         case .noAudio:
             "The recording contains no audio to transcribe."
         }

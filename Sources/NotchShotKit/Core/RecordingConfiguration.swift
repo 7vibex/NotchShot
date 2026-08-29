@@ -17,6 +17,32 @@ public enum RecordingTarget: Sendable, Equatable {
     }
 }
 
+/// The user-facing scope used before ScreenCaptureKit resolves a concrete
+/// display/window identifier or an area rectangle.
+public enum RecordingTargetMode: String, Sendable, Codable, CaseIterable, Identifiable {
+    case area
+    case window
+    case display
+
+    public var id: String { rawValue }
+
+    public var title: String {
+        switch self {
+        case .area: "Area"
+        case .window: "Window"
+        case .display: "Display"
+        }
+    }
+
+    public var symbolName: String {
+        switch self {
+        case .area: "viewfinder"
+        case .window: "macwindow"
+        case .display: "display"
+        }
+    }
+}
+
 public struct RecordingAudioSources: OptionSet, Sendable, Codable {
     public let rawValue: Int
     public init(rawValue: Int) { self.rawValue = rawValue }
@@ -27,29 +53,14 @@ public struct RecordingAudioSources: OptionSet, Sendable, Codable {
     public var isEmpty: Bool { rawValue == 0 }
 }
 
-public enum RecordingQuality: String, Sendable, Codable, CaseIterable, Identifiable {
-    case high
-    case balanced
-    case small
-
-    public var id: String { rawValue }
-    public var title: String {
-        switch self {
-        case .high: "High Quality"
-        case .balanced: "Balanced"
-        case .small: "Small File"
-        }
-    }
-
-    /// Bits per pixel per frame, used to derive a bitrate from the output size.
-    var bitsPerPixel: Double {
-        switch self {
-        case .high: 0.20
-        case .balanced: 0.12
-        case .small: 0.07
-        }
-    }
-}
+// `RecordingQuality` was removed deliberately, not mislaid.
+//
+// It set a bitrate, and this recorder writes through
+// `SCRecordingOutputConfiguration`, whose entire surface is `outputURL`,
+// `videoCodecType`, and `outputFileType` — there is no bitrate to set. The
+// picker had no production caller and changed nothing about the MP4, so it
+// promised the user control the backend cannot give. Resolution and frame rate
+// are the real size controls and both still apply.
 
 /// Longest edge the recording is downscaled to. `native` keeps source pixels.
 public enum RecordingResolution: String, Sendable, Codable, CaseIterable, Identifiable {
@@ -87,7 +98,6 @@ public struct RecordingConfiguration: Sendable, Equatable {
     public var target: RecordingTarget
     public var audioSources: RecordingAudioSources
     public var microphoneDeviceID: String?
-    public var quality: RecordingQuality
     public var resolution: RecordingResolution
     public var framesPerSecond: Int
     public var showsCursor: Bool
@@ -99,7 +109,6 @@ public struct RecordingConfiguration: Sendable, Equatable {
         target: RecordingTarget,
         audioSources: RecordingAudioSources = .system,
         microphoneDeviceID: String? = nil,
-        quality: RecordingQuality = .balanced,
         resolution: RecordingResolution = .native,
         framesPerSecond: Int = 60,
         showsCursor: Bool = true,
@@ -110,9 +119,8 @@ public struct RecordingConfiguration: Sendable, Equatable {
         self.target = target
         self.audioSources = audioSources
         self.microphoneDeviceID = microphoneDeviceID
-        self.quality = quality
         self.resolution = resolution
-        self.framesPerSecond = framesPerSecond
+        self.framesPerSecond = Self.sanitizedFramesPerSecond(framesPerSecond)
         self.showsCursor = showsCursor
         self.highlightsClicks = highlightsClicks
         self.autoZoomsOnClicks = autoZoomsOnClicks
@@ -122,22 +130,29 @@ public struct RecordingConfiguration: Sendable, Equatable {
     /// Scales `sourcePixelSize` down to the configured resolution, preserving
     /// aspect ratio and keeping both dimensions even (H.264 requirement).
     public func outputPixelSize(for sourcePixelSize: CGSize) -> CGSize {
-        guard sourcePixelSize.width > 0, sourcePixelSize.height > 0 else {
+        guard sourcePixelSize.width.isFinite,
+              sourcePixelSize.height.isFinite,
+              sourcePixelSize.width > 0,
+              sourcePixelSize.height > 0 else {
             return CGSize(width: 2, height: 2)
         }
-        var size = sourcePixelSize
+        let maximumDimension: CGFloat = 32_768
+        var size = CGSize(
+            width: min(sourcePixelSize.width, maximumDimension),
+            height: min(sourcePixelSize.height, maximumDimension)
+        )
         if let targetHeight = resolution.targetHeight, sourcePixelSize.height > CGFloat(targetHeight) {
-            let factor = CGFloat(targetHeight) / sourcePixelSize.height
-            size = CGSize(width: sourcePixelSize.width * factor, height: CGFloat(targetHeight))
+            let factor = CGFloat(targetHeight) / size.height
+            size = CGSize(width: size.width * factor, height: CGFloat(targetHeight))
         }
         return CGSize(width: evenValue(size.width), height: evenValue(size.height))
     }
 
-    public func averageBitRate(for outputPixelSize: CGSize) -> Int {
-        let pixels = Double(outputPixelSize.width * outputPixelSize.height)
-        let raw = pixels * Double(framesPerSecond) * quality.bitsPerPixel
-        // Keep within sane bounds so a 4K/60 capture doesn't produce a 200 Mbps file.
-        return Int(min(max(raw, 1_000_000), 60_000_000))
+    public static func sanitizedFramesPerSecond(_ value: Int) -> Int {
+        switch value {
+        case 30, 60: value
+        default: 60
+        }
     }
 
     /// Insets and aspect-fits the captured pixels into a restrained matte.

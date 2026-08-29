@@ -18,25 +18,43 @@ public struct HistoryView: View {
 
     public var body: some View {
         NavigationSplitView {
-            List(entries, selection: $selection) { entry in
-                HistoryRow(entry: entry)
-                    .tag(entry.id)
-                    .contextMenu { contextMenu(for: entry) }
+            Group {
+                if entries.isEmpty {
+                    ContentUnavailableView(
+                        query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                            ? "No captures yet" : "No matching captures",
+                        systemImage: query.isEmpty ? "camera.viewfinder" : "magnifyingglass",
+                        description: Text(
+                            query.isEmpty
+                                ? "New screenshots and recordings will appear here."
+                                : "Try a different name, app, or recognized-text search."
+                        )
+                    )
+                } else {
+                    List(entries, selection: $selection) { entry in
+                        HistoryRow(entry: entry)
+                            .tag(entry.id)
+                            .contextMenu { contextMenu(for: entry) }
+                    }
+                }
             }
             .searchable(text: $query, prompt: searchPrompt)
             .navigationSplitViewColumnWidth(min: 280, ideal: 320)
         } detail: {
-            if let selection, let entry = coordinator.history.entry(id: selection) {
-                HistoryDetail(entry: entry, coordinator: coordinator)
-            } else {
-                ContentUnavailableView(
-                    "No capture selected",
-                    systemImage: "clock.arrow.circlepath",
-                    description: Text(
-                        "Captures are kept for \(retentionText). Retention removes app-managed temporary files, but keeps captures you saved or dragged in."
+            Group {
+                if let selection, let entry = coordinator.history.entry(id: selection) {
+                    HistoryDetail(entry: entry, coordinator: coordinator)
+                } else {
+                    ContentUnavailableView(
+                        "No capture selected",
+                        systemImage: "clock.arrow.circlepath",
+                        description: Text(
+                            "Captures are kept for \(retentionText). Retention removes app-managed temporary files, but keeps captures you saved or dragged in."
+                        )
                     )
-                )
+                }
             }
+            .notchShotContentSwap(id: selection)
         }
         .frame(minWidth: 760, minHeight: 460)
     }
@@ -54,26 +72,39 @@ public struct HistoryView: View {
 
     @ViewBuilder
     private func contextMenu(for entry: HistoryEntry) -> some View {
-        Button("Reveal in Finder") {
-            NSWorkspace.shared.activateFileViewerSelecting([entry.fileURL])
-        }
-        Button("Copy") {
-            ImageExport.copyToPasteboard(fileURL: entry.fileURL)
-        }
-        if entry.kind != .recording {
-            Button("Annotate") {
-                coordinator.openEditor(for: entry)
+        if entry.fileExists {
+            Button("Reveal in Finder") {
+                NSWorkspace.shared.activateFileViewerSelecting([entry.fileURL])
+            }
+            Button("Copy") {
+                ImageExport.copyToPasteboard(fileURL: entry.fileURL)
+            }
+            Button("Share…") {
+                coordinator.share(entry.asset)
+            }
+            if entry.kind.isImage {
+                Button("Annotate") {
+                    coordinator.openEditor(for: entry)
+                }
+                Button("Inspect") { coordinator.openInspector(for: entry.asset) }
+                Button("Optimize Export…") { coordinator.openSmartExport(for: entry.asset) }
             }
         }
         Divider()
-        Button("Remove from History") {
-            try? coordinator.history.delete(id: entry.id, includingFile: false)
-        }
-        Button(entry.kind == .recording ? "Move Recording and Captions to Trash" : "Move File to Trash", role: .destructive) {
+        Button(entry.fileExists ? "Remove from History" : "Remove Missing Capture from History") {
             do {
-                try coordinator.history.delete(id: entry.id, includingFile: true)
+                try coordinator.history.delete(id: entry.id, includingFile: false)
             } catch {
                 coordinator.present(error: error)
+            }
+        }
+        if entry.fileExists {
+            Button(entry.kind == .recording ? "Move Recording and Captions to Trash" : "Move File to Trash", role: .destructive) {
+                do {
+                    try coordinator.history.delete(id: entry.id, includingFile: true)
+                } catch {
+                    coordinator.present(error: error)
+                }
             }
         }
     }
@@ -90,7 +121,14 @@ private struct HistoryRow: View {
                     Image(nsImage: thumbnail).resizable().aspectRatio(contentMode: .fill)
                 } else {
                     Rectangle().fill(.quaternary)
-                        .overlay { Image(systemName: entry.kind.symbolName).foregroundStyle(.secondary) }
+                        .overlay {
+                            Image(systemName: entry.kind.symbolName)
+                                .foregroundStyle(.secondary)
+                                // Decorative stand-in for a thumbnail that has
+                                // not loaded; the row's filename already names
+                                // the item.
+                                .accessibilityHidden(true)
+                        }
                 }
             }
             .frame(width: 52, height: 36)
@@ -117,6 +155,11 @@ private struct HistoryRow: View {
                 Image(systemName: "questionmark.folder")
                     .foregroundStyle(.orange)
                     .help("The file has moved or been deleted")
+                    // `help` is a pointer tooltip, not a label — without this
+                    // the only warning that a capture's file is gone was
+                    // invisible to VoiceOver.
+                    .accessibilityLabel("File missing")
+                    .accessibilityHint("The file has moved or been deleted")
             }
         }
         .task { await loadThumbnail() }
@@ -155,6 +198,7 @@ private struct HistoryDetail: View {
                     Image(nsImage: image)
                         .resizable()
                         .aspectRatio(contentMode: .fit)
+                        .accessibilityLabel("Preview of \(entry.fileURL.lastPathComponent)")
                 } else if entry.fileExists, !finishedLoading {
                     ProgressView()
                 } else if entry.fileExists {
@@ -173,6 +217,7 @@ private struct HistoryDetail: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .padding()
+            .notchShotContentSwap(id: previewPhase)
 
             Divider()
 
@@ -184,15 +229,25 @@ private struct HistoryDetail: View {
                         .foregroundStyle(.secondary)
                 }
                 Spacer()
-                Button("Reveal") {
-                    NSWorkspace.shared.activateFileViewerSelecting([entry.fileURL])
-                }
-                Button("Copy") {
-                    ImageExport.copyToPasteboard(fileURL: entry.fileURL)
-                }
-                if entry.kind != .recording {
-                    Button("Annotate") { coordinator.openEditor(for: entry) }
-                        .buttonStyle(.borderedProminent)
+                if entry.fileExists {
+                    Button("Reveal") {
+                        NSWorkspace.shared.activateFileViewerSelecting([entry.fileURL])
+                    }
+                    Button("Copy") {
+                        ImageExport.copyToPasteboard(fileURL: entry.fileURL)
+                    }
+                    Button("Share…") { coordinator.share(entry.asset) }
+                    if entry.kind.isImage {
+                        Menu("More") {
+                            Button("Inspect") { coordinator.openInspector(for: entry.asset) }
+                            Button("Optimize Export…") { coordinator.openSmartExport(for: entry.asset) }
+                        }
+                        Button("Annotate") { coordinator.openEditor(for: entry) }
+                            .notchShotPrimaryActionStyle()
+                    }
+                } else {
+                    Button("Remove from History") { removeMissingEntry() }
+                        .notchShotPrimaryActionStyle()
                 }
             }
             .padding(12)
@@ -206,10 +261,24 @@ private struct HistoryDetail: View {
             }
             if entry.kind == .recording {
                 image = await VideoThumbnail.make(for: entry.fileURL)
-            } else {
+            } else if entry.kind.isImage {
                 image = SafeImageFile.nsImage(for: entry.asset)
             }
             finishedLoading = true
+        }
+    }
+
+    private var previewPhase: Int {
+        if image != nil { return 0 }
+        if entry.fileExists, !finishedLoading { return 1 }
+        return entry.fileExists ? 2 : 3
+    }
+
+    private func removeMissingEntry() {
+        do {
+            try coordinator.history.delete(id: entry.id, includingFile: false)
+        } catch {
+            coordinator.present(error: error)
         }
     }
 }

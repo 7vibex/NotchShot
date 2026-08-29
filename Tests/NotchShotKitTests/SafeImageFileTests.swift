@@ -61,4 +61,35 @@ struct SafeImageFileTests {
             limits: .init(maximumBytes: byteCount, maximumDimension: 100, maximumPixels: 11)
         ) == nil)
     }
+
+    @Test("An external image must still match the inode the user selected")
+    func externalIdentityIsPinned() throws {
+        let fixture = try makeFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let identity = try #require(SafeAssetFile.identity(
+            at: fixture.image,
+            maximumBytes: SafeAssetFile.maximumExternalBytes
+        ))
+        let asset = CaptureAsset(
+            url: fixture.image,
+            kind: .screenshot,
+            pixelSize: CGSize(width: 4, height: 3),
+            ownership: .externalReference,
+            externalFileIdentity: identity
+        )
+        #expect(SafeImageFile.cgImage(for: asset) != nil)
+
+        let replacement = fixture.directory.appendingPathComponent("replacement.png")
+        _ = try ImageExport.write(
+            TestImage.solid(width: 5, height: 3, red: 200),
+            to: replacement,
+            format: .png,
+            quality: 1,
+            dpiScale: 1
+        )
+        try FileManager.default.removeItem(at: fixture.image)
+        try FileManager.default.moveItem(at: replacement, to: fixture.image)
+
+        #expect(SafeImageFile.cgImage(for: asset) == nil)
+    }
 }

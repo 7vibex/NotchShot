@@ -1,6 +1,7 @@
 import AppKit
 import AudioToolbox
 import CoreMedia
+import Darwin
 import Foundation
 import Testing
 @testable import NotchShotKit
@@ -146,7 +147,7 @@ struct HistoryRetentionTests {
 
     @Test("History preserves exact generated-caption ownership")
     func captionOwnershipRoundTrip() throws {
-        let captionURL = URL(fileURLWithPath: "/tmp/owned-captions.srt")
+        let captionURL = URL(fileURLWithPath: "/tmp/recording.srt")
         let asset = CaptureAsset(
             url: URL(fileURLWithPath: "/tmp/recording.mp4"),
             kind: .recording,
@@ -187,10 +188,12 @@ struct HistoryRetentionTests {
         let externalProject = URL(fileURLWithPath: "/tmp/user.notchshot")
 
         #expect(HistoryRepository.deletableSidecars(
+            primaryURL: URL(fileURLWithPath: "/tmp/captions.mp4"),
             captionURL: caption,
             projectURL: managedProject
         ) == [caption, managedProject])
         #expect(HistoryRepository.deletableSidecars(
+            primaryURL: URL(fileURLWithPath: "/tmp/captions.mp4"),
             captionURL: caption,
             projectURL: externalProject
         ) == [caption])
@@ -203,6 +206,49 @@ struct HistoryRetentionTests {
         #expect(throws: CocoaError.self) {
             try HistoryRepository.trashCaptureAndCaption(at: missing)
         }
+    }
+
+    /// Retiring a row whose capture the user already deleted in Finder has
+    /// nothing left to fail at. Treating it as a failure stranded the row
+    /// forever: every retry hit the same missing file.
+    @Test("Retiring a row tolerates a primary already deleted outside the app")
+    func missingPrimaryIsRetirableWhenTolerated() throws {
+        let missing = FileManager.default.temporaryDirectory
+            .appendingPathComponent("notchshot-missing-\(UUID().uuidString).png")
+        try HistoryRepository.trashCaptureAndCaption(
+            at: missing,
+            toleratingMissingPrimary: true
+        )
+    }
+
+    @Test("Clearing history and files drops rows whose capture is already gone")
+    @MainActor
+    func clearAllRetiresAlreadyMissingCaptures() throws {
+        let store = FileManager.default.temporaryDirectory
+            .appendingPathComponent("notchshot-clear-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: store) }
+        let repository = HistoryRepository(storeURL: store)
+
+        let historyWasEnabled = Preferences.shared.historyEnabled
+        Preferences.shared.historyEnabled = true
+        defer { Preferences.shared.historyEnabled = historyWasEnabled }
+
+        let missing = FileManager.default.temporaryDirectory
+            .appendingPathComponent("notchshot-gone-\(UUID().uuidString).png")
+        repository.record(
+            asset: CaptureAsset(
+                url: missing,
+                kind: .screenshot,
+                pixelSize: CGSize(width: 10, height: 10),
+                ownership: .userDocument
+            ),
+            image: nil
+        )
+        #expect(repository.entries.count == 1)
+
+        let failed = repository.clearAll(includingFiles: true)
+        #expect(failed.isEmpty)
+        #expect(repository.entries.isEmpty)
     }
 
     @Test("Retention removes a managed project beside a preserved user document")
@@ -274,10 +320,123 @@ struct HistoryRetentionTests {
         #expect(result.duplicates.map(\.id) == [older.id])
         #expect(result.entries.first?.projectPath == project.path)
     }
+
+    @Test("Persisted traversal thumbnails and foreign sidecars are quarantined from the model")
+    @MainActor
+    func unsafePersistedPathsAreRejected() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = directory.appendingPathComponent("history.json")
+        let primary = directory.appendingPathComponent("recording.mp4")
+        var entry = HistoryEntry(
+            asset: CaptureAsset(
+                url: primary,
+                kind: .recording,
+                pixelSize: CGSize(width: 100, height: 100),
+                ownership: .userDocument
+            ),
+            thumbnailFilename: "../../victim.png",
+            indexedText: nil
+        )
+        entry.captionPath = directory.appendingPathComponent("foreign.srt").path
+        entry.projectPath = directory.appendingPathComponent("foreign.notchshot").path
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        try encoder.encode([entry]).write(to: store)
+
+        let repository = HistoryRepository(storeURL: store)
+        let loaded = try #require(repository.entries.first)
+        #expect(loaded.thumbnailURL == nil)
+        #expect(loaded.captionPath == nil)
+        #expect(loaded.projectPath == nil)
+        #expect(loaded.asset.captionURL == nil)
+    }
+
+    @Test("Thumbnail validation accepts only the exact generated filename")
+    func thumbnailFilenameValidationIsExact() throws {
+        let id = UUID(uuidString: "A92A8258-9378-4AA0-B212-2C08810A124E")!
+        let filename = "\(id.uuidString).png"
+        let valid = try #require(HistoryRepository.validatedThumbnailURL(
+            filename: filename,
+            id: id
+        ))
+        #expect(valid.lastPathComponent == filename)
+        #expect(valid.deletingLastPathComponent() == AppPaths.thumbnails)
+
+        for rejected in [
+            "../\(filename)",
+            "folder/\(filename)",
+            "\(filename)/child",
+            filename.lowercased(),
+            "\(id.uuidString).jpg",
+        ] {
+            #expect(HistoryRepository.validatedThumbnailURL(filename: rejected, id: id) == nil)
+        }
+    }
+
+    @Test("Oversized history is rejected before it is read")
+    @MainActor
+    func oversizedHistoryRejectedBeforeRead() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = directory.appendingPathComponent("history.json")
+        FileManager.default.createFile(atPath: store.path, contents: nil)
+        let handle = try FileHandle(forWritingTo: store)
+        try handle.truncate(atOffset: UInt64(HistoryRepository.maximumStoreBytes + 1))
+        try handle.close()
+
+        let repository = HistoryRepository(storeURL: store)
+        #expect(repository.entries.isEmpty)
+        #expect(!FileManager.default.fileExists(atPath: store.path))
+        let quarantined = try FileManager.default.contentsOfDirectory(atPath: directory.path)
+            .filter { $0.hasPrefix("history.json.corrupt-") }
+        #expect(quarantined.count == 1)
+    }
 }
 
 @Suite("Media snapshot")
 struct MediaSnapshotTests {
+
+    @Test("Artwork accent preserves cover hue and lifts dark colours for the notch")
+    @MainActor
+    func artworkAccent() throws {
+        let image = NSImage(size: CGSize(width: 20, height: 20))
+        image.lockFocus()
+        NSColor(srgbRed: 0.02, green: 0.08, blue: 0.35, alpha: 1).setFill()
+        NSBezierPath(rect: CGRect(x: 0, y: 0, width: 20, height: 20)).fill()
+        image.unlockFocus()
+
+        let accent = try #require(ArtworkAccentColor.extract(from: image).usingColorSpace(.sRGB))
+        var hue: CGFloat = 0
+        var saturation: CGFloat = 0
+        var brightness: CGFloat = 0
+        var alpha: CGFloat = 0
+        accent.getHue(&hue, saturation: &saturation, brightness: &brightness, alpha: &alpha)
+
+        #expect(hue > 0.55 && hue < 0.75)
+        #expect(saturation >= 0.55)
+        #expect(brightness >= 0.68)
+        #expect(ArtworkAccentColor.contrastAgainstBlack(accent) >= 4.5)
+    }
+
+    @Test("Artwork accent falls back to white for a neutral cover")
+    @MainActor
+    func neutralArtworkAccent() throws {
+        let image = NSImage(size: CGSize(width: 8, height: 8))
+        image.lockFocus()
+        NSColor.black.setFill()
+        NSBezierPath(rect: CGRect(x: 0, y: 0, width: 8, height: 8)).fill()
+        image.unlockFocus()
+
+        let accent = try #require(ArtworkAccentColor.extract(from: image).usingColorSpace(.sRGB))
+        #expect(accent.redComponent == 1)
+        #expect(accent.greenComponent == 1)
+        #expect(accent.blueComponent == 1)
+    }
 
     @Test("Position is interpolated forward while playing")
     func interpolationWhilePlaying() {
@@ -392,6 +551,49 @@ struct MediaSnapshotTests {
     }
 }
 
+@Suite("Apple Events media timeline")
+struct AppleEventsMediaTimelineTests {
+
+    @Test("Spotify duration is converted from milliseconds")
+    func spotifyDurationConversion() throws {
+        let separator = AppleEventsMediaSource.fieldSeparator
+        let fields = try #require(AppleEventsMediaSource.parseSnapshotFields(
+            ["Song", "Artist", "Album", "215000", "42", "playing"].joined(separator: separator),
+            spotifyDurationIsMilliseconds: true
+        ))
+
+        #expect(fields.duration == 215)
+        #expect(fields.position == 42)
+        #expect(fields.isPlaying)
+    }
+
+    @Test("Newlines in metadata do not shift timeline fields")
+    func metadataNewline() throws {
+        let separator = AppleEventsMediaSource.fieldSeparator
+        let fields = try #require(AppleEventsMediaSource.parseSnapshotFields(
+            ["First line\nSecond line", "Artist", "Album", "180", "73", "paused"].joined(separator: separator),
+            spotifyDurationIsMilliseconds: false
+        ))
+
+        #expect(fields.title == "First line\nSecond line")
+        #expect(fields.duration == 180)
+        #expect(fields.position == 73)
+        #expect(!fields.isPlaying)
+    }
+
+    @Test("Invalid timeline numbers degrade to unknown")
+    func malformedTimeline() throws {
+        let separator = AppleEventsMediaSource.fieldSeparator
+        let fields = try #require(AppleEventsMediaSource.parseSnapshotFields(
+            ["Song", "Artist", "Album", "not-a-number", "-1", "playing"].joined(separator: separator),
+            spotifyDurationIsMilliseconds: false
+        ))
+
+        #expect(fields.duration == nil)
+        #expect(fields.position == nil)
+    }
+}
+
 @Suite("Adapter payload parsing")
 struct AdapterPayloadTests {
 
@@ -443,6 +645,16 @@ struct AdapterPayloadTests {
         #expect(result.position == 20)
     }
 
+    @Test("Non-finite and negative playback numbers are discarded")
+    func invalidNumbers() throws {
+        let result = try #require(snapshot("""
+        {"title":"Song","duration":"nan","elapsedTime":"-1"}
+        """))
+        #expect(result.duration == nil)
+        #expect(result.position == nil)
+        #expect(result.positionTimestamp == nil)
+    }
+
     @Test("A payload with no track means nothing is playing")
     func emptyPayload() throws {
         let result = try #require(snapshot(#"{"bundleIdentifier":"com.apple.Safari"}"#))
@@ -472,6 +684,11 @@ struct AdapterPayloadTests {
 
 @Suite("Adapter command process safety")
 struct AdapterCommandProcessTests {
+    @Test("The process-group runner is available to adapter launches")
+    func runnerIsAvailable() {
+        #expect(MediaRemoteAdapterSource.defaultRunnerURL != nil)
+    }
+
     @Test("A successful command returns its bounded output")
     func successfulCommand() async {
         let data = await MediaRemoteAdapterSource.runOnce(
@@ -492,7 +709,11 @@ struct AdapterCommandProcessTests {
         let elapsed = started.duration(to: .now)
 
         #expect(data == nil)
-        #expect(elapsed < .seconds(1))
+        // `tail -f /dev/null` never exits on its own, so any finite elapsed
+        // time proves the deadline fired. The bound is deliberately far above
+        // the ~0.2s this actually takes: a tighter one only measures how
+        // loaded the machine is while the rest of the suite runs in parallel.
+        #expect(elapsed < .seconds(5))
     }
 
     @Test("Unbounded command output is rejected")
@@ -505,38 +726,119 @@ struct AdapterCommandProcessTests {
         )
         #expect(data == nil)
     }
+
+
+    @Test("Replacing an approved adapter inode requires reapproval")
+    func replacementRequiresReapproval() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("notchshot-adapter-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let executable = directory.appendingPathComponent("adapter")
+        try FileManager.default.copyItem(at: URL(fileURLWithPath: "/bin/echo"), to: executable)
+        let identity = try #require(SafeAssetFile.identity(
+            at: executable,
+            maximumBytes: SafeAssetFile.maximumExternalBytes
+        ))
+
+        try FileManager.default.removeItem(at: executable)
+        try FileManager.default.copyItem(at: URL(fileURLWithPath: "/bin/echo"), to: executable)
+        let data = await MediaRemoteAdapterSource.runOnce(
+            executableURL: executable,
+            approvedIdentity: identity,
+            arguments: ["must-not-run"]
+        )
+        #expect(data == nil)
+    }
+
+    @Test("A stubborn streaming adapter is killed before stop returns")
+    func stubbornStreamingAdapterIsReaped() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("notchshot-stream-adapter-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let executable = directory.appendingPathComponent("adapter")
+        let childPIDFile = directory.appendingPathComponent("child.pid")
+        try Data("#!/bin/sh\ntrap '' TERM\nsleep 1000 &\necho $! > \"$1\"\nwait\n".utf8)
+            .write(to: executable)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o700],
+            ofItemAtPath: executable.path
+        )
+        let identity = try #require(SafeAssetFile.identity(
+            at: executable,
+            maximumBytes: SafeAssetFile.maximumExternalBytes
+        ))
+        let source = MediaRemoteAdapterSource(
+            executableURL: executable,
+            arguments: [childPIDFile.path],
+            approvedIdentity: identity
+        )
+        let stream = await source.updates()
+        for _ in 0 ..< 300 where !FileManager.default.fileExists(atPath: childPIDFile.path) {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        let processID = try #require(await source.runningProcessIdentifier)
+        let childPIDText = try String(contentsOf: childPIDFile, encoding: .utf8)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let childProcessID = try #require(pid_t(childPIDText))
+        defer { _ = kill(childProcessID, SIGKILL) }
+
+        await source.stop()
+        errno = 0
+        #expect(kill(processID, 0) == -1)
+        #expect(errno == ESRCH)
+        errno = 0
+        #expect(kill(childProcessID, 0) == -1)
+        #expect(errno == ESRCH)
+        _ = stream
+    }
 }
 
-@Suite("OCR data detection")
+@Suite("Structured OCR")
 struct DataDetectionTests {
 
-    @Test("An email address is detected")
-    func email() {
-        let items = OCRService.detectItems(in: "Write to sam@example.com for access")
-        #expect(items.contains { $0.kind == .email && $0.value == "sam@example.com" })
+    @Test("Tables preserve rows and columns as TSV")
+    func tableTSV() {
+        let table = RecognizedTable(rows: [
+            ["Name", "Score"],
+            ["Ada", "98"],
+            ["Linus", "95"],
+        ])
+        #expect(table.tabSeparatedText == "Name\tScore\nAda\t98\nLinus\t95")
     }
 
-    @Test("A URL is detected")
-    func link() {
-        let items = OCRService.detectItems(in: "See https://example.com/docs for details")
-        #expect(items.contains { $0.kind == .link })
+    @Test("Markdown tables escape pipes and pad ragged rows")
+    func tableMarkdown() {
+        let table = RecognizedTable(rows: [
+            ["Name", "Notes"],
+            ["Ada", "Fast | precise"],
+            ["Linus"],
+        ])
+        #expect(table.markdown == """
+        | Name | Notes |
+        | --- | --- |
+        | Ada | Fast \\| precise |
+        | Linus |  |
+        """)
     }
 
-    @Test("A phone number is detected")
-    func phone() {
-        let items = OCRService.detectItems(in: "Call +1 (555) 010-9999 today")
-        #expect(items.contains { $0.kind == .phone })
-    }
-
-    @Test("Plain prose produces no false positives")
-    func noDetections() {
-        #expect(OCRService.detectItems(in: "Just some ordinary words here.").isEmpty)
-    }
-
-    @Test("The same address isn't reported twice")
-    func deduplication() {
-        let items = OCRService.detectItems(in: "sam@example.com and again sam@example.com")
-        #expect(items.filter { $0.value == "sam@example.com" }.count == 1)
+    @Test("A structured OCR result chooses the requested clipboard format")
+    func clipboardFormats() {
+        let table = RecognizedTable(rows: [["A", "B"], ["1", "2"]])
+        let result = OCRResult(
+            regions: [],
+            fullText: "A B 1 2",
+            detectedItems: [],
+            tables: [table],
+            structuredText: table.tabSeparatedText,
+            markdownText: table.markdown
+        )
+        #expect(result.clipboardText(format: .text) == table.tabSeparatedText)
+        #expect(result.clipboardText(format: .tsv) == table.tabSeparatedText)
+        #expect(result.clipboardText(format: .markdown) == table.markdown)
     }
 
     @Test("Detected items produce openable URLs")
@@ -544,6 +846,7 @@ struct DataDetectionTests {
         #expect(DetectedItem(kind: .email, value: "a@b.com").actionURL?.scheme == "mailto")
         #expect(DetectedItem(kind: .phone, value: "+1 555 0100").actionURL?.scheme == "tel")
         #expect(DetectedItem(kind: .link, value: "example.com").actionURL?.scheme == "https")
+        #expect(DetectedItem(kind: .address, value: "1 Infinite Loop").actionURL == nil)
     }
 }
 
@@ -552,12 +855,10 @@ struct RecordingConfigurationTests {
 
     private func configuration(
         resolution: RecordingResolution,
-        quality: RecordingQuality = .balanced,
         fps: Int = 60
     ) -> RecordingConfiguration {
         RecordingConfiguration(
             target: .display(1),
-            quality: quality,
             resolution: resolution,
             framesPerSecond: fps
         )
@@ -600,26 +901,6 @@ struct RecordingConfigurationTests {
         let size = configuration(resolution: .native).outputPixelSize(for: .zero)
         #expect(size.width >= 2)
         #expect(size.height >= 2)
-    }
-
-    @Test("Bitrate rises with quality and stays within sane bounds")
-    func bitrateBounds() {
-        let output = CGSize(width: 1920, height: 1080)
-        let small = configuration(resolution: .p1080, quality: .small).averageBitRate(for: output)
-        let balanced = configuration(resolution: .p1080, quality: .balanced).averageBitRate(for: output)
-        let high = configuration(resolution: .p1080, quality: .high).averageBitRate(for: output)
-
-        #expect(small < balanced)
-        #expect(balanced < high)
-        #expect(small >= 1_000_000)
-        #expect(high <= 60_000_000)
-    }
-
-    @Test("A 5K/60 capture is capped rather than producing an absurd bitrate")
-    func bitrateCap() {
-        let rate = configuration(resolution: .native, quality: .high)
-            .averageBitRate(for: CGSize(width: 5120, height: 2880))
-        #expect(rate == 60_000_000)
     }
 
     @Test("Audio sources compose as flags")

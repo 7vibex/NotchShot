@@ -22,6 +22,9 @@ public enum NotchShotError: LocalizedError, Equatable {
     /// Approved in an earlier launch, but the stored grant belongs to a
     /// different signing identity, so macOS keeps refusing this build.
     case screenRecordingGrantStale
+    /// The running bundle carries an ad-hoc signature, so its identity is its
+    /// own code hash and no TCC grant can outlive a rebuild.
+    case unstableSigningIdentity
     case microphonePermissionDenied
     case noShareableContent
     case displayNotFound
@@ -42,10 +45,12 @@ public enum NotchShotError: LocalizedError, Equatable {
             "Allow NotchShot in Screen & System Audio Recording, then quit and reopen it."
         case .screenRecordingGrantStale:
             "macOS is still refusing Screen Recording even though NotchShot looks approved. Reset the permission in Settings › Privacy."
+        case .unstableSigningIdentity:
+            "This build of NotchShot is ad-hoc signed, so macOS treats every rebuild as a different app and drops the permissions you granted. Rebuild it with a code-signing certificate."
         case .microphonePermissionDenied:
             "NotchShot needs Microphone permission to record your voice."
         case .noShareableContent:
-            "No capturable content is available right now."
+            "The macOS capture service returned no displays. Wake every display; if they are already awake, log out or restart the Mac, then reopen NotchShot."
         case .displayNotFound:
             "That display is no longer connected."
         case .windowNotFound:
@@ -73,7 +78,9 @@ public enum NotchShotError: LocalizedError, Equatable {
         case .screenRecordingPermissionDenied: "Screen Recording denied"
         case .screenRecordingPermissionPending: "Allow Screen Recording, then reopen NotchShot"
         case .screenRecordingGrantStale: "Screen Recording needs resetting — open Settings › Privacy"
+        case .unstableSigningIdentity: "This build is ad-hoc signed — permissions cannot stick"
         case .microphonePermissionDenied: "Microphone denied"
+        case .noShareableContent: "macOS capture service is unavailable — log out or restart"
         case .cancelled: "Cancelled"
         case .diskSpaceUnavailable: "Disk full"
         default: errorDescription ?? "Something went wrong"

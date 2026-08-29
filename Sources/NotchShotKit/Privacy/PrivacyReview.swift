@@ -9,17 +9,23 @@ public struct PrivacyFinding: Identifiable, Sendable, Equatable {
     public enum Kind: String, Sendable, CaseIterable {
         case email
         case phone
+        case address
         case accessToken
         case face
         case accountIdentifier
+        case paymentCard
+        case ipAddress
 
         public var title: String {
             switch self {
             case .email: "Email address"
             case .phone: "Phone number"
+            case .address: "Postal address"
             case .accessToken: "Possible access token"
             case .face: "Face"
             case .accountIdentifier: "Possible account identifier"
+            case .paymentCard: "Possible payment card"
+            case .ipAddress: "IP address"
             }
         }
 
@@ -27,9 +33,12 @@ public struct PrivacyFinding: Identifiable, Sendable, Equatable {
             switch self {
             case .email: "envelope"
             case .phone: "phone"
+            case .address: "mappin.and.ellipse"
             case .accessToken: "key.horizontal"
             case .face: "face.smiling"
             case .accountIdentifier: "person.text.rectangle"
+            case .paymentCard: "creditcard"
+            case .ipAddress: "network"
             }
         }
     }
@@ -78,7 +87,13 @@ public actor PrivacyReviewService {
                         rect: region.rect.insetBy(dx: -4, dy: -3),
                         confidence: region.confidence
                     ))
-                case .link:
+                case .address:
+                    findings.append(PrivacyFinding(
+                        kind: .address,
+                        rect: region.rect.insetBy(dx: -4, dy: -3),
+                        confidence: region.confidence
+                    ))
+                case .link, .qrCode, .barcode:
                     break
                 }
             }
@@ -93,6 +108,20 @@ public actor PrivacyReviewService {
             if Self.containsAccountIdentifier(region.text) {
                 findings.append(PrivacyFinding(
                     kind: .accountIdentifier,
+                    rect: region.rect.insetBy(dx: -4, dy: -3),
+                    confidence: region.confidence
+                ))
+            }
+            if Self.containsPaymentCard(region.text) {
+                findings.append(PrivacyFinding(
+                    kind: .paymentCard,
+                    rect: region.rect.insetBy(dx: -4, dy: -3),
+                    confidence: region.confidence
+                ))
+            }
+            if Self.containsIPAddress(region.text) {
+                findings.append(PrivacyFinding(
+                    kind: .ipAddress,
                     rect: region.rect.insetBy(dx: -4, dy: -3),
                     confidence: region.confidence
                 ))
@@ -127,6 +156,39 @@ public actor PrivacyReviewService {
             #"(?i)(?:\b(?:account|user|customer|member|tenant)[ _-]?(?:id|number)?\s*[:#=]\s*[A-Z0-9][A-Z0-9_-]{4,}\b|(?<![A-Z0-9])@[A-Z0-9_][A-Z0-9_.-]{2,}\b)"#,
             in: text
         )
+    }
+
+    static func containsPaymentCard(_ text: String) -> Bool {
+        guard let regex = try? NSRegularExpression(
+            pattern: #"(?<!\d)(?:\d[ -]?){13,19}(?!\d)"#
+        ) else { return false }
+        let fullRange = NSRange(text.startIndex ..< text.endIndex, in: text)
+        return regex.matches(in: text, range: fullRange).contains { match in
+            guard let range = Range(match.range, in: text) else { return false }
+            let digits = text[range].compactMap(\.wholeNumberValue)
+            guard (13...19).contains(digits.count) else { return false }
+            let sum = digits.reversed().enumerated().reduce(0) { partial, pair in
+                let (index, digit) = pair
+                if index.isMultiple(of: 2) { return partial + digit }
+                let doubled = digit * 2
+                return partial + (doubled > 9 ? doubled - 9 : doubled)
+            }
+            return sum.isMultiple(of: 10)
+        }
+    }
+
+    static func containsIPAddress(_ text: String) -> Bool {
+        guard let regex = try? NSRegularExpression(
+            pattern: #"(?<!\d)(?:\d{1,3}\.){3}\d{1,3}(?!\d)"#
+        ) else { return false }
+        let fullRange = NSRange(text.startIndex ..< text.endIndex, in: text)
+        return regex.matches(in: text, range: fullRange).contains { match in
+            guard let range = Range(match.range, in: text) else { return false }
+            return text[range].split(separator: ".").allSatisfy {
+                guard let octet = Int($0) else { return false }
+                return (0...255).contains(octet)
+            }
+        }
     }
 
     private static func matches(_ pattern: String, in text: String) -> Bool {
@@ -192,6 +254,14 @@ public final class PrivacyReviewSession {
     public var selectedFindings: [PrivacyFinding] {
         findings.filter { selectedFindingIDs.contains($0.id) }
     }
+
+    public func selectAll() {
+        selectedFindingIDs = Set(findings.map(\.id))
+    }
+
+    public func deselectAll() {
+        selectedFindingIDs.removeAll()
+    }
 }
 
 public struct PrivacyReviewView: View {
@@ -228,6 +298,7 @@ public struct PrivacyReviewView: View {
                 ))
                 .resizable()
                 .aspectRatio(contentMode: .fit)
+                .accessibilityLabel("Capture being reviewed for private details")
                 .frame(width: fitted.width, height: fitted.height)
                 .position(x: fitted.midX, y: fitted.midY)
 
@@ -237,6 +308,8 @@ public struct PrivacyReviewView: View {
                         .fill(session.selectedFindingIDs.contains(finding.id)
                               ? Color.red.opacity(0.22) : Color.orange.opacity(0.12))
                         .overlay {
+                            RoundedRectangle(cornerRadius: 5)
+                                .stroke(.black.opacity(0.82), lineWidth: 4)
                             RoundedRectangle(cornerRadius: 5)
                                 .stroke(session.selectedFindingIDs.contains(finding.id)
                                         ? Color.red : Color.orange, lineWidth: 2)
@@ -251,9 +324,9 @@ public struct PrivacyReviewView: View {
 
     private var sidebar: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Privacy Review")
+            Text("Share Ready")
                 .font(.title2.weight(.semibold))
-            Text("Suggestions are made on this Mac. Nothing is hidden until you select it and open the editor.")
+            Text("NotchShot checks locally for likely private details. Detection is not perfect, so inspect the whole capture before sharing.")
                 .font(.callout)
                 .foregroundStyle(.secondary)
 
@@ -269,9 +342,23 @@ public struct PrivacyReviewView: View {
                     description: Text("Still inspect the capture yourself before sharing.")
                 )
             } else {
+                HStack {
+                    Button("Select All") { session.selectAll() }
+                    Button("Deselect All") { session.deselectAll() }
+                    Spacer()
+                    Text("Confidence is shown for context")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
                 List(session.findings) { finding in
                     Toggle(isOn: selectionBinding(for: finding.id)) {
-                        Label(finding.kind.title, systemImage: finding.kind.symbolName)
+                        HStack {
+                            Label(finding.kind.title, systemImage: finding.kind.symbolName)
+                            Spacer()
+                            Text(finding.confidence, format: .percent.precision(.fractionLength(0)))
+                                .font(.caption.monospacedDigit())
+                                .foregroundStyle(.secondary)
+                        }
                     }
                     .toggleStyle(.checkbox)
                 }
@@ -284,10 +371,10 @@ public struct PrivacyReviewView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 Spacer()
-                Button("Open in Editor") {
+                Button("Review Redactions in Editor") {
                     onApply(session.selectedFindings)
                 }
-                .buttonStyle(.borderedProminent)
+                .notchShotPrimaryActionStyle()
                 .disabled(session.selectedFindingIDs.isEmpty)
             }
         }

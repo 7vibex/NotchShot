@@ -141,6 +141,19 @@ struct StackLayoutTests {
         }
     }
 
+    @Test("Public render rejects empty and non-finite input without trapping")
+    func invalidRenderInputRejected() {
+        #expect(throws: NotchShotError.self) {
+            try StackRenderer.render(images: [], options: StackExportOptions())
+        }
+        #expect(throws: NotchShotError.self) {
+            try StackRenderer.render(
+                images: [TestImage.solid(width: 1, height: 1)],
+                options: StackExportOptions(spacing: .nan, margin: .infinity)
+            )
+        }
+    }
+
     @Test("The first capture is drawn at the top of a long image")
     func drawOrder() throws {
         let images = [
@@ -172,6 +185,26 @@ struct StackLayoutTests {
         #expect(FileManager.default.fileExists(atPath: url.path))
         let document = try #require(CGPDFDocument(url as CFURL))
         #expect(document.numberOfPages == 3)
+    }
+
+    @Test("A rejected PDF export preserves an existing destination")
+    func rejectedPDFPreservesDestination() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appendingPathComponent("existing.pdf")
+        let original = Data("original document".utf8)
+        try original.write(to: url)
+
+        #expect(throws: NotchShotError.self) {
+            try StackRenderer.writePDF(
+                images: [TestImage.solid(width: 10, height: 10)],
+                options: StackExportOptions(style: .pdf, spacing: 0, margin: .nan),
+                to: url
+            )
+        }
+        #expect(try Data(contentsOf: url) == original)
     }
 }
 
@@ -250,6 +283,55 @@ struct CaptureStackTests {
         }
         #expect(!FileManager.default.fileExists(atPath: output.path))
     }
+
+    @Test("Saved capture sessions round-trip through an injected store")
+    func savedSessionsRoundTrip() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("notchshot-stack-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = directory.appendingPathComponent("sessions.json")
+        let stack = CaptureStack(sessionsURL: store)
+        stack.add(asset("saved"))
+
+        let session = try #require(try stack.saveSession(named: "Release flow"))
+        let reloaded = CaptureStack(sessionsURL: store)
+        #expect(reloaded.savedSessions == [session])
+        #expect(stack.lastPersistenceError == nil)
+    }
+
+    @Test("A failed session save leaves observable state unchanged")
+    func failedSessionSaveDoesNotLie() {
+        let stack = CaptureStack(
+            sessionsURL: URL(fileURLWithPath: "/dev/null/CaptureSessions.json")
+        )
+        stack.add(asset("unsaved"))
+
+        #expect(throws: (any Error).self) {
+            _ = try stack.saveSession(named: "Cannot persist")
+        }
+        #expect(stack.savedSessions.isEmpty)
+        #expect(stack.lastPersistenceError != nil)
+    }
+
+    @Test("A failed session delete preserves the durable row")
+    func failedSessionDeleteKeepsRow() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("notchshot-stack-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let store = directory.appendingPathComponent("sessions.json")
+        let stack = CaptureStack(sessionsURL: store)
+        stack.add(asset("saved"))
+        let session = try #require(try stack.saveSession(named: "Keep me"))
+
+        try FileManager.default.removeItem(at: store)
+        try FileManager.default.createDirectory(at: store, withIntermediateDirectories: true)
+        #expect(throws: (any Error).self) {
+            try stack.deleteSession(id: session.id)
+        }
+        #expect(stack.savedSessions == [session])
+        #expect(stack.lastPersistenceError != nil)
+    }
 }
 
 @Suite("Comparison memory budget")
@@ -264,6 +346,38 @@ struct ComparisonMemoryBudgetTests {
 
 @Suite("System level HUD")
 struct SystemLevelTests {
+
+    @Test("System media keys map to narrow replacement actions")
+    func mediaKeyMapping() {
+        #expect(SystemMediaKeyAction.action(
+            keyType: Int(NX_KEYTYPE_SOUND_UP),
+            modifierFlags: []
+        ) == .volumeUp(fine: false))
+        #expect(SystemMediaKeyAction.action(
+            keyType: Int(NX_KEYTYPE_BRIGHTNESS_DOWN),
+            modifierFlags: [.shift, .option]
+        ) == .brightnessDown(fine: true))
+        #expect(SystemMediaKeyAction.action(keyType: 999, modifierFlags: []) == nil)
+    }
+
+    @Test("System media-key levels use standard and fine increments with clamping")
+    func mediaKeySteps() {
+        #expect(SystemMediaKeyAction.adjustedLevel(
+            current: 0.5,
+            increasing: true,
+            fine: false
+        ) == 0.5625)
+        #expect(SystemMediaKeyAction.adjustedLevel(
+            current: 0.5,
+            increasing: false,
+            fine: true
+        ) == 0.484375)
+        #expect(SystemMediaKeyAction.adjustedLevel(
+            current: 0.99,
+            increasing: true,
+            fine: false
+        ) == 1)
+    }
 
     @Test("The volume symbol reflects how loud it is")
     func volumeSymbols() {
@@ -330,6 +444,10 @@ struct SystemLevelTests {
         #expect(layout.size.height <= NotchLayout.maximumSize.height)
         // Wider than the cutout, so the change is actually visible.
         #expect(layout.size.width > metrics.notchSize.width)
+        // Feedback uses only the two wings beside the camera. It must not
+        // create a separate rounded bubble below the physical notch.
+        #expect(layout.size.height == metrics.notchSize.height)
+        #expect(layout.contentTopInset == 0)
     }
 
     @Test("A stacked shelf is taller than a plain one, and both still fit")
@@ -567,6 +685,34 @@ struct ScreenRecordingRemediationTests {
         #expect(subject.screenRecording.isUsable)
         #expect(requestCount() == 0)
         #expect(!subject.isScreenRecordingGrantStale)
+    }
+
+    /// `CGPreflightScreenCaptureAccess` is the source of truth for the current
+    /// process. Once it turns true, a request made earlier in this launch must
+    /// not keep the UI or capture flow stuck behind a false relaunch prompt.
+    @Test("A live preflight grant overrides the same-launch pending state")
+    func liveGrantOverridesPendingState() {
+        var granted = false
+        let defaults = UserDefaults.standard
+        defaults.set(false, forKey: "notchshot.askedScreenRecording")
+        let counter = Counter()
+        let subject = PermissionCenter(
+            preflight: { granted },
+            request: { counter.increment(); return false }
+        )
+
+        #expect(!subject.requestScreenRecordingAccess())
+        #expect(subject.screenRecording == .restartRequired)
+        #expect(subject.pendingRemediation == .screenRecording)
+
+        granted = true
+        subject.refresh()
+
+        #expect(subject.screenRecording == .granted)
+        #expect(subject.screenRecording.isUsable)
+        #expect(subject.pendingRemediation == nil)
+        #expect(subject.requestScreenRecordingAccess())
+        #expect(counter.value == 1)
     }
 
     /// The stale hint is the poll's decision, not the request's: a prompt the

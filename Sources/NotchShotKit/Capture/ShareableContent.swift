@@ -88,35 +88,7 @@ public actor ShareableContentProvider {
             return cached
         }
 
-        var content: SCShareableContent
-        do {
-            // Fetch the complete public inventory, then perform the small
-            // on-screen/layer/app exclusions in `selectableWindows`. On macOS
-            // 26 the older filtered query can return an empty display list for
-            // an accessory app despite a valid TCC grant.
-            content = try await SCShareableContent.current
-            if content.displays.isEmpty {
-                Log.capture.notice(
-                    "ScreenCaptureKit returned no displays for the full inventory; retrying the filtered query"
-                )
-                content = try await SCShareableContent.excludingDesktopWindows(
-                    false,
-                    onScreenWindowsOnly: true
-                )
-            }
-        } catch {
-            // The most common failure here is a missing TCC grant, which SCK
-            // reports as a generic stream error.
-            Log.capture.error("SCShareableContent failed: \(error.localizedDescription)")
-            if !CGPreflightScreenCaptureAccess() {
-                throw NotchShotError.screenRecordingPermissionDenied
-            }
-            throw NotchShotError.noShareableContent
-        }
-        guard !content.displays.isEmpty else {
-            Log.capture.error("ScreenCaptureKit returned no displays after retry")
-            throw NotchShotError.noShareableContent
-        }
+        let content = try await fetchRawShareableContent()
 
         let scales = await MainActor.run { () -> [CGDirectDisplayID: CGFloat] in
             var map: [CGDirectDisplayID: CGFloat] = [:]
@@ -161,6 +133,14 @@ public actor ShareableContentProvider {
 
 }
 
+enum ShareableContentRetryPolicy {
+    static let maximumAttempts = 2
+
+    static func shouldRetry(afterAttempt attempt: Int) -> Bool {
+        attempt < maximumAttempts
+    }
+}
+
 /// Fetches the raw ScreenCaptureKit objects a capture or recording needs.
 ///
 /// Deliberately `nonisolated` and free-standing: `SCShareableContent` is not
@@ -169,10 +149,42 @@ public actor ShareableContentProvider {
 /// actor without an unsafe escape hatch.
 func fetchRawShareableContent() async throws -> SCShareableContent {
     do {
-        return try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
+        for attempt in 1 ... ShareableContentRetryPolicy.maximumAttempts {
+            if attempt > 1 {
+                // replayd can briefly publish an empty inventory after wake or
+                // a display-mode change. One fresh request repairs the transient
+                // case without creating a capture loop or masking a stuck service.
+                try await Task.sleep(for: .milliseconds(300))
+            }
+
+            // Use one inventory policy for the picker, screenshots, and recording.
+            // On macOS 26 the older filtered query can be empty for accessory apps
+            // even when the complete public inventory contains usable displays.
+            var content = try await SCShareableContent.current
+            if !content.displays.isEmpty { return content }
+
+            Log.capture.notice(
+                "ScreenCaptureKit returned no displays for the full inventory; retrying the filtered query"
+            )
+            content = try await SCShareableContent.excludingDesktopWindows(
+                false,
+                onScreenWindowsOnly: true
+            )
+            if !content.displays.isEmpty { return content }
+
+            if ShareableContentRetryPolicy.shouldRetry(afterAttempt: attempt) {
+                Log.capture.notice("ScreenCaptureKit inventory is still empty; making one fresh request")
+            }
+        }
+        throw NotchShotError.noShareableContent
     } catch {
+        if error is CancellationError { throw error }
+        Log.capture.error("SCShareableContent failed: \(error.localizedDescription)")
         if !CGPreflightScreenCaptureAccess() {
             throw NotchShotError.screenRecordingPermissionDenied
+        }
+        if let notchShotError = error as? NotchShotError {
+            throw notchShotError
         }
         throw NotchShotError.noShareableContent
     }

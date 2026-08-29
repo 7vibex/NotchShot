@@ -20,7 +20,7 @@ public struct MarqueeText: View {
     @State private var textWidth: CGFloat = 0
     @State private var containerWidth: CGFloat = 0
     @State private var offset: CGFloat = 0
-    @State private var animationToken = 0
+    @State private var animationTask: Task<Void, Never>?
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -105,6 +105,10 @@ public struct MarqueeText: View {
             .onChange(of: text) { _, _ in restart() }
             .onChange(of: textWidth) { _, _ in restart() }
             .onChange(of: reduceMotion) { _, _ in restart() }
+            .onDisappear {
+                animationTask?.cancel()
+                animationTask = nil
+            }
         }
         .accessibilityElement()
         // VoiceOver always gets the whole string, however it is displayed.
@@ -112,8 +116,8 @@ public struct MarqueeText: View {
     }
 
     private func restart() {
-        animationToken += 1
-        let token = animationToken
+        animationTask?.cancel()
+        animationTask = nil
         offset = 0
 
         guard overflows, !reduceMotion else { return }
@@ -121,10 +125,10 @@ public struct MarqueeText: View {
         let distance = textWidth + gap
         let duration = Double(distance) / speed
 
-        Task { @MainActor in
+        animationTask = Task { @MainActor in
             // Let the title be readable from the start before it moves off.
             try? await Task.sleep(for: .seconds(dwell))
-            guard token == animationToken else { return }
+            guard !Task.isCancelled else { return }
             withAnimation(.linear(duration: duration).repeatForever(autoreverses: false)) {
                 offset = -distance
             }

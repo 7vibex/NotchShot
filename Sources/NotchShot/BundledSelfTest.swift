@@ -60,7 +60,6 @@ func runBundledSelfTest() async -> Int32 {
         let recordingConfiguration = RecordingConfiguration(
             target: .area(testArea, display.id),
             audioSources: [],
-            quality: .balanced,
             resolution: .p720,
             framesPerSecond: 30,
             showsCursor: false,

@@ -100,6 +100,20 @@ public struct NotchLayout: Sendable, Equatable {
     /// Largest island the panel must be able to contain. The panel is sized to
     /// this plus shadow padding, once, so state changes never resize the window.
     public static let maximumSize = CGSize(width: 640, height: 440)
+
+    /// Visible width either side of a physical cutout in the collapsed context
+    /// strip.
+    ///
+    /// A physical notch is a hole, not a dark pixel: anything drawn behind it is
+    /// gone, not dimmed. The collapsed strip therefore has only these two wings
+    /// to work with, and its width is derived from them rather than the other
+    /// way round. The previous 44pt could not hold a single word — a state label
+    /// or a percentage ran straight under the camera — while the system-level
+    /// HUD had already claimed 115pt for the same job. 75pt fits an agent glyph
+    /// with a progress ring on one side and a short metric on the other, without
+    /// making a strip that can persist for a 30-minute agent run as wide as a
+    /// transient volume HUD.
+    public static let compactContextWing: CGFloat = 75
     /// Slack around the island for shadows and spring overshoot.
     public static let shadowPadding: CGFloat = 40
 
@@ -142,11 +156,15 @@ public struct NotchLayout: Sendable, Equatable {
             }
             return NotchLayout(size: closed, cornerRadius: metrics.hasPhysicalNotch ? 12 : 16)
         case .media:
-            let width = isPeeking ? max(closed.width + 290, 470) : closed.width + 92
+            // The closed island only needs artwork and a playback indicator.
+            // Elapsed and total time appear in the scrubber after hover opens it.
+            // Keep the compact artwork and playback wave tucked close to the
+            // camera instead of floating at the outside edges of wide wings.
+            let width = isPeeking ? max(closed.width + 290, 470) : closed.width + 76
             if isPeeking {
                 // Taller and wider than the bare progress bar needed: the
                 // scrubber carries an elapsed and a total time either side of it.
-                return revealed(width: width, contentHeight: 86, cornerRadius: 18)
+                return revealed(width: width, contentHeight: 122, cornerRadius: 18)
             }
             // Compact media lives in the visible wings beside the camera and
             // intentionally shares the hardware notch's vertical band.
@@ -155,7 +173,15 @@ public struct NotchLayout: Sendable, Equatable {
                 cornerRadius: 18
             )
         case .expanded:
-            return revealed(width: 520, contentHeight: 268, cornerRadius: 24)
+            // Dynamic-Island-style expansion: enough room for the three core
+            // capture actions and one secondary command strip, but no large
+            // dashboard floating from the camera cutout.
+            return revealed(width: 480, contentHeight: 190, cornerRadius: 24)
+        case .fileDrop:
+            // Four equal drop destinations plus a compact instruction line.
+            // The physical camera band is added by `revealed`, keeping every
+            // target below real hardware while the drag remains active.
+            return revealed(width: 500, contentHeight: 164, cornerRadius: 24)
         case .selecting:
             return revealed(width: 340, contentHeight: 54, cornerRadius: 18)
         case .countdown:
@@ -166,18 +192,128 @@ public struct NotchLayout: Sendable, Equatable {
             return revealed(width: 320, contentHeight: 62, cornerRadius: 18)
         case .result:
             let extra = min(max(resultCount - 1, 0), 4) * 12
-            let height: CGFloat = hasStack ? 226 : 186
+            let height: CGFloat = hasStack ? 246 : 202
             return revealed(width: 470 + CGFloat(extra), contentHeight: height, cornerRadius: 24)
         case .systemLevel:
-            // Just wide enough for an icon and a bar: a volume nudge should
-            // feel like the notch flexing, not like a panel opening.
-            return revealed(
-                width: max(closed.width + 230, 390),
-                contentHeight: 46,
-                cornerRadius: 20
+            // A physical notch already provides the black centre of the HUD.
+            // Keep feedback inside its two visible wings instead of growing a
+            // rounded bubble below the camera. A notchless display still needs
+            // a conventional pill because there is no hardware cutout to use.
+            let width = max(closed.width + 230, 390)
+            if metrics.hasPhysicalNotch {
+                return NotchLayout(
+                    size: CGSize(width: width, height: max(closed.height, 32)),
+                    cornerRadius: 18
+                )
+            }
+            return revealed(width: width, contentHeight: 46, cornerRadius: 20)
+        case .context(let snapshot):
+            if snapshot.presentation == .expanded {
+                if snapshot.kind == .ai {
+                    return revealed(width: 520, contentHeight: 320, cornerRadius: 24)
+                }
+                // Five event rows, the calendar strip, header, and actions must
+                // fit without shrinking click targets or clipping at the
+                // bottom of a physical camera cutout.
+                return revealed(width: 520, contentHeight: 390, cornerRadius: 24)
+            }
+            if isPeeking {
+                return revealed(width: 430, contentHeight: 70, cornerRadius: 18)
+            }
+            return NotchLayout(
+                size: CGSize(
+                    width: closed.width + compactContextWing * 2,
+                    height: closed.height
+                ),
+                cornerRadius: 14
             )
         case .error:
             return revealed(width: 360, contentHeight: 62, cornerRadius: 18)
+        case .dictation(let snapshot):
+            return dictationLayout(for: snapshot, metrics: metrics, isPeeking: isPeeking, closed: closed, revealed: revealed)
+        }
+    }
+
+    /// Height of the pill's control row: waveform, timer, and the stop and
+    /// cancel targets. It is sized from the minimum control target so those
+    /// buttons cannot be clipped by the row that contains them.
+    public static let dictationControlRowHeight: CGFloat = 38
+    /// Inset either side of the dictation island's content.
+    public static let dictationHorizontalPadding: CGFloat = 10
+    /// Slack around the camera cutout so wing content never crowds the hardware.
+    public static let dictationCameraClearance: CGFloat = 16
+    /// Narrowest trace still worth drawing; below this the pill should carry a
+    /// label instead of a waveform.
+    public static let dictationMinimumWaveformWidth: CGFloat = 120
+
+    /// Width one wing gets beside the physical cutout.
+    ///
+    /// The wings are the reason this is shared rather than inlined in the view:
+    /// the previous island put a timer and two 36pt buttons into a wing this
+    /// arithmetic gives only ~94pt of, and the island's clip shape silently ate
+    /// the overflow.
+    public func dictationWingWidth(notchWidth: CGFloat) -> CGFloat {
+        let inner = size.width - 2 * Self.dictationHorizontalPadding
+        return max(0, (inner - notchWidth - Self.dictationCameraClearance) / 2)
+    }
+
+    /// Width left for the trace once the fixed controls have taken their share.
+    public func dictationWaveformWidth(controlsWidth: CGFloat) -> CGFloat {
+        max(0, size.width - 2 * Self.dictationHorizontalPadding - controlsWidth)
+    }
+    /// One line of transcript plus its surface padding.
+    public static let dictationTranscriptRowHeight: CGFloat = 28
+
+    private static func dictationLayout(
+        for snapshot: DictationSnapshot,
+        metrics: NotchMetrics,
+        isPeeking: Bool,
+        closed: CGSize,
+        revealed: (CGFloat, CGFloat, CGFloat) -> NotchLayout
+    ) -> NotchLayout {
+        let isHover = isPeeking || snapshot.isHoverExpanded
+        let hasTranscript = !snapshot.combinedText.isEmpty
+        // The wings either side of the camera carry only a status label and the
+        // timer; every control lives in the row below, where a 36pt target
+        // fits. The old layout put 106pt of controls into a 94pt wing and let
+        // the shape clip the difference.
+        let compactWidth = closed.width + 240
+        let controlRow = dictationControlRowHeight + 8
+
+        switch snapshot.state {
+        case .idle:
+            return NotchLayout(size: closed, cornerRadius: metrics.hasPhysicalNotch ? 12 : 16)
+        case .requestingMicrophone:
+            return revealed(closed.width + 200, controlRow, metrics.hasPhysicalNotch ? 22 : 28)
+        case .preparingModel:
+            return revealed(closed.width + 210, controlRow, metrics.hasPhysicalNotch ? 22 : 28)
+        case .listening:
+            // The pill grows only as far as it has something to show: a bare
+            // waveform while the user is still finding their first word, one
+            // line once there is a transcript, two while hovered for review.
+            if isHover {
+                return revealed(520, controlRow + dictationTranscriptRowHeight + 18, 28)
+            }
+            if hasTranscript {
+                return revealed(compactWidth, controlRow + dictationTranscriptRowHeight, 26)
+            }
+            return revealed(compactWidth, controlRow, 26)
+        case .finalizing:
+            return revealed(
+                compactWidth,
+                hasTranscript ? controlRow + dictationTranscriptRowHeight : controlRow,
+                26
+            )
+        case .inserting:
+            return revealed(closed.width + 200, controlRow, 24)
+        case .copied:
+            return revealed(closed.width + 200, controlRow, 24)
+        case .completed:
+            return revealed(closed.width + 200, controlRow, 24)
+        case .cancelled:
+            return NotchLayout(size: closed, cornerRadius: metrics.hasPhysicalNotch ? 12 : 16)
+        case .failed:
+            return revealed(430, controlRow + 44, 24)
         }
     }
 

@@ -43,12 +43,11 @@ public enum BugReportPackager {
         guard SafeAssetFile.isCurrentAndSafe(asset) else {
             throw NotchShotError.exportFailed("The capture file changed or is no longer safely readable")
         }
-        guard !fileManager.fileExists(atPath: destination.path) else {
-            throw NotchShotError.destinationUnwritable(
-                "\(destination.path) already exists; choose a different name"
-            )
-        }
-
+        // No existence check: the save panel has already asked the user whether
+        // to replace, and refusing here turned that answered question into a
+        // dead end. The package is assembled in a sibling temporary directory
+        // and swapped in, so a failure part-way through leaves whatever was
+        // already at `destination` untouched.
         let temporary = destination.deletingLastPathComponent()
             .appendingPathComponent(".notchbug-\(UUID().uuidString)", isDirectory: true)
         try fileManager.createDirectory(at: temporary, withIntermediateDirectories: true)
@@ -103,7 +102,11 @@ public enum BugReportPackager {
                 atomically: true,
                 encoding: .utf8
             )
-            try fileManager.moveItem(at: temporary, to: destination)
+            if fileManager.fileExists(atPath: destination.path) {
+                _ = try fileManager.replaceItemAt(destination, withItemAt: temporary)
+            } else {
+                try fileManager.moveItem(at: temporary, to: destination)
+            }
             return destination
         } catch {
             try? fileManager.removeItem(at: temporary)
@@ -181,6 +184,24 @@ public final class BugReportSession {
             errorMessage = error.localizedDescription
         }
     }
+
+    public func shareExportedPackage() {
+        guard let exportedURL,
+              let values = try? exportedURL.resourceValues(forKeys: [
+                .isDirectoryKey, .isSymbolicLinkKey,
+              ]),
+              values.isDirectory == true,
+              values.isSymbolicLink != true else {
+            errorMessage = "Create the package before sharing it."
+            return
+        }
+        do {
+            try MacSharePresenter.shared.present(items: [exportedURL])
+            errorMessage = nil
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
 }
 
 public struct BugReportView: View {
@@ -235,20 +256,18 @@ public struct BugReportView: View {
                         Button("Show in Finder") {
                             NSWorkspace.shared.activateFileViewerSelecting([url])
                         }
+                        Button("Share…") { session.shareExportedPackage() }
                     }
                     if let error = session.errorMessage {
-                        Text(error)
-                            .font(.caption)
-                            .foregroundStyle(.red)
-                            .lineLimit(2)
+                        InlineErrorMessage(message: error)
                     }
                     Spacer()
                     Button("Create Package…") { session.export() }
-                        .buttonStyle(.borderedProminent)
+                        .notchShotPrimaryActionStyle()
                 }
             }
         }
-        .formStyle(.grouped)
+        .notchShotFormStyle()
         .frame(minWidth: 560, minHeight: 520)
     }
 }

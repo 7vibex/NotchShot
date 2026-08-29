@@ -3,6 +3,14 @@ import CoreGraphics
 import Foundation
 import Observation
 
+enum EditableProjectPrivacyAlertPolicy {
+    static let buttonTitles = ["Cancel", "Save Editable Project"]
+
+    static func allowsSave(for response: NSApplication.ModalResponse) -> Bool {
+        response == .alertSecondButtonReturn
+    }
+}
+
 /// Editable state for one open capture: the document, the tool in hand, the
 /// selection, and undo/redo.
 ///
@@ -12,6 +20,14 @@ import Observation
 @MainActor
 @Observable
 public final class AnnotationDocumentController {
+
+    private struct BasePreviewCacheKey: Equatable {
+        var sourcePixelSize: CGSize
+        var sourceScale: CGFloat
+        var cropRect: CGRect?
+        var rotation: RotationAngle
+        var background: BackgroundConfiguration
+    }
 
     public private(set) var document: AnnotationDocument
     public let source: CGImage
@@ -26,12 +42,19 @@ public final class AnnotationDocumentController {
     public var lineWidth: Double
     public var projectURL: URL?
     public private(set) var hasUnsavedChanges = false
+    private var hasAcknowledgedProjectPrivacyWarning = false
 
     private var undoStack: [AnnotationDocument] = []
     private var redoStack: [AnnotationDocument] = []
     private let undoLimit = 60
     /// Set while a drag is in flight so the whole gesture is one undo step.
     private var isCoalescing = false
+    private var coalescingStartDocument: AnnotationDocument?
+    /// Rendering the composed source is one of the editor's most expensive
+    /// operations. Annotation drags and selection changes do not affect this
+    /// layer, so keep it until crop, rotation, or background geometry changes.
+    @ObservationIgnored private var cachedBasePreviewKey: BasePreviewCacheKey?
+    @ObservationIgnored private var cachedBasePreview: NSImage?
 
     public init(source: CGImage, document: AnnotationDocument, asset: CaptureAsset? = nil) {
         self.source = source
@@ -57,6 +80,7 @@ public final class AnnotationDocumentController {
 
     public var canUndo: Bool { !undoStack.isEmpty }
     public var canRedo: Bool { !redoStack.isEmpty }
+    var undoStepCount: Int { undoStack.count }
 
     /// Call before any mutation that should be undoable.
     public func checkpoint() {
@@ -69,19 +93,26 @@ public final class AnnotationDocumentController {
 
     /// Groups every mutation inside `body` into a single undo step.
     public func coalescing(_ body: () -> Void) {
-        if !isCoalescing { checkpoint() }
-        isCoalescing = true
+        let startedHere = !isCoalescing
+        if startedHere { beginCoalescing() }
         body()
-        isCoalescing = false
+        if startedHere { endCoalescing() }
     }
 
     public func beginCoalescing() {
+        guard !isCoalescing else { return }
+        coalescingStartDocument = document
         checkpoint()
         isCoalescing = true
     }
 
     public func endCoalescing() {
+        guard isCoalescing else { return }
         isCoalescing = false
+        if document == coalescingStartDocument {
+            _ = undoStack.popLast()
+        }
+        coalescingStartDocument = nil
     }
 
     public func undo() {
@@ -188,7 +219,61 @@ public final class AnnotationDocumentController {
         )
     }
 
+    /// Base image used behind the editor's live annotation canvas.
+    ///
+    /// This deliberately excludes annotation elements from the cache key:
+    /// they are rendered by the live `Canvas`, not burned into this image.
+    func basePreviewImage() -> NSImage? {
+        let key = BasePreviewCacheKey(
+            sourcePixelSize: document.sourcePixelSize,
+            sourceScale: document.sourceScale,
+            cropRect: document.cropRect,
+            rotation: document.rotation,
+            background: document.background
+        )
+        if cachedBasePreviewKey == key {
+            return cachedBasePreview
+        }
+
+        var stripped = document
+        stripped.elements = []
+        cachedBasePreviewKey = key
+        guard let image = try? AnnotationRenderer.render(
+            document: stripped,
+            source: source,
+            options: AnnotationRenderer.Options(isPreview: true)
+        ) else {
+            cachedBasePreview = nil
+            return nil
+        }
+        let preview = NSImage(
+            cgImage: image,
+            size: NSSize(width: image.width, height: image.height)
+        )
+        cachedBasePreview = preview
+        return preview
+    }
+
     // MARK: Saving
+
+    /// Editable projects intentionally retain the original source pixels so
+    /// redactions can be changed later. Require one explicit acknowledgement
+    /// per open document before writing that sensitive package.
+    public func confirmProjectPrivacyBeforeSaving() -> Bool {
+        if hasAcknowledgedProjectPrivacyWarning { return true }
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "Editable projects contain the original pixels"
+        alert.informativeText = "A .notchshot project is not share-safe: blackout and pixelation remain editable, and the original image is stored inside. Export a flattened image when you need permanently applied redactions."
+        for title in EditableProjectPrivacyAlertPolicy.buttonTitles {
+            alert.addButton(withTitle: title)
+        }
+        alert.buttons.first?.keyEquivalent = "\u{1b}"
+        NSApp.activate(ignoringOtherApps: true)
+        guard EditableProjectPrivacyAlertPolicy.allowsSave(for: alert.runModal()) else { return false }
+        hasAcknowledgedProjectPrivacyWarning = true
+        return true
+    }
 
     /// Writes a flattened image. This is the only path that should ever be
     /// shared, copied, or uploaded.

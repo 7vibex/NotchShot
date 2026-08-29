@@ -15,6 +15,9 @@ public enum HotKeyAction: String, Sendable, CaseIterable, Identifiable, Codable 
     case stopRecording
     case toggleNotch
     case restoreLastCapture
+    case showClipboard
+    case toggleDictation
+    case pushToTalk
 
     public var id: String { rawValue }
 
@@ -32,6 +35,9 @@ public enum HotKeyAction: String, Sendable, CaseIterable, Identifiable, Codable 
         case .stopRecording: "Stop Recording"
         case .toggleNotch: "Open the Notch"
         case .restoreLastCapture: "Restore Last Capture"
+        case .showClipboard: "Clipboard History"
+        case .toggleDictation: "Toggle Dictation"
+        case .pushToTalk: "Push to Talk"
         }
     }
 
@@ -78,6 +84,12 @@ public enum HotKeyAction: String, Sendable, CaseIterable, Identifiable, Codable 
         case .stopRecording: HotKeyBinding(keyCode: UInt32(kVK_Escape), modifiers: UInt32(cmdKey | shiftKey | optionKey))
         case .toggleNotch: HotKeyBinding(keyCode: UInt32(kVK_ANSI_N), modifiers: UInt32(cmdKey | shiftKey | optionKey))
         case .restoreLastCapture: nil
+        // No default: the clipboard history is off until the user turns it on,
+        // so claiming a global combination for it before then would reserve a
+        // shortcut for a feature that does nothing.
+        case .showClipboard: nil
+        case .toggleDictation: HotKeyBinding(keyCode: UInt32(kVK_Space), modifiers: UInt32(optionKey))
+        case .pushToTalk: nil
         }
     }
 }
@@ -146,6 +158,11 @@ public struct HotKeyBinding: Codable, Sendable, Equatable, Hashable {
     }
 }
 
+public enum HotKeyPhase: Sendable, Equatable {
+    case pressed
+    case released
+}
+
 /// Registers global shortcuts through Carbon's hot-key API.
 ///
 /// Carbon is used deliberately: `RegisterEventHotKey` needs no Accessibility
@@ -157,11 +174,16 @@ public final class HotKeyController {
 
     public private(set) var bindings: [HotKeyAction: HotKeyBinding] = [:]
     public var handler: ((HotKeyAction) -> Void)?
+    /// Includes release events for genuine push-to-talk behavior. Ordinary
+    /// actions continue to use `handler` and fire only on key press.
+    public var phaseHandler: ((HotKeyAction, HotKeyPhase) -> Void)?
 
     private var registrations: [UInt32: (action: HotKeyAction, ref: EventHotKeyRef)] = [:]
     private var eventHandler: EventHandlerRef?
     private var nextIdentifier: UInt32 = 1
     private let defaultsKey = "notchshot.hotkeys"
+    private let dictationDefaultMigrationKey = "notchshot.hotkeys.dictationDefaultInstalled"
+    private let simpleDictationShortcutMigrationKey = "notchshot.hotkeys.simpleDictationShortcutInstalled"
 
     private init() {
         loadBindings()
@@ -260,6 +282,27 @@ public final class HotKeyController {
         // as they are, but do not turn an invalid legacy entry into a bare
         // system-wide key.
         bindings = decoded.filter { $0.value.isValidGlobalShortcut }
+        // Dictionaries from releases before Notch Dictation cannot contain the
+        // new action. Install its default exactly once without changing any
+        // existing custom or explicitly cleared shortcuts on later launches.
+        if !UserDefaults.standard.bool(forKey: dictationDefaultMigrationKey) {
+            if decoded[.toggleDictation] == nil {
+                bindings[.toggleDictation] = HotKeyAction.toggleDictation.defaultBinding
+            }
+            UserDefaults.standard.set(true, forKey: dictationDefaultMigrationKey)
+        }
+        // Replace only the old shipped default. A custom binding — including a
+        // user-cleared shortcut — remains entirely under the user's control.
+        if !UserDefaults.standard.bool(forKey: simpleDictationShortcutMigrationKey) {
+            let oldDefault = HotKeyBinding(
+                keyCode: UInt32(kVK_ANSI_D),
+                modifiers: UInt32(cmdKey | shiftKey | optionKey)
+            )
+            if decoded[.toggleDictation] == oldDefault {
+                bindings[.toggleDictation] = HotKeyAction.toggleDictation.defaultBinding
+            }
+            UserDefaults.standard.set(true, forKey: simpleDictationShortcutMigrationKey)
+        }
     }
 
     private func saveBindings() {
@@ -311,10 +354,16 @@ public final class HotKeyController {
 
     private func installEventHandler() {
         guard eventHandler == nil else { return }
-        var eventType = EventTypeSpec(
-            eventClass: OSType(kEventClassKeyboard),
-            eventKind: UInt32(kEventHotKeyPressed)
-        )
+        var eventTypes = [
+            EventTypeSpec(
+                eventClass: OSType(kEventClassKeyboard),
+                eventKind: UInt32(kEventHotKeyPressed)
+            ),
+            EventTypeSpec(
+                eventClass: OSType(kEventClassKeyboard),
+                eventKind: UInt32(kEventHotKeyReleased)
+            ),
+        ]
         let callback: EventHandlerUPP = { _, event, _ in
             var hotKeyID = EventHotKeyID()
             let status = GetEventParameter(
@@ -328,11 +377,14 @@ public final class HotKeyController {
             )
             guard status == noErr else { return status }
             let identifier = hotKeyID.id
+            let phase: HotKeyPhase = GetEventKind(event) == UInt32(kEventHotKeyReleased)
+                ? .released
+                : .pressed
             // Carbon calls back on the main run loop, but hop explicitly so the
             // isolation is checked rather than assumed.
             DispatchQueue.main.async {
                 MainActor.assumeIsolated {
-                    HotKeyController.shared.fire(identifier: identifier)
+                    HotKeyController.shared.fire(identifier: identifier, phase: phase)
                 }
             }
             return noErr
@@ -340,15 +392,18 @@ public final class HotKeyController {
         InstallEventHandler(
             GetApplicationEventTarget(),
             callback,
-            1,
-            &eventType,
+            eventTypes.count,
+            &eventTypes,
             nil,
             &eventHandler
         )
     }
 
-    fileprivate func fire(identifier: UInt32) {
+    fileprivate func fire(identifier: UInt32, phase: HotKeyPhase) {
         guard let registration = registrations[identifier] else { return }
-        handler?(registration.action)
+        phaseHandler?(registration.action, phase)
+        if phase == .pressed {
+            handler?(registration.action)
+        }
     }
 }

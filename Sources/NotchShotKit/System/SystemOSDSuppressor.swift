@@ -39,11 +39,24 @@ public final class SystemOSDSuppressor {
     private var pausedProcessIDs: Set<pid_t> = []
     private var watchdogs: [pid_t: Watchdog] = [:]
     private var launchTask: Task<Void, Never>?
+    private let mediaKeyInterceptor = SystemMediaKeyInterceptor()
 
-    public init() {}
+    var onSystemMediaKey: ((SystemMediaKeyAction) -> Bool)? {
+        didSet { mediaKeyInterceptor.onKeyDown = onSystemMediaKey }
+    }
+
+    /// Internal, not public. The suppressor owns a SIGSTOP lease on an Apple
+    /// system process and an event tap keyed to its own address; a second
+    /// instance would be a second, uncoordinated owner of both.
+    init() {}
 
     public var isSuppressing: Bool {
         isEnabled && !pausedProcessIDs.isEmpty
+    }
+
+    public var needsInputMonitoringPermission: Bool {
+        guard #available(macOS 26.5, *) else { return false }
+        return isEnabled && !mediaKeyInterceptor.isRunning
     }
 
     public var isCrashRecoveryAvailable: Bool {
@@ -69,13 +82,22 @@ public final class SystemOSDSuppressor {
     /// quit, or setting changes.
     public func recoverLegacySuspension() {
         for application in runningHelpers() {
-            _ = kill(application.processIdentifier, SIGCONT)
+            let processID = application.processIdentifier
+            // Only resume a helper that is actually suspended. `pause()` is
+            // careful never to claim one another utility already stopped; this
+            // path has to be equally careful not to release one.
+            guard let identity = Self.processIdentity(for: processID),
+                  identity.status == UInt32(SSTOP) else { continue }
+            _ = kill(processID, SIGCONT)
         }
     }
 
-    public func setEnabled(_ enabled: Bool) {
+    public func setEnabled(_ enabled: Bool, requestInputAccess: Bool = false) {
         if enabled {
             guard !isEnabled else {
+                if #available(macOS 26.5, *) {
+                    _ = mediaKeyInterceptor.start(requestAccess: requestInputAccess)
+                }
                 if pausedProcessIDs.isEmpty { pauseHelper() }
                 return
             }
@@ -85,14 +107,22 @@ public final class SystemOSDSuppressor {
                 return
             }
             isEnabled = true
+            if #available(macOS 26.5, *) {
+                _ = mediaKeyInterceptor.start(requestAccess: requestInputAccess)
+            }
             installLaunchObserver()
             pauseHelper()
         } else {
-            guard isEnabled || !pausedProcessIDs.isEmpty || !watchdogs.isEmpty else { return }
+            // `mediaKeyInterceptor` is part of the condition because fail-open
+            // can leave it running with everything else already cleared, and a
+            // guard that ignored it made that state permanent.
+            guard isEnabled || !pausedProcessIDs.isEmpty || !watchdogs.isEmpty
+                    || mediaKeyInterceptor.isRunning else { return }
             isEnabled = false
             removeLaunchObserver()
             launchTask?.cancel()
             launchTask = nil
+            mediaKeyInterceptor.stop()
             resumeAll()
         }
     }
@@ -102,6 +132,7 @@ public final class SystemOSDSuppressor {
         removeLaunchObserver()
         launchTask?.cancel()
         launchTask = nil
+        mediaKeyInterceptor.stop()
         resumeAll()
     }
 
@@ -393,6 +424,12 @@ public final class SystemOSDSuppressor {
         removeLaunchObserver()
         launchTask?.cancel()
         launchTask = nil
+        // Failing open has to give the *whole* native path back. Leaving the
+        // tap installed kept swallowing the five hardware keys after the notch
+        // had stopped drawing their replacement, and the early return in
+        // `setEnabled(false)` then had nothing left to notice, so it survived
+        // until quit.
+        mediaKeyInterceptor.stop()
         resumeAll()
     }
 

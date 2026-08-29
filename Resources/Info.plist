@@ -6,6 +6,14 @@
 	<string>NotchShot</string>
 	<key>CFBundleDisplayName</key>
 	<string>NotchShot</string>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>en</string>
+	<key>CFBundleLocalizations</key>
+	<array>
+		<string>en</string>
+	</array>
+	<key>NSHumanReadableCopyright</key>
+	<string>Copyright © 2026 NotchShot. All rights reserved.</string>
 	<key>CFBundleExecutable</key>
 	<string>NotchShot</string>
 	<key>CFBundleIdentifier</key>
@@ -18,6 +26,17 @@
 	<string>1</string>
 	<key>CFBundleInfoDictionaryVersion</key>
 	<string>6.0</string>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>com.notchshot.automation</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>notchshot</string>
+			</array>
+		</dict>
+	</array>
 	<key>LSMinimumSystemVersion</key>
 	<string>26.0</string>
 
@@ -33,6 +52,10 @@
 	<false/>
 	<key>NSSupportsSuddenTermination</key>
 	<false/>
+	<key>SUEnableAutomaticChecks</key>
+	<true/>
+	<key>SUAutomaticallyUpdate</key>
+	<true/>
 
 	<!-- Sensitive capabilities are requested lazily when their feature is used. -->
 	<key>NSScreenCaptureUsageDescription</key>
@@ -42,11 +65,41 @@
 	<key>NSDesktopFolderUsageDescription</key>
 	<string>NotchShot saves captures to the Desktop only when it is your selected output folder.</string>
 	<key>NSMicrophoneUsageDescription</key>
-	<string>NotchShot records your microphone only while you have microphone recording switched on for a screen recording.</string>
+	<string>NotchShot records your microphone only when you start a screen recording with microphone audio, explicitly start a Voice Note, or use Notch Dictation to transcribe speech locally.</string>
+	<key>NSServices</key>
+	<array>
+		<dict>
+			<key>NSMenuItem</key>
+			<dict>
+				<key>default</key>
+				<string>Add to NotchShot Shelf</string>
+			</dict>
+			<key>NSMessage</key>
+			<string>addFilesToShelf</string>
+			<key>NSPortName</key>
+			<string>NotchShot</string>
+			<key>NSServiceDescription</key>
+			<string>Park selected files in the NotchShot shelf without copying or moving them.</string>
+			<key>NSSendFileTypes</key>
+			<array>
+				<string>public.data</string>
+			</array>
+			<key>NSSendTypes</key>
+			<array>
+				<string>public.file-url</string>
+			</array>
+		</dict>
+	</array>
 	<key>NSSpeechRecognitionUsageDescription</key>
-	<string>NotchShot can create an optional on-device transcript and caption file from a recording you make.</string>
+	<string>NotchShot performs speech recognition entirely on-device. A one-time language download may be required. Dictation audio is not saved and no transcript is stored by default; optional recording captions are created locally from a recording you make.</string>
 	<key>NSAppleEventsUsageDescription</key>
 	<string>NotchShot reads playback details from and sends playback controls to Music or Spotify when you enable the Apple Events fallback.</string>
+	<key>NSCalendarsFullAccessUsageDescription</key>
+	<string>NotchShot reads upcoming events only when you enable Calendar Glance, and writes an event only after you preview it and press Add.</string>
+	<key>NSCalendarsWriteOnlyAccessUsageDescription</key>
+	<string>NotchShot adds a calendar event only after you preview the parsed title and time and press Add.</string>
+	<key>NSRemindersFullAccessUsageDescription</key>
+	<string>NotchShot adds a reminder only after you preview the parsed title and due time and press Add.</string>
 
 	<key>CFBundleDocumentTypes</key>
 	<array>

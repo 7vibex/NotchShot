@@ -7,8 +7,17 @@ let package = Package(
     products: [
         .executable(name: "NotchShot", targets: ["NotchShot"]),
         .executable(name: "NotchShotOSDRecovery", targets: ["NotchShotOSDRecovery"]),
+        .executable(name: "NotchShotAdapterRunner", targets: ["NotchShotAdapterRunner"]),
+        .executable(name: "NotchShotAIReporter", targets: ["NotchShotAIReporter"]),
         .executable(name: "notchshot-diagnostics", targets: ["NotchShotDiagnostics"]),
         .library(name: "NotchShotKit", targets: ["NotchShotKit"]),
+    ],
+    dependencies: [
+        // Pinned exactly, because the updater is a privileged install path and a
+        // signed release must be reproducible. That makes the pin a standing
+        // obligation: 2.9.5 and 2.9.6 each carried symlink and privilege
+        // fixes that a stale `exact:` would have silently skipped.
+        .package(url: "https://github.com/sparkle-project/Sparkle", exact: "2.9.6"),
     ],
     targets: [
         .executableTarget(
@@ -25,6 +34,26 @@ let package = Package(
             path: "Sources/NotchShotOSDRecovery",
             swiftSettings: [.swiftLanguageMode(.v6)]
         ),
+        // Establishes a dedicated process group before executing the optional
+        // user-approved media adapter, allowing bounded descendant cleanup.
+        .executableTarget(
+            name: "NotchShotAdapterRunner",
+            path: "Sources/NotchShotAdapterRunner",
+            swiftSettings: [.swiftLanguageMode(.v6)]
+        ),
+        // Receives explicit lifecycle events from Claude, Codex, and Cursor
+        // hooks and writes a small local status record for the island.
+        .executableTarget(
+            name: "NotchShotAIReporter",
+            dependencies: ["NotchShotAIReporterSupport"],
+            path: "Sources/NotchShotAIReporter",
+            swiftSettings: [.swiftLanguageMode(.v6)]
+        ),
+        .target(
+            name: "NotchShotAIReporterSupport",
+            path: "Sources/NotchShotAIReporterSupport",
+            swiftSettings: [.swiftLanguageMode(.v6)]
+        ),
         // Headless smoke test for the capture pipeline: tells you whether a
         // failed capture is a code problem or a permission problem.
         .executableTarget(
@@ -35,12 +64,23 @@ let package = Package(
         ),
         .target(
             name: "NotchShotKit",
+            dependencies: [.product(name: "Sparkle", package: "Sparkle")],
             path: "Sources/NotchShotKit",
+            swiftSettings: [.swiftLanguageMode(.v6)]
+        ),
+        // Performance benchmarks for the latency-sensitive paths. Not part of
+        // any shipped product — `Scripts/build_app.sh` builds products by name,
+        // so this never reaches the bundle. Run with:
+        //   swift run -c release NotchShotBench
+        .executableTarget(
+            name: "NotchShotBench",
+            dependencies: ["NotchShotKit"],
+            path: "Sources/NotchShotBench",
             swiftSettings: [.swiftLanguageMode(.v6)]
         ),
         .testTarget(
             name: "NotchShotKitTests",
-            dependencies: ["NotchShotKit"],
+            dependencies: ["NotchShotKit", "NotchShotAIReporterSupport"],
             path: "Tests/NotchShotKitTests",
             swiftSettings: [.swiftLanguageMode(.v6)]
         ),

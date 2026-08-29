@@ -132,6 +132,39 @@ public enum ImageExport {
         return usedFormat
     }
 
+    /// `write`, moved off the caller's actor.
+    ///
+    /// Encoding a full-screen Retina capture as PNG takes well over 200 ms.
+    /// Called straight from the `@MainActor` capture flow that lands squarely in
+    /// the moment the capture is meant to feel instant, stalling the notch
+    /// animation and everything queued behind it on the main thread.
+    public static func write(
+        _ image: CapturedImage,
+        to url: URL,
+        format: ImageFormat,
+        quality: Double
+    ) async throws -> ImageFormat {
+        try await Task.detached(priority: .userInitiated) {
+            try write(
+                image.cgImage,
+                to: url,
+                format: format,
+                quality: quality,
+                dpiScale: image.scale
+            )
+        }.value
+    }
+
+    /// `makeThumbnail`, moved off the caller's actor for the same reason.
+    public static func makeThumbnail(
+        from image: CapturedImage,
+        maximumDimension: CGFloat = 512
+    ) async -> CGImage? {
+        await Task.detached(priority: .userInitiated) {
+            makeThumbnail(from: image.cgImage, maximumDimension: maximumDimension)
+        }.value
+    }
+
     /// Downsamples for the shelf and history list. Uses Core Graphics directly
     /// so it can run off the main actor.
     public static func makeThumbnail(from image: CGImage, maximumDimension: CGFloat = 512) -> CGImage? {
@@ -159,23 +192,101 @@ public enum ImageExport {
         return context.makeImage()
     }
 
-    /// Puts an image on the general pasteboard as both TIFF (universal) and PNG
-    /// (lossless, what most editors prefer).
+    /// Offers an image on the general pasteboard as both TIFF (universal) and
+    /// PNG (lossless, what most editors prefer), encoded on demand.
+    ///
+    /// Encoding a full-screen Retina capture costs roughly 330 ms for PNG and
+    /// another 90 ms for TIFF. Doing that here froze the main actor for close to
+    /// half a second on every single capture — paid in full even though most
+    /// captures are never pasted anywhere. Promising the types instead defers
+    /// the work to whoever actually asks for the bytes, and holding the
+    /// immutable `CGImage` in the meantime costs less memory than the
+    /// uncompressed TIFF it replaces.
     @MainActor
     public static func copyToPasteboard(_ image: CGImage) {
-        let pasteboard = NSPasteboard.general
-        pasteboard.clearContents()
-        let rep = NSBitmapImageRep(cgImage: image)
-        var items: [NSPasteboardItem] = []
+        copyToPasteboard(image, to: .general)
+    }
+
+    /// Injectable so tests can prove the promise resolves without commandeering
+    /// the user's real clipboard.
+    @MainActor
+    static func copyToPasteboard(_ image: CGImage, to pasteboard: NSPasteboard) {
+        let changeCount = pasteboard.clearContents()
+        let provider = PromisedImage(image: image)
         let item = NSPasteboardItem()
-        if let png = rep.representation(using: .png, properties: [:]) {
-            item.setData(png, forType: .png)
+        item.setDataProvider(provider, forTypes: PromisedImage.types)
+        if pasteboard === NSPasteboard.general {
+            promisedImage = provider
+            promisedImageChangeCount = changeCount
         }
-        if let tiff = rep.representation(using: .tiff, properties: [:]) {
-            item.setData(tiff, forType: .tiff)
+        pasteboard.writeObjects([item])
+        noteSelfWrite(pasteboard.changeCount, to: pasteboard)
+    }
+
+    /// Encodes any clipboard image still held as a promise.
+    ///
+    /// AppKit does not redeem outstanding promises when the promising process
+    /// exits, so without this, quitting NotchShot would empty a clipboard the
+    /// user had just filled from it. Call it on the way out.
+    @MainActor
+    public static func redeemPromisedPasteboardImage() {
+        guard promisedImage != nil else { return }
+        // Someone else has copied since, so there is no promise of ours left to
+        // redeem — and nothing left to hold the pixels for.
+        guard NSPasteboard.general.changeCount == promisedImageChangeCount else {
+            releasePromisedImage()
+            return
         }
-        items.append(item)
-        pasteboard.writeObjects(items)
+        // Asking is what drives the callback; the bytes then replace the promise
+        // on the pasteboard itself, which outlives this process.
+        for type in PromisedImage.types {
+            _ = NSPasteboard.general.data(forType: type)
+        }
+        releasePromisedImage()
+    }
+
+    /// Retained only so the promise can still be redeemed at termination. The
+    /// pasteboard holds its own reference for as long as the content is current.
+    ///
+    /// Dropped as soon as the pasteboard is finished with it: a full-screen
+    /// capture is tens of megabytes, and holding the last copied one for the
+    /// rest of the session — long after the user has copied something else —
+    /// would trade a main-thread stall for a permanent memory cost.
+    @MainActor private static var promisedImage: PromisedImage?
+    @MainActor private static var promisedImageChangeCount = -1
+
+    /// Change count of the last write NotchShot made to the general pasteboard.
+    ///
+    /// The clipboard history has to skip these. Not to avoid a duplicate — that
+    /// would be cosmetic — but because a copied capture is offered as a
+    /// *promise*, and reading its data to record it would force the very
+    /// encode the promise exists to defer, on every single capture.
+    @MainActor public private(set) static var lastSelfWriteChangeCount = -1
+
+    @MainActor
+    private static func noteSelfWrite(_ changeCount: Int, to pasteboard: NSPasteboard) {
+        guard pasteboard === NSPasteboard.general else { return }
+        lastSelfWriteChangeCount = changeCount
+    }
+
+    @MainActor
+    private static func releasePromisedImage() {
+        promisedImage = nil
+        promisedImageChangeCount = -1
+    }
+
+    /// Called by the provider once the pasteboard no longer needs it.
+    ///
+    /// Takes an identity rather than the provider itself: the callback arrives
+    /// from whatever thread finished with the pasteboard, and an
+    /// `ObjectIdentifier` crosses to the main actor without carrying the object.
+    static func promisedImageFinished(_ provider: ObjectIdentifier) {
+        Task { @MainActor in
+            // Identity-checked: a newer copy may already have replaced it, and
+            // that one is still live.
+            guard promisedImage.map(ObjectIdentifier.init) == provider else { return }
+            releasePromisedImage()
+        }
     }
 
     @MainActor
@@ -183,6 +294,7 @@ public enum ImageExport {
         let pasteboard = NSPasteboard.general
         pasteboard.clearContents()
         pasteboard.writeObjects([fileURL as NSURL])
+        noteSelfWrite(pasteboard.changeCount, to: pasteboard)
     }
 
     @MainActor
@@ -190,5 +302,72 @@ public enum ImageExport {
         let pasteboard = NSPasteboard.general
         pasteboard.clearContents()
         pasteboard.setString(text, forType: .string)
+        noteSelfWrite(pasteboard.changeCount, to: pasteboard)
+    }
+}
+
+/// Holds the pixels behind a clipboard promise and encodes them when a
+/// receiving app asks for a particular representation.
+///
+/// The pasteboard keeps this alive while its content is current, so the source
+/// image stays valid for as long as the promise can be redeemed.
+///
+/// `NSPasteboardItemDataProvider` carries no actor isolation, and the callback
+/// arrives on whichever thread redeems the promise, so the cache is locked
+/// rather than assumed to be on the main one. `CGImage` is immutable and safe
+/// to read from anywhere.
+private final class PromisedImage: NSObject, NSPasteboardItemDataProvider, @unchecked Sendable {
+    /// TIFF first: the order is what the pasteboard advertises, and apps that
+    /// take the first type they recognise have historically expected TIFF.
+    static let types: [NSPasteboard.PasteboardType] = [.tiff, .png]
+
+    private let image: CGImage
+    private let lock = NSLock()
+    /// Encoding the same representation twice is pure waste when several apps
+    /// read one clipboard entry, and TIFF of a full-screen capture is not cheap.
+    private var encoded: [NSPasteboard.PasteboardType: Data] = [:]
+
+    init(image: CGImage) {
+        self.image = image
+    }
+
+    func pasteboard(
+        _ pasteboard: NSPasteboard?,
+        item: NSPasteboardItem,
+        provideDataForType type: NSPasteboard.PasteboardType
+    ) {
+        guard let data = data(for: type) else { return }
+        item.setData(data, forType: type)
+    }
+
+    /// The pasteboard has moved on, so nothing can ask for these pixels again.
+    func pasteboardFinishedWithDataProvider(_ pasteboard: NSPasteboard) {
+        ImageExport.promisedImageFinished(ObjectIdentifier(self))
+    }
+
+    private func data(for type: NSPasteboard.PasteboardType) -> Data? {
+        let fileType: NSBitmapImageRep.FileType? = switch type {
+        case .png: .png
+        case .tiff: .tiff
+        default: nil
+        }
+        guard let fileType else { return nil }
+
+        lock.lock()
+        let cached = encoded[type]
+        lock.unlock()
+        if let cached { return cached }
+
+        // Encoded outside the lock: this is the expensive part, and a second
+        // reader waiting on it would be worse than encoding twice.
+        let representation = NSBitmapImageRep(cgImage: image)
+        guard let data = representation.representation(using: fileType, properties: [:]) else {
+            return nil
+        }
+
+        lock.lock()
+        encoded[type] = data
+        lock.unlock()
+        return data
     }
 }

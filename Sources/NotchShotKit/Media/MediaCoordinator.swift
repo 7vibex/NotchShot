@@ -16,13 +16,19 @@ public final class MediaCoordinator {
 
     public private(set) var snapshot = MediaSnapshot.empty
     public private(set) var activeSource: MediaSourceKind = .none
+    /// Decoded only when artwork bytes change. Rebuilding an `NSImage` from the
+    /// same data on every two-second position tick needlessly decodes on the UI
+    /// thread and can make the notch animation hitch.
+    public private(set) var artwork: NSImage?
+    /// Readable cover-derived accent cached alongside `artwork`, for the compact
+    /// playback indicator. White is retained when artwork is absent or neutral.
+    public private(set) var artworkAccentColor: NSColor = ArtworkAccentColor.fallback
+    /// Session and display state let the notch remove interaction at the lock
+    /// window and stop decorative animation while the screens are asleep.
+    public private(set) var isSessionActive = true
+    public private(set) var areScreensAwake = true
     /// Set when every backend failed, for the settings UI to explain.
     public private(set) var lastFailureReason: String?
-
-    public var artwork: NSImage? {
-        guard let data = snapshot.artworkData else { return nil }
-        return NSImage(data: data)
-    }
 
     private var source: (any MediaSource)?
     private var streamTask: Task<Void, Never>?
@@ -47,6 +53,18 @@ public final class MediaCoordinator {
     }
 
     public func stop() {
+        let current = detachSource()
+        Task { await current?.stop() }
+    }
+
+    /// Quit uses the awaited form so a stubborn external adapter is reaped
+    /// before AppKit lets the process exit.
+    public func stopAndWait() async {
+        let current = detachSource()
+        await current?.stop()
+    }
+
+    private func detachSource() -> (any MediaSource)? {
         selectionGeneration &+= 1
         selectionTask?.cancel()
         selectionTask = nil
@@ -54,13 +72,15 @@ public final class MediaCoordinator {
         streamTask = nil
         let current = source
         source = nil
-        Task { await current?.stop() }
         for observer in observers {
             NSWorkspace.shared.notificationCenter.removeObserver(observer)
         }
         observers.removeAll()
         snapshot = .empty
+        artwork = nil
+        artworkAccentColor = ArtworkAccentColor.fallback
         activeSource = .none
+        return current
     }
 
     /// Called when the user changes media settings.
@@ -79,7 +99,46 @@ public final class MediaCoordinator {
             object: nil,
             queue: .main
         ) { [weak self] _ in
-            MainActor.assumeIsolated { self?.reselectIfAllowed() }
+            MainActor.assumeIsolated {
+                self?.areScreensAwake = true
+                self?.reselectIfAllowed()
+            }
+        })
+        observers.append(center.addObserver(
+            forName: NSWorkspace.screensDidSleepNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.areScreensAwake = false }
+        })
+        observers.append(center.addObserver(
+            forName: NSWorkspace.screensDidWakeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.areScreensAwake = true }
+        })
+        observers.append(center.addObserver(
+            forName: NSWorkspace.sessionDidResignActiveNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.isSessionActive = false }
+        })
+        observers.append(center.addObserver(
+            forName: NSWorkspace.sessionDidBecomeActiveNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.isSessionActive = true
+                // Locking can leave either bridge connected but stale. An
+                // unconditional fresh selection restores the current track as
+                // soon as the user unlocks without ever controlling playback.
+                self.lastSelection = nil
+                self.scheduleSelection()
+            }
         })
     }
 
@@ -185,6 +244,8 @@ public final class MediaCoordinator {
         guard activeSource == kind, kind != .none else { return }
         Log.media.notice("\(kind.rawValue) stream ended; re-selecting")
         snapshot = .empty
+        artwork = nil
+        artworkAccentColor = ArtworkAccentColor.fallback
         reselectIfAllowed()
     }
 
@@ -196,6 +257,10 @@ public final class MediaCoordinator {
             snapshot.positionTimestamp = update.positionTimestamp
             snapshot.isPlaying = update.isPlaying
             return
+        }
+        if snapshot.artworkData != update.artworkData {
+            artwork = update.artworkData.flatMap(NSImage.init(data:))
+            artworkAccentColor = ArtworkAccentColor.extract(from: artwork)
         }
         snapshot = update
     }

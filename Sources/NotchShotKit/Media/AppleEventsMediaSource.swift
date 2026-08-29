@@ -2,6 +2,59 @@ import AppKit
 import Foundation
 import ImageIO
 
+struct AppleEventsSnapshotFields: Equatable {
+    var title: String
+    var artist: String
+    var album: String
+    var duration: TimeInterval?
+    var position: TimeInterval?
+    var isPlaying: Bool
+}
+
+private struct AppleScriptExecution: Sendable {
+    var stringValue: String?
+    var data: Data?
+    var errorNumber: Int?
+}
+
+/// `NSAppleScript` is synchronous and may wait several seconds for another
+/// application. Serializing it on its own actor keeps those waits off AppKit's
+/// main thread while also avoiding concurrent use of the scripting runtime.
+private actor AppleScriptExecutor {
+    private var scripts: [String: NSAppleScript] = [:]
+    private var scriptOrder: [String] = []
+    private let timeoutSeconds = 2
+    private let maximumCachedScripts = 16
+
+    func execute(_ source: String) -> AppleScriptExecution {
+        let boundedSource = """
+        with timeout of \(timeoutSeconds) seconds
+            \(source)
+        end timeout
+        """
+        let cachedScript = scripts[source]
+        guard let script = cachedScript ?? NSAppleScript(source: boundedSource) else {
+            return AppleScriptExecution(errorNumber: errOSAScriptError)
+        }
+        if cachedScript == nil {
+            scripts[source] = script
+            scriptOrder.append(source)
+            while scriptOrder.count > maximumCachedScripts {
+                scripts.removeValue(forKey: scriptOrder.removeFirst())
+            }
+        }
+
+        var error: NSDictionary?
+        let result = script.executeAndReturnError(&error)
+        let errorNumber = error?[NSAppleScript.errorNumber] as? Int
+        return AppleScriptExecution(
+            stringValue: error == nil ? result.stringValue : nil,
+            data: error == nil && !result.data.isEmpty ? result.data : nil,
+            errorNumber: errorNumber
+        )
+    }
+}
+
 /// Fallback Now Playing source driven by Apple Events.
 ///
 /// Only knows about Music and Spotify — they are the two mainstream macOS
@@ -12,6 +65,8 @@ import ImageIO
 /// needed, and a denial degrades to the disabled source rather than prompting
 /// repeatedly.
 public actor AppleEventsMediaSource: MediaSource {
+
+    static let fieldSeparator = "\u{1F}"
 
     public nonisolated let kind: MediaSourceKind = .appleEvents
 
@@ -34,6 +89,7 @@ public actor AppleEventsMediaSource: MediaSource {
     /// rather than on every poll tick.
     private var artworkCache: [String: Data] = [:]
     private var artworkCacheOrder: [String] = []
+    private let scriptExecutor = AppleScriptExecutor()
     private let maximumArtworkBytes = 8_000_000
     private let maximumArtworkDimension = 4_096
     private let maximumArtworkPixels = 16_000_000
@@ -51,7 +107,7 @@ public actor AppleEventsMediaSource: MediaSource {
     public init() {}
 
     public func healthCheck() async -> Bool {
-        await MainActor.run { Self.runningPlayer() != nil }
+        await runningPlayer() != nil
     }
 
     public func updates() -> AsyncStream<MediaSnapshot> {
@@ -71,7 +127,7 @@ public actor AppleEventsMediaSource: MediaSource {
     }
 
     public func send(_ command: MediaCommand) async throws {
-        guard let player = await MainActor.run(body: { Self.runningPlayer() }) else { return }
+        guard let player = await runningPlayer() else { return }
         let script: String
         switch command {
         case .play: script = "play"
@@ -84,9 +140,7 @@ public actor AppleEventsMediaSource: MediaSource {
                 ? "set player position to \(Int(position))"
                 : "set player position to \(Int(position))"
         }
-        await MainActor.run {
-            _ = Self.run(script: "tell application \"\(player.applicationName)\" to \(script)")
-        }
+        _ = await run(script: "tell application \"\(player.applicationName)\" to \(script)")
         await poll()
     }
 
@@ -100,7 +154,7 @@ public actor AppleEventsMediaSource: MediaSource {
     // MARK: Polling
 
     private func poll() async {
-        var snapshot = await MainActor.run { Self.snapshot() }
+        var snapshot = await snapshot()
         snapshot.artworkData = await artwork(for: snapshot)
 
         // Only emit when something the UI cares about actually changed, so the
@@ -124,9 +178,9 @@ public actor AppleEventsMediaSource: MediaSource {
         let data: Data?
         switch snapshot.applicationBundleID {
         case Player.music.rawValue:
-            data = await MainActor.run { Self.musicArtworkData() }
+            data = await musicArtworkData()
         case Player.spotify.rawValue:
-            guard let urlString = await MainActor.run(body: { Self.spotifyArtworkURL() }),
+            guard let urlString = await spotifyArtworkURL(),
                   let url = URL(string: urlString),
                   url.scheme == "https"
             else { return nil }
@@ -194,8 +248,7 @@ public actor AppleEventsMediaSource: MediaSource {
         }
     }
 
-    @MainActor
-    private static func musicArtworkData() -> Data? {
+    private func musicArtworkData() async -> Data? {
         let source = """
         tell application "Music"
             if player state is stopped then return missing value
@@ -203,35 +256,37 @@ public actor AppleEventsMediaSource: MediaSource {
             return raw data of artwork 1 of current track
         end tell
         """
-        guard let script = NSAppleScript(source: source) else { return nil }
-        var error: NSDictionary?
-        let result = script.executeAndReturnError(&error)
-        guard error == nil else { return nil }
         // `raw data` arrives as a typed image descriptor, not a string.
-        return result.data.isEmpty ? nil : result.data
+        return await execute(script: source).data
     }
 
-    @MainActor
-    private static func spotifyArtworkURL() -> String? {
-        run(script: "tell application \"Spotify\" to get artwork url of current track")
+    private func spotifyArtworkURL() async -> String? {
+        await run(script: "tell application \"Spotify\" to get artwork url of current track")
     }
 
-    @MainActor
-    private static func runningPlayer() -> Player? {
-        let running = NSWorkspace.shared.runningApplications.compactMap(\.bundleIdentifier)
-        // Prefer whichever is actually playing; fall back to whichever is open.
+    private func runningPlayer() async -> Player? {
+        let running = await MainActor.run {
+            NSWorkspace.shared.runningApplications.compactMap(\.bundleIdentifier)
+        }
+        // Prefer whichever is actually playing, then another responsive player.
+        // A merely open app is not a healthy source: treating a timed-out player
+        // as usable would start a poll loop that spends two seconds waiting on
+        // every cycle while never producing metadata.
+        var firstResponsivePlayer: Player?
         for player in Player.allCases where running.contains(player.rawValue) {
-            if run(script: "tell application \"\(player.applicationName)\" to player state as string")?
-                .lowercased() == "playing" {
+            guard let state = await run(
+                script: "tell application \"\(player.applicationName)\" to player state as string"
+            )?.lowercased() else { continue }
+            if state == "playing" {
                 return player
             }
+            firstResponsivePlayer = firstResponsivePlayer ?? player
         }
-        return Player.allCases.first { running.contains($0.rawValue) }
+        return firstResponsivePlayer
     }
 
-    @MainActor
-    private static func snapshot() -> MediaSnapshot {
-        guard let player = runningPlayer() else {
+    private func snapshot() async -> MediaSnapshot {
+        guard let player = await runningPlayer() else {
             return MediaSnapshot(source: .none)
         }
 
@@ -243,14 +298,15 @@ public actor AppleEventsMediaSource: MediaSource {
             set theTitle to name of current track
             set theArtist to artist of current track
             set theAlbum to album of current track
-            set theDuration to duration of current track
-            set thePosition to player position
+            set theDuration to (duration of current track) as integer
+            set thePosition to (player position) as integer
             set theState to player state as string
-            return theTitle & "\\n" & theArtist & "\\n" & theAlbum & "\\n" & theDuration & "\\n" & thePosition & "\\n" & theState
+            set fieldSeparator to ASCII character 31
+            return theTitle & fieldSeparator & theArtist & fieldSeparator & theAlbum & fieldSeparator & theDuration & fieldSeparator & thePosition & fieldSeparator & theState
         end tell
         """
 
-        guard let output = run(script: script), output != "stopped" else {
+        guard let output = await run(script: script), output != "stopped" else {
             return MediaSnapshot(
                 source: .appleEvents,
                 applicationBundleID: player.rawValue,
@@ -258,50 +314,76 @@ public actor AppleEventsMediaSource: MediaSource {
             )
         }
 
-        let fields = output.components(separatedBy: "\n")
-        guard fields.count >= 6 else {
+        guard let fields = Self.parseSnapshotFields(
+            output,
+            spotifyDurationIsMilliseconds: player == .spotify
+        ) else {
             return MediaSnapshot(source: .appleEvents, applicationBundleID: player.rawValue)
         }
-
-        // Spotify reports duration in milliseconds, Music in seconds.
-        var duration = Double(fields[3]) ?? 0
-        if player == .spotify, duration > 1000 { duration /= 1000 }
 
         return MediaSnapshot(
             source: .appleEvents,
             applicationBundleID: player.rawValue,
             applicationName: player.applicationName,
-            title: fields[0].isEmpty ? nil : fields[0],
-            artist: fields[1].isEmpty ? nil : fields[1],
-            album: fields[2].isEmpty ? nil : fields[2],
+            title: fields.title.isEmpty ? nil : fields.title,
+            artist: fields.artist.isEmpty ? nil : fields.artist,
+            album: fields.album.isEmpty ? nil : fields.album,
             artworkData: nil,
-            duration: duration > 0 ? duration : nil,
-            position: Double(fields[4]),
+            duration: fields.duration,
+            position: fields.position,
             positionTimestamp: Date(),
-            isPlaying: fields[5].lowercased().contains("playing"),
+            isPlaying: fields.isPlaying,
             supportedCommands: [.play, .pause, .togglePlayPause, .nextTrack, .previousTrack, .seek]
         )
     }
 
-    /// `NSAppleScript` must be used from the main thread.
-    @MainActor
-    private static func run(script source: String) -> String? {
-        guard let script = NSAppleScript(source: source) else { return nil }
-        var error: NSDictionary?
-        let result = script.executeAndReturnError(&error)
-        if let error {
+    static func parseSnapshotFields(
+        _ output: String,
+        spotifyDurationIsMilliseconds: Bool
+    ) -> AppleEventsSnapshotFields? {
+        let fields = output.components(separatedBy: fieldSeparator)
+        guard fields.count == 6 else { return nil }
+
+        var duration = Double(fields[3])
+        if spotifyDurationIsMilliseconds, let value = duration {
+            duration = value / 1_000
+        }
+        if duration?.isFinite != true || (duration ?? 0) <= 0 {
+            duration = nil
+        }
+
+        var position = Double(fields[4])
+        if position?.isFinite != true || (position ?? -1) < 0 {
+            position = nil
+        }
+
+        return AppleEventsSnapshotFields(
+            title: fields[0],
+            artist: fields[1],
+            album: fields[2],
+            duration: duration,
+            position: position,
+            isPlaying: fields[5].lowercased().contains("playing")
+        )
+    }
+
+    private func execute(script source: String) async -> AppleScriptExecution {
+        let execution = await scriptExecutor.execute(source)
+        if let code = execution.errorNumber {
             // -1743 is "not authorised to send Apple Events"; anything else is
             // usually the player simply not being scriptable right now.
-            let code = error[NSAppleScript.errorNumber] as? Int ?? 0
             if code == -1743 {
                 Log.media.notice("Apple Events denied for Now Playing fallback")
-                Task { @MainActor in
+                await MainActor.run {
                     PermissionCenter.shared.pendingRemediation = .automation
                 }
             }
-            return nil
         }
-        return result.stringValue
+        return execution
+    }
+
+    private func run(script source: String) async -> String? {
+        await execute(script: source).stringValue
     }
 }
 

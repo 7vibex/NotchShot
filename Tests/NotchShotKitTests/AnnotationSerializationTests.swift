@@ -4,8 +4,91 @@ import Foundation
 import Testing
 @testable import NotchShotKit
 
+@Suite("Annotation undo transactions")
+@MainActor
+struct AnnotationUndoTransactionTests {
+    @Test("A text editing session creates one undo step")
+    func textEditingCoalesces() {
+        let source = TestImage.solid(width: 100, height: 100)
+        let controller = AnnotationDocumentController(
+            source: source,
+            document: AnnotationDocument(sourcePixelSize: CGSize(width: 100, height: 100))
+        )
+        var element = AnnotationElement(
+            kind: .text,
+            points: [CGPoint(x: 10, y: 10)],
+            style: AnnotationStyle(),
+            text: ""
+        )
+        controller.add(element)
+        let beforeEditing = controller.undoStepCount
+
+        controller.beginCoalescing()
+        for index in 0 ..< 100 {
+            element.text = "Draft \(index)"
+            controller.update(element)
+        }
+        controller.endCoalescing()
+
+        #expect(controller.undoStepCount == beforeEditing + 1)
+        controller.undo()
+        #expect(controller.selectedElement == nil)
+        #expect(controller.document.elements.first?.text == "")
+        controller.redo()
+        #expect(controller.document.elements.first?.text == "Draft 99")
+    }
+
+    @Test("A continuous background slider gesture creates one undo step")
+    func backgroundSliderCoalesces() {
+        let controller = AnnotationDocumentController(
+            source: TestImage.solid(width: 100, height: 100),
+            document: AnnotationDocument(sourcePixelSize: CGSize(width: 100, height: 100))
+        )
+        let before = controller.undoStepCount
+        controller.beginCoalescing()
+        for value in 1 ... 100 {
+            var background = controller.document.background
+            background.padding = Double(value)
+            controller.applyBackground(background)
+        }
+        controller.endCoalescing()
+
+        #expect(controller.undoStepCount == before + 1)
+        controller.undo()
+        #expect(controller.document.background.padding == 0)
+    }
+
+    @Test("The editor reuses its base image until composition changes")
+    func basePreviewCaching() throws {
+        let controller = AnnotationDocumentController(
+            source: TestImage.solid(width: 100, height: 80),
+            document: AnnotationDocument(sourcePixelSize: CGSize(width: 100, height: 80))
+        )
+        let first = try #require(controller.basePreviewImage())
+
+        controller.add(AnnotationElement(
+            kind: .arrow,
+            points: [CGPoint(x: 5, y: 5), CGPoint(x: 40, y: 30)],
+            style: AnnotationStyle()
+        ))
+        let afterAnnotation = try #require(controller.basePreviewImage())
+        #expect(first === afterAnnotation)
+
+        controller.rotateRight()
+        let afterRotation = try #require(controller.basePreviewImage())
+        #expect(first !== afterRotation)
+    }
+}
+
 @Suite("Annotation serialisation")
 struct AnnotationSerializationTests {
+
+    @Test("Editable project privacy warning defaults to cancel")
+    func editableProjectPrivacyWarningDefaultsToCancel() {
+        #expect(EditableProjectPrivacyAlertPolicy.buttonTitles.first == "Cancel")
+        #expect(!EditableProjectPrivacyAlertPolicy.allowsSave(for: .alertFirstButtonReturn))
+        #expect(EditableProjectPrivacyAlertPolicy.allowsSave(for: .alertSecondButtonReturn))
+    }
 
     private func sampleDocument() -> AnnotationDocument {
         var document = AnnotationDocument(

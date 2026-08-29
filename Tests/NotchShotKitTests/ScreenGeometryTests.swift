@@ -125,6 +125,233 @@ struct ScreenGeometryTests {
 @Suite("Notch metrics")
 struct NotchMetricsTests {
 
+    @Test("Compact notch controls retain a usable pointer target")
+    @MainActor
+    func compactControlHitSize() {
+        #expect(NotchIconButton.minimumHitSize >= 36)
+        #expect(NotchIconButton.visualDiameter <= NotchIconButton.minimumHitSize)
+        #expect(NotchShotDesignSystem.minimumControlTarget >= 36)
+        #expect(NotchIconButton.disabledOpacity < 0.5)
+        #expect(NotchIconButton.usesLiquidGlass)
+    }
+
+    @Test("Notch controls use glass normally and become opaque for accessibility")
+    func accessibleIslandControls() {
+        #expect(NotchControlSurfacePolicy.usesLiquidGlass)
+        #expect(NotchControlSurfacePolicy.shouldUseLiquidGlass(
+            reduceTransparency: false,
+            increaseContrast: false
+        ))
+        #expect(!NotchControlSurfacePolicy.shouldUseLiquidGlass(
+            reduceTransparency: true,
+            increaseContrast: false
+        ))
+        #expect(!NotchControlSurfacePolicy.shouldUseLiquidGlass(
+            reduceTransparency: false,
+            increaseContrast: true
+        ))
+        #expect(!NotchControlSurfacePolicy.shouldUseLiquidGlass(
+            reduceTransparency: false,
+            increaseContrast: false,
+            allowsLiquidGlass: false
+        ))
+        #expect(!NotchControlSurfacePolicy.usesOpaqueSurface(
+            reduceTransparency: false,
+            increaseContrast: false
+        ))
+        #expect(NotchControlSurfacePolicy.usesOpaqueSurface(
+            reduceTransparency: true,
+            increaseContrast: false
+        ))
+        #expect(NotchControlSurfacePolicy.usesOpaqueSurface(
+            reduceTransparency: false,
+            increaseContrast: true
+        ))
+        #expect(NotchControlSurfacePolicy.fillOpacity(
+            increaseContrast: true,
+            emphasized: false
+        ) > NotchControlSurfacePolicy.fillOpacity(
+            increaseContrast: false,
+            emphasized: false
+        ))
+        #expect(NotchControlSurfacePolicy.strokeOpacity(
+            increaseContrast: false,
+            emphasized: true
+        ) > NotchControlSurfacePolicy.strokeOpacity(
+            increaseContrast: false,
+            emphasized: false
+        ))
+    }
+
+    @Test("Capture expansion stays compact around the essential commands")
+    func compactCaptureExpansion() {
+        let metrics = NotchMetrics(
+            screenFrame: CGRect(x: 0, y: 0, width: 1_512, height: 982),
+            hasPhysicalNotch: true,
+            notchSize: CGSize(width: 250, height: 37),
+            menuBarHeight: 37
+        )
+        let layout = NotchLayout.layout(
+            for: .expanded,
+            metrics: metrics,
+            isPeeking: false,
+            resultCount: 0
+        )
+        #expect(layout.size == CGSize(width: 480, height: 227))
+        #expect(layout.contentTopInset == 37)
+    }
+
+    @Test("Expanded AI activity uses a compact workbench")
+    func aiActivityLayout() {
+        let metrics = NotchMetrics(
+            screenFrame: CGRect(x: 0, y: 0, width: 1_512, height: 982),
+            hasPhysicalNotch: true,
+            notchSize: CGSize(width: 250, height: 37),
+            menuBarHeight: 37
+        )
+        let activity = NotchActivity.context(ContextSnapshot(
+            kind: .ai,
+            title: "Codex · Working",
+            presentation: .expanded
+        ))
+        let layout = NotchLayout.layout(
+            for: activity,
+            metrics: metrics,
+            isPeeking: false,
+            resultCount: 0
+        )
+        #expect(layout.size == CGSize(width: 520, height: 357))
+        #expect(layout.contentTopInset == 37)
+    }
+
+    @Test("Now Playing keeps pointer presence polling armed before the first click")
+    @MainActor
+    func mediaPresencePolling() {
+        #expect(NotchWindowController.shouldPollPresence(
+            activity: .media,
+            isPeeking: false,
+            isPointerOverIsland: false,
+            hasHoveredDisplay: false
+        ))
+        #expect(!NotchWindowController.shouldPollPresence(
+            activity: .idle,
+            isPeeking: false,
+            isPointerOverIsland: false,
+            hasHoveredDisplay: false
+        ))
+        #expect(NotchWindowController.shouldPollPresence(
+            activity: .idle,
+            isPeeking: true,
+            isPointerOverIsland: false,
+            hasHoveredDisplay: false
+        ))
+        #expect(NotchWindowController.shouldPollPresence(
+            activity: .context(ContextSnapshot(kind: .calendar, title: "Next")),
+            isPeeking: false,
+            isPointerOverIsland: false,
+            hasHoveredDisplay: false
+        ))
+    }
+
+    /// Media arms the poll for hours at a time, so the full rate is spent only
+    /// where it can change the outcome — while the notch is engaged, or while
+    /// the pointer is close enough to reach it before the next slow tick.
+    @Test("The pointer poll drops to its backstop rate away from the notch")
+    @MainActor
+    func presencePollCadence() {
+        #expect(NotchWindowController.presencePollInterval(
+            isEngaged: false,
+            isPointerNearNotch: false
+        ) == NotchWindowController.idlePresencePollInterval)
+
+        #expect(NotchWindowController.presencePollInterval(
+            isEngaged: false,
+            isPointerNearNotch: true
+        ) == NotchWindowController.presencePollInterval)
+
+        #expect(NotchWindowController.presencePollInterval(
+            isEngaged: true,
+            isPointerNearNotch: false
+        ) == NotchWindowController.presencePollInterval)
+
+        // The backstop must still be quicker than the peek delay, or a slow
+        // tick could outlast the gesture it is meant to catch.
+        #expect(NotchWindowController.idlePresencePollInterval > NotchWindowController.presencePollInterval)
+        #expect(NotchWindowController.idlePresencePollInterval < 0.35)
+    }
+
+    @Test("A locked session can show only opted-in media and never accepts input")
+    @MainActor
+    func lockedMediaPresentationPolicy() {
+        #expect(LockedMediaPresentationPolicy.shouldShowPanel(
+            sessionIsActive: true,
+            activity: .result,
+            isOptedIn: false,
+            hasMediaContent: false
+        ))
+        #expect(LockedMediaPresentationPolicy.shouldShowPanel(
+            sessionIsActive: false,
+            activity: .media,
+            isOptedIn: true,
+            hasMediaContent: true
+        ))
+        #expect(LockedMediaPresentationPolicy.shouldShowPanel(
+            sessionIsActive: false,
+            activity: .result,
+            isOptedIn: true,
+            hasMediaContent: true
+        ))
+        #expect(!LockedMediaPresentationPolicy.shouldShowPanel(
+            sessionIsActive: false,
+            activity: .media,
+            isOptedIn: false,
+            hasMediaContent: true
+        ))
+        #expect(LockedMediaPresentationPolicy.effectiveActivity(
+            sessionIsActive: false,
+            currentActivity: .result,
+            isOptedIn: true,
+            hasMediaContent: true
+        ) == .media)
+        #expect(LockedMediaPresentationPolicy.effectiveActivity(
+            sessionIsActive: false,
+            currentActivity: .media,
+            isOptedIn: true,
+            hasMediaContent: false
+        ) == .idle)
+        #expect(!LockedMediaPresentationPolicy.acceptsInput(sessionIsActive: false))
+        #expect(LockedMediaPresentationPolicy.acceptsInput(sessionIsActive: true))
+        #expect(NotchPanel.level(sessionIsActive: true) == NotchPanel.notchLevel)
+        #expect(NotchPanel.level(sessionIsActive: false) == .screenSaver)
+        #expect(NotchPanel.lockedMediaLevel.rawValue > NotchPanel.notchLevel.rawValue)
+    }
+
+    @Test("Only the physical cutout needs AppKit click bridging")
+    @MainActor
+    func triggerClickBridge() {
+        let physical = NotchMetrics(
+            screenFrame: CGRect(x: 0, y: 0, width: 1_512, height: 982),
+            hasPhysicalNotch: true,
+            notchSize: CGSize(width: 250, height: 37),
+            menuBarHeight: 37
+        )
+        #expect(NotchWindowController.shouldBridgeTriggerClick(
+            at: CGPoint(x: physical.notchRect.midX, y: physical.notchRect.midY),
+            metrics: physical
+        ))
+        #expect(!NotchWindowController.shouldBridgeTriggerClick(
+            at: CGPoint(x: physical.notchRect.minX - 2, y: physical.notchRect.midY),
+            metrics: physical
+        ))
+
+        var synthetic = physical
+        synthetic.hasPhysicalNotch = false
+        #expect(!NotchWindowController.shouldBridgeTriggerClick(
+            at: CGPoint(x: synthetic.notchRect.midX, y: synthetic.notchRect.midY),
+            metrics: synthetic
+        ))
+    }
+
     @Test("A notched MacBook reports the gap between the auxiliary areas")
     func physicalNotch() {
         let screen = CGRect(x: 0, y: 0, width: 1512, height: 982)
@@ -220,7 +447,7 @@ struct NotchMetricsTests {
         #expect(layout.contentTopInset == 0)
     }
 
-    @Test("Revealed content clears the physical notch")
+    @Test("Compact system feedback stays inside the physical notch band")
     func revealedContentClearsNotch() {
         let metrics = NotchMetrics(
             screenFrame: CGRect(x: 0, y: 0, width: 1512, height: 982),
@@ -235,8 +462,8 @@ struct NotchMetricsTests {
             isPeeking: false,
             resultCount: 0
         )
-        #expect(systemLevel.contentTopInset == 37)
-        #expect(systemLevel.size.height == 83)
+        #expect(systemLevel.contentTopInset == 0)
+        #expect(systemLevel.size.height == 37)
 
         let mediaPeek = NotchLayout.layout(
             for: .media,
@@ -245,11 +472,11 @@ struct NotchMetricsTests {
             resultCount: 0
         )
         #expect(mediaPeek.contentTopInset == 37)
-        // 86pt of content plus the 37pt cutout band. The content grew from 78
-        // when the progress bar became a scrubber with a time either side of it.
-        #expect(mediaPeek.size.height == 123)
+        // 122pt of content plus the 37pt cutout band. The expanded player now
+        // includes elapsed/total time and the public Core Audio output picker.
+        #expect(mediaPeek.size.height == 159)
         // Whatever the content height, it must clear the camera.
-        #expect(mediaPeek.size.height - mediaPeek.contentTopInset == 86)
+        #expect(mediaPeek.size.height - mediaPeek.contentTopInset == 122)
 
         let compactMedia = NotchLayout.layout(
             for: .media,
@@ -259,6 +486,7 @@ struct NotchMetricsTests {
         )
         #expect(compactMedia.contentTopInset == 0)
         #expect(compactMedia.size.height == 37)
+        #expect(compactMedia.size.width == metrics.notchSize.width + 76)
     }
 
     @Test("Notchless displays keep their existing content heights")

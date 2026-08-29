@@ -6,6 +6,7 @@ public enum CaptureAssetKind: String, Sendable, Codable, CaseIterable {
     case scrollingScreenshot
     case recording
     case text
+    case document
 
     public var displayName: String {
         switch self {
@@ -13,6 +14,7 @@ public enum CaptureAssetKind: String, Sendable, Codable, CaseIterable {
         case .scrollingScreenshot: "Scrolling Screenshot"
         case .recording: "Recording"
         case .text: "Text"
+        case .document: "Document"
         }
     }
 
@@ -22,7 +24,12 @@ public enum CaptureAssetKind: String, Sendable, Codable, CaseIterable {
         case .scrollingScreenshot: "arrow.up.and.down.text.horizontal"
         case .recording: "video"
         case .text: "text.alignleft"
+        case .document: "doc.richtext"
         }
+    }
+
+    public var isImage: Bool {
+        self == .screenshot || self == .scrollingScreenshot
     }
 }
 
@@ -61,9 +68,14 @@ public struct CaptureAsset: Sendable, Identifiable, Equatable {
     /// Explicit provenance prevents a shelf action from deleting a dragged-in
     /// original and lets retention clean up only hidden app-managed files.
     public var ownership: CaptureAssetOwnership
-    /// Present for Finder imports so later raw-file actions can reject a path
-    /// that was replaced after the original drop.
+    /// Exact identity of the primary file when the asset was created or last
+    /// moved. Older persisted owned assets may not have one; destructive paths
+    /// fail closed for those rows instead of trusting a reused pathname.
     public var externalFileIdentity: ExternalFileIdentity?
+    /// Identity of the generated caption and editable project package. These
+    /// prevent a same-name replacement from being removed with the capture.
+    public var captionFileIdentity: ExternalFileIdentity?
+    public var projectFileIdentity: ExternalFileIdentity?
 
     public init(
         id: UUID = UUID(),
@@ -79,7 +91,10 @@ public struct CaptureAsset: Sendable, Identifiable, Equatable {
         captionURL: URL? = nil,
         projectURL: URL? = nil,
         ownership: CaptureAssetOwnership = .userDocument,
-        externalFileIdentity: ExternalFileIdentity? = nil
+        externalFileIdentity: ExternalFileIdentity? = nil,
+        captionFileIdentity: ExternalFileIdentity? = nil,
+        projectFileIdentity: ExternalFileIdentity? = nil,
+        captureMissingFileIdentities: Bool = true
     ) {
         self.id = id
         self.url = url
@@ -94,17 +109,74 @@ public struct CaptureAsset: Sendable, Identifiable, Equatable {
         self.captionURL = captionURL
         self.projectURL = projectURL
         self.ownership = ownership
-        self.externalFileIdentity = externalFileIdentity
+        let maximum = ownership == .externalReference
+            ? SafeAssetFile.maximumExternalBytes
+            : SafeAssetFile.maximumOwnedBytes
+        if captureMissingFileIdentities {
+            self.externalFileIdentity = externalFileIdentity ?? SafeAssetFile.identity(
+                at: url,
+                maximumBytes: maximum
+            )
+            self.captionFileIdentity = captionFileIdentity ?? captionURL.flatMap {
+                SafeAssetFile.identity(at: $0, maximumBytes: SafeAssetFile.maximumOwnedBytes)
+            }
+            self.projectFileIdentity = projectFileIdentity ?? projectURL.flatMap {
+                SafeAssetFile.fileSystemIdentity(
+                    at: $0,
+                    maximumBytes: SafeAssetFile.maximumOwnedBytes,
+                    allowsDirectory: true
+                )
+            }
+        } else {
+            self.externalFileIdentity = externalFileIdentity
+            self.captionFileIdentity = captionFileIdentity
+            self.projectFileIdentity = projectFileIdentity
+        }
+    }
+
+    /// Refresh only after NotchShot itself has successfully created, renamed,
+    /// or moved these paths. Calling this for an arbitrary external path would
+    /// bless a replacement, so external references keep their drop-time
+    /// identity unless a caller supplies a new asset.
+    public mutating func refreshOwnedFileIdentities() {
+        guard ownership != .externalReference else { return }
+        externalFileIdentity = SafeAssetFile.identity(
+            at: url,
+            maximumBytes: SafeAssetFile.maximumOwnedBytes
+        )
+        captionFileIdentity = captionURL.flatMap {
+            SafeAssetFile.identity(at: $0, maximumBytes: SafeAssetFile.maximumOwnedBytes)
+        }
+        projectFileIdentity = projectURL.flatMap {
+            SafeAssetFile.fileSystemIdentity(
+                at: $0,
+                maximumBytes: SafeAssetFile.maximumOwnedBytes,
+                allowsDirectory: true
+            )
+        }
     }
 
     public var pointSize: CGSize {
-        CGSize(width: pixelSize.width / scale, height: pixelSize.height / scale)
+        guard scale.isFinite, scale > 0 else { return pixelSize }
+        return CGSize(width: pixelSize.width / scale, height: pixelSize.height / scale)
     }
 
     public var displayName: String { url.lastPathComponent }
 
     public var dimensionsDescription: String {
-        "\(Int(pixelSize.width)) × \(Int(pixelSize.height))"
+        guard kind.isImage,
+              pixelSize.width.isFinite,
+              pixelSize.height.isFinite,
+              pixelSize.width >= 0,
+              pixelSize.height >= 0,
+              pixelSize.width <= CGFloat(Int.max),
+              pixelSize.height <= CGFloat(Int.max) else {
+            if kind == .document, url.pathExtension.lowercased() == "pdf" {
+                return "PDF document"
+            }
+            return kind.displayName
+        }
+        return "\(Int(pixelSize.width)) × \(Int(pixelSize.height))"
     }
 
     public var fileSize: Int64 {
@@ -125,28 +197,77 @@ public struct CaptureAsset: Sendable, Identifiable, Equatable {
 /// What the user can do with a finished capture.
 public enum ShareAction: String, Sendable, CaseIterable, Identifiable {
     case copy
+    case open
     case save
+    case share
     case annotate
+    case trim
     case privacyReview
+    case removeBackground
     case bugReport
     case ocr
     case pin
+    case inspect
+    case optimize
+    case convert
+    case quickLook
+    case rename
+    case moveTo
+    case compress
     case airDrop
     case reveal
     case delete
 
     public var id: String { rawValue }
 
+    /// Actions that can occupy the four immediate shelf slots. Destructive
+    /// and location-changing operations stay in More so a customized layout
+    /// cannot turn a common click into an accidental delete or move.
+    public static let customizableShelfCases: [ShareAction] = [
+        .copy, .open, .save, .share, .annotate, .trim, .privacyReview,
+        .removeBackground, .ocr, .pin, .inspect, .optimize, .convert,
+        .quickLook, .compress, .airDrop, .reveal,
+    ]
+
+    public static let defaultShelfQuickActions: [ShareAction] = [
+        .copy, .save, .annotate, .share,
+    ]
+
+    /// Migrates malformed, duplicated, or now-unsupported stored choices to
+    /// four safe actions without discarding the user's valid ordering.
+    public static func sanitizedShelfQuickActions(
+        _ actions: [ShareAction]
+    ) -> [ShareAction] {
+        var result: [ShareAction] = []
+        for action in actions + defaultShelfQuickActions + customizableShelfCases
+            where customizableShelfCases.contains(action) && !result.contains(action) {
+            result.append(action)
+            if result.count == 4 { break }
+        }
+        return result
+    }
+
     public var title: String {
         switch self {
         case .copy: "Copy"
+        case .open: "Open"
         case .save: "Save…"
         case .annotate: "Annotate"
-        case .privacyReview: "Privacy Review"
+        case .trim: "Quick Trim…"
+        case .privacyReview: "Share Ready"
+        case .removeBackground: "Remove Background…"
         case .bugReport: "Bug Report Package"
         case .ocr: "Copy Text"
         case .pin: "Pin"
-        case .airDrop: "AirDrop"
+        case .inspect: "Inspect"
+        case .optimize: "Optimize Export…"
+        case .convert: "Convert…"
+        case .share: "Share…"
+        case .quickLook: "Quick Look"
+        case .rename: "Rename…"
+        case .moveTo: "Move To…"
+        case .compress: "Create ZIP…"
+        case .airDrop: "AirDrop…"
         case .reveal: "Reveal in Finder"
         case .delete: "Delete"
         }
@@ -162,12 +283,23 @@ public enum ShareAction: String, Sendable, CaseIterable, Identifiable {
     public var symbolName: String {
         switch self {
         case .copy: "doc.on.doc"
+        case .open: "arrow.up.forward.app"
         case .save: "square.and.arrow.down"
         case .annotate: "pencil.tip.crop.circle"
+        case .trim: "timeline.selection"
         case .privacyReview: "checkmark.shield"
+        case .removeBackground: "person.crop.rectangle.badge.minus"
         case .bugReport: "ladybug"
         case .ocr: "text.viewfinder"
         case .pin: "pin"
+        case .inspect: "scope"
+        case .optimize: "arrow.down.right.and.arrow.up.left"
+        case .convert: "arrow.left.arrow.right"
+        case .share: "square.and.arrow.up"
+        case .quickLook: "eye"
+        case .rename: "character.cursor.ibeam"
+        case .moveTo: "folder.badge.gearshape"
+        case .compress: "doc.zipper"
         case .airDrop: "airplayaudio"
         case .reveal: "folder"
         case .delete: "trash"
@@ -176,7 +308,14 @@ public enum ShareAction: String, Sendable, CaseIterable, Identifiable {
 
     public func isAvailable(for asset: CaptureAsset) -> Bool {
         switch self {
-        case .annotate, .privacyReview, .ocr, .pin: asset.kind != .recording
+        case .trim: asset.kind == .recording
+        case .annotate, .privacyReview, .removeBackground, .ocr, .pin, .inspect, .optimize, .convert:
+            asset.kind.isImage
+        // A file dragged in from Finder is the user's document sitting where
+        // they put it. Renaming or moving it from the shelf would edit their
+        // folder as a side effect of a preview action, so those two stay on
+        // files NotchShot produced.
+        case .rename, .moveTo: asset.ownership != .externalReference
         default: true
         }
     }

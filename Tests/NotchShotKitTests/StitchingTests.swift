@@ -49,6 +49,17 @@ private final class ControlledFrameProvider {
         self.continuation = nil
         continuation?.resume(returning: image)
     }
+
+    func resume(throwing error: any Error) {
+        let continuation = continuation
+        self.continuation = nil
+        continuation?.resume(throwing: error)
+    }
+}
+
+private enum ScrollingTestError: Error {
+    case captureFailed
+    case writeFailed
 }
 
 /// Scrolling capture is the feature most likely to produce a silently wrong
@@ -338,10 +349,67 @@ struct StitchingTests {
         })
     }
 
+    @Test("An initial frame failure terminates instead of installing an inert session")
+    @MainActor
+    func initialFrameFailureTerminates() async {
+        let provider = ControlledFrameProvider()
+        var events: [ScrollingCaptureSession.Event] = []
+        let session = ScrollingCaptureSession(
+            region: CGRect(x: 0, y: 0, width: 80, height: 240),
+            onEvent: { events.append($0) },
+            limits: StitchLimits(),
+            frameProvider: { try await provider.capture() }
+        )
+
+        let start = Task { await session.start() }
+        #expect(await provider.waitUntilWaiting())
+        provider.resume(throwing: ScrollingTestError.captureFailed)
+        await start.value
+
+        #expect(!session.isRunning)
+        #expect(session.frames.isEmpty)
+        #expect(terminalCount(in: events) == 1)
+        #expect(events.contains { event in
+            if case .failed = event { return true }
+            return false
+        })
+    }
+
+    @Test("A recovery write failure is reported and partial output is removed")
+    @MainActor
+    func recoveryWriteFailureIsTruthful() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let frame = TestImage.page(width: 80, height: 240, offset: 0)
+        var events: [ScrollingCaptureSession.Event] = []
+        let session = ScrollingCaptureSession(
+            region: CGRect(x: 0, y: 0, width: 80, height: 240),
+            onEvent: { events.append($0) },
+            limits: StitchLimits(),
+            recoveryRoot: directory,
+            frameWriter: { _, _ in throw ScrollingTestError.writeFailed },
+            frameProvider: { frame }
+        )
+
+        await session.start()
+        await session.finish()
+
+        #expect(events.contains { event in
+            if case .failed(let reason) = event {
+                return reason.contains("could not be preserved")
+            }
+            return false
+        })
+        let leftovers = try FileManager.default.contentsOfDirectory(atPath: directory.path)
+        #expect(leftovers.isEmpty)
+    }
+
     private func terminalCount(in events: [ScrollingCaptureSession.Event]) -> Int {
         events.reduce(into: 0) { count, event in
             switch event {
-            case .finished, .failedButFramesKept, .cancelled:
+            case .finished, .failedButFramesKept, .failed, .cancelled:
                 count += 1
             case .frameCaptured, .stitching:
                 break

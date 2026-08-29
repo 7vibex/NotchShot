@@ -97,6 +97,51 @@ struct RedactionExportTests {
         #expect(exportedColors.count <= 30)
     }
 
+    /// The redaction canvas is flipped so element geometry reads in top-left
+    /// space. That is right for `fill`, which is what a blackout uses, but it
+    /// mirrors any *image* drawn into it — and pixelation draws one. The export
+    /// therefore came out with its mosaic rows reversed relative to both the
+    /// source and the editor preview.
+    ///
+    /// The colour-count tests above cannot see that: a mirrored mosaic has
+    /// exactly the same colours as an upright one. This asserts on position.
+    @Test("Pixelation keeps the orientation of what it replaced")
+    func pixelationIsNotMirrored() throws {
+        // Top half red, bottom half blue, so a vertical flip is unmistakable.
+        let source = TestImage.make(width: 64, height: 64) { context in
+            context.setFillColor(red: 0, green: 0, blue: 1, alpha: 1)
+            context.fill(CGRect(x: 0, y: 0, width: 64, height: 32))
+            context.setFillColor(red: 1, green: 0, blue: 0, alpha: 1)
+            context.fill(CGRect(x: 0, y: 32, width: 64, height: 32))
+        }
+        #expect(TestImage.pixel(source, x: 32, y: 8).r > 200)
+        #expect(TestImage.pixel(source, x: 32, y: 56).b > 200)
+
+        var style = AnnotationStyle()
+        style.pixelBlockSize = 16
+        let element = AnnotationElement.rect(
+            kind: .pixelate,
+            from: CGPoint(x: 0, y: 0),
+            to: CGPoint(x: 64, y: 64),
+            style: style
+        )
+        let exported = try AnnotationRenderer.render(
+            document: AnnotationDocument(
+                sourcePixelSize: CGSize(width: 64, height: 64),
+                sourceScale: 1,
+                elements: [element]
+            ),
+            source: source
+        )
+
+        // Still destructive — that is the other tests' job — but the red half
+        // must remain the top half.
+        let top = TestImage.pixel(exported, x: 32, y: 8)
+        let bottom = TestImage.pixel(exported, x: 32, y: 56)
+        #expect(top.r > top.b)
+        #expect(bottom.b > bottom.r)
+    }
+
     @Test("Pixel blocks are uniform, so no sub-block detail survives")
     func pixelBlocksAreFlat() throws {
         let source = secretImage()
@@ -143,6 +188,7 @@ struct RedactionExportTests {
     }
 
     @Test("The preview keeps the original pixels so editing stays reversible")
+    @MainActor
     func previewIsNonDestructive() throws {
         let source = secretImage()
         let element = AnnotationElement.rect(
@@ -153,12 +199,13 @@ struct RedactionExportTests {
         )
         let document = document(with: element)
 
-        // The document holds the untouched source either way — that is the
-        // point of a non-destructive editor — and the export path is the only
-        // place the burn-in happens.
         #expect(document.hasRedactions)
-        let flattened = try AnnotationRenderer.render(document: document, source: source)
+        let controller = AnnotationDocumentController(source: source, document: document)
+        let preview = try controller.renderPreview()
+        let flattened = try controller.renderFlattened()
+        #expect(preview.width == source.width)
         #expect(flattened.width == source.width)
+        #expect(TestImage.pixel(preview, x: 25, y: 25) != TestImage.pixel(flattened, x: 25, y: 25))
 
         let sourceColors = TestImage.distinctColors(
             source,

@@ -247,25 +247,16 @@ public enum NotchShotPackage {
     }
 
     private static func safeRegularFileData(at url: URL, maximumBytes: Int) throws -> Data {
-        let values: URLResourceValues
         do {
-            values = try url.resourceValues(forKeys: [
-                .isRegularFileKey,
-                .isSymbolicLinkKey,
-                .fileSizeKey,
-            ])
+            return try SafeAssetFile.readData(
+                at: url,
+                maximumBytes: Int64(maximumBytes)
+            )
         } catch {
-            throw NotchShotError.exportFailed("Project is missing \(url.lastPathComponent)")
-        }
-        guard values.isRegularFile == true,
-              values.isSymbolicLink != true,
-              let size = values.fileSize,
-              size <= maximumBytes else {
             throw NotchShotError.exportFailed(
                 "Project entry \(url.lastPathComponent) is unsafe or too large"
             )
         }
-        return try Data(contentsOf: url, options: .mappedIfSafe)
     }
 
     private static func validate(document: AnnotationDocument, source: CGImage) throws {

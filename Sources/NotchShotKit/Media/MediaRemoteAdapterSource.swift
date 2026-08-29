@@ -31,10 +31,16 @@ public actor MediaRemoteAdapterSource: MediaSource {
     """
 
     private let executableURL: URL
+    private let approvedIdentity: ExternalFileIdentity?
     private let arguments: [String]
+    private let runnerURL: URL?
     private var process: Process?
+    private var processGroupID: pid_t?
+    private var outputPipe: Pipe?
     private var continuation: AsyncStream<MediaSnapshot>.Continuation?
     private var buffer = Data()
+
+    var runningProcessIdentifier: pid_t? { process?.processIdentifier }
 
     private final class CancellationFlag: @unchecked Sendable {
         private let lock = NSLock()
@@ -57,9 +63,19 @@ public actor MediaRemoteAdapterSource: MediaSource {
         }
     }
 
-    public init(executableURL: URL, arguments: [String] = ["stream"]) {
+    public init(
+        executableURL: URL,
+        arguments: [String] = ["stream"],
+        approvedIdentity: ExternalFileIdentity? = nil,
+        runnerURL: URL? = nil
+    ) {
         self.executableURL = executableURL
         self.arguments = arguments
+        self.approvedIdentity = approvedIdentity ?? SafeAssetFile.identity(
+            at: executableURL,
+            maximumBytes: SafeAssetFile.maximumExternalBytes
+        )
+        self.runnerURL = runnerURL ?? Self.defaultRunnerURL
     }
 
     /// Builds a source from the configured preference, if it points at
@@ -68,15 +84,16 @@ public actor MediaRemoteAdapterSource: MediaSource {
     public static func configured() -> MediaRemoteAdapterSource? {
         guard let path = Preferences.shared.mediaRemoteAdapterPath, !path.isEmpty else { return nil }
         let url = URL(fileURLWithPath: path)
-        let values = try? url.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
-        guard values?.isRegularFile == true,
-              values?.isSymbolicLink != true,
-              FileManager.default.isExecutableFile(atPath: url.path)
+        guard let approvedIdentity = Preferences.shared.mediaRemoteAdapterIdentity,
+              Self.isApprovedExecutable(url, identity: approvedIdentity)
         else {
-            Log.media.notice("Adapter path is missing or not executable: \(path)")
+            Log.media.notice("Adapter path changed or is no longer executable: \(path)")
             return nil
         }
-        return MediaRemoteAdapterSource(executableURL: url)
+        return MediaRemoteAdapterSource(
+            executableURL: url,
+            approvedIdentity: approvedIdentity
+        )
     }
 
     // MARK: MediaSource
@@ -86,6 +103,7 @@ public actor MediaRemoteAdapterSource: MediaSource {
     public func healthCheck() async -> Bool {
         guard let data = await Self.runOnce(
             executableURL: executableURL,
+            approvedIdentity: approvedIdentity,
             arguments: ["get"]
         ) else { return false }
         return AdapterPayload.snapshot(from: data) != nil
@@ -109,19 +127,53 @@ public actor MediaRemoteAdapterSource: MediaSource {
         case .togglePlayPause: arguments = ["send", "togglePlayPause"]
         case .nextTrack: arguments = ["send", "nextTrack"]
         case .previousTrack: arguments = ["send", "previousTrack"]
-        case .seek(let position): arguments = ["send", "seek", String(Int(position))]
+        case .seek(let position):
+            guard position.isFinite,
+                  position >= 0,
+                  position <= Double(Int32.max) else {
+                throw AdapterCommandError.failed
+            }
+            arguments = ["send", "seek", String(Int(position.rounded()))]
         }
-        guard await Self.runOnce(executableURL: executableURL, arguments: arguments) != nil else {
+        guard await Self.runOnce(
+            executableURL: executableURL,
+            approvedIdentity: approvedIdentity,
+            arguments: arguments
+        ) != nil else {
             throw AdapterCommandError.failed
         }
     }
 
     public func stop() async {
-        process?.terminationHandler = nil
-        if process?.isRunning == true {
-            process?.terminate()
-        }
+        let runningProcess = process
         process = nil
+        let groupID = processGroupID
+        processGroupID = nil
+        let pipe = outputPipe
+        outputPipe = nil
+        pipe?.fileHandleForReading.readabilityHandler = nil
+        runningProcess?.terminationHandler = nil
+        if let runningProcess, runningProcess.isRunning {
+            if let groupID {
+                _ = kill(-groupID, SIGTERM)
+            } else {
+                runningProcess.terminate()
+            }
+            let deadline = ProcessInfo.processInfo.systemUptime + 0.3
+            while (groupID.map(Self.processGroupExists) ?? runningProcess.isRunning),
+                  ProcessInfo.processInfo.systemUptime < deadline {
+                try? await Task.sleep(for: .milliseconds(10))
+            }
+            if let groupID {
+                if Self.processGroupExists(groupID) {
+                    _ = kill(-groupID, SIGKILL)
+                }
+            } else if runningProcess.isRunning {
+                _ = kill(runningProcess.processIdentifier, SIGKILL)
+            }
+            runningProcess.waitUntilExit()
+        }
+        pipe?.fileHandleForReading.closeFile()
         continuation?.finish()
         continuation = nil
         buffer.removeAll()
@@ -130,9 +182,22 @@ public actor MediaRemoteAdapterSource: MediaSource {
     // MARK: Process plumbing
 
     private func start(continuation: AsyncStream<MediaSnapshot>.Continuation) {
+        guard let approvedIdentity,
+              Self.isApprovedExecutable(executableURL, identity: approvedIdentity),
+              let runnerURL,
+              Self.isTrustedRunner(runnerURL) else {
+            Log.media.error("The approved media adapter changed before launch")
+            continuation.yield(.empty)
+            continuation.finish()
+            return
+        }
         let process = Process()
-        process.executableURL = executableURL
-        process.arguments = arguments
+        process.executableURL = runnerURL
+        process.arguments = Self.runnerArguments(
+            executableURL: executableURL,
+            identity: approvedIdentity,
+            arguments: arguments
+        )
         process.environment = Self.sanitizedEnvironment
 
         let output = Pipe()
@@ -147,16 +212,24 @@ public actor MediaRemoteAdapterSource: MediaSource {
             Task { await self.ingest(data) }
         }
 
-        process.terminationHandler = { _ in
+        process.terminationHandler = { terminated in
             Task {
                 Log.media.notice("Media adapter exited; falling back")
-                await self.handleTermination()
+                await self.handleTermination(processID: terminated.processIdentifier)
             }
         }
 
         do {
             try process.run()
+            let pid = process.processIdentifier
+            guard Self.waitForDedicatedProcessGroup(processID: pid) else {
+                process.terminate()
+                process.waitUntilExit()
+                throw AdapterCommandError.failed
+            }
+            processGroupID = pid
             self.process = process
+            self.outputPipe = output
             Log.media.info("Media adapter started: \(self.executableURL.lastPathComponent)")
         } catch {
             Log.media.error("Could not start media adapter: \(error.localizedDescription)")
@@ -165,7 +238,14 @@ public actor MediaRemoteAdapterSource: MediaSource {
         }
     }
 
-    private func handleTermination() {
+    private func handleTermination(processID: pid_t) {
+        guard process?.processIdentifier == processID else { return }
+        if processGroupID == processID, Self.processGroupExists(processID) {
+            _ = kill(-processID, SIGKILL)
+        }
+        outputPipe?.fileHandleForReading.readabilityHandler = nil
+        outputPipe = nil
+        processGroupID = nil
         continuation?.yield(.empty)
         continuation?.finish()
         continuation = nil
@@ -202,16 +282,29 @@ public actor MediaRemoteAdapterSource: MediaSource {
     /// pipe, terminates on timeout/cancellation, and bounds retained output.
     static func runOnce(
         executableURL: URL,
+        approvedIdentity: ExternalFileIdentity? = nil,
         arguments: [String],
         timeout: TimeInterval = 3,
         maximumOutputBytes: Int = 1_000_000
     ) async -> Data? {
+        guard let approvedIdentity = approvedIdentity ?? SafeAssetFile.identity(
+            at: executableURL,
+            maximumBytes: SafeAssetFile.maximumExternalBytes
+        ), isApprovedExecutable(executableURL, identity: approvedIdentity),
+           let runnerURL = defaultRunnerURL,
+           isTrustedRunner(runnerURL) else {
+            return nil
+        }
         let cancellation = CancellationFlag()
         return await withTaskCancellationHandler {
             await withCheckedContinuation { continuation in
                 let process = Process()
-                process.executableURL = executableURL
-                process.arguments = arguments
+                process.executableURL = runnerURL
+                process.arguments = runnerArguments(
+                    executableURL: executableURL,
+                    identity: approvedIdentity,
+                    arguments: arguments
+                )
                 process.environment = Self.sanitizedEnvironment
                 process.standardInput = FileHandle.nullDevice
                 let output = Pipe()
@@ -220,6 +313,14 @@ public actor MediaRemoteAdapterSource: MediaSource {
 
                 do {
                     try process.run()
+                    guard waitForDedicatedProcessGroup(
+                        processID: process.processIdentifier
+                    ) else {
+                        process.terminate()
+                        process.waitUntilExit()
+                        continuation.resume(returning: nil)
+                        return
+                    }
                 } catch {
                     continuation.resume(returning: nil)
                     return
@@ -283,18 +384,27 @@ public actor MediaRemoteAdapterSource: MediaSource {
                     let mustStop = process.isRunning
                         && (exceededLimit || timedOut || cancellation.isCancelled)
                     if mustStop {
-                        process.terminate()
+                        _ = kill(-process.processIdentifier, SIGTERM)
                         let graceDeadline = ProcessInfo.processInfo.systemUptime + 0.2
-                        while process.isRunning,
+                        while processGroupExists(process.processIdentifier),
                               ProcessInfo.processInfo.systemUptime < graceDeadline {
                             usleep(10_000)
                         }
-                        if process.isRunning {
-                            _ = kill(process.processIdentifier, SIGKILL)
+                        if processGroupExists(process.processIdentifier) {
+                            _ = kill(-process.processIdentifier, SIGKILL)
                         }
                     }
 
                     process.waitUntilExit()
+                    // A helper can exit successfully after forking. Never let
+                    // descendants escape merely because their parent returned.
+                    if processGroupExists(process.processIdentifier) {
+                        _ = kill(-process.processIdentifier, SIGTERM)
+                        usleep(20_000)
+                        if processGroupExists(process.processIdentifier) {
+                            _ = kill(-process.processIdentifier, SIGKILL)
+                        }
+                    }
                     drainAvailableOutput()
                     output.fileHandleForReading.closeFile()
 
@@ -308,6 +418,106 @@ public actor MediaRemoteAdapterSource: MediaSource {
         } onCancel: {
             cancellation.cancel()
         }
+    }
+
+    nonisolated static func isApprovedExecutable(
+        _ url: URL,
+        identity: ExternalFileIdentity
+    ) -> Bool {
+        SafeAssetFile.identity(
+            at: url,
+            maximumBytes: SafeAssetFile.maximumExternalBytes
+        ) == identity && FileManager.default.isExecutableFile(atPath: url.path)
+    }
+
+    nonisolated static var defaultRunnerURL: URL? {
+        let fileManager = FileManager.default
+        return runnerCandidates().first {
+            fileManager.isExecutableFile(atPath: $0.path)
+        }
+    }
+
+    private nonisolated static func isTrustedRunner(_ url: URL) -> Bool {
+        guard FileManager.default.isExecutableFile(atPath: url.path) else { return false }
+        return runnerCandidates().contains(url.standardizedFileURL)
+    }
+
+    private nonisolated static func runnerCandidates() -> [URL] {
+        let bundleURL = Bundle.main.bundleURL.standardizedFileURL
+        let bundled = bundleURL
+            .appendingPathComponent("Contents/MacOS/NotchShotAdapterRunner")
+            .standardizedFileURL
+        guard Bundle.main.bundleIdentifier != "com.notchshot.app" else { return [bundled] }
+
+#if !DEBUG
+        // The search below exists so a test host, which has neither the app's
+        // bundle identifier nor its layout, can still find the runner. A
+        // shipped build has no use for it and should not carry a widened notion
+        // of "trusted runner" on a path that ends in `execv`.
+        return [bundled]
+#else
+        var candidates = [bundled]
+        var directory = URL(fileURLWithPath: CommandLine.arguments[0])
+            .deletingLastPathComponent()
+            .standardizedFileURL
+        for _ in 0 ..< 5 {
+            candidates.append(
+                directory.appendingPathComponent("NotchShotAdapterRunner").standardizedFileURL
+            )
+            directory.deleteLastPathComponent()
+        }
+        for index in 0 ..< _dyld_image_count() {
+            guard let name = _dyld_get_image_name(index) else { continue }
+            let path = String(cString: name)
+            guard path.contains(".xctest/") else { continue }
+            var imageDirectory = URL(fileURLWithPath: path).deletingLastPathComponent()
+            for _ in 0 ..< 5 {
+                candidates.append(
+                    imageDirectory
+                        .appendingPathComponent("NotchShotAdapterRunner")
+                        .standardizedFileURL
+                )
+                imageDirectory.deleteLastPathComponent()
+            }
+        }
+        var unique: [URL] = []
+        for candidate in candidates where !unique.contains(candidate) {
+            unique.append(candidate)
+        }
+        return unique
+#endif
+    }
+
+    private nonisolated static func waitForDedicatedProcessGroup(processID: pid_t) -> Bool {
+        for _ in 0 ..< 100 {
+            if getpgid(processID) == processID { return true }
+            // A short-lived command may finish before the parent observes its
+            // group. There can be no surviving group if the PID no longer
+            // exists, so let normal exit-status validation decide success.
+            if kill(processID, 0) != 0 { return true }
+            usleep(1_000)
+        }
+        return false
+    }
+
+    private nonisolated static func runnerArguments(
+        executableURL: URL,
+        identity: ExternalFileIdentity,
+        arguments: [String]
+    ) -> [String] {
+        [
+            String(identity.device),
+            String(identity.inode),
+            String(identity.size),
+            String(identity.modifiedSeconds),
+            String(identity.modifiedNanoseconds),
+            executableURL.path,
+        ] + arguments
+    }
+
+    private nonisolated static func processGroupExists(_ processGroupID: pid_t) -> Bool {
+        errno = 0
+        return kill(-processGroupID, 0) == 0 || errno == EPERM
     }
 
     private static var sanitizedEnvironment: [String: String] {
@@ -344,7 +554,11 @@ enum AdapterPayload {
             return MediaSnapshot(source: .mediaRemote, applicationBundleID: bundleID)
         }
 
-        let duration = number(payload, "duration", "totalDiscNumber", "playbackDuration")
+        // `totalDiscNumber` used to sit in this chain. It is a disc count, not a
+        // time, so a payload that spelled duration differently handed the notch
+        // a one- or two-second track: the progress bar pinned instantly and the
+        // seek range collapsed.
+        let duration = number(payload, "duration", "playbackDuration", "totalDuration")
         let elapsed = number(payload, "elapsedTime", "currentTime", "position")
         let isPlaying = boolean(payload, "playing", "isPlaying", "playbackRate") ?? false
 
@@ -385,9 +599,10 @@ enum AdapterPayload {
 
     private static func number(_ payload: [String: Any], _ keys: String...) -> Double? {
         for key in keys {
-            if let value = payload[key] as? Double { return value }
-            if let value = payload[key] as? Int { return Double(value) }
-            if let value = payload[key] as? String, let parsed = Double(value) { return parsed }
+            if let value = payload[key] as? Double, value.isFinite, value >= 0 { return value }
+            if let value = payload[key] as? Int, value >= 0 { return Double(value) }
+            if let value = payload[key] as? String,
+               let parsed = Double(value), parsed.isFinite, parsed >= 0 { return parsed }
         }
         return nil
     }

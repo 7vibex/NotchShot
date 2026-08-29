@@ -36,7 +36,7 @@ public enum AnnotationRenderer {
         source: CGImage,
         options: Options = Options()
     ) throws -> CGImage {
-        let redacted = document.hasRedactions
+        let redacted = document.hasRedactions && !options.isPreview
             ? try burnRedactions(document: document, into: source)
             : source
 
@@ -93,10 +93,18 @@ public enum AnnotationRenderer {
                     region: clipped,
                     of: source,
                     imageHeight: height,
-                    blockSize: max(4, element.style.pixelBlockSize)
+                    blockSize: max(8, element.style.pixelBlockSize)
                 ) else { continue }
                 context.saveGState()
                 context.interpolationQuality = .none
+                // The context is flipped so element geometry reads in top-left
+                // space, which is right for `fill` but mirrors any *image*
+                // drawn into it. A blackout could not show that; a mosaic can,
+                // and did — the exported blocks came out upside down relative
+                // to both the source and the editor preview. Undo the flip for
+                // the duration of this one draw.
+                context.translateBy(x: 0, y: clipped.minY + clipped.maxY)
+                context.scaleBy(x: 1, y: -1)
                 context.draw(block, in: clipped)
                 context.restoreGState()
 

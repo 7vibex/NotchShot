@@ -4,6 +4,159 @@ import CoreGraphics
 import Testing
 @testable import NotchShotKit
 
+@Suite("Video trim presentation")
+@MainActor
+struct VideoTrimPresentationTests {
+    @Test("A missing recording stays unavailable instead of exposing zero-duration controls")
+    func missingRecording() async {
+        let missing = FileManager.default.temporaryDirectory
+            .appendingPathComponent("notchshot-missing-\(UUID().uuidString).mp4")
+        let asset = CaptureAsset(
+            url: missing,
+            kind: .recording,
+            pixelSize: .zero,
+            scale: 1
+        )
+        let session = VideoTrimSession(asset: asset)
+
+        #expect(session.isLoading)
+        #expect(!session.isReady)
+
+        await session.load()
+
+        #expect(!session.isLoading)
+        #expect(!session.isReady)
+        #expect(session.duration == 0)
+        #expect(session.errorMessage != nil)
+    }
+
+    @Test("A replaced external recording is rejected before AVFoundation reads it")
+    func replacedExternalRecording() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("notchshot-trim-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let source = directory.appendingPathComponent("recording.mp4")
+        try Data("original".utf8).write(to: source)
+        let asset = CaptureAsset(
+            url: source,
+            kind: .recording,
+            pixelSize: .zero,
+            scale: 1,
+            ownership: .externalReference
+        )
+        try Data("replacement with a different identity".utf8)
+            .write(to: source, options: .atomic)
+        let session = VideoTrimSession(asset: asset)
+
+        await session.load()
+
+        #expect(!session.isReady)
+        #expect(session.errorMessage?.localizedCaseInsensitiveContains("changed") == true)
+        #expect(session.player.currentItem == nil)
+    }
+}
+
+@Suite("Recording disk capacity policy")
+struct RecordingCapacityPolicyTests {
+    @Test("Recording warns and stops before exhausting the volume")
+    func thresholds() {
+        #expect(RecordingCapacityPolicy.action(for: 2_000_000_000) == .continueRecording)
+        #expect(RecordingCapacityPolicy.action(for: 700_000_000) == .warn)
+        #expect(RecordingCapacityPolicy.action(for: 500_000_000) == .stopAndFinalize)
+        #expect(RecordingCapacityPolicy.action(for: 0) == .stopAndFinalize)
+        #expect(RecordingCapacityPolicy.minimumStartBytes > RecordingCapacityPolicy.automaticStopBytes)
+    }
+}
+
+@Suite("Recording scratch retirement")
+struct RecordingScratchRetirementTests {
+    private static func temporaryDirectory() throws -> URL {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("notchshot-retirement-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        return url
+    }
+
+    @MainActor
+    @Test("A source that cannot be removed stays excluded from recovery")
+    func removalFailureLeavesMarker() throws {
+        let directory = try Self.temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let source = directory.appendingPathComponent("segment.mp4")
+        try Data("video".utf8).write(to: source)
+
+        let operations = RecordingScratchRetirement.Operations(
+            fileExists: { FileManager.default.fileExists(atPath: $0.path) },
+            writeMarker: { try Data().write(to: $0, options: .atomic) },
+            removeItem: { url in
+                if url.standardizedFileURL == source.standardizedFileURL {
+                    throw NSError(
+                        domain: NSCocoaErrorDomain,
+                        code: NSFileWriteNoPermissionError
+                    )
+                }
+                try FileManager.default.removeItem(at: url)
+            }
+        )
+
+        let retained = try RecordingScratchRetirement.retireCommitted(
+            [source],
+            operations: operations
+        )
+
+        #expect(retained == [source.standardizedFileURL])
+        #expect(FileManager.default.fileExists(atPath: source.path))
+        #expect(FileManager.default.fileExists(
+            atPath: RecordingScratchRetirement.marker(for: source).path
+        ))
+    }
+
+    @MainActor
+    @Test("A marker failure occurs before any source deletion")
+    func markerFailurePreservesEverySource() throws {
+        let directory = try Self.temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let first = directory.appendingPathComponent("first.mp4")
+        let second = directory.appendingPathComponent("second.mp4")
+        try Data("first".utf8).write(to: first)
+        try Data("second".utf8).write(to: second)
+        var removedSources: [URL] = []
+
+        let operations = RecordingScratchRetirement.Operations(
+            fileExists: { FileManager.default.fileExists(atPath: $0.path) },
+            writeMarker: { marker in
+                if marker == RecordingScratchRetirement.marker(for: second) {
+                    throw NSError(
+                        domain: NSCocoaErrorDomain,
+                        code: NSFileWriteNoPermissionError
+                    )
+                }
+                try Data().write(to: marker, options: .atomic)
+            },
+            removeItem: { url in
+                if url.pathExtension == "mp4" { removedSources.append(url) }
+                try FileManager.default.removeItem(at: url)
+            }
+        )
+
+        do {
+            _ = try RecordingScratchRetirement.retireCommitted(
+                [first, second],
+                operations: operations
+            )
+            Issue.record("Expected marker preflight to fail")
+        } catch {
+            #expect(removedSources.isEmpty)
+            #expect(FileManager.default.fileExists(atPath: first.path))
+            #expect(FileManager.default.fileExists(atPath: second.path))
+            #expect(!FileManager.default.fileExists(
+                atPath: RecordingScratchRetirement.marker(for: first).path
+            ))
+        }
+    }
+}
+
 @Suite("Recording area safety")
 struct RecordingAreaSafetyTests {
     private let displays = [

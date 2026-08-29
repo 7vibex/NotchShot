@@ -16,6 +16,7 @@ public final class ScrollingCaptureSession {
         case stitching(progress: Double)
         case finished(StitchOutput)
         case failedButFramesKept(reason: String, folder: URL)
+        case failed(reason: String)
         case cancelled
     }
 
@@ -43,10 +44,15 @@ public final class ScrollingCaptureSession {
     private var isFinishing = false
     private var capturedPixels = 0
     private var capturedBytes = 0
+    private var consecutiveCaptureFailures = 0
     private var lastStitchProgress = 0.0
     private var hasEmittedStitchProgress = false
 
     typealias FrameProvider = @MainActor @Sendable () async throws -> CGImage
+    typealias FrameWriter = @Sendable (CGImage, URL) throws -> Void
+
+    private let recoveryRoot: URL
+    private let frameWriter: FrameWriter
 
     public convenience init(region: CGRect, onEvent: @escaping (Event) -> Void) {
         self.init(region: region, onEvent: onEvent, limits: StitchLimits()) {
@@ -65,11 +71,17 @@ public final class ScrollingCaptureSession {
         region: CGRect,
         onEvent: @escaping (Event) -> Void,
         limits: StitchLimits,
+        recoveryRoot: URL = AppPaths.captures,
+        frameWriter: @escaping FrameWriter = { image, url in
+            _ = try ImageExport.write(image, to: url, format: .png, quality: 1, dpiScale: 2)
+        },
         frameProvider: @escaping FrameProvider
     ) {
         self.region = region
         self.onEvent = onEvent
         self.limits = limits
+        self.recoveryRoot = recoveryRoot
+        self.frameWriter = frameWriter
         self.frameProvider = frameProvider
     }
 
@@ -82,6 +94,7 @@ public final class ScrollingCaptureSession {
         frames.removeAll(keepingCapacity: true)
         capturedPixels = 0
         capturedBytes = 0
+        consecutiveCaptureFailures = 0
         hasPendingScroll = false
         scrollRevision = 0
         lastStitchProgress = 0
@@ -120,10 +133,11 @@ public final class ScrollingCaptureSession {
 
         let captured = frames
         guard captured.count > 1 else {
-            emitTerminal(.failedButFramesKept(
+            await failAndPreserveFrames(
+                captured,
                 reason: "Only one frame was captured — nothing to stitch.",
-                folder: (try? preserveFrames(captured)) ?? AppPaths.captures
-            ), for: activeGeneration)
+                generation: activeGeneration
+            )
             return
         }
 
@@ -160,7 +174,7 @@ public final class ScrollingCaptureSession {
             // `cancel()` owns the sole terminal event for an intentional
             // cancellation. A superseded generation is likewise silent.
             guard canEmit(for: activeGeneration), isFinishing else { return }
-            failAndPreserveFrames(
+            await failAndPreserveFrames(
                 captured,
                 reason: "Stitching was interrupted before it could finish.",
                 generation: activeGeneration
@@ -170,7 +184,7 @@ public final class ScrollingCaptureSession {
                 stitchTask = nil
             }
             guard canEmit(for: activeGeneration), isFinishing else { return }
-            failAndPreserveFrames(
+            await failAndPreserveFrames(
                 captured,
                 reason: stitchFailureReason(error),
                 generation: activeGeneration
@@ -201,20 +215,52 @@ public final class ScrollingCaptureSession {
         _ captured: [CGImage],
         reason: String,
         generation activeGeneration: UInt64
-    ) {
+    ) async {
         guard canEmit(for: activeGeneration) else { return }
         isRunning = false
         isFinishing = false
         stopMonitoring()
-        do {
-            let folder = try preserveFrames(captured)
-            emitTerminal(.failedButFramesKept(reason: reason, folder: folder), for: activeGeneration)
-        } catch {
+
+        // Encoding is deliberately not done here. Each kept frame is a
+        // full-resolution Retina PNG costing well over 200 ms to write, and this
+        // runs on the main actor at exactly the moment the failure UI is meant
+        // to appear — so a six-frame capture used to freeze the app for more
+        // than a second while trying to tell the user it had not worked.
+        let box = FrameBox(frames: captured)
+        let writer = frameWriter
+        let root = recoveryRoot
+        let outcome = await Task.detached(priority: .userInitiated) {
+            () -> PreservationOutcome in
+            do {
+                return .kept(try Self.preserveFrames(box.frames, in: root, using: writer))
+            } catch {
+                return .failed(error.localizedDescription)
+            }
+        }.value
+        // Re-checked after the suspension: cancel() or a newer generation may
+        // have claimed the terminal event while the frames were being written.
+        guard canEmit(for: activeGeneration) else { return }
+        switch outcome {
+        case .kept(let folder):
             emitTerminal(
-                .failedButFramesKept(reason: reason, folder: AppPaths.captures),
+                .failedButFramesKept(reason: reason, folder: folder),
+                for: activeGeneration
+            )
+        case .failed(let description):
+            emitTerminal(
+                .failed(
+                    reason: "\(reason) The captured frames could not be preserved: \(description)"
+                ),
                 for: activeGeneration
             )
         }
+    }
+
+    /// `Error` is not `Sendable`, so the failure crosses the actor boundary as
+    /// the message the caller would have shown anyway.
+    private enum PreservationOutcome: Sendable {
+        case kept(URL)
+        case failed(String)
     }
 
     private func stitchFailureReason(_ error: Error) -> String {
@@ -326,8 +372,9 @@ public final class ScrollingCaptureSession {
                     self.frames.append(image)
                     self.capturedPixels += cost.pixels
                     self.capturedBytes += cost.decodedBytes
+                    self.consecutiveCaptureFailures = 0
                 } catch {
-                    self.failAndPreserveFrames(
+                    await self.failAndPreserveFrames(
                         self.frames,
                         reason: self.stitchFailureReason(error),
                         generation: activeGeneration
@@ -343,6 +390,14 @@ public final class ScrollingCaptureSession {
                 // `cancel()` emits the terminal event and invalidates this task.
             } catch {
                 Log.capture.error("Scrolling frame capture failed: \(error.localizedDescription)")
+                self.consecutiveCaptureFailures += 1
+                if self.frames.isEmpty || self.consecutiveCaptureFailures >= 3 {
+                    await self.failAndPreserveFrames(
+                        self.frames,
+                        reason: "Frame capture failed: \(error.localizedDescription)",
+                        generation: activeGeneration
+                    )
+                }
             }
         }
         captureTask = task
@@ -375,18 +430,40 @@ public final class ScrollingCaptureSession {
 
     /// When stitching fails the frames are still the user's work, so they get
     /// written out individually instead of thrown away.
-    private func preserveFrames(_ frames: [CGImage]) throws -> URL {
+    nonisolated private static func preserveFrames(
+        _ frames: [CGImage],
+        in recoveryRoot: URL,
+        using frameWriter: FrameWriter
+    ) throws -> URL {
+        guard !frames.isEmpty else {
+            throw NotchShotError.exportFailed("No scrolling frames were captured")
+        }
         let formatter = DateFormatter()
         formatter.dateFormat = "yyyy-MM-dd 'at' HH.mm.ss"
-        let folder = AppPaths.captures.appendingPathComponent(
-            "Scrolling Frames \(formatter.string(from: Date()))",
+        let identifier = UUID().uuidString
+        let folder = recoveryRoot.appendingPathComponent(
+            "Scrolling Frames \(formatter.string(from: Date())) \(identifier.prefix(8))",
             isDirectory: true
         )
-        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-        for (index, frame) in frames.enumerated() {
-            let url = folder.appendingPathComponent(String(format: "frame-%03d.png", index + 1))
-            _ = try? ImageExport.write(frame, to: url, format: .png, quality: 1, dpiScale: 2)
+        let staging = recoveryRoot.appendingPathComponent(
+            ".scrolling-frames-\(identifier).partial",
+            isDirectory: true
+        )
+        try FileManager.default.createDirectory(at: staging, withIntermediateDirectories: true)
+        var committed = false
+        defer {
+            if !committed { try? FileManager.default.removeItem(at: staging) }
         }
+        for (index, frame) in frames.enumerated() {
+            let url = staging.appendingPathComponent(String(format: "frame-%03d.png", index + 1))
+            try frameWriter(frame, url)
+            let values = try url.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey])
+            guard values.isRegularFile == true, (values.fileSize ?? 0) > 0 else {
+                throw NotchShotError.exportFailed("A scrolling frame was not written completely")
+            }
+        }
+        try FileManager.default.moveItem(at: staging, to: folder)
+        committed = true
         Log.capture.notice("Preserved \(frames.count) scrolling frames at \(folder.path)")
         return folder
     }
