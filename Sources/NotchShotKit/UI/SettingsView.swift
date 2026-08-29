@@ -123,7 +123,7 @@ private enum SettingsSection: String, CaseIterable, Identifiable {
         case .general: "General"
         case .capture: "Capture & Export"
         case .presets: "Presets"
-        case .recording: "Recording"
+        case .recording: "Record"
         case .dictation: "Dictation"
         case .appearance: "Appearance & Displays"
         case .integrations: "Integrations"
@@ -140,11 +140,11 @@ private enum SettingsSection: String, CaseIterable, Identifiable {
         case .presets: "Presets"
         case .recording: "Recording"
         case .dictation: "Dictation"
-        case .appearance: "Appearance"
-        case .integrations: "Integrations"
+        case .appearance: "Display"
+        case .integrations: "Media"
         case .context: "Context"
         case .privacy: "Privacy"
-        case .shortcuts: "Shortcuts"
+        case .shortcuts: "Hotkeys"
         }
     }
 
