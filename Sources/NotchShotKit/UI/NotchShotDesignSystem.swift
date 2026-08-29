@@ -90,11 +90,12 @@ enum NotchShotColorPolicy {
     }
 }
 
-/// The media accent is a restrained glow over the black shell, not a blurred
-/// copy of the artwork. Keeping the policy here makes the visual and its
-/// accessibility fallback agree wherever the shell is presented.
+/// The media accent is a restrained keyline around an opaque-black shell, not
+/// a tint over the shell itself. Keeping the policy here makes the visual and
+/// its accessibility fallback agree wherever the shell is presented.
 enum NotchMediaGlowPolicy {
-    static let shellOpacity = 0.13
+    static let keylineOpacity = 0.34
+    static let haloOpacity = 0.14
 
     static func shouldShow(
         isMedia: Bool,

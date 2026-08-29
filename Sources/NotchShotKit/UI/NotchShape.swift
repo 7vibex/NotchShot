@@ -39,34 +39,6 @@ enum NotchControlSurfacePolicy {
     }
 }
 
-/// Dictation is itself transient system chrome, so its expanding software shell
-/// may use Liquid Glass. The transcript remains on an opaque reading surface and
-/// the physical camera core is restored to optical black by `NotchRootView`.
-enum NotchDictationShellPolicy {
-    static func shouldUseLiquidGlass(
-        isActive: Bool,
-        reduceTransparency: Bool,
-        increaseContrast: Bool
-    ) -> Bool {
-        isActive && NotchShotDesignSystem.usesLiquidGlass(
-            reduceTransparency: reduceTransparency,
-            increaseContrast: increaseContrast
-        )
-    }
-
-    static func fillOpacity(
-        isActive: Bool,
-        reduceTransparency: Bool,
-        increaseContrast: Bool
-    ) -> Double {
-        shouldUseLiquidGlass(
-            isActive: isActive,
-            reduceTransparency: reduceTransparency,
-            increaseContrast: increaseContrast
-        ) ? 0.58 : 1
-    }
-}
-
 extension View {
     /// Stable control grouping for the notch. Increase Contrast is read here so
     /// individual call sites cannot accidentally omit its opaque treatment.
@@ -84,43 +56,6 @@ extension View {
             emphasized: emphasized,
             allowsLiquidGlass: allowsLiquidGlass
         ))
-    }
-
-    func notchDictationShell<S: Shape>(
-        in shape: S,
-        isActive: Bool,
-        reduceTransparency: Bool
-    ) -> some View {
-        modifier(NotchDictationShellModifier(
-            shape: shape,
-            isActive: isActive,
-            reduceTransparency: reduceTransparency
-        ))
-    }
-}
-
-private struct NotchDictationShellModifier<S: Shape>: ViewModifier {
-    var shape: S
-    var isActive: Bool
-    var reduceTransparency: Bool
-
-    @Environment(\.colorSchemeContrast) private var colorSchemeContrast
-
-    @ViewBuilder
-    func body(content: Content) -> some View {
-        if NotchDictationShellPolicy.shouldUseLiquidGlass(
-            isActive: isActive,
-            reduceTransparency: reduceTransparency,
-            increaseContrast: colorSchemeContrast == .increased
-        ) {
-            content
-                .glassEffect(.regular.tint(.black.opacity(0.40)), in: shape)
-                .overlay {
-                    shape.stroke(.white.opacity(0.12), lineWidth: 0.75)
-                }
-        } else {
-            content
-        }
     }
 }
 
@@ -189,16 +124,22 @@ private struct NotchControlSurfaceModifier<S: Shape>: ViewModifier {
     }
 }
 
-/// The island outline: square at the top edge (it meets the bezel), rounded at
-/// the bottom, with small inverted fillets on the top corners so it flows out of
-/// the surrounding black rather than sitting on it as a separate rectangle.
+/// The island outline. A physical MacBook notch flows out of the bezel with
+/// inverted top fillets; a synthetic island is detached from the screen edge
+/// and uses one concentric continuous radius on every corner.
 public struct NotchShape: Shape {
     public var bottomRadius: CGFloat
     public var topRadius: CGFloat
+    public var isFloating: Bool
 
-    public init(bottomRadius: CGFloat, topRadius: CGFloat = 8) {
+    public init(
+        bottomRadius: CGFloat,
+        topRadius: CGFloat = 8,
+        isFloating: Bool = false
+    ) {
         self.bottomRadius = bottomRadius
         self.topRadius = topRadius
+        self.isFloating = isFloating
     }
 
     /// Lets the shape animate along with the island's size changes.
@@ -211,6 +152,14 @@ public struct NotchShape: Shape {
     }
 
     public func path(in rect: CGRect) -> Path {
+        if isFloating {
+            return RoundedRectangle(
+                cornerRadius: min(bottomRadius, rect.height / 2, rect.width / 2),
+                style: .continuous
+            )
+            .path(in: rect)
+        }
+
         var path = Path()
         let bottom = min(bottomRadius, rect.height / 2, rect.width / 2)
         let top = min(topRadius, rect.height / 3, rect.width / 3)

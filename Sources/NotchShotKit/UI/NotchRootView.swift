@@ -104,7 +104,8 @@ public struct NotchRootView: View {
                 )
             ),
             cornerRadius: max(base.cornerRadius, 20),
-            contentTopInset: base.contentTopInset
+            contentTopInset: base.contentTopInset,
+            topInset: base.topInset
         )
     }
 
@@ -114,6 +115,9 @@ public struct NotchRootView: View {
 
     public var body: some View {
         VStack(spacing: 0) {
+            Color.clear
+                .frame(height: layout.topInset)
+                .accessibilityHidden(true)
             island
             Spacer(minLength: 0)
         }
@@ -131,23 +135,21 @@ public struct NotchRootView: View {
         NotchShape(
             bottomRadius: layout.cornerRadius,
             // The fillets only make sense against a real cutout; on an external
-            // display they would look like a floating tab with odd ears.
-            topRadius: context.metrics.hasPhysicalNotch ? 10 : 0
+            // display the synthetic island is a complete floating pill.
+            topRadius: context.metrics.hasPhysicalNotch ? 10 : layout.cornerRadius,
+            isFloating: !context.metrics.hasPhysicalNotch
         )
     }
 
     private var island: some View {
         ZStack(alignment: .top) {
             shape
-                .fill(shellFill)
-                .notchDictationShell(
-                    in: shape,
-                    isActive: isShowingDictation,
-                    reduceTransparency: reduceTransparency
-                )
+                .fill(.black)
                 .overlay {
                     if isTargetedForDrop {
                         shape.stroke(Color.accentColor, lineWidth: 2)
+                    } else {
+                        mediaShellKeyline
                     }
                 }
                 // The shadow only appears once the island is bigger than the
@@ -157,8 +159,6 @@ public struct NotchRootView: View {
                     radius: 22,
                     y: 10
                 )
-
-            mediaShellGlow
 
             dictationCameraCore
 
@@ -194,6 +194,7 @@ public struct NotchRootView: View {
         .clipShape(shape)
         .frame(width: layout.size.width, height: layout.size.height)
         .animation(shapeAnimation, value: layout.size)
+        .animation(shapeAnimation, value: layout.cornerRadius)
         .animation(contentAnimation, value: effectiveActivity.presentationIdentity)
         .animation(contentAnimation, value: overlaidSystemLevel)
         .accessibilityElement(children: .contain)
@@ -218,14 +219,6 @@ public struct NotchRootView: View {
         return false
     }
 
-    private var shellFill: Color {
-        Color.black.opacity(NotchDictationShellPolicy.fillOpacity(
-            isActive: isShowingDictation,
-            reduceTransparency: reduceTransparency,
-            increaseContrast: colorSchemeContrast == .increased
-        ))
-    }
-
     private var contentTopOffset: CGFloat {
         isShowingDictation ? 0 : baseLayout.contentTopInset
     }
@@ -244,9 +237,9 @@ public struct NotchRootView: View {
         return max(1, min(available, ceiling))
     }
 
-    /// Liquid Glass belongs to the software extension, never to the camera and
-    /// sensor cutout. Repainting that exact band black makes the hardware notch
-    /// read as the seed from which the glass dictation island grows.
+    /// The complete shell is opaque black, matching the Dynamic Island's system
+    /// background. Repainting the exact camera band also guards against future
+    /// content treatments leaking into real hardware clearance.
     @ViewBuilder
     private var dictationCameraCore: some View {
         if isShowingDictation, context.metrics.hasPhysicalNotch {
@@ -266,28 +259,29 @@ public struct NotchRootView: View {
         }
     }
 
-    /// Album colour covers the complete software island, including the visible
-    /// wings beside the physical camera cutout. The hardware centre remains
-    /// black, while the glow now reaches the top instead of beginning below it.
+    /// Apple keeps the Dynamic Island background opaque black and uses colour
+    /// in content plus a restrained keyline. The artwork accent therefore
+    /// traces the shell instead of tinting its entire surface.
     @ViewBuilder
-    private var mediaShellGlow: some View {
+    private var mediaShellKeyline: some View {
         if NotchMediaGlowPolicy.shouldShow(
             isMedia: isShowingMedia,
             reduceTransparency: reduceTransparency,
             increaseContrast: colorSchemeContrast == .increased
         ) {
-            LinearGradient(
-                colors: [
+            shape
+                .stroke(
                     Color(nsColor: coordinator.media.artworkAccentColor)
-                        .opacity(NotchMediaGlowPolicy.shellOpacity),
-                    .clear,
-                ],
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
-            )
-            .frame(width: layout.size.width, height: layout.size.height)
-            .allowsHitTesting(false)
-            .accessibilityHidden(true)
+                        .opacity(NotchMediaGlowPolicy.keylineOpacity),
+                    lineWidth: 1
+                )
+                .shadow(
+                    color: Color(nsColor: coordinator.media.artworkAccentColor)
+                        .opacity(NotchMediaGlowPolicy.haloOpacity),
+                    radius: 10
+                )
+                .allowsHitTesting(false)
+                .accessibilityHidden(true)
         }
     }
 
@@ -296,9 +290,8 @@ public struct NotchRootView: View {
         return false
     }
 
-    /// The dictation shell may refract as transient system chrome; transcript and
-    /// warning content remain stable, while compact control glass is coordinated
-    /// here so adjacent effects merge cleanly.
+    /// The shell stays opaque while compact control surfaces are coordinated so
+    /// adjacent effects merge cleanly without tinting readable content.
     private var styledContent: some View {
         GlassEffectContainer(spacing: 6) {
             content
@@ -311,11 +304,19 @@ public struct NotchRootView: View {
         guard NotchShotMotion.allowsSpatialAnimation(reduceMotion: reduceMotion) else {
             return nil
         }
-        return .spring(response: 0.38, dampingFraction: 0.72)
+        return .spring(
+            response: NotchIsland.Motion.shellResponse,
+            dampingFraction: NotchIsland.Motion.shellDamping
+        )
     }
 
     private var contentAnimation: Animation? {
-        reduceMotion ? nil : .spring(response: 0.30, dampingFraction: 0.86)
+        reduceMotion
+            ? nil
+            : .spring(
+                response: NotchIsland.Motion.contentResponse,
+                dampingFraction: NotchIsland.Motion.contentDamping
+            )
     }
 
     private var contentTransition: AnyTransition {
@@ -1151,18 +1152,18 @@ private struct MediaContent: View {
                     // long track name is fully readable rather than truncated.
                     MarqueeText(
                         snapshot.title ?? "Not Playing",
-                        font: .system(size: 12, weight: .semibold),
+                        font: .system(size: 13, weight: .semibold),
                         color: .white
                     )
-                    .frame(height: 15)
+                    .frame(height: 16)
 
                     MarqueeText(
                         snapshot.artist ?? snapshot.applicationName ?? "",
-                        font: .system(size: 10),
+                        font: .system(size: 11, weight: .medium),
                         color: .white.opacity(0.65),
                         speed: 22
                     )
-                    .frame(height: 13)
+                    .frame(height: 14)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
 
@@ -1611,7 +1612,7 @@ private struct CaptureMenuContent: View {
     private let secondaryIntents: [CaptureIntent] = [.scrolling, .ocr, .previousArea]
 
     var body: some View {
-        VStack(spacing: 10) {
+        VStack(spacing: 7) {
             HStack(spacing: 8) {
                 Label("Capture", systemImage: "camera.viewfinder")
                     .font(.system(size: 13, weight: .semibold))
@@ -1668,7 +1669,10 @@ private struct CaptureMenuContent: View {
                 }
             }
 
-            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: 3), spacing: 8) {
+            LazyVGrid(
+                columns: Array(repeating: GridItem(.flexible(), spacing: 7), count: 3),
+                spacing: 7
+            ) {
                 ForEach(primaryIntents) { intent in
                     CaptureIntentButton(intent: intent) {
                         coordinator.capture(intent, timer: timer)
@@ -1676,25 +1680,17 @@ private struct CaptureMenuContent: View {
                 }
             }
 
-            HStack(spacing: 8) {
+            HStack(spacing: 7) {
                 Menu {
-                    ForEach(secondaryIntents) { intent in
-                        Button {
-                            coordinator.capture(intent, timer: timer)
-                        } label: {
-                            Label(intent.title, systemImage: intent.symbolName)
+                    Section("More Capture Modes") {
+                        ForEach(secondaryIntents) { intent in
+                            Button {
+                                coordinator.capture(intent, timer: timer)
+                            } label: {
+                                Label(intent.title, systemImage: intent.symbolName)
+                            }
                         }
                     }
-                } label: {
-                    commandLabel(
-                        "More",
-                        systemImage: "ellipsis"
-                    )
-                }
-                .menuStyle(.borderlessButton)
-                .help("Scrolling capture, OCR, and previous area")
-
-                Menu {
                     Section("Focus Timer") {
                         ForEach([5, 15, 25, 45], id: \.self) { minutes in
                             Button("\(minutes) minutes") {
@@ -1708,15 +1704,20 @@ private struct CaptureMenuContent: View {
                     } label: {
                         Label("Voice Note", systemImage: "waveform.and.mic")
                     }
+                    Divider()
+                    Button {
+                        coordinator.onOpenSettings?()
+                    } label: {
+                        Label("Settings", systemImage: "gearshape")
+                    }
                 } label: {
                     commandLabel(
-                        "Activities",
-                        systemImage: "timer",
-                        iconTint: .orange
+                        "More",
+                        systemImage: "ellipsis"
                     )
                 }
                 .menuStyle(.borderlessButton)
-                .help("Focus Timer and Voice Note")
+                .help("More capture modes, activities, and settings")
 
                 Menu {
                     ForEach(RecordingTargetMode.allCases) { target in
@@ -1744,16 +1745,10 @@ private struct CaptureMenuContent: View {
                     )
                 }
                 .buttonStyle(NotchPressButtonStyle())
-
-                NotchIconButton(
-                    systemName: "gearshape",
-                    label: "Settings"
-                ) {
-                    coordinator.onOpenSettings?()
-                }
             }
         }
-        .padding(14)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
     }
 
     private func commandLabel(
@@ -1801,7 +1796,7 @@ private struct CaptureIntentButton: View {
                 Text(intent.shortTitle)
                     .font(.system(size: 10, weight: .semibold))
             }
-            .frame(maxWidth: .infinity, minHeight: 54)
+            .frame(maxWidth: .infinity, minHeight: 52)
             .foregroundStyle(.white)
             .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
             .notchControlSurface(
@@ -1842,7 +1837,7 @@ private struct StatusContent: View {
                 .foregroundStyle(.white)
             VStack(alignment: .leading, spacing: 1) {
                 Text(title)
-                    .font(.system(size: 11, weight: .semibold))
+                    .font(.system(size: 12, weight: .semibold))
                     .foregroundStyle(.white)
                 Text(subtitle)
                     .font(.system(size: 10))
@@ -1896,7 +1891,7 @@ private struct ProcessingContent: View {
                 .controlSize(.small)
                 .tint(.white)
             Text(message)
-                .font(.system(size: 11, weight: .medium))
+                .font(.system(size: 12, weight: .medium))
                 .foregroundStyle(.white)
                 .lineLimit(1)
             Spacer(minLength: 0)
@@ -1939,7 +1934,7 @@ private struct ErrorContent: View {
             Image(systemName: "exclamationmark.triangle.fill")
                 .foregroundStyle(.orange)
             Text(message)
-                .font(.system(size: 11, weight: .medium))
+                .font(.system(size: 12, weight: .medium))
                 .foregroundStyle(.white)
                 .lineLimit(2)
             Spacer(minLength: 0)

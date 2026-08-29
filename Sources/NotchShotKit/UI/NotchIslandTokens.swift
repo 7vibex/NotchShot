@@ -11,6 +11,26 @@ import SwiftUI
 /// numbers but that a row, a badge, and a tile pick from the same ladder, so
 /// two features built months apart still line up.
 enum NotchIsland {
+    /// Geometry derived from Apple's compact and expanded Dynamic Island
+    /// presentations, then adapted for a pointer-driven Mac surface. The
+    /// synthetic core matches the sensor region implied by Apple's 230pt
+    /// compact layout, while the expanded capture surface keeps desktop-sized
+    /// controls inside a substantially tighter shell.
+    enum Geometry {
+        static let compactHeight: CGFloat = 37
+        static let compactActivityWidth: CGFloat = 230
+        static let syntheticCoreWidth: CGFloat = 126
+        static let floatingTopInset: CGFloat = 6
+        static let expandedCaptureWidth: CGFloat = 432
+        static let expandedCaptureHeight: CGFloat = 164
+        static let expandedCornerRadius: CGFloat = 32
+
+        static let syntheticCoreSize = CGSize(
+            width: syntheticCoreWidth,
+            height: compactHeight
+        )
+    }
+
     /// Spacing tiers. `row` is the default gap between sibling rows; `gutter`
     /// is the inset from the island's own edge.
     enum Spacing {
@@ -44,6 +64,16 @@ enum NotchIsland {
 
     enum Stroke {
         static let hairline: CGFloat = 1
+    }
+
+    /// The shell is deliberately more elastic than its content. This makes the
+    /// black shape feel alive without letting text and controls wobble as live
+    /// values update.
+    enum Motion {
+        static let shellResponse = 0.42
+        static let shellDamping = 0.76
+        static let contentResponse = 0.30
+        static let contentDamping = 0.86
     }
 
     /// Hit targets. `control` is the floor for anything clickable; a smaller

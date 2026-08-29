@@ -23,6 +23,17 @@ struct DesignSystemTests {
         #expect(NotchIsland.Hit.control >= 36)
     }
 
+    @Test("Dynamic Island geometry stays compact, concentric, and elastic")
+    func dynamicIslandGeometryAndMotion() {
+        #expect(NotchIsland.Geometry.syntheticCoreSize == CGSize(width: 126, height: 37))
+        #expect(NotchIsland.Geometry.compactActivityWidth == 230)
+        #expect(NotchIsland.Geometry.expandedCaptureWidth == 432)
+        #expect(NotchIsland.Geometry.expandedCaptureHeight == 164)
+        #expect(NotchIsland.Geometry.expandedCornerRadius >= 30)
+        #expect(NotchIsland.Motion.shellResponse > NotchIsland.Motion.contentResponse)
+        #expect(NotchIsland.Motion.shellDamping < NotchIsland.Motion.contentDamping)
+    }
+
     @Test("Liquid Glass APIs stay centralized in functional chrome")
     func liquidGlassPlacementIsCentralized() throws {
         let packageRoot = URL(fileURLWithPath: #filePath)
@@ -84,30 +95,10 @@ struct DesignSystemTests {
             reduceTransparency: false,
             increaseContrast: true
         ))
-        #expect(NotchDictationShellPolicy.shouldUseLiquidGlass(
-            isActive: true,
-            reduceTransparency: false,
-            increaseContrast: false
-        ))
-        #expect(!NotchDictationShellPolicy.shouldUseLiquidGlass(
-            isActive: true,
-            reduceTransparency: true,
-            increaseContrast: false
-        ))
-        #expect(!NotchDictationShellPolicy.shouldUseLiquidGlass(
-            isActive: true,
-            reduceTransparency: false,
-            increaseContrast: true
-        ))
-        #expect(NotchDictationShellPolicy.fillOpacity(
-            isActive: false,
-            reduceTransparency: false,
-            increaseContrast: false
-        ) == 1)
     }
 
-    @Test("Now Playing glow covers the shell above the content inset")
-    func nowPlayingGlowCoversWholeShell() throws {
+    @Test("Now Playing keeps an opaque shell and puts colour in the keyline")
+    func nowPlayingUsesKeylineInsteadOfShellTint() throws {
         let packageRoot = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
             .deletingLastPathComponent()
@@ -124,8 +115,9 @@ struct DesignSystemTests {
         let shellSource = String(source[islandStart.lowerBound..<contentStart.lowerBound])
 
         #expect(shellSource.contains(".fill(.black)"))
-        #expect(shellSource.contains("mediaShellGlow"))
-        #expect(shellSource.contains("NotchMediaGlowPolicy.shellOpacity"))
+        #expect(shellSource.contains("mediaShellKeyline"))
+        #expect(shellSource.contains("NotchMediaGlowPolicy.keylineOpacity"))
+        #expect(!shellSource.contains("LinearGradient("))
 
         let mediaStart = try #require(source.range(of: "private struct MediaContent"))
         let scrubberStart = try #require(source.range(
@@ -133,7 +125,7 @@ struct DesignSystemTests {
             range: mediaStart.upperBound..<source.endIndex
         ))
         let mediaSource = String(source[mediaStart.lowerBound..<scrubberStart.lowerBound])
-        #expect(!mediaSource.contains("NotchMediaGlowPolicy.shellOpacity"))
+        #expect(!mediaSource.contains("NotchMediaGlowPolicy.keylineOpacity"))
     }
 
     @Test("Annotation tools adapt instead of exposing a horizontal scrollbar")

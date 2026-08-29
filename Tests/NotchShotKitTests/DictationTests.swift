@@ -240,6 +240,7 @@ struct DictationLayoutTests {
         #expect(layout.contentTopInset == 0) // notchless has no top inset, content centered
         let rect = layout.islandRect(in: notchlessMetrics)
         #expect(rect.midX == notchlessMetrics.screenFrame.midX)
+        #expect(rect.maxY == notchlessMetrics.screenFrame.maxY - layout.topInset)
     }
 
     @Test("Collapse returns to exact idle dimensions")

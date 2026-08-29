@@ -20,9 +20,10 @@ public struct NotchMetrics: Sendable, Equatable {
         self.menuBarHeight = menuBarHeight
     }
 
-    /// Size used when no hardware notch exists. Roughly notch-shaped so the
-    /// same layout math and artwork work on external displays.
-    public static let syntheticIslandSize = CGSize(width: 190, height: 32)
+    /// Size used when no hardware notch exists. It represents the compact
+    /// sensor core, while active content grows to the wider compact activity
+    /// width in `NotchLayout`.
+    public static let syntheticIslandSize = NotchIsland.Geometry.syntheticCoreSize
 
     /// Derives metrics from raw `NSScreen` values. Pure, so the multi-display
     /// permutations are unit-testable without hardware.
@@ -90,11 +91,20 @@ public struct NotchLayout: Sendable, Equatable {
     /// Vertical space occupied by the physical camera cutout. Revealed content
     /// is laid out below this band instead of being centered behind hardware.
     public var contentTopInset: CGFloat
+    /// Distance below the screen edge for a synthetic, fully rounded island.
+    /// A physical notch always remains attached to the bezel.
+    public var topInset: CGFloat
 
-    public init(size: CGSize, cornerRadius: CGFloat, contentTopInset: CGFloat = 0) {
+    public init(
+        size: CGSize,
+        cornerRadius: CGFloat,
+        contentTopInset: CGFloat = 0,
+        topInset: CGFloat = 0
+    ) {
         self.size = size
         self.cornerRadius = cornerRadius
         self.contentTopInset = contentTopInset
+        self.topInset = topInset
     }
 
     /// Largest island the panel must be able to contain. The panel is sized to
@@ -129,6 +139,17 @@ public struct NotchLayout: Sendable, Equatable {
             height: max(metrics.notchSize.height, 1)
         )
         let revealedContentInset = metrics.hasPhysicalNotch ? closed.height : 0
+        let floatingTopInset = metrics.hasPhysicalNotch
+            ? 0
+            : NotchIsland.Geometry.floatingTopInset
+
+        func closedLayout(cornerRadius: CGFloat) -> NotchLayout {
+            NotchLayout(
+                size: closed,
+                cornerRadius: cornerRadius,
+                topInset: floatingTopInset
+            )
+        }
 
         func revealed(
             width: CGFloat,
@@ -141,7 +162,8 @@ public struct NotchLayout: Sendable, Equatable {
                     height: min(contentHeight + revealedContentInset, maximumSize.height)
                 ),
                 cornerRadius: cornerRadius,
-                contentTopInset: revealedContentInset
+                contentTopInset: revealedContentInset,
+                topInset: floatingTopInset
             )
         }
 
@@ -151,16 +173,27 @@ public struct NotchLayout: Sendable, Equatable {
                 return revealed(
                     width: closed.width + 150,
                     contentHeight: 46,
-                    cornerRadius: metrics.hasPhysicalNotch ? 12 : 16
+                    cornerRadius: metrics.hasPhysicalNotch
+                        ? 12
+                        : NotchIsland.Geometry.compactHeight / 2
                 )
             }
-            return NotchLayout(size: closed, cornerRadius: metrics.hasPhysicalNotch ? 12 : 16)
+            return closedLayout(
+                cornerRadius: metrics.hasPhysicalNotch
+                    ? 12
+                    : NotchIsland.Geometry.compactHeight / 2
+            )
         case .media:
             // The closed island only needs artwork and a playback indicator.
             // Elapsed and total time appear in the scrubber after hover opens it.
             // Keep the compact artwork and playback wave tucked close to the
             // camera instead of floating at the outside edges of wide wings.
-            let width = isPeeking ? max(closed.width + 290, 470) : closed.width + 76
+            let compactWidth = metrics.hasPhysicalNotch
+                ? closed.width + 76
+                : NotchIsland.Geometry.compactActivityWidth
+            let width = isPeeking
+                ? max(closed.width + 290, NotchIsland.Geometry.expandedCaptureWidth)
+                : compactWidth
             if isPeeking {
                 // Taller and wider than the bare progress bar needed: the
                 // scrubber carries an elapsed and a total time either side of it.
@@ -170,13 +203,20 @@ public struct NotchLayout: Sendable, Equatable {
             // intentionally shares the hardware notch's vertical band.
             return NotchLayout(
                 size: CGSize(width: width, height: max(closed.height, 32)),
-                cornerRadius: 18
+                cornerRadius: metrics.hasPhysicalNotch
+                    ? 18
+                    : NotchIsland.Geometry.compactHeight / 2,
+                topInset: floatingTopInset
             )
         case .expanded:
             // Dynamic-Island-style expansion: enough room for the three core
             // capture actions and one secondary command strip, but no large
             // dashboard floating from the camera cutout.
-            return revealed(width: 480, contentHeight: 190, cornerRadius: 24)
+            return revealed(
+                width: NotchIsland.Geometry.expandedCaptureWidth,
+                contentHeight: NotchIsland.Geometry.expandedCaptureHeight,
+                cornerRadius: NotchIsland.Geometry.expandedCornerRadius
+            )
         case .fileDrop:
             // Four equal drop destinations plus a compact instruction line.
             // The physical camera band is added by `revealed`, keeping every
@@ -206,7 +246,7 @@ public struct NotchLayout: Sendable, Equatable {
                     cornerRadius: 18
                 )
             }
-            return revealed(width: width, contentHeight: 46, cornerRadius: 20)
+            return revealed(width: 360, contentHeight: 46, cornerRadius: 23)
         case .context(let snapshot):
             if snapshot.presentation == .expanded {
                 if snapshot.kind == .ai {
@@ -225,12 +265,22 @@ public struct NotchLayout: Sendable, Equatable {
                     width: closed.width + compactContextWing * 2,
                     height: closed.height
                 ),
-                cornerRadius: 14
+                cornerRadius: metrics.hasPhysicalNotch
+                    ? 14
+                    : NotchIsland.Geometry.compactHeight / 2,
+                topInset: floatingTopInset
             )
         case .error:
             return revealed(width: 360, contentHeight: 62, cornerRadius: 18)
         case .dictation(let snapshot):
-            return dictationLayout(for: snapshot, metrics: metrics, isPeeking: isPeeking, closed: closed, revealed: revealed)
+            return dictationLayout(
+                for: snapshot,
+                metrics: metrics,
+                isPeeking: isPeeking,
+                closed: closed,
+                floatingTopInset: floatingTopInset,
+                revealed: revealed
+            )
         }
     }
 
@@ -269,6 +319,7 @@ public struct NotchLayout: Sendable, Equatable {
         metrics: NotchMetrics,
         isPeeking: Bool,
         closed: CGSize,
+        floatingTopInset: CGFloat,
         revealed: (CGFloat, CGFloat, CGFloat) -> NotchLayout
     ) -> NotchLayout {
         let isHover = isPeeking || snapshot.isHoverExpanded
@@ -282,7 +333,13 @@ public struct NotchLayout: Sendable, Equatable {
 
         switch snapshot.state {
         case .idle:
-            return NotchLayout(size: closed, cornerRadius: metrics.hasPhysicalNotch ? 12 : 16)
+            return NotchLayout(
+                size: closed,
+                cornerRadius: metrics.hasPhysicalNotch
+                    ? 12
+                    : NotchIsland.Geometry.compactHeight / 2,
+                topInset: floatingTopInset
+            )
         case .requestingMicrophone:
             return revealed(closed.width + 200, controlRow, metrics.hasPhysicalNotch ? 22 : 28)
         case .preparingModel:
@@ -311,7 +368,13 @@ public struct NotchLayout: Sendable, Equatable {
         case .completed:
             return revealed(closed.width + 200, controlRow, 24)
         case .cancelled:
-            return NotchLayout(size: closed, cornerRadius: metrics.hasPhysicalNotch ? 12 : 16)
+            return NotchLayout(
+                size: closed,
+                cornerRadius: metrics.hasPhysicalNotch
+                    ? 12
+                    : NotchIsland.Geometry.compactHeight / 2,
+                topInset: floatingTopInset
+            )
         case .failed:
             return revealed(430, controlRow + 44, 24)
         }
@@ -321,7 +384,7 @@ public struct NotchLayout: Sendable, Equatable {
     public func islandRect(in metrics: NotchMetrics) -> CGRect {
         CGRect(
             x: metrics.screenFrame.midX - size.width / 2,
-            y: metrics.screenFrame.maxY - size.height,
+            y: metrics.screenFrame.maxY - topInset - size.height,
             width: size.width,
             height: size.height
         )

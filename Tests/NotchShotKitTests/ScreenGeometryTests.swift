@@ -380,6 +380,47 @@ struct NotchMetricsTests {
         )
         #expect(!metrics.hasPhysicalNotch)
         #expect(metrics.notchSize == NotchMetrics.syntheticIslandSize)
+        #expect(metrics.notchSize == CGSize(width: 126, height: 37))
+    }
+
+    @Test("A synthetic island floats below the edge and grows through Apple's size classes")
+    func syntheticIslandPresentationGeometry() {
+        let metrics = NotchMetrics(
+            screenFrame: CGRect(x: 0, y: 0, width: 1920, height: 1080),
+            hasPhysicalNotch: false,
+            notchSize: NotchMetrics.syntheticIslandSize,
+            menuBarHeight: 24
+        )
+
+        let idle = NotchLayout.layout(
+            for: .idle,
+            metrics: metrics,
+            isPeeking: false,
+            resultCount: 0
+        )
+        #expect(idle.size == CGSize(width: 126, height: 37))
+        #expect(idle.cornerRadius == 18.5)
+        #expect(idle.topInset == 6)
+        #expect(idle.islandRect(in: metrics).maxY == metrics.screenFrame.maxY - 6)
+
+        let compact = NotchLayout.layout(
+            for: .media,
+            metrics: metrics,
+            isPeeking: false,
+            resultCount: 0
+        )
+        #expect(compact.size == CGSize(width: 230, height: 37))
+        #expect(compact.cornerRadius == 18.5)
+
+        let expanded = NotchLayout.layout(
+            for: .expanded,
+            metrics: metrics,
+            isPeeking: false,
+            resultCount: 0
+        )
+        #expect(expanded.size == CGSize(width: 432, height: 164))
+        #expect(expanded.cornerRadius == 32)
+        #expect(expanded.topInset == idle.topInset)
     }
 
     @Test("Auxiliary areas that cover the full width mean no notch")
@@ -445,6 +486,7 @@ struct NotchMetricsTests {
         let layout = NotchLayout.layout(for: .idle, metrics: metrics, isPeeking: false, resultCount: 0)
         #expect(layout.size == metrics.notchSize)
         #expect(layout.contentTopInset == 0)
+        #expect(layout.topInset == 0)
     }
 
     @Test("Compact system feedback stays inside the physical notch band")
@@ -505,6 +547,7 @@ struct NotchMetricsTests {
         )
         #expect(layout.contentTopInset == 0)
         #expect(layout.size.height == 46)
+        #expect(layout.topInset == NotchIsland.Geometry.floatingTopInset)
     }
 
     /// `visibleFrame` excludes the Dock as well as the menu bar, so deriving the
