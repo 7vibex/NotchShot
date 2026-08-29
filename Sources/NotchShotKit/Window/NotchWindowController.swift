@@ -310,7 +310,11 @@ public final class NotchWindowController {
             metrics.screenFrame.height
         )
         return CGRect(
-            x: metrics.screenFrame.midX - width / 2,
+            // Anchor the fixed panel to the hardware gap rather than assuming
+            // an odd-width notch is centred on a whole point. SwiftUI centres
+            // the island inside this panel, so this keeps drawing, hover, and
+            // AppKit click bridging on the same physical pixels.
+            x: metrics.notchCenterX - width / 2,
             y: metrics.screenFrame.maxY - height,
             width: width,
             height: height

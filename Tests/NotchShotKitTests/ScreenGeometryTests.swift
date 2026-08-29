@@ -369,6 +369,35 @@ struct NotchMetricsTests {
         #expect(metrics.menuBarHeight == 37)
     }
 
+    @Test("The physical shell covers and aligns with the complete reported notch band")
+    func physicalNotchCoverage() {
+        // Values measured on this 14-inch MacBook Pro. The safe-area and
+        // auxiliary regions are 32pt tall, but the menu-bar band is 33pt. Its
+        // odd-width 179pt gap is centred at x=735.5, not screen midX 735.
+        let metrics = NotchMetrics.metrics(
+            screenFrame: CGRect(x: 0, y: 0, width: 1_470, height: 956),
+            safeAreaTop: 32,
+            auxiliaryTopLeft: CGRect(x: 0, y: 924, width: 646, height: 32),
+            auxiliaryTopRight: CGRect(x: 825, y: 924, width: 645, height: 32),
+            menuBarHeight: 33
+        )
+
+        #expect(metrics.hasPhysicalNotch)
+        #expect(metrics.notchSize == CGSize(width: 179, height: 33))
+        #expect(metrics.notchCenterX == 735.5)
+        #expect(metrics.notchRect == CGRect(x: 646, y: 923, width: 179, height: 33))
+
+        let expanded = NotchLayout.layout(
+            for: .expanded,
+            metrics: metrics,
+            isPeeking: false,
+            resultCount: 0
+        )
+        #expect(expanded.islandRect(in: metrics).midX == metrics.notchRect.midX)
+        #expect(expanded.contentTopInset == 33)
+        #expect(expanded.size.height - expanded.contentTopInset == NotchIsland.Geometry.expandedCaptureHeight)
+    }
+
     @Test("An external display falls back to a synthetic island")
     func externalDisplay() {
         let screen = CGRect(x: 0, y: 0, width: 2560, height: 1440)

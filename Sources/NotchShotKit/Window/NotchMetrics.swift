@@ -8,16 +8,29 @@ public struct NotchMetrics: Sendable, Equatable {
     public var screenFrame: CGRect
     /// True when the display reports a real hardware notch.
     public var hasPhysicalNotch: Bool
-    /// Size in points of the notch cutout, or of the synthetic island.
+    /// Size in points of the region the black shell must cover, or of the
+    /// synthetic island. On a physical display this can be one point taller
+    /// than the safe-area cutout when the menu-bar band includes its separator.
     public var notchSize: CGSize
+    /// Horizontal centre reported by the display's two auxiliary top areas.
+    /// Odd-width hardware gaps can sit on a half point rather than exactly on
+    /// `screenFrame.midX`.
+    public var notchCenterX: CGFloat
     /// Height of the menu bar area, used to align the island with it.
     public var menuBarHeight: CGFloat
 
-    public init(screenFrame: CGRect, hasPhysicalNotch: Bool, notchSize: CGSize, menuBarHeight: CGFloat) {
+    public init(
+        screenFrame: CGRect,
+        hasPhysicalNotch: Bool,
+        notchSize: CGSize,
+        menuBarHeight: CGFloat,
+        notchCenterX: CGFloat? = nil
+    ) {
         self.screenFrame = screenFrame
         self.hasPhysicalNotch = hasPhysicalNotch
         self.notchSize = notchSize
         self.menuBarHeight = menuBarHeight
+        self.notchCenterX = notchCenterX ?? screenFrame.midX
     }
 
     /// Size used when no hardware notch exists. It represents the compact
@@ -38,13 +51,26 @@ public struct NotchMetrics: Sendable, Equatable {
         menuBarHeight: CGFloat
     ) -> NotchMetrics {
         if safeAreaTop > 0, let left = auxiliaryTopLeft, let right = auxiliaryTopRight {
-            let width = screenFrame.width - left.width - right.width
+            let notchMinX = max(left.maxX, screenFrame.minX)
+            let notchMaxX = min(right.minX, screenFrame.maxX)
+            let width = notchMaxX - notchMinX
             if width > 1 {
+                // `safeAreaInsets.top` describes the camera clearance, while
+                // the visible menu-bar band can include another point at its
+                // bottom edge. Cover the complete band so the wallpaper never
+                // appears as a hairline below the physical notch.
+                let coverageHeight = max(
+                    safeAreaTop,
+                    menuBarHeight,
+                    left.height,
+                    right.height
+                )
                 return NotchMetrics(
                     screenFrame: screenFrame,
                     hasPhysicalNotch: true,
-                    notchSize: CGSize(width: width, height: safeAreaTop),
-                    menuBarHeight: max(menuBarHeight, safeAreaTop)
+                    notchSize: CGSize(width: width, height: coverageHeight),
+                    menuBarHeight: coverageHeight,
+                    notchCenterX: notchMinX + width / 2
                 )
             }
         }
@@ -70,10 +96,10 @@ public struct NotchMetrics: Sendable, Equatable {
         )
     }
 
-    /// Cocoa-space rect of the notch cutout itself.
+    /// Cocoa-space rect of the complete physical notch coverage band.
     public var notchRect: CGRect {
         CGRect(
-            x: screenFrame.midX - notchSize.width / 2,
+            x: notchCenterX - notchSize.width / 2,
             y: screenFrame.maxY - notchSize.height,
             width: notchSize.width,
             height: notchSize.height
@@ -380,10 +406,11 @@ public struct NotchLayout: Sendable, Equatable {
         }
     }
 
-    /// Cocoa-space rect of the island for a display, anchored to the top centre.
+    /// Cocoa-space rect of the island, anchored to the display's reported
+    /// physical notch centre (or to the screen centre for a synthetic island).
     public func islandRect(in metrics: NotchMetrics) -> CGRect {
         CGRect(
-            x: metrics.screenFrame.midX - size.width / 2,
+            x: metrics.notchCenterX - size.width / 2,
             y: metrics.screenFrame.maxY - topInset - size.height,
             width: size.width,
             height: size.height
