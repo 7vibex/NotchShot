@@ -141,6 +141,21 @@ struct ContextFeatureTests {
         #expect(normalized.first?.name == "Studio Display")
     }
 
+    @Test("Audio output selector symbols reflect Core Audio transport without inventing products")
+    func audioOutputSymbols() {
+        func reading(_ transport: UInt32) -> AudioRouteReading {
+            AudioRouteReading(deviceID: transport, name: "Output", transport: transport)
+        }
+
+        #expect(reading(kAudioDeviceTransportTypeBuiltIn).selectorSymbolName == "laptopcomputer")
+        #expect(reading(kAudioDeviceTransportTypeBluetooth).selectorSymbolName == "headphones")
+        #expect(reading(kAudioDeviceTransportTypeBluetoothLE).selectorSymbolName == "headphones")
+        #expect(reading(kAudioDeviceTransportTypeAirPlay).selectorSymbolName == "airplayaudio")
+        #expect(reading(kAudioDeviceTransportTypeUSB).selectorSymbolName == "cable.connector")
+        #expect(reading(kAudioDeviceTransportTypeHDMI).selectorSymbolName == "display")
+        #expect(reading(0).selectorSymbolName == "speaker.wave.2.fill")
+    }
+
     @Test("Calendar timing never gives an all-day event a false countdown")
     func calendarTiming() {
         let now = Date()

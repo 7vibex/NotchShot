@@ -1131,6 +1131,7 @@ private struct MediaContent: View {
     @State private var now = Date()
     @State private var audioOutputs: [AudioRouteReading] = []
     @State private var currentAudioOutputID: UInt32?
+    @State private var isAudioOutputPickerPresented = false
     @State private var artworkMotion = false
 
     private var snapshot: MediaSnapshot { coordinator.media.snapshot }
@@ -1256,59 +1257,60 @@ private struct MediaContent: View {
     }
 
     private var audioOutputPicker: some View {
-        HStack(spacing: 8) {
-            Image(systemName: "airplayaudio")
-                .font(.system(size: 11, weight: .semibold))
-                .foregroundStyle(.white.opacity(0.7))
+        Button {
+            refreshAudioOutputs()
+            isAudioOutputPickerPresented = true
+            coordinator.windowController?.focusActivePanel()
+        } label: {
+            HStack(spacing: 9) {
+                Image(systemName: currentAudioOutput?.selectorSymbolName ?? "airplayaudio")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(.white.opacity(0.74))
+                    .frame(width: 18)
 
-            Text(currentAudioOutputName)
-                .font(.system(size: 10, weight: .medium))
-                .foregroundStyle(.white.opacity(0.82))
-                .lineLimit(1)
-                .truncationMode(.tail)
+                Text(currentAudioOutputName)
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(.white.opacity(0.88))
+                    .lineLimit(1)
+                    .truncationMode(.tail)
 
-            Spacer(minLength: 4)
+                Spacer(minLength: 6)
 
-            Menu {
-                if audioOutputs.isEmpty {
-                    Text("No audio outputs found")
-                } else {
-                    ForEach(audioOutputs) { output in
-                        Button {
-                            selectAudioOutput(output)
-                        } label: {
-                            if output.deviceID == currentAudioOutputID {
-                                Label(output.name, systemImage: "checkmark")
-                            } else {
-                                Text(output.name)
-                            }
-                        }
-                    }
-                }
-            } label: {
-                Label("Choose Output", systemImage: "chevron.up.chevron.down")
-                    .font(.system(size: 9, weight: .semibold))
-                    .foregroundStyle(.white)
-                    .padding(.horizontal, 9)
-                    .frame(minHeight: 28)
-                    .notchControlSurface(in: Capsule(), reduceTransparency: reduceTransparency)
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 8, weight: .bold))
+                    .foregroundStyle(.white.opacity(0.56))
             }
-            .menuStyle(.borderlessButton)
-            .fixedSize()
-            .help("Choose the macOS audio output")
-            .accessibilityLabel("Audio output, \(currentAudioOutputName)")
+            .padding(.horizontal, 10)
+            .frame(maxWidth: .infinity, minHeight: 32)
+            .contentShape(Rectangle())
         }
-        .padding(.horizontal, 8)
-        .frame(minHeight: 32)
-        .background {
-            RoundedRectangle(cornerRadius: 9)
-                .fill(.white.opacity(0.06))
+        .buttonStyle(NotchPressButtonStyle())
+        .notchControlSurface(
+            in: RoundedRectangle(cornerRadius: 10, style: .continuous),
+            reduceTransparency: reduceTransparency,
+            emphasized: isAudioOutputPickerPresented
+        )
+        .popover(isPresented: $isAudioOutputPickerPresented, arrowEdge: .top) {
+            AudioOutputPickerPopover(
+                outputs: audioOutputs,
+                currentOutputID: currentAudioOutputID,
+                onRefresh: refreshAudioOutputs,
+                onSelect: selectAudioOutput
+            )
+            .preferredColorScheme(.dark)
         }
+        .help("Choose the macOS audio output")
+        .accessibilityLabel("Audio output")
+        .accessibilityValue(currentAudioOutputName)
+        .accessibilityHint("Opens the available audio output list")
+    }
+
+    private var currentAudioOutput: AudioRouteReading? {
+        audioOutputs.first(where: { $0.deviceID == currentAudioOutputID })
     }
 
     private var currentAudioOutputName: String {
-        audioOutputs.first(where: { $0.deviceID == currentAudioOutputID })?.name
-            ?? "Audio Output"
+        currentAudioOutput?.name ?? "Audio Output"
     }
 
     private func refreshAudioOutputs() {
@@ -1317,9 +1319,14 @@ private struct MediaContent: View {
     }
 
     private func selectAudioOutput(_ output: AudioRouteReading) {
+        guard output.deviceID != currentAudioOutputID else {
+            isAudioOutputPickerPresented = false
+            return
+        }
         do {
             try AudioOutputDeviceService.select(output.deviceID)
             refreshAudioOutputs()
+            isAudioOutputPickerPresented = false
         } catch {
             coordinator.present(error: error)
         }
@@ -1357,6 +1364,138 @@ private struct MediaContent: View {
             value: artworkMotion
         )
         .accessibilityHidden(true)
+    }
+}
+
+/// Reference-inspired output card shown below the media route control.
+///
+/// It deliberately lists only devices returned by the existing public Core
+/// Audio service. The glass card and status dots echo the supplied selector
+/// without copying device names, imagery, or unavailable battery metadata.
+private struct AudioOutputPickerPopover: View {
+    var outputs: [AudioRouteReading]
+    var currentOutputID: UInt32?
+    var onRefresh: () -> Void
+    var onSelect: (AudioRouteReading) -> Void
+
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+
+    private var listHeight: CGFloat {
+        guard !outputs.isEmpty else { return 64 }
+        return min(CGFloat(outputs.count) * 42, 168)
+    }
+
+    var body: some View {
+        VStack(spacing: 8) {
+            HStack(spacing: 8) {
+                Text("Audio Output")
+                    .font(.system(size: 11, weight: .semibold, design: .rounded))
+                    .foregroundStyle(.white.opacity(0.86))
+
+                Spacer(minLength: 12)
+
+                Button(action: onRefresh) {
+                    Image(systemName: "arrow.clockwise")
+                        .font(.system(size: 10, weight: .semibold))
+                        .frame(width: 28, height: 28)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(NotchPressButtonStyle())
+                .foregroundStyle(.white.opacity(0.72))
+                .help("Refresh audio outputs")
+                .accessibilityLabel("Refresh audio outputs")
+            }
+
+            if outputs.isEmpty {
+                VStack(spacing: 5) {
+                    Image(systemName: "speaker.slash")
+                        .font(.system(size: 15, weight: .semibold))
+                    Text("No audio outputs found")
+                        .font(.system(size: 11, weight: .semibold))
+                    Text("Connect an output, then refresh.")
+                        .font(.system(size: 9, weight: .medium))
+                        .foregroundStyle(.white.opacity(0.5))
+                }
+                .foregroundStyle(.white.opacity(0.74))
+                .frame(height: listHeight)
+            } else {
+                ScrollView(.vertical) {
+                    LazyVStack(spacing: 6) {
+                        ForEach(outputs) { output in
+                            AudioOutputDeviceRow(
+                                output: output,
+                                isSelected: output.deviceID == currentOutputID,
+                                action: { onSelect(output) }
+                            )
+                        }
+                    }
+                }
+                .scrollIndicators(outputs.count > 4 ? .visible : .hidden)
+                .frame(height: listHeight)
+            }
+        }
+        .padding(10)
+        .frame(width: 300)
+        .notchShotActivityGlassSurface(
+            cornerRadius: 18,
+            reduceTransparency: reduceTransparency
+        )
+        .padding(5)
+    }
+}
+
+private struct AudioOutputDeviceRow: View {
+    var output: AudioRouteReading
+    var isSelected: Bool
+    var action: () -> Void
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var isHovered = false
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 9) {
+                Image(systemName: output.selectorSymbolName)
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(.white.opacity(isSelected ? 0.94 : 0.62))
+                    .frame(width: 24, height: 24)
+                    .background(.white.opacity(isSelected ? 0.14 : 0.07), in: Circle())
+
+                Text(output.name)
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(.white.opacity(0.9))
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+
+                Spacer(minLength: 8)
+
+                Image(systemName: isSelected ? "checkmark.circle.fill" : "circle.fill")
+                    .font(.system(size: isSelected ? 11 : 10, weight: .semibold))
+                    .foregroundStyle(.white.opacity(isSelected ? 0.96 : 0.34))
+                    .contentTransition(.symbolEffect(.replace))
+            }
+            .padding(.horizontal, 9)
+            .frame(maxWidth: .infinity, minHeight: 36)
+            .background {
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .fill(.white.opacity(isSelected ? 0.13 : (isHovered ? 0.10 : 0.065)))
+            }
+            .overlay {
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .stroke(.white.opacity(isSelected ? 0.18 : 0.07), lineWidth: 0.75)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(NotchPressButtonStyle())
+        .scaleEffect(NotchShotMotion.activeScale(
+            isActive: isHovered,
+            reduceMotion: reduceMotion,
+            activeScale: 1.012
+        ))
+        .onHover { isHovered = $0 }
+        .animation(NotchShotMotion.interaction(reduceMotion: reduceMotion), value: isHovered)
+        .accessibilityLabel(output.name)
+        .accessibilityValue(isSelected ? "Selected" : "Available")
     }
 }
 

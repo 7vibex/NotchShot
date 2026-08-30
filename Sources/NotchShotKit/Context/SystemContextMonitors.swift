@@ -154,6 +154,29 @@ public struct AudioRouteReading: Sendable, Equatable, Identifiable {
     }
 
     public var id: UInt32 { deviceID }
+
+    /// A transport-aware symbol for the output selector. Core Audio exposes
+    /// the connection type, not a trustworthy product image, so the UI stays
+    /// honest about generic Bluetooth and wired devices instead of pretending
+    /// every headset is an AirPods model.
+    var selectorSymbolName: String {
+        switch transport {
+        case kAudioDeviceTransportTypeBuiltIn:
+            "laptopcomputer"
+        case kAudioDeviceTransportTypeBluetooth, kAudioDeviceTransportTypeBluetoothLE:
+            "headphones"
+        case kAudioDeviceTransportTypeAirPlay:
+            "airplayaudio"
+        case kAudioDeviceTransportTypeUSB:
+            "cable.connector"
+        case kAudioDeviceTransportTypeHDMI,
+             kAudioDeviceTransportTypeDisplayPort,
+             kAudioDeviceTransportTypeThunderbolt:
+            "display"
+        default:
+            "speaker.wave.2.fill"
+        }
+    }
 }
 
 enum AudioOutputDeviceError: LocalizedError {

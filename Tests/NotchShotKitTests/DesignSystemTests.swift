@@ -157,6 +157,31 @@ struct DesignSystemTests {
         #expect(!mediaSource.contains("NotchMediaGlowPolicy.keylineOpacity"))
     }
 
+    @Test("Audio output selector uses a rounded device card instead of a generic menu")
+    func audioOutputSelectorUsesDeviceCard() throws {
+        let packageRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let sourceURL = packageRoot.appending(
+            path: "Sources/NotchShotKit/UI/NotchRootView.swift"
+        )
+        let source = try String(contentsOf: sourceURL, encoding: .utf8)
+        let mediaStart = try #require(source.range(of: "private struct MediaContent"))
+        let scrubberStart = try #require(source.range(
+            of: "private struct MediaScrubber",
+            range: mediaStart.upperBound..<source.endIndex
+        ))
+        let mediaSource = String(source[mediaStart.lowerBound..<scrubberStart.lowerBound])
+
+        #expect(mediaSource.contains(".popover(isPresented:"))
+        #expect(mediaSource.contains("private struct AudioOutputPickerPopover"))
+        #expect(mediaSource.contains("private struct AudioOutputDeviceRow"))
+        #expect(mediaSource.contains("checkmark.circle.fill"))
+        #expect(mediaSource.contains("LazyVStack(spacing: 6)"))
+        #expect(!mediaSource.contains("Menu {"))
+    }
+
     @Test("Annotation tools adapt instead of exposing a horizontal scrollbar")
     func annotationToolbarAdaptsToWindowWidth() throws {
         let packageRoot = URL(fileURLWithPath: #filePath)
