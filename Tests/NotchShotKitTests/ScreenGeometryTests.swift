@@ -225,6 +225,30 @@ struct NotchMetricsTests {
         #expect(layout.contentTopInset == 37)
     }
 
+    @Test("Visible notification card stays compact beneath the camera")
+    func systemNotificationLayout() {
+        let metrics = NotchMetrics(
+            screenFrame: CGRect(x: 0, y: 0, width: 1_512, height: 982),
+            hasPhysicalNotch: true,
+            notchSize: CGSize(width: 250, height: 37),
+            menuBarHeight: 37
+        )
+        let layout = NotchLayout.layout(
+            for: .systemNotification(SystemNotificationSnapshot(
+                sourceName: "WhatsApp",
+                title: "Cammi",
+                body: "Yea !!"
+            )),
+            metrics: metrics,
+            isPeeking: false,
+            resultCount: 0
+        )
+
+        #expect(layout.size == CGSize(width: 410, height: 115))
+        #expect(layout.contentTopInset == 37)
+        #expect(layout.cornerRadius == 22)
+    }
+
     @Test("Now Playing keeps pointer presence polling armed before the first click")
     @MainActor
     func mediaPresencePolling() {

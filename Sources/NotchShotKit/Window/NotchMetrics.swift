@@ -297,7 +297,9 @@ public struct NotchLayout: Sendable, Equatable {
                 topInset: floatingTopInset
             )
         case .systemNotification:
-            return revealed(width: 430, contentHeight: 82, cornerRadius: 22)
+            // Source icon, sender, one-line message, time, and two full-size
+            // actions in a compact shell inspired by native message banners.
+            return revealed(width: 410, contentHeight: 78, cornerRadius: 22)
         case .error:
             return revealed(width: 360, contentHeight: 62, cornerRadius: 18)
         case .dictation(let snapshot):

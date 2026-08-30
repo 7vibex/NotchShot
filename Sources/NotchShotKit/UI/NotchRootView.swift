@@ -425,7 +425,11 @@ public struct NotchRootView: View {
                 coordinator: coordinator
             )
         case .systemNotification(let snapshot):
-            SystemNotificationContent(snapshot: snapshot, coordinator: coordinator)
+            SystemNotificationCard(
+                snapshot: snapshot,
+                onOpenSource: { coordinator.openSystemNotificationSource(snapshot) },
+                onDismiss: { coordinator.dismissSystemNotification() }
+            )
         case .error(let message):
             ErrorContent(message: message, coordinator: coordinator)
         case .dictation(let snapshot):
@@ -2045,58 +2049,6 @@ private struct StatusContent: View {
             Spacer(minLength: 0)
         }
         .padding(.horizontal, 16)
-    }
-}
-
-private struct SystemNotificationContent: View {
-    let snapshot: SystemNotificationSnapshot
-    @Bindable var coordinator: AppCoordinator
-
-    var body: some View {
-        HStack(spacing: 12) {
-            ZStack {
-                Circle()
-                    .fill(Color.purple.opacity(0.22))
-                Image(systemName: "app.badge.fill")
-                    .font(.system(size: 17, weight: .semibold))
-                    .foregroundStyle(.purple)
-            }
-            .frame(width: 38, height: 38)
-
-            VStack(alignment: .leading, spacing: 2) {
-                Text(snapshot.sourceName.uppercased())
-                    .font(.system(size: 9, weight: .bold, design: .rounded))
-                    .foregroundStyle(.purple)
-                    .lineLimit(1)
-                Text(snapshot.title)
-                    .font(.system(size: 13, weight: .semibold, design: .rounded))
-                    .foregroundStyle(.white)
-                    .lineLimit(1)
-                if !snapshot.body.isEmpty {
-                    Text(snapshot.body)
-                        .font(.system(size: 11))
-                        .foregroundStyle(.white.opacity(0.66))
-                        .lineLimit(1)
-                }
-            }
-            Spacer(minLength: 8)
-            Button {
-                coordinator.dismissSystemNotification()
-            } label: {
-                Image(systemName: "xmark")
-                    .font(.system(size: 11, weight: .bold))
-                    .frame(width: 32, height: 32)
-                    .background(.white.opacity(0.09), in: Circle())
-            }
-            .buttonStyle(.plain)
-            .foregroundStyle(.white.opacity(0.72))
-            .accessibilityLabel("Dismiss notification")
-        }
-        .padding(.horizontal, 14)
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .accessibilityElement(children: .contain)
-        .accessibilityLabel("Notification from \(snapshot.sourceName)")
-        .accessibilityValue([snapshot.title, snapshot.body].filter { !$0.isEmpty }.joined(separator: ", "))
     }
 }
 

@@ -1,4 +1,5 @@
 import Foundation
+import SwiftUI
 import Testing
 @testable import NotchShotKit
 
@@ -28,6 +29,76 @@ struct ProductivityNotificationTests {
         #expect(content.title == "Subject")
         #expect(content.body.count == 500)
         #expect(SystemNotificationBannerParser.parse(description: "Mail", staticTexts: []) == nil)
+    }
+
+    @Test("Messaging banners get source-aware reply handoffs without claiming an inline send")
+    func messagingSourcePresentation() {
+        let messages = SystemNotificationSourcePresentation(sourceName: "Messages")
+        let whatsApp = SystemNotificationSourcePresentation(sourceName: "WhatsApp")
+
+        #expect(messages.kind == .messages)
+        #expect(whatsApp.kind == .whatsApp)
+        #expect(messages.supportsReplyHandoff)
+        #expect(whatsApp.supportsReplyHandoff)
+        #expect(messages.openAccessibilityLabel == "Open Messages to reply")
+        #expect(whatsApp.openAccessibilityLabel == "Open WhatsApp to reply")
+        #expect(messages.kind.bundleIdentifiers == ["com.apple.MobileSMS"])
+        #expect(whatsApp.kind.bundleIdentifiers.contains("net.whatsapp.WhatsApp"))
+    }
+
+    @Test("Unknown notification sources keep a generic non-actionable presentation")
+    func unknownSourcePresentation() {
+        let source = SystemNotificationSourcePresentation(sourceName: "A localized app name")
+
+        #expect(source.kind == .generic)
+        #expect(!source.supportsReplyHandoff)
+        #expect(source.kind.bundleIdentifiers.isEmpty)
+        #expect(source.openAccessibilityLabel == "Open A localized app name")
+    }
+
+    @Test("Notification age stays compact and clamps future timestamps")
+    func compactNotificationAge() {
+        let start = Date(timeIntervalSince1970: 1_000)
+        #expect(SystemNotificationTimePolicy.compactElapsed(
+            receivedAt: start,
+            now: start.addingTimeInterval(-10)
+        ) == "0s")
+        #expect(SystemNotificationTimePolicy.compactElapsed(
+            receivedAt: start,
+            now: start.addingTimeInterval(59)
+        ) == "59s")
+        #expect(SystemNotificationTimePolicy.compactElapsed(
+            receivedAt: start,
+            now: start.addingTimeInterval(60)
+        ) == "1m")
+        #expect(SystemNotificationTimePolicy.compactElapsed(
+            receivedAt: start,
+            now: start.addingTimeInterval(3_600)
+        ) == "1h")
+    }
+
+    @MainActor
+    @Test("The notification card renders at its compact contract size")
+    func notificationCardRenders() throws {
+        let card = SystemNotificationCard(
+            snapshot: SystemNotificationSnapshot(
+                sourceName: "WhatsApp",
+                title: "Cammi",
+                body: "Yea !!",
+                receivedAt: Date()
+            ),
+            onOpenSource: {},
+            onDismiss: {}
+        )
+        .frame(width: 410, height: 78)
+
+        let renderer = ImageRenderer(content: card)
+        renderer.proposedSize = ProposedViewSize(width: 410, height: 78)
+        renderer.scale = 2
+        let image = try #require(renderer.nsImage)
+
+        #expect(image.size == CGSize(width: 410, height: 78))
+        #expect(!(image.tiffRepresentation?.isEmpty ?? true))
     }
 
     @Test("Visible banner queue preserves order and suppresses repeated content")

@@ -460,6 +460,16 @@ public final class AppCoordinator {
         refreshActivity()
     }
 
+    /// Hands the user to the application that posted the visible banner. The
+    /// public notification API does not expose another app's reply callback,
+    /// so this intentionally opens the real app instead of pretending a reply
+    /// was sent from NotchShot.
+    public func openSystemNotificationSource(_ snapshot: SystemNotificationSnapshot) {
+        let source = SystemNotificationSourcePresentation(sourceName: snapshot.sourceName)
+        guard SystemNotificationSourceCatalog.activate(source) else { return }
+        dismissSystemNotification()
+    }
+
     private func receiveSystemNotification(_ snapshot: SystemNotificationSnapshot) {
         guard Preferences.shared.mirrorsSystemNotificationBanners,
               media.isSessionActive else { return }
