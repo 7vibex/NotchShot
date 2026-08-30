@@ -42,7 +42,7 @@ struct ProductivityNotificationCenterView: View {
             VStack(alignment: .leading, spacing: 4) {
                 Text("Notification Center")
                     .font(.system(size: 24, weight: .semibold, design: .rounded))
-                Text("NotchShot alerts, replies, media, and live Focus state in one place.")
+                Text("NotchShot alerts, visible notification banners, media, and live Focus state in one place.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
             }

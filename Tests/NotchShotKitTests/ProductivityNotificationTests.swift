@@ -4,6 +4,78 @@ import Testing
 
 @Suite("Productivity notifications")
 struct ProductivityNotificationTests {
+    @Test("Visible banner accessibility text becomes a bounded system notification")
+    func parsesVisibleSystemBanner() throws {
+        let content = try #require(SystemNotificationBannerParser.parse(
+            description: "Messages, Build finished, Review the result",
+            staticTexts: ["Build finished", "Review the result"]
+        ))
+
+        #expect(content.sourceName == "Messages")
+        #expect(content.title == "Build finished")
+        #expect(content.body == "Review the result")
+    }
+
+    @Test("Banner parsing ignores empty and repeated accessibility values")
+    func boundsSystemBannerText() throws {
+        let longBody = String(repeating: "a", count: 800)
+        let content = try #require(SystemNotificationBannerParser.parse(
+            description: "Mail, Subject",
+            staticTexts: ["", "Subject", "Subject", longBody]
+        ))
+
+        #expect(content.sourceName == "Mail")
+        #expect(content.title == "Subject")
+        #expect(content.body.count == 500)
+        #expect(SystemNotificationBannerParser.parse(description: "Mail", staticTexts: []) == nil)
+    }
+
+    @Test("Visible banner queue preserves order and suppresses repeated content")
+    func systemBannerQueueOrdering() throws {
+        var queue = SystemNotificationQueue()
+        let first = systemSnapshot(1, title: "First")
+        let second = systemSnapshot(2, title: "Second")
+
+        let acceptedFirst = queue.enqueue(first)
+        let acceptedDuplicate = queue.enqueue(systemSnapshot(3, title: "First"))
+        let acceptedSecond = queue.enqueue(second)
+        #expect(acceptedFirst)
+        #expect(!acceptedDuplicate)
+        #expect(acceptedSecond)
+        #expect(queue.current == first)
+        #expect(queue.pending == [second])
+
+        queue.advance()
+        #expect(queue.current == second)
+        queue.advance()
+        #expect(queue.current == nil)
+    }
+
+    @Test("Visible banner queue bounds notification bursts")
+    func systemBannerQueueLimit() throws {
+        var queue = SystemNotificationQueue(pendingLimit: 2)
+        for index in 0..<4 {
+            let accepted = queue.enqueue(systemSnapshot(index, title: "Notification \(index)"))
+            #expect(accepted)
+        }
+
+        #expect(queue.current?.title == "Notification 0")
+        #expect(queue.pending.map(\.title) == ["Notification 2", "Notification 3"])
+        queue.removeAll()
+        #expect(queue.current == nil)
+        #expect(queue.pending.isEmpty)
+    }
+
+    private func systemSnapshot(_ index: Int, title: String) -> SystemNotificationSnapshot {
+        SystemNotificationSnapshot(
+            id: UUID(uuidString: String(format: "00000000-0000-0000-0000-%012d", index + 1))!,
+            sourceName: "Messages",
+            title: title,
+            body: "Body",
+            receivedAt: Date(timeIntervalSince1970: TimeInterval(index))
+        )
+    }
+
     @Test("Notification actions preserve a bounded local reply")
     func notificationReducer() {
         let item = ProductivityNotificationItem(

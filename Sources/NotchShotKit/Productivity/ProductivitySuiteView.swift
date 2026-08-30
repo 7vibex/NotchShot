@@ -184,7 +184,7 @@ private struct ScheduleToolView: View {
                 Button("Open Notification Center") {
                     coordinator.openProductivity(tool: .notifications)
                 }
-                Text("NotchShot can schedule and act on its own notifications. macOS does not expose another app’s notification history or reply channel.")
+                Text("NotchShot can schedule and act on its own notifications. macOS exposes no API for another app’s history or reply channel; the optional Accessibility mirror in Settings can show only banners that are visibly presented.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

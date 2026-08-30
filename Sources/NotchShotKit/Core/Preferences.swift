@@ -213,6 +213,12 @@ public final class Preferences {
     public var showsActivityStackWhileLocked = false {
         didSet { write(showsActivityStackWhileLocked, .activityStackWhileLocked) }
     }
+    /// Privacy-sensitive and intentionally off by default. When enabled,
+    /// visible other-app banners are read through Accessibility and shown only
+    /// in memory while the user session is unlocked.
+    public var mirrorsSystemNotificationBanners = false {
+        didSet { write(mirrorsSystemNotificationBanners, .mirrorSystemNotifications) }
+    }
     public var appleEventsFallbackEnabled = false { didSet { write(appleEventsFallbackEnabled, .appleEventsFallback) } }
     /// Path to the user-installed mediaremote-adapter bundle, if present.
     public var mediaRemoteAdapterPath: String? { didSet { write(mediaRemoteAdapterPath, .adapterPath) } }
@@ -431,7 +437,7 @@ public final class Preferences {
         case clipboardEnabled, clipboardRetentionDays, clipboardClearsOnQuit, clipboardExcluded
         case notchEnabled, notchDisplayPlacement, islandOnExternal, mirrorPassiveContext, hoverPeek, hoverPeekDelay, systemLevelHUD
         case mirrorsBrightness, suppressesSystemOSD, usesSystemShortcuts
-        case mediaEnabled, mediaWhileLocked, activityStackWhileLocked
+        case mediaEnabled, mediaWhileLocked, activityStackWhileLocked, mirrorSystemNotifications
         case appleEventsFallback, adapterPath, adapterIdentity
         case calendarGlance, selectedCalendars, hiddenTitleCalendars, calendarTitles, calendarOverMedia
         case customCalendarSelection
@@ -568,6 +574,7 @@ public final class Preferences {
         mediaIntegrationEnabled = bool(.mediaEnabled, true)
         showsMediaWhileLocked = bool(.mediaWhileLocked, false)
         showsActivityStackWhileLocked = bool(.activityStackWhileLocked, false)
+        mirrorsSystemNotificationBanners = bool(.mirrorSystemNotifications, false)
         appleEventsFallbackEnabled = bool(.appleEventsFallback, false)
         mediaRemoteAdapterPath = string(.adapterPath)
         mediaRemoteAdapterIdentity = defaults.data(

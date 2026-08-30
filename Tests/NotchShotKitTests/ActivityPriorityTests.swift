@@ -1,3 +1,4 @@
+import Foundation
 import Testing
 @testable import NotchShotKit
 
@@ -85,6 +86,27 @@ struct ActivityPriorityTests {
         #expect(arbiter.resolve() == .expanded)
     }
 
+    @Test("A visible system notification waits for deliberate and active work but outranks media")
+    func systemNotificationPriority() {
+        let notification = SystemNotificationSnapshot(
+            id: UUID(uuidString: "00000000-0000-0000-0000-000000000001")!,
+            sourceName: "Messages",
+            title: "New message",
+            body: "Hello",
+            receivedAt: Date(timeIntervalSince1970: 1)
+        )
+        var arbiter = ActivityArbiter()
+        arbiter.hasMedia = true
+        arbiter.systemNotification = notification
+        #expect(arbiter.resolve() == .systemNotification(notification))
+
+        arbiter.userExpanded = true
+        #expect(arbiter.resolve() == .expanded)
+        arbiter.userExpanded = false
+        arbiter.isRecording = true
+        #expect(arbiter.resolve() == .recording)
+    }
+
     @Test("Media shows only when nothing else is competing")
     func mediaWhenQuiet() {
         var arbiter = ActivityArbiter()
@@ -122,6 +144,12 @@ struct ActivityPriorityTests {
     func fullOrdering() {
         let context = ContextSnapshot(kind: .power, title: "Charging", mayInterruptMedia: true)
         let level = SystemLevel(kind: .volume, value: 0.5, isMuted: false)
+        let notification = SystemNotificationSnapshot(
+            sourceName: "Mail",
+            title: "New mail",
+            body: "Review",
+            receivedAt: Date(timeIntervalSince1970: 1)
+        )
         var arbiter = ActivityArbiter()
         arbiter.error = "boom"
         arbiter.selection = .area
@@ -131,6 +159,7 @@ struct ActivityPriorityTests {
         arbiter.hasResult = true
         arbiter.isDraggingFiles = true
         arbiter.userExpanded = true
+        arbiter.systemNotification = notification
         arbiter.systemLevel = level
         arbiter.context = context
         arbiter.hasMedia = true
@@ -151,6 +180,8 @@ struct ActivityPriorityTests {
         arbiter.hasResult = false
         #expect(arbiter.resolve() == .expanded)
         arbiter.userExpanded = false
+        #expect(arbiter.resolve() == .systemNotification(notification))
+        arbiter.systemNotification = nil
         #expect(arbiter.resolve() == .systemLevel(level))
         arbiter.systemLevel = nil
         #expect(arbiter.resolve() == .context(context))
@@ -182,6 +213,11 @@ struct ActivityPriorityTests {
         #expect(NotchActivity.selecting(.area).isInteractive)
         #expect(NotchActivity.processing("x").isInteractive)
         #expect(!NotchActivity.media.isInteractive)
+        #expect(!NotchActivity.systemNotification(SystemNotificationSnapshot(
+            sourceName: "Mail",
+            title: "Message",
+            body: ""
+        )).isInteractive)
         #expect(!NotchActivity.idle.isInteractive)
     }
 }

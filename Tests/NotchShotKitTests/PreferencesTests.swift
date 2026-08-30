@@ -185,11 +185,14 @@ struct PreferencesTests {
         let first = Preferences(defaults: defaults)
         #expect(!first.showsMediaWhileLocked)
         #expect(!first.showsActivityStackWhileLocked)
+        #expect(!first.mirrorsSystemNotificationBanners)
         first.showsMediaWhileLocked = true
         first.showsActivityStackWhileLocked = true
+        first.mirrorsSystemNotificationBanners = true
 
         #expect(Preferences(defaults: defaults).showsMediaWhileLocked)
         #expect(Preferences(defaults: defaults).showsActivityStackWhileLocked)
+        #expect(Preferences(defaults: defaults).mirrorsSystemNotificationBanners)
     }
 
     @Test("Context modules use privacy-safe defaults and persist explicit choices")

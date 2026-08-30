@@ -61,6 +61,8 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
                 controller?.focusActivePanel()
             } else if case .context = coordinator.activity {
                 coordinator.setContextExpanded(true)
+            } else if case .systemNotification = coordinator.activity {
+                coordinator.dismissSystemNotification()
             } else {
                 coordinator.toggleExpanded()
             }
@@ -141,6 +143,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         // Refresh globally rather than only while the Privacy settings page is
         // visible, so menu-bar captures and the notch never use a stale value.
         coordinator.permissions.refresh()
+        coordinator.refreshSystemNotificationMirroringPermission()
         coordinator.resumePendingFirstCaptureIfPossible()
     }
 

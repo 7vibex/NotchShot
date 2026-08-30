@@ -296,6 +296,8 @@ public struct NotchLayout: Sendable, Equatable {
                     : NotchIsland.Geometry.compactHeight / 2,
                 topInset: floatingTopInset
             )
+        case .systemNotification:
+            return revealed(width: 430, contentHeight: 82, cornerRadius: 22)
         case .error:
             return revealed(width: 360, contentHeight: 62, cornerRadius: 18)
         case .dictation(let snapshot):

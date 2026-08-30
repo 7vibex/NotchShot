@@ -1672,6 +1672,22 @@ private struct MediaSettings: View {
                 }
             }
 
+            Section("Notification banners") {
+                Toggle("Mirror visible notifications in the notch", isOn: Binding(
+                    get: { preferences.mirrorsSystemNotificationBanners },
+                    set: { coordinator.setSystemNotificationMirroringEnabled($0) }
+                ))
+                LabeledContent("Status", value: coordinator.systemNotifications.status.title)
+                if coordinator.systemNotifications.status.needsAccessibility {
+                    Button("Open Accessibility Settings") {
+                        coordinator.permissions.openSettings(for: .accessibility)
+                    }
+                }
+                Text("Privacy opt-in. NotchShot reads only notification banners macOS visibly presents through Accessibility, keeps their text in memory, and never shows them while the Mac is locked. Focus-suppressed notifications, hidden history, and another app's reply actions are not available.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
             Section("Now Playing bridge") {
                 LabeledContent("Adapter") {
                     HStack {

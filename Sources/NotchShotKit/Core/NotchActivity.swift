@@ -24,6 +24,9 @@ public enum NotchActivity: Sendable, Equatable {
     case systemLevel(SystemLevel)
     /// A normalized, privacy-bounded calendar, power, audio, or document event.
     case context(ContextSnapshot)
+    /// A transient, memory-only mirror of a banner Notification Center is
+    /// visibly presenting while the user session is unlocked.
+    case systemNotification(SystemNotificationSnapshot)
     /// A transient error banner.
     case error(String)
     /// Transient dictation island morphed from the physical notch.
@@ -44,6 +47,7 @@ public enum NotchActivity: Sendable, Equatable {
         switch self {
         case .idle, .media: false
         case .context(let snapshot): snapshot.presentation == .expanded
+        case .systemNotification: true
         case .dictation: true
         default: true
         }
@@ -62,6 +66,7 @@ public enum NotchActivity: Sendable, Equatable {
         case .result: "result"
         case .systemLevel(let level): "systemLevel(\(level.kind.rawValue))"
         case .context(let snapshot): "context(\(snapshot.kind.rawValue))"
+        case .systemNotification(let snapshot): "systemNotification(\(snapshot.id))"
         case .error(let s): "error(\(s))"
         case .dictation(let snap): "dictation(\(snap.state.debugName))"
         }
@@ -82,6 +87,8 @@ public enum NotchActivity: Sendable, Equatable {
             // The HUD bar is the animation here, so its value has to be part of
             // the identity.
             "systemLevel(\(level.kind.rawValue))-\(level.value)-\(level.isMuted)"
+        case .systemNotification(let snapshot):
+            "systemNotification(\(snapshot.id))"
         default:
             debugName
         }
@@ -100,6 +107,7 @@ public struct ActivityArbiter: Sendable {
     public var userExpanded = false
     public var systemLevel: SystemLevel?
     public var context: ContextSnapshot?
+    public var systemNotification: SystemNotificationSnapshot?
     public var hasMedia = false
     public var error: String?
     public var dictation: DictationSnapshot?
@@ -110,7 +118,7 @@ public struct ActivityArbiter: Sendable {
     /// win, and the order is the product rule:
     ///
     ///     error → selecting → countdown → recording → processing → file drop →
-    ///     result → expanded → system level → interrupting context →
+    ///     result → expanded → notification → system level → interrupting context →
     ///     media → passive context → idle
     ///
     /// Selection and countdown sit above `recording` because they are modal to
@@ -130,6 +138,7 @@ public struct ActivityArbiter: Sendable {
         if isDraggingFiles { return .fileDrop }
         if hasResult { return .result }
         if userExpanded { return .expanded }
+        if let systemNotification { return .systemNotification(systemNotification) }
         if let systemLevel { return .systemLevel(systemLevel) }
         if let context, context.mayInterruptMedia || !hasMedia { return .context(context) }
         if hasMedia { return .media }

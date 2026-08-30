@@ -63,6 +63,7 @@ public final class AppCoordinator {
     public let clipboard = ClipboardStore.shared
     public let clipboardMonitor = ClipboardMonitor.shared
     public let notifications = ProductivityNotificationStore.shared
+    public let systemNotifications = SystemNotificationMirror.shared
     public let permissions = PermissionCenter.shared
     public let systemLevels = SystemLevelMonitor.shared
     public let osd = SystemOSDSuppressor.shared
@@ -82,6 +83,9 @@ public final class AppCoordinator {
     private var scrollingSessionID: UUID?
     private var errorTask: Task<Void, Never>?
     private var systemLevelTask: Task<Void, Never>?
+    private var systemNotificationTask: Task<Void, Never>?
+    private var systemNotificationTaskID: UUID?
+    private var systemNotificationQueue = SystemNotificationQueue()
     private var accessibilityLevelTask: Task<Void, Never>?
     private var peekTask: Task<Void, Never>?
     private var recordingStartTask: Task<Void, Never>?
@@ -127,6 +131,11 @@ public final class AppCoordinator {
         notifications.onChange = { [weak self] in
             self?.refreshActivity()
         }
+        systemNotifications.onNotification = { [weak self] snapshot in
+            self?.receiveSystemNotification(snapshot)
+        }
+        systemNotifications.setSessionActive(media.isSessionActive)
+        systemNotifications.setEnabled(Preferences.shared.mirrorsSystemNotificationBanners)
         context.onSnapshotChange = { [weak self] snapshot in
             guard let self else { return }
             self.arbiter.context = snapshot
@@ -214,9 +223,14 @@ public final class AppCoordinator {
 
     private func observeMedia() {
         arbiter.hasMedia = media.snapshot.hasContent
+        systemNotifications.setSessionActive(media.isSessionActive)
+        if !media.isSessionActive {
+            clearSystemNotifications()
+        }
         refreshActivity()
         withObservationTracking {
             _ = media.snapshot.hasContent
+            _ = media.isSessionActive
         } onChange: { [weak self] in
             Task { @MainActor in self?.observeMedia() }
         }
@@ -413,6 +427,7 @@ public final class AppCoordinator {
         if resolved != activity {
             activity = resolved
         }
+        reconcileSystemNotificationTimer(for: resolved)
         windowController?.update(
             activity: activity,
             isPeeking: isPeeking,
@@ -422,6 +437,72 @@ public final class AppCoordinator {
             hasLockedActivityContent: !notifications.activeItems.isEmpty
                 || context.timer.current != nil
         )
+    }
+
+    // MARK: System notification banners
+
+    public func setSystemNotificationMirroringEnabled(_ enabled: Bool) {
+        Preferences.shared.mirrorsSystemNotificationBanners = enabled
+        systemNotifications.setEnabled(enabled, requestAccessibility: enabled)
+        if !enabled { clearSystemNotifications() }
+        refreshActivity()
+    }
+
+    public func refreshSystemNotificationMirroringPermission() {
+        systemNotifications.refreshPermission()
+    }
+
+    public func dismissSystemNotification() {
+        systemNotificationTask?.cancel()
+        systemNotificationTask = nil
+        systemNotificationTaskID = nil
+        promoteNextSystemNotification()
+        refreshActivity()
+    }
+
+    private func receiveSystemNotification(_ snapshot: SystemNotificationSnapshot) {
+        guard Preferences.shared.mirrorsSystemNotificationBanners,
+              media.isSessionActive else { return }
+        guard systemNotificationQueue.enqueue(snapshot) else { return }
+        arbiter.systemNotification = systemNotificationQueue.current
+        refreshActivity()
+    }
+
+    private func reconcileSystemNotificationTimer(for resolved: NotchActivity) {
+        guard case .systemNotification(let snapshot) = resolved else {
+            systemNotificationTask?.cancel()
+            systemNotificationTask = nil
+            systemNotificationTaskID = nil
+            return
+        }
+        guard systemNotificationTaskID != snapshot.id else { return }
+
+        systemNotificationTask?.cancel()
+        systemNotificationTaskID = snapshot.id
+        systemNotificationTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(6))
+            guard !Task.isCancelled else { return }
+            await MainActor.run {
+                guard let self, self.arbiter.systemNotification?.id == snapshot.id else { return }
+                self.systemNotificationTask = nil
+                self.systemNotificationTaskID = nil
+                self.promoteNextSystemNotification()
+                self.refreshActivity()
+            }
+        }
+    }
+
+    private func promoteNextSystemNotification() {
+        systemNotificationQueue.advance()
+        arbiter.systemNotification = systemNotificationQueue.current
+    }
+
+    private func clearSystemNotifications() {
+        systemNotificationTask?.cancel()
+        systemNotificationTask = nil
+        systemNotificationTaskID = nil
+        systemNotificationQueue.removeAll()
+        arbiter.systemNotification = nil
     }
 
     /// Hover reported by the window controller.

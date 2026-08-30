@@ -515,7 +515,13 @@ struct NotchMetricsTests {
         let activities: [NotchActivity] = [
             .idle, .media, .expanded, .selecting(.area),
             .countdown(remaining: 3, intent: .area), .recording,
-            .processing("x"), .result, .error("x"),
+            .processing("x"), .result,
+            .systemNotification(SystemNotificationSnapshot(
+                sourceName: "Mail",
+                title: "Message",
+                body: "Body"
+            )),
+            .error("x"),
         ]
         for activity in activities {
             for peeking in [true, false] {
