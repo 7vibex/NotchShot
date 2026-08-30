@@ -583,7 +583,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         let window = makeWindow(
             title: "NotchShot Settings",
             content: SettingsView(coordinator: coordinator),
-            size: CGSize(width: 820, height: 580)
+            size: SettingsWindowMetrics.defaultSize
         )
         attachCloseHandler(to: window) { [weak self] in self?.settingsWindow = nil }
         settingsWindow = window

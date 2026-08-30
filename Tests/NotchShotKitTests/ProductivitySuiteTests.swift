@@ -16,6 +16,16 @@ struct ProductivitySuiteTests {
         #expect(SettingsSection.recording.sidebarTitle == "Record")
     }
 
+    @Test("Settings use a System Settings-style two-column window")
+    func settingsWindowLayout() {
+        #expect(SettingsWindowMetrics.defaultSize.width >= 960)
+        #expect(SettingsWindowMetrics.defaultSize.height >= 680)
+        #expect(SettingsWindowMetrics.minimumWidth > SettingsWindowMetrics.sidebarMaximumWidth)
+        #expect(SettingsWindowMetrics.sidebarMinimumWidth >= 240)
+        #expect(SettingsWindowMetrics.sidebarMinimumWidth < SettingsWindowMetrics.sidebarIdealWidth)
+        #expect(SettingsWindowMetrics.sidebarIdealWidth < SettingsWindowMetrics.sidebarMaximumWidth)
+    }
+
     @Test("Settings search matches every term across titles and synonyms")
     func settingsSearch() {
         let sections = [

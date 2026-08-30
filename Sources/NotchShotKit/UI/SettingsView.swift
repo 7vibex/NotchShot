@@ -17,29 +17,36 @@ public struct SettingsView: View {
 
     public var body: some View {
         NavigationSplitView {
-            List(selection: $selection) {
-                Section {
-                    ForEach(filteredSections) { section in
-                        SettingsSidebarLabel(
-                            section: section,
-                            isSelected: selection == section
-                        )
-                        .tag(section)
-                        .accessibilityLabel(section.title)
+            VStack(spacing: 0) {
+                SettingsSidebarSearchField(text: $searchText)
+                SettingsSidebarIdentity()
+
+                List(selection: $selection) {
+                    ForEach(SettingsSidebarGroup.allCases) { group in
+                        let sections = filteredSections.filter { $0.sidebarGroup == group }
+                        if !sections.isEmpty {
+                            Section(group.title) {
+                                ForEach(sections) { section in
+                                    SettingsSidebarLabel(
+                                        section: section,
+                                        isSelected: selection == section
+                                    )
+                                    .tag(section)
+                                    .accessibilityLabel(section.title)
+                                }
+                            }
+                        }
                     }
-                } header: {
-                    Text("Workspace")
                 }
+                .listStyle(.sidebar)
+                .scrollContentBackground(.hidden)
             }
-            .listStyle(.sidebar)
-            .scrollContentBackground(.hidden)
             .background(SettingsWorkbenchStyle.sidebarBackground)
-            .navigationTitle("NotchShot")
-            .navigationSplitViewColumnWidth(min: 210, ideal: 228, max: 260)
-            .searchable(text: $searchText, prompt: "Search settings")
-            .safeAreaInset(edge: .bottom, spacing: 0) {
-                SettingsSidebarFooter()
-            }
+            .navigationSplitViewColumnWidth(
+                min: SettingsWindowMetrics.sidebarMinimumWidth,
+                ideal: SettingsWindowMetrics.sidebarIdealWidth,
+                max: SettingsWindowMetrics.sidebarMaximumWidth
+            )
             .onChange(of: searchText) { _, _ in
                 guard selection.map(filteredSections.contains) != true else { return }
                 selection = filteredSections.first
@@ -52,7 +59,6 @@ public struct SettingsView: View {
                 if let selection {
                     VStack(spacing: 0) {
                         SettingsPaneHeader(section: selection)
-                        Divider().opacity(0.55)
                         settingsPane(for: selection)
                     }
                     .notchShotContentSwap(id: selection)
@@ -64,7 +70,12 @@ public struct SettingsView: View {
             .navigationTitle(selection?.title ?? "Settings")
         }
         .tint(SettingsWorkbenchStyle.accent)
-        .frame(minWidth: 800, idealWidth: 880, minHeight: 560, idealHeight: 620)
+        .frame(
+            minWidth: SettingsWindowMetrics.minimumWidth,
+            idealWidth: SettingsWindowMetrics.defaultSize.width,
+            minHeight: SettingsWindowMetrics.minimumHeight,
+            idealHeight: SettingsWindowMetrics.defaultSize.height
+        )
     }
 
     @ViewBuilder
@@ -101,6 +112,29 @@ public struct SettingsView: View {
             title: \SettingsSection.title,
             keywords: \SettingsSection.searchKeywords
         )
+    }
+}
+
+enum SettingsWindowMetrics {
+    static let defaultSize = CGSize(width: 980, height: 700)
+    static let minimumWidth: CGFloat = 900
+    static let minimumHeight: CGFloat = 620
+    static let sidebarMinimumWidth: CGFloat = 250
+    static let sidebarIdealWidth: CGFloat = 268
+    static let sidebarMaximumWidth: CGFloat = 294
+}
+
+fileprivate enum SettingsSidebarGroup: String, CaseIterable, Identifiable {
+    case workspace
+    case system
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .workspace: "Workspace"
+        case .system: "System"
+        }
     }
 }
 
@@ -148,6 +182,15 @@ enum SettingsSection: String, CaseIterable, Identifiable {
         }
     }
 
+    fileprivate var sidebarGroup: SettingsSidebarGroup {
+        switch self {
+        case .general, .capture, .presets, .recording, .dictation, .appearance:
+            .workspace
+        case .integrations, .context, .privacy, .shortcuts:
+            .system
+        }
+    }
+
     var symbolName: String {
         switch self {
         case .general: "gearshape"
@@ -160,6 +203,21 @@ enum SettingsSection: String, CaseIterable, Identifiable {
         case .context: "rectangle.topthird.inset.filled"
         case .privacy: "hand.raised"
         case .shortcuts: "command"
+        }
+    }
+
+    var symbolTint: Color {
+        switch self {
+        case .general: .gray
+        case .capture: .blue
+        case .presets: .purple
+        case .recording: .red
+        case .dictation: .blue
+        case .appearance: .indigo
+        case .integrations: .orange
+        case .context: .teal
+        case .privacy: .green
+        case .shortcuts: .gray
         }
     }
 
@@ -216,9 +274,79 @@ enum SettingsSection: String, CaseIterable, Identifiable {
 
 private enum SettingsWorkbenchStyle {
     static let accent = Color.accentColor
-    static let sidebarBackground = Color(nsColor: .underPageBackgroundColor)
-        .opacity(0.92)
-    static let detailBackground = Color(nsColor: .windowBackgroundColor)
+    static let sidebarBackground = Color(nsColor: .controlBackgroundColor)
+    static let detailBackground = Color(nsColor: .underPageBackgroundColor)
+    static let groupedSurface = Color(nsColor: .controlBackgroundColor)
+    static let keyline = Color(nsColor: .separatorColor).opacity(0.7)
+}
+
+private struct SettingsSidebarSearchField: View {
+    @Binding var text: String
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "magnifyingglass")
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(.secondary)
+
+            TextField("Search", text: $text)
+                .textFieldStyle(.plain)
+                .font(.system(size: 14))
+                .accessibilityLabel("Search settings")
+
+            if !text.isEmpty {
+                Button {
+                    text = ""
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .foregroundStyle(.tertiary)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Clear settings search")
+            }
+        }
+        .padding(.horizontal, 10)
+        .frame(height: 34)
+        .background {
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(Color.primary.opacity(0.075))
+        }
+        .overlay {
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .stroke(SettingsWorkbenchStyle.keyline, lineWidth: 0.75)
+        }
+        .padding(.horizontal, 14)
+        .padding(.top, 14)
+        .padding(.bottom, 10)
+    }
+}
+
+private struct SettingsSidebarIdentity: View {
+    var body: some View {
+        HStack(spacing: 12) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 13, style: .continuous)
+                    .fill(SettingsWorkbenchStyle.accent.gradient)
+                Image(systemName: "camera.aperture")
+                    .font(.system(size: 20, weight: .semibold))
+                    .foregroundStyle(.white)
+            }
+            .frame(width: 48, height: 48)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text("NotchShot")
+                    .font(.system(size: 15, weight: .semibold))
+                Text("Local-first capture")
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+            }
+
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 16)
+        .padding(.bottom, 12)
+        .accessibilityElement(children: .combine)
+    }
 }
 
 private struct SettingsSidebarLabel: View {
@@ -230,54 +358,21 @@ private struct SettingsSidebarLabel: View {
             Image(systemName: section.symbolName)
                 .font(.system(size: 13, weight: .semibold))
                 .symbolRenderingMode(.monochrome)
-                .foregroundStyle(isSelected ? .white : SettingsWorkbenchStyle.accent)
-                .frame(width: 26, height: 26)
+                .foregroundStyle(.white)
+                .frame(width: 28, height: 28)
                 .background {
                     RoundedRectangle(cornerRadius: 8, style: .continuous)
-                        .fill(isSelected
-                            ? SettingsWorkbenchStyle.accent
-                            : SettingsWorkbenchStyle.accent.opacity(0.12))
+                        .fill(section.symbolTint.gradient)
                 }
 
             Text(section.sidebarTitle)
-                .font(.system(size: 13, weight: isSelected ? .semibold : .medium))
+                .font(.system(size: 14, weight: isSelected ? .semibold : .regular))
                 .lineLimit(1)
 
             Spacer(minLength: 4)
         }
-        .padding(.vertical, 3)
+        .padding(.vertical, 4)
         .contentShape(.rect)
-    }
-}
-
-private struct SettingsSidebarFooter: View {
-    var body: some View {
-        HStack(spacing: 10) {
-            ZStack {
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .fill(SettingsWorkbenchStyle.accent.gradient)
-                Image(systemName: "camera.aperture")
-                    .font(.system(size: 14, weight: .semibold))
-                    .foregroundStyle(.white)
-            }
-            .frame(width: 32, height: 32)
-
-            VStack(alignment: .leading, spacing: 1) {
-                Text("NotchShot")
-                    .font(.system(size: 12, weight: .semibold))
-                Text("Local-first capture")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-            }
-
-            Spacer(minLength: 0)
-        }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 10)
-        .background(.bar)
-        .overlay(alignment: .top) {
-            Divider().opacity(0.55)
-        }
     }
 }
 
@@ -285,48 +380,57 @@ private struct SettingsPaneHeader: View {
     let section: SettingsSection
 
     var body: some View {
-        HStack(spacing: 14) {
+        VStack(spacing: 9) {
             ZStack {
-                RoundedRectangle(cornerRadius: 13, style: .continuous)
-                    .fill(SettingsWorkbenchStyle.accent.opacity(0.13))
-                RoundedRectangle(cornerRadius: 13, style: .continuous)
-                    .stroke(SettingsWorkbenchStyle.accent.opacity(0.18), lineWidth: 1)
+                RoundedRectangle(cornerRadius: 17, style: .continuous)
+                    .fill(section.symbolTint.gradient)
                 Image(systemName: section.symbolName)
-                    .font(.system(size: 19, weight: .semibold))
-                    .foregroundStyle(SettingsWorkbenchStyle.accent)
+                    .font(.system(size: 28, weight: .semibold))
+                    .foregroundStyle(.white)
             }
-            .frame(width: 44, height: 44)
+            .frame(width: 68, height: 68)
+            .shadow(color: .black.opacity(0.15), radius: 3, y: 2)
             .accessibilityHidden(true)
 
-            VStack(alignment: .leading, spacing: 3) {
-                Text(section.title)
-                    .font(.title2.weight(.semibold))
-                Text(section.summary)
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(2)
-            }
+            Text(section.title)
+                .font(.system(size: 27, weight: .bold))
 
-            Spacer(minLength: 12)
-
-            Label("On this Mac", systemImage: "lock.fill")
-                .font(.caption.weight(.medium))
+            Text(section.summary)
+                .font(.system(size: 14, weight: .medium))
                 .foregroundStyle(.secondary)
-                .padding(.horizontal, 10)
-                .padding(.vertical, 6)
-                .background(.quaternary, in: Capsule())
-                .accessibilityLabel("Settings are stored on this Mac")
+                .multilineTextAlignment(.center)
+                .lineLimit(2)
+                .frame(maxWidth: 620)
+
+            Label("Stored on this Mac", systemImage: "lock.fill")
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(.secondary)
         }
-        .padding(.horizontal, 26)
-        .padding(.vertical, 18)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(.bar)
+        .padding(.horizontal, 28)
+        .padding(.vertical, 22)
+        .frame(maxWidth: .infinity)
+        .background {
+            RoundedRectangle(cornerRadius: 20, style: .continuous)
+                .fill(SettingsWorkbenchStyle.groupedSurface)
+        }
+        .overlay {
+            RoundedRectangle(cornerRadius: 20, style: .continuous)
+                .stroke(SettingsWorkbenchStyle.keyline, lineWidth: 0.75)
+        }
+        .padding(.horizontal, 24)
+        .padding(.top, 20)
+        .padding(.bottom, 8)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(section.title). \(section.summary) Settings are stored on this Mac")
     }
 }
 
 private extension View {
     func settingsWorkbenchFormStyle() -> some View {
         formStyle(.grouped)
+            .font(.system(size: 13))
+            .controlSize(.regular)
+            .environment(\.defaultMinListRowHeight, 38)
             .scrollContentBackground(.hidden)
             .background(SettingsWorkbenchStyle.detailBackground)
     }
