@@ -242,6 +242,15 @@ public final class MediaCoordinator {
 
     private func handleStreamEnded(kind: MediaSourceKind) {
         guard activeSource == kind, kind != .none else { return }
+        guard LockedMediaSnapshotPolicy.shouldClearAfterStreamEnds(
+            sessionIsActive: isSessionActive
+        ) else {
+            // loginwindow can interrupt either bridge. Keep the last confirmed
+            // track for the opted-in display-only card; unlock always performs
+            // a fresh source selection.
+            Log.media.notice("\(kind.rawValue) stream ended while locked; preserving the last track")
+            return
+        }
         Log.media.notice("\(kind.rawValue) stream ended; re-selecting")
         snapshot = .empty
         artwork = nil
@@ -250,6 +259,12 @@ public final class MediaCoordinator {
     }
 
     private func apply(_ update: MediaSnapshot) {
+        guard let update = LockedMediaSnapshotPolicy.acceptedUpdate(
+            current: snapshot,
+            proposed: update,
+            sessionIsActive: isSessionActive
+        ) else { return }
+
         // De-duplicate: position-only ticks update the model but shouldn't be
         // treated as a track change by anything downstream.
         if snapshot.isMateriallyEqual(to: update) {

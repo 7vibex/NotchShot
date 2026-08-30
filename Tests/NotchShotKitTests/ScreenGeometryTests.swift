@@ -1,3 +1,4 @@
+import AppKit
 import CoreGraphics
 import Testing
 @testable import NotchShotKit
@@ -399,8 +400,11 @@ struct NotchMetricsTests {
         #expect(!LockedMediaPresentationPolicy.acceptsInput(sessionIsActive: false))
         #expect(LockedMediaPresentationPolicy.acceptsInput(sessionIsActive: true))
         #expect(NotchPanel.level(sessionIsActive: true) == NotchPanel.notchLevel)
-        #expect(NotchPanel.level(sessionIsActive: false) == .screenSaver)
-        #expect(NotchPanel.lockedMediaLevel.rawValue > NotchPanel.notchLevel.rawValue)
+        #expect(NotchPanel.level(sessionIsActive: false) == NotchPanel.lockedMediaLevel)
+        #expect(NotchPanel.lockedMediaLevel.rawValue > NSWindow.Level.screenSaver.rawValue)
+        #expect(NotchPanel.lockedMediaLevel.rawValue < Int(CGWindowLevelForKey(
+            .assistiveTechHighWindow
+        )))
     }
 
     @Test("Only the physical cutout needs AppKit click bridging")

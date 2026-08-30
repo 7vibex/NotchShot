@@ -401,6 +401,46 @@ struct HistoryRetentionTests {
 @Suite("Media snapshot")
 struct MediaSnapshotTests {
 
+    @Test("A transient empty bridge result cannot erase opted-in locked media")
+    func lockedSnapshotRetention() {
+        let playing = MediaSnapshot(
+            source: .appleEvents,
+            applicationName: "Music",
+            title: "Song",
+            artist: "Artist",
+            isPlaying: true
+        )
+
+        #expect(LockedMediaSnapshotPolicy.acceptedUpdate(
+            current: playing,
+            proposed: .empty,
+            sessionIsActive: false
+        ) == nil)
+        #expect(LockedMediaSnapshotPolicy.acceptedUpdate(
+            current: playing,
+            proposed: .empty,
+            sessionIsActive: true
+        ) == .empty)
+        #expect(!LockedMediaSnapshotPolicy.shouldClearAfterStreamEnds(
+            sessionIsActive: false
+        ))
+        #expect(LockedMediaSnapshotPolicy.shouldClearAfterStreamEnds(
+            sessionIsActive: true
+        ))
+    }
+
+    @Test("A real track change is still accepted while locked")
+    func lockedSnapshotRefresh() {
+        let first = MediaSnapshot(source: .mediaRemote, title: "First", artist: "Artist")
+        let second = MediaSnapshot(source: .mediaRemote, title: "Second", artist: "Artist")
+
+        #expect(LockedMediaSnapshotPolicy.acceptedUpdate(
+            current: first,
+            proposed: second,
+            sessionIsActive: false
+        ) == second)
+    }
+
     @Test("Artwork accent preserves cover hue and lifts dark colours for the notch")
     @MainActor
     func artworkAccent() throws {

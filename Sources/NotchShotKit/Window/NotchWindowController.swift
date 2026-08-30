@@ -247,6 +247,9 @@ public final class NotchWindowController {
     private func setSessionActive(_ active: Bool) {
         guard active != isSessionActive else { return }
         isSessionActive = active
+        Log.window.notice(
+            "Session \(active ? "active" : "inactive"); panels: \(self.entries.count), locked opt-in: \(self.allowsLockedPresentation), media available: \(self.hasMediaContent)"
+        )
         if !active {
             hoveredDisplayID = nil
             isPointerOverIsland = false

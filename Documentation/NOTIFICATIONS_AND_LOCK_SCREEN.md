@@ -17,7 +17,7 @@ a WidgetKit Lock Screen widget.
 | Reply to a WhatsApp, Messages, Slack, or other third-party notification | The posting app owns its notification category, text-input action, and response callback | NotchShot can open a recognized source app so the user can reply there. It does not show an inline send control or claim that a message was sent. |
 | Add an iPhone-style accessory widget to the Mac Lock Screen | WidgetKit does not offer the accessory Lock Screen families on macOS | Not implemented. |
 | Start a native ActivityKit Live Activity from a macOS app | The macOS 26 SDK marks `ActivityAttributes`, `ActivityContent`, and `Activity` unavailable on macOS | Not implemented. A Mac may display activities originating on a paired iPhone; that is not a native NotchShot macOS activity. |
-| Show opted-in app content while the login session is inactive | AppKit provides an app-window policy using `NSWindow.canBecomeVisibleWithoutLogin` | Uses the existing mouse-transparent screen-saver-level panel, only after a separate privacy opt-in. |
+| Show opted-in app content while the login session is inactive | AppKit provides an app-window policy using `NSWindow.canBecomeVisibleWithoutLogin` | Uses the existing mouse-transparent panel one level above the standard screen-saver band, only after a separate privacy opt-in. |
 
 Primary references:
 
