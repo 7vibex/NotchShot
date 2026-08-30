@@ -42,7 +42,7 @@ enum PowerContextPolicy {
                 || previous?.isConnectedToPower == true
                 || (previous?.percentage ?? 101) > 20 else { return nil }
             title = "Low Battery"
-            symbol = "#FF453A"
+            symbol = "#FFD60A"
             expires = 10
         } else if current.isConnectedToPower, percentage >= 100, !current.isCharging {
             guard previous?.percentage != percentage || previous?.isCharging != current.isCharging else { return nil }

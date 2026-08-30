@@ -683,7 +683,7 @@ private struct ContextModuleSettings: View {
                         coordinator.refreshContextPreferences()
                     }
                 ))
-                Text("Audio feedback uses the public Core Audio output route only. It never guesses accessory battery level.")
+                Text("Low-battery alerts show the public Low Power Mode state and open Battery Settings; NotchShot cannot switch that system mode itself. Audio feedback uses the public Core Audio output route only and never guesses accessory battery level.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

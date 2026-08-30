@@ -274,6 +274,11 @@ public struct NotchLayout: Sendable, Equatable {
             }
             return revealed(width: 360, contentHeight: 46, cornerRadius: 23)
         case .context(let snapshot):
+            if PowerModePresentationPolicy.isLowBatteryAlert(snapshot) {
+                // The ten-second alert exposes its Battery Settings handoff
+                // immediately instead of hiding it behind a second expansion.
+                return revealed(width: 410, contentHeight: 78, cornerRadius: 22)
+            }
             if snapshot.presentation == .expanded {
                 if snapshot.kind == .ai {
                     return revealed(width: 520, contentHeight: 320, cornerRadius: 24)

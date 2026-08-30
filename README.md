@@ -173,6 +173,9 @@ persisting event titles. Explicit document drops can be summarized locally throu
 Vision OCR, and Apple Intelligence when available, with a visible local extractive fallback
 and copy/open/save/forget controls. Event-driven charging feedback is enabled by default;
 public Core Audio route feedback is optional and never invents accessory battery values.
+Low-battery transitions reveal a compact alert that reads the public Low Power Mode state and
+opens macOS Battery settings from its action pill. Foundation exposes that state as read-only,
+so NotchShot does not run privileged power commands or present the pill as a direct system toggle.
 An explicit local reporter lets Claude Code, Codex, Cursor, scripts, and build tools show
 working, waiting, finished, failed, step, and measured-progress states in the island. Hook
 events never manufacture a percentage, read private app UI, or leave the Mac. Setup and the

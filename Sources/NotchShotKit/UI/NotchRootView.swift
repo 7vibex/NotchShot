@@ -706,7 +706,12 @@ private struct ContextContent: View {
     @Bindable var coordinator: AppCoordinator
 
     var body: some View {
-        if snapshot.presentation == .expanded {
+        if PowerModePresentationPolicy.isLowBatteryAlert(snapshot) {
+            BatteryAlertCard(
+                snapshot: snapshot,
+                onOpenBatterySettings: { coordinator.openBatterySettings() }
+            )
+        } else if snapshot.presentation == .expanded {
             expanded
         } else if isPreviewing {
             if let agent = headlineAgent {
@@ -867,17 +872,6 @@ private struct ContextContent: View {
             }
             Spacer(minLength: 0)
             HStack {
-                if snapshot.kind == .power, snapshot.title == "Low Battery" {
-                    Button("Battery Settings") {
-                        guard let url = URL(
-                            string: "x-apple.systempreferences:com.apple.preference.battery"
-                        ) else { return }
-                        NSWorkspace.shared.open(url)
-                    }
-                    .buttonStyle(.borderless)
-                    .frame(minHeight: NotchShotDesignSystem.minimumControlTarget)
-                    .contentShape(Rectangle())
-                }
                 if snapshot.kind == .power {
                     Text(ProcessInfo.processInfo.isLowPowerModeEnabled ? "Low Power Mode is on" : "Low Power Mode is off")
                         .font(.caption2)

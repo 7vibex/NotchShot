@@ -2979,6 +2979,13 @@ public final class AppCoordinator {
         context.present(snapshot)
     }
 
+    public func openBatterySettings() {
+        guard BatterySettingsService.open() else {
+            present(error: NotchShotError.exportFailed("Battery Settings could not be opened"))
+            return
+        }
+    }
+
     public func refreshContextPreferences() { context.refreshPreferences() }
 
     // MARK: Clipboard
