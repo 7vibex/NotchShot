@@ -79,6 +79,21 @@ public enum DictationModelError: LocalizedError, Equatable {
     }
 }
 
+/// The small part of `AssetInventory` used to reserve dictation languages.
+/// Keeping it injectable lets the five-language boundary be tested without
+/// downloading or releasing the user's real speech assets.
+struct DictationReservationInventory: Sendable {
+    var maximumReservedLocales: @Sendable () -> Int
+    var reservedLocales: @Sendable () async -> [Locale]
+    var reserve: @Sendable (Locale) async throws -> Bool
+
+    static let system = DictationReservationInventory(
+        maximumReservedLocales: { AssetInventory.maximumReservedLocales },
+        reservedLocales: { await AssetInventory.reservedLocales },
+        reserve: { try await AssetInventory.reserve(locale: $0) }
+    )
+}
+
 /// One place that answers "is this language's model installed?" and installs it.
 ///
 /// Settings and the dictation session both go through here so they cannot
@@ -214,42 +229,32 @@ public enum DictationModelCatalog {
         await onProgress(1)
     }
 
-    /// Makes sure the locale holds one of this app's reservation slots.
+    /// Makes sure the locale holds one of this app's reservation slots without
+    /// silently evicting another language the user chose to keep ready.
     ///
     /// A downloaded model is only visible to `SpeechAnalyzer` once reserved,
-    /// and the slots are capped. The previous code reserved with `try?` and
-    /// discarded the `Bool` result, so hitting the cap left the language
-    /// downloaded but permanently unusable — reported forever as "the current
-    /// language model is not installed", with no action that could fix it.
-    private static func ensureReserved(_ locale: Locale) async throws(DictationModelError) {
-        if await isReserved(locale) { return }
-        if await reserveSucceeded(locale) { return }
-
-        // Out of slots: free one this session does not need, then retry once.
-        let reserved = await AssetInventory.reservedLocales
-        let releasable = reserved.first { $0.identifier != locale.identifier }
-        guard let releasable else {
-            throw DictationModelError.reservationLimitReached(
-                maximum: AssetInventory.maximumReservedLocales
-            )
+    /// and the slots are capped. Apple's API returns `false` when the locale is
+    /// already reserved, which is a successful end state. It throws when a new
+    /// reservation would exceed the cap. Preserve the existing reservations in
+    /// that case so all five remain ready until the user explicitly removes one.
+    static func ensureReserved(
+        _ locale: Locale,
+        inventory: DictationReservationInventory = .system
+    ) async throws {
+        do {
+            // `true` means newly reserved; `false` means already reserved.
+            // Either result means the requested language is ready to retain.
+            _ = try await inventory.reserve(locale)
+        } catch {
+            let maximum = inventory.maximumReservedLocales()
+            let reservedCount = await inventory.reservedLocales().count
+            guard reservedCount < maximum else {
+                throw DictationModelError.reservationLimitReached(maximum: maximum)
+            }
+            // Do not disguise unsupported-locale, storage, or service failures
+            // as a capacity problem when fewer than the allowed slots are used.
+            throw error
         }
-        _ = await AssetInventory.release(reservedLocale: releasable)
-        guard await reserveSucceeded(locale) else {
-            throw DictationModelError.reservationLimitReached(
-                maximum: AssetInventory.maximumReservedLocales
-            )
-        }
-    }
-
-    private static func isReserved(_ locale: Locale) async -> Bool {
-        let reserved = await AssetInventory.reservedLocales
-        return reserved.contains { $0.identifier == locale.identifier }
-    }
-
-    /// `reserve` signals failure two ways — a throw and a `false` return — and
-    /// both mean the language will not work.
-    private static func reserveSucceeded(_ locale: Locale) async -> Bool {
-        (try? await AssetInventory.reserve(locale: locale)) == true
     }
 
     /// Either signal being positive means dictation can run: the analyzer gate

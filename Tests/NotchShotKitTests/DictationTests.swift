@@ -658,6 +658,39 @@ struct DictationStopAffordanceTests {
 
 @Suite("Dictation language model")
 struct DictationModelCatalogTests {
+    private actor ReservationStore {
+        enum Failure: Error, Equatable {
+            case full
+            case serviceUnavailable
+        }
+
+        let maximum: Int
+        private(set) var locales: [Locale] = []
+
+        init(maximum: Int) {
+            self.maximum = maximum
+        }
+
+        func reserve(_ locale: Locale) throws -> Bool {
+            if locales.contains(where: { $0.identifier(.bcp47) == locale.identifier(.bcp47) }) {
+                return false
+            }
+            guard locales.count < maximum else { throw Failure.full }
+            locales.append(locale)
+            return true
+        }
+
+        func snapshot() -> [Locale] { locales }
+    }
+
+    private func inventory(for store: ReservationStore) -> DictationReservationInventory {
+        DictationReservationInventory(
+            maximumReservedLocales: { store.maximum },
+            reservedLocales: { await store.snapshot() },
+            reserve: { try await store.reserve($0) }
+        )
+    }
+
     @Test("Install is offered exactly when downloading it would help")
     func installability() {
         #expect(DictationModelAvailability.availableToInstall.isInstallable)
@@ -710,6 +743,58 @@ struct DictationModelCatalogTests {
 
         let stale = DictationModelError.unavailableAfterInstall(language: "German").errorDescription ?? ""
         #expect(stale.contains("German"))
+    }
+
+    @Test("Five languages stay reserved and a sixth does not evict one")
+    func keepsFiveLanguagesReady() async throws {
+        let store = ReservationStore(maximum: 5)
+        let inventory = inventory(for: store)
+        let firstFive = ["en-US", "de-DE", "fr-FR", "es-ES", "it-IT"].map(Locale.init(identifier:))
+
+        for locale in firstFive {
+            try await DictationModelCatalog.ensureReserved(locale, inventory: inventory)
+        }
+
+        #expect(await store.snapshot().map { $0.identifier(.bcp47) } == firstFive.map { $0.identifier(.bcp47) })
+        await #expect(throws: DictationModelError.reservationLimitReached(maximum: 5)) {
+            try await DictationModelCatalog.ensureReserved(
+                Locale(identifier: "pt-BR"),
+                inventory: inventory
+            )
+        }
+        #expect(await store.snapshot().map { $0.identifier(.bcp47) } == firstFive.map { $0.identifier(.bcp47) })
+    }
+
+    @Test("An already reserved language succeeds when all five slots are used")
+    func alreadyReservedLanguageIsReady() async throws {
+        let store = ReservationStore(maximum: 5)
+        let inventory = inventory(for: store)
+        let locales = ["en-US", "de-DE", "fr-FR", "es-ES", "it-IT"].map(Locale.init(identifier:))
+        for locale in locales {
+            try await DictationModelCatalog.ensureReserved(locale, inventory: inventory)
+        }
+
+        try await DictationModelCatalog.ensureReserved(
+            Locale(identifier: "en_US"),
+            inventory: inventory
+        )
+        #expect(await store.snapshot().count == 5)
+    }
+
+    @Test("A reservation service failure below the cap is not mislabeled as capacity")
+    func preservesNonCapacityFailure() async {
+        let inventory = DictationReservationInventory(
+            maximumReservedLocales: { 5 },
+            reservedLocales: { [] },
+            reserve: { _ in throw ReservationStore.Failure.serviceUnavailable }
+        )
+
+        await #expect(throws: ReservationStore.Failure.serviceUnavailable) {
+            try await DictationModelCatalog.ensureReserved(
+                Locale(identifier: "en-US"),
+                inventory: inventory
+            )
+        }
     }
 
     @Test("A locale the analyzer can already use never reports as missing")
