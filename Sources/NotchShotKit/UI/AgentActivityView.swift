@@ -99,112 +99,122 @@ struct AgentStatePill: View {
     }
 }
 
-// MARK: - Progress
+// MARK: - Focus card content
 
-/// A determinate bar drawn on the island's ladder rather than the system
-/// `ProgressView`, whose control-tinted track disappears against black.
-struct AgentProgressBar: View {
-    var progress: Double
-    var tint: Color
+/// Keeps the dense focus card honest and predictable. The adapter may report
+/// six steps, but four is the most the notch card can show without either
+/// shrinking the labels into noise or pushing the task summary out of view.
+enum AgentFocusCardPolicy {
+    static let maximumVisibleSteps = 4
 
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    static func visibleSteps(in activity: AIActivitySnapshot) -> [AIActivityStep] {
+        Array(activity.steps.prefix(maximumVisibleSteps))
+    }
 
-    private var clamped: Double { min(max(progress, 0), 1) }
-
-    var body: some View {
-        HStack(spacing: NotchIsland.Spacing.element) {
-            GeometryReader { proxy in
-                ZStack(alignment: .leading) {
-                    Capsule(style: .continuous)
-                        .fill(Color.islandInk(NotchIsland.Ink.fill))
-                    Capsule(style: .continuous)
-                        .fill(
-                            LinearGradient(
-                                colors: [tint, tint.opacity(0.72)],
-                                startPoint: .leading,
-                                endPoint: .trailing
-                            )
-                        )
-                        .frame(width: max(0, proxy.size.width * clamped))
-                }
-            }
-            .frame(height: 4)
-            .animation(reduceMotion ? nil : .easeOut(duration: 0.24), value: clamped)
-
-            Text("\(Int((clamped * 100).rounded()))%")
-                .font(.system(size: 10, weight: .semibold, design: .rounded))
-                .monospacedDigit()
-                .foregroundStyle(tint)
-                .frame(width: 32, alignment: .trailing)
-        }
-        .accessibilityElement()
-        .accessibilityLabel("Reported progress")
-        .accessibilityValue("\(Int((clamped * 100).rounded())) percent")
+    static func overflowCount(in activity: AIActivitySnapshot) -> Int {
+        max(0, activity.steps.count - maximumVisibleSteps)
     }
 }
 
-// MARK: - Step trail
-
-/// The agent's declared steps as a connected trail. Each step keeps its own
-/// state colour, so a failure mid-run is visible without reading the labels.
-struct AgentStepTrail: View {
-    var steps: [AIActivityStep]
+/// The agent's declared work as a vertical checklist. This follows the compact
+/// scan pattern used by terminal agents: completed work above, the active item
+/// in accent, and pending work below. When an adapter reports no steps, the
+/// activity's real title is used as the single current item rather than
+/// inventing a plan that the agent never supplied.
+struct AgentStepList: View {
+    var activity: AIActivitySnapshot
     var tint: Color
 
-    private static let visibleLimit = 4
+    private var visible: [AIActivityStep] {
+        AgentFocusCardPolicy.visibleSteps(in: activity)
+    }
 
-    private var visible: [AIActivityStep] { Array(steps.prefix(Self.visibleLimit)) }
-    private var overflow: Int { max(0, steps.count - Self.visibleLimit) }
+    private var overflow: Int {
+        AgentFocusCardPolicy.overflowCount(in: activity)
+    }
 
     var body: some View {
-        HStack(spacing: NotchIsland.Spacing.snug) {
-            ForEach(Array(visible.enumerated()), id: \.element.id) { index, step in
-                if index > 0 {
-                    Rectangle()
-                        .fill(Color.islandInk(NotchIsland.Ink.hairline))
-                        .frame(width: 6, height: 1)
-                        .accessibilityHidden(true)
+        VStack(alignment: .leading, spacing: 3) {
+            if visible.isEmpty {
+                fallbackActivityLine
+            } else {
+                ForEach(Array(visible.enumerated()), id: \.element.id) { index, step in
+                    HStack(spacing: NotchIsland.Spacing.tight) {
+                        Image(systemName: symbol(for: step.state))
+                            .font(.system(size: 8, weight: .bold))
+                            .foregroundStyle(color(for: step.state))
+                            .frame(width: 10)
+                            .accessibilityHidden(true)
+
+                        Text(step.label)
+                            .font(.system(size: 9.5, weight: step.state == .working ? .semibold : .medium))
+                            .foregroundStyle(labelColor(for: step.state))
+                            .lineLimit(1)
+
+                        Spacer(minLength: NotchIsland.Spacing.tight)
+
+                        if index == visible.count - 1, overflow > 0 {
+                            Text("+\(overflow)")
+                                .font(.system(size: 8.5, weight: .semibold, design: .rounded))
+                                .foregroundStyle(Color.islandInk(NotchIsland.Ink.tertiary))
+                        }
+                    }
+                    .frame(minHeight: 11)
                 }
-
-                HStack(spacing: NotchIsland.Spacing.tight) {
-                    Image(systemName: step.state.symbolName)
-                        .font(.system(size: 9, weight: .semibold))
-                        .foregroundStyle(color(for: step.state))
-                    Text(step.label)
-                        .font(.system(size: 10, weight: .medium))
-                        .foregroundStyle(
-                            step.state == .pending
-                                ? Color.islandInk(NotchIsland.Ink.tertiary)
-                                : Color.islandInk(NotchIsland.Ink.secondary)
-                        )
-                        .lineLimit(1)
-                }
-                .layoutPriority(step.state == .working ? 1 : 0)
             }
-
-            if overflow > 0 {
-                Text("+\(overflow)")
-                    .font(.system(size: 10, weight: .semibold, design: .rounded))
-                    .foregroundStyle(Color.islandInk(NotchIsland.Ink.tertiary))
-            }
-
-            Spacer(minLength: 0)
         }
+        .frame(maxWidth: .infinity, alignment: .topLeading)
         .accessibilityElement(children: .combine)
         .accessibilityLabel("Steps")
-        .accessibilityValue(
-            visible.map { "\($0.label), \($0.state.accessibilityDescription)" }
-                .joined(separator: ". ")
-        )
+        .accessibilityValue(accessibilityValue)
+    }
+
+    private var fallbackActivityLine: some View {
+        HStack(spacing: NotchIsland.Spacing.tight) {
+            Image(systemName: activity.state.stripSymbol)
+                .font(.system(size: 8, weight: .bold))
+                .foregroundStyle(tint)
+                .frame(width: 10)
+                .accessibilityHidden(true)
+            Text(activity.title)
+                .font(.system(size: 9.5, weight: .semibold))
+                .foregroundStyle(Color.islandInk(NotchIsland.Ink.secondary))
+                .lineLimit(2)
+        }
+    }
+
+    private var accessibilityValue: String {
+        guard !visible.isEmpty else {
+            return "\(activity.title), \(activity.state.title)"
+        }
+        var value = visible.map { "\($0.label), \($0.state.accessibilityDescription)" }
+            .joined(separator: ". ")
+        if overflow > 0 { value += ". \(overflow) more steps" }
+        return value
+    }
+
+    private func symbol(for state: AIActivityStepState) -> String {
+        switch state {
+        case .pending: "circle"
+        case .working: "circle.fill"
+        case .completed: "checkmark"
+        case .failed: "xmark"
+        }
     }
 
     private func color(for state: AIActivityStepState) -> Color {
         switch state {
         case .pending: Color.islandInk(NotchIsland.Ink.tertiary)
         case .working: tint
-        case .completed: .green
+        case .completed: tint
         case .failed: .red
         }
+    }
+
+    private func labelColor(for state: AIActivityStepState) -> Color {
+        state == .pending
+            ? Color.islandInk(NotchIsland.Ink.tertiary)
+            : Color.islandInk(NotchIsland.Ink.secondary)
     }
 }
 
@@ -221,20 +231,17 @@ extension AIActivityStepState {
 
 // MARK: - Row
 
-/// One agent's card.
-///
-/// The bands always appear in the same order — who, what, where, how far, which
-/// step — so rows for different agents scan as one column rather than as a set
-/// of unrelated boxes, and a band is omitted rather than reordered when an
-/// agent reports nothing for it. A recent run keeps only the first band: its
-/// progress and steps are no longer actionable, and the space belongs to the
-/// agents still running.
+/// One agent's card. Live work uses the same compact grammar as a terminal
+/// agent: identity and state on top, a vertical command trail beside a recessed
+/// task summary, and a quiet source-coloured glow at the bottom. Completed runs
+/// collapse to one row so history never competes with work still in motion.
 struct AgentActivityRow: View {
     var activity: AIActivitySnapshot
     var isRecent: Bool
     var onDismiss: () -> Void
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @State private var isHovered = false
 
     private var accent: Color {
@@ -245,43 +252,15 @@ struct AgentActivityRow: View {
 
     private var stateTint: Color { activity.state.tint(sourceAccent: accent) }
 
-    private var iconSize: CGFloat { isRecent ? 20 : 28 }
+    private var iconSize: CGFloat { isRecent ? 18 : 20 }
 
     var body: some View {
-        HStack(alignment: .top, spacing: NotchIsland.Spacing.row) {
-            agentButton
-
-            VStack(alignment: .leading, spacing: NotchIsland.Spacing.snug) {
-                identityBand
-
-                if !isRecent {
-                    Text(activity.title)
-                        .font(.system(size: 12, weight: .medium))
-                        .foregroundStyle(Color.islandInk(NotchIsland.Ink.primary))
-                        .lineLimit(2)
-                        .fixedSize(horizontal: false, vertical: true)
-
-                    contextLine
-
-                    if let progress = activity.progress {
-                        AgentProgressBar(progress: progress, tint: stateTint)
-                            .padding(.top, NotchIsland.Spacing.hairline)
-                    }
-
-                    if !activity.steps.isEmpty {
-                        AgentStepTrail(steps: activity.steps, tint: stateTint)
-                    }
-                }
+        Group {
+            if isRecent {
+                recentRow
+            } else {
+                liveCard
             }
-        }
-        .padding(isRecent ? NotchIsland.Spacing.element : NotchIsland.Spacing.group)
-        .background {
-            RoundedRectangle(cornerRadius: NotchIsland.Radius.card, style: .continuous)
-                .fill(Color.black.opacity(NotchIsland.Ink.recessed))
-        }
-        .overlay {
-            RoundedRectangle(cornerRadius: NotchIsland.Radius.card, style: .continuous)
-                .stroke(borderTint, lineWidth: NotchIsland.Stroke.hairline)
         }
         .contentShape(RoundedRectangle(cornerRadius: NotchIsland.Radius.card, style: .continuous))
         .onHover { isHovered = $0 }
@@ -289,6 +268,65 @@ struct AgentActivityRow: View {
         .accessibilityElement(children: .contain)
         .accessibilityLabel("\(activity.source.title), \(activity.state.title)")
         .accessibilityValue(accessibilityValue)
+    }
+
+    private var liveCard: some View {
+        VStack(alignment: .leading, spacing: NotchIsland.Spacing.snug) {
+            liveHeader
+
+            HStack(alignment: .top, spacing: NotchIsland.Spacing.group) {
+                AgentStepList(activity: activity, tint: stateTint)
+                    .padding(.top, NotchIsland.Spacing.tight)
+
+                taskSummary
+                    .frame(width: 208)
+            }
+
+            focusRail
+        }
+        .padding(.horizontal, NotchIsland.Spacing.group)
+        .padding(.vertical, NotchIsland.Spacing.element)
+        .background {
+            liveCardBackground
+        }
+        .overlay {
+            RoundedRectangle(cornerRadius: NotchIsland.Radius.card, style: .continuous)
+                .stroke(borderTint, lineWidth: NotchIsland.Stroke.hairline)
+        }
+        .shadow(color: accent.opacity(reduceTransparency ? 0 : 0.12), radius: 12, y: 7)
+    }
+
+    private var recentRow: some View {
+        HStack(spacing: NotchIsland.Spacing.snug) {
+            agentButton
+
+            Text(activity.source.title)
+                .font(.system(size: 10.5, weight: .semibold))
+                .foregroundStyle(Color.islandInk(NotchIsland.Ink.primary))
+                .fixedSize()
+
+            AgentStatePill(state: activity.state, tint: stateTint, isDimmed: true)
+
+            Text(activity.title)
+                .font(.system(size: 10.5))
+                .foregroundStyle(Color.islandInk(NotchIsland.Ink.secondary))
+                .lineLimit(1)
+
+            Spacer(minLength: NotchIsland.Spacing.tight)
+
+            elapsedLabel
+            dismissButton
+        }
+        .padding(.leading, NotchIsland.Spacing.tight)
+        .padding(.trailing, NotchIsland.Spacing.element)
+        .background {
+            RoundedRectangle(cornerRadius: NotchIsland.Radius.card, style: .continuous)
+                .fill(Color.black.opacity(NotchIsland.Ink.recessed))
+        }
+        .overlay {
+            RoundedRectangle(cornerRadius: NotchIsland.Radius.card, style: .continuous)
+                .stroke(Color.islandInk(NotchIsland.Ink.hairline), lineWidth: NotchIsland.Stroke.hairline)
+        }
     }
 
     /// An agent needing attention keeps a tinted edge even unhovered — it is
@@ -300,77 +338,121 @@ struct AgentActivityRow: View {
         return Color.islandInk(NotchIsland.Ink.hairline)
     }
 
-    private var identityBand: some View {
+    private var liveHeader: some View {
         HStack(spacing: NotchIsland.Spacing.snug) {
+            agentButton
+
             Text(activity.source.title)
-                .font(.system(size: 11, weight: .semibold))
+                .font(.system(size: 10.5, weight: .bold))
                 .foregroundStyle(Color.islandInk(NotchIsland.Ink.primary))
                 .fixedSize()
 
-            AgentStatePill(state: activity.state, tint: stateTint, isDimmed: isRecent)
+            Circle()
+                .fill(stateTint)
+                .frame(width: 4, height: 4)
+                .accessibilityHidden(true)
 
-            if isRecent {
-                Text(activity.title)
-                    .font(.system(size: 11))
-                    .foregroundStyle(Color.islandInk(NotchIsland.Ink.secondary))
-                    .lineLimit(1)
-            }
+            Text(activity.state.title)
+                .font(.system(size: 9, weight: .semibold))
+                .foregroundStyle(stateTint)
+                .lineLimit(1)
 
             Spacer(minLength: NotchIsland.Spacing.tight)
 
-            Text(FocusTimerPolicy.formatted(activity.elapsed()))
-                .font(.system(size: 10, weight: .medium, design: .rounded))
-                .monospacedDigit()
-                .foregroundStyle(Color.islandInk(NotchIsland.Ink.tertiary))
-                .accessibilityLabel("Elapsed \(FocusTimerPolicy.formatted(activity.elapsed()))")
-
+            elapsedLabel
             dismissButton
         }
     }
 
-    /// Where the agent is working and what it is doing, on one line.
-    ///
-    /// These were separate rows. In a panel bounded to 320pt they cost a line
-    /// each while saying one thing — the run's context — so they share a line,
-    /// with the path truncating from the head because the distinguishing part
-    /// of a repository path is its tail.
     @ViewBuilder
-    private var contextLine: some View {
-        let workspace = activity.workspace.flatMap { $0.isEmpty ? nil : AgentWorkspaceFormatter.display($0) }
-        let detail = activity.detail.flatMap { $0.isEmpty ? nil : $0 }
+    private var taskSummary: some View {
+        VStack(alignment: .leading, spacing: NotchIsland.Spacing.tight) {
+            Text(activity.title)
+                .font(.system(size: 9.5, weight: .semibold))
+                .foregroundStyle(Color.islandInk(NotchIsland.Ink.primary))
+                .lineLimit(2)
+                .fixedSize(horizontal: false, vertical: true)
 
-        if workspace != nil || detail != nil {
-            HStack(spacing: NotchIsland.Spacing.snug) {
-                if let workspace {
-                    HStack(spacing: NotchIsland.Spacing.tight) {
-                        Image(systemName: "folder")
-                            .font(.system(size: 9, weight: .medium))
-                            .accessibilityHidden(true)
-                        Text(workspace)
-                            .font(.system(size: 10, weight: .medium, design: .rounded))
-                            .lineLimit(1)
-                            .truncationMode(.head)
-                    }
-                    .foregroundStyle(Color.islandInk(NotchIsland.Ink.tertiary))
-                    .layoutPriority(1)
-                }
-
-                if let detail {
-                    if workspace != nil {
-                        Circle()
-                            .fill(Color.islandInk(NotchIsland.Ink.hairline))
-                            .frame(width: 2, height: 2)
-                            .accessibilityHidden(true)
-                    }
-                    Text(detail)
-                        .font(.system(size: 10))
-                        .foregroundStyle(Color.islandInk(NotchIsland.Ink.secondary))
-                        .lineLimit(1)
-                        .layoutPriority(2)
-                }
-
-                Spacer(minLength: 0)
+            if let detail = activity.detail, !detail.isEmpty {
+                Text(detail)
+                    .font(.system(size: 8.5, weight: .medium))
+                    .foregroundStyle(Color.islandInk(NotchIsland.Ink.secondary))
+                    .lineLimit(3)
             }
+
+            if let workspace = activity.workspace, !workspace.isEmpty {
+                Label(AgentWorkspaceFormatter.display(workspace), systemImage: "folder")
+                    .font(.system(size: 8, weight: .medium, design: .rounded))
+                    .foregroundStyle(Color.islandInk(NotchIsland.Ink.tertiary))
+                    .lineLimit(1)
+                    .truncationMode(.head)
+            }
+        }
+        .frame(maxWidth: .infinity, minHeight: 54, alignment: .topLeading)
+        .padding(NotchIsland.Spacing.element)
+        .background {
+            RoundedRectangle(cornerRadius: NotchIsland.Radius.control, style: .continuous)
+                .fill(Color.black.opacity(reduceTransparency ? 0.82 : 0.54))
+        }
+        .overlay {
+            RoundedRectangle(cornerRadius: NotchIsland.Radius.control, style: .continuous)
+                .stroke(Color.islandInk(NotchIsland.Ink.hairline), lineWidth: NotchIsland.Stroke.hairline)
+        }
+    }
+
+    @ViewBuilder
+    private var focusRail: some View {
+        if let progress = activity.progress {
+            GeometryReader { proxy in
+                ZStack(alignment: .leading) {
+                    Capsule(style: .continuous)
+                        .fill(Color.islandInk(NotchIsland.Ink.hairline))
+                    Capsule(style: .continuous)
+                        .fill(stateTint)
+                        .frame(width: proxy.size.width * min(max(progress, 0), 1))
+                }
+            }
+            .frame(height: 3)
+            .accessibilityElement()
+            .accessibilityLabel("Reported progress")
+            .accessibilityValue("\(Int((min(max(progress, 0), 1) * 100).rounded())) percent")
+        } else {
+            HStack(spacing: NotchIsland.Spacing.tight) {
+                ForEach(0..<3, id: \.self) { index in
+                    Capsule(style: .continuous)
+                        .fill(index == 0 ? stateTint : Color.islandInk(NotchIsland.Ink.hairline))
+                        .frame(width: index == 0 ? 24 : 16, height: 2)
+                }
+            }
+            .frame(maxWidth: .infinity)
+            .accessibilityHidden(true)
+        }
+    }
+
+    private var elapsedLabel: some View {
+        Text(FocusTimerPolicy.formatted(activity.elapsed()))
+            .font(.system(size: 9, weight: .medium, design: .rounded))
+            .monospacedDigit()
+            .foregroundStyle(Color.islandInk(NotchIsland.Ink.tertiary))
+            .accessibilityLabel("Elapsed \(FocusTimerPolicy.formatted(activity.elapsed()))")
+    }
+
+    private var liveCardBackground: some View {
+        ZStack(alignment: .bottom) {
+            RoundedRectangle(cornerRadius: NotchIsland.Radius.card, style: .continuous)
+                .fill(Color.black.opacity(reduceTransparency ? 0.96 : 0.78))
+
+            LinearGradient(
+                colors: [
+                    .clear,
+                    accent.opacity(reduceTransparency ? 0.10 : 0.04),
+                    accent.opacity(reduceTransparency ? 0.22 : 0.38)
+                ],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+            .frame(height: 62)
+            .clipShape(RoundedRectangle(cornerRadius: NotchIsland.Radius.card, style: .continuous))
         }
     }
 

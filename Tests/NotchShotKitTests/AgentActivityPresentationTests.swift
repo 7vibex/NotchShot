@@ -58,6 +58,37 @@ struct AgentActivityPresentationTests {
             == "/Users/example2/src")
     }
 
+    @Test("The focus card shows four reported steps and accounts for the rest")
+    func focusCardStepLimit() {
+        let steps = (0..<6).map {
+            AIActivityStep(id: "step-\($0)", label: "Step \($0)", state: .pending)
+        }
+        let activity = AIActivitySnapshot(
+            id: "run",
+            source: .claude,
+            state: .working,
+            title: "Refine the card",
+            steps: steps
+        )
+
+        #expect(AgentFocusCardPolicy.visibleSteps(in: activity).map(\.id)
+            == ["step-0", "step-1", "step-2", "step-3"])
+        #expect(AgentFocusCardPolicy.overflowCount(in: activity) == 2)
+    }
+
+    @Test("The focus card never fabricates steps for sparse agent updates")
+    func focusCardKeepsSparseUpdatesHonest() {
+        let activity = AIActivitySnapshot(
+            id: "run",
+            source: .codex,
+            state: .working,
+            title: "Inspect the workspace"
+        )
+
+        #expect(AgentFocusCardPolicy.visibleSteps(in: activity).isEmpty)
+        #expect(AgentFocusCardPolicy.overflowCount(in: activity) == 0)
+    }
+
     @MainActor
     @Test("Every source declares at least one application to look for")
     func everySourceHasCandidates() {

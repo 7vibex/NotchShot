@@ -827,11 +827,17 @@ private struct ContextContent: View {
 
     private var expanded: some View {
         VStack(alignment: .leading, spacing: 10) {
-            previewHeader
-                .accessibilityElement(children: .combine)
-                .accessibilityLabel(snapshot.title)
-                .accessibilityValue(snapshot.subtitle ?? snapshot.metric ?? "")
-            Divider().overlay(.white.opacity(0.14))
+            // The live AI card owns its source, state, task and progress
+            // header. Repeating the generic context header above it made the
+            // compact card feel like a row inside a settings panel instead of
+            // the focused agent surface it is.
+            if snapshot.kind != .ai {
+                previewHeader
+                    .accessibilityElement(children: .combine)
+                    .accessibilityLabel(snapshot.title)
+                    .accessibilityValue(snapshot.subtitle ?? snapshot.metric ?? "")
+                Divider().overlay(.white.opacity(0.14))
+            }
             if snapshot.kind == .calendar {
                 HStack(alignment: .top, spacing: 14) {
                     eventList
