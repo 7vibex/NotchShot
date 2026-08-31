@@ -715,10 +715,10 @@ private struct ContextContent: View {
             expanded
         } else if isPreviewing {
             if let agent = headlineAgent {
-                if hasLiveClaudeSurface {
-                    ClaudeVibePeekHeader(
+                if hasLiveVibeSurface {
+                    AgentVibePeekHeader(
                         activity: agent,
-                        sessionCount: coordinator.context.claude.sessions.count
+                        activityCount: vibeActivityCount
                     ) { coordinator.setContextExpanded(true) }
                 } else {
                     AgentPeekHeader(activity: agent) { coordinator.setContextExpanded(true) }
@@ -728,10 +728,10 @@ private struct ContextContent: View {
             }
         } else {
             if let agent = headlineAgent {
-                if hasLiveClaudeSurface {
-                    ClaudeVibeCompactStrip(
+                if hasLiveVibeSurface {
+                    AgentVibeCompactStrip(
                         activity: agent,
-                        sessionCount: coordinator.context.claude.sessions.count,
+                        activityCount: vibeActivityCount,
                         physicalNotchWidth: physicalNotchWidth
                     ) { coordinator.setContextExpanded(true) }
                 } else {
@@ -753,12 +753,20 @@ private struct ContextContent: View {
     /// has one; every other context keeps the generic symbol-and-metric strip.
     private var headlineAgent: AIActivitySnapshot? {
         guard snapshot.kind == .ai else { return nil }
-        return snapshot.aiActivities.first
+        return snapshot.aiActivities.first ?? coordinator.context.claude.sessions.first?.aiActivity
     }
 
-    private var hasLiveClaudeSurface: Bool {
-        headlineAgent?.source == .claude
-            && !coordinator.context.claude.sessions.isEmpty
+    private var hasLiveVibeSurface: Bool {
+        snapshot.kind == .ai
+            && (!snapshot.aiActivities.isEmpty || !coordinator.context.claude.sessions.isEmpty)
+    }
+
+    private var vibeActivityCount: Int {
+        let directClaudeIDs = Set(coordinator.context.claude.sessions.map(\.id))
+        let genericCount = snapshot.aiActivities.filter {
+            $0.source != .claude || !directClaudeIDs.contains($0.id)
+        }.count
+        return max(1, genericCount + coordinator.context.claude.sessions.count)
     }
 
     private var accentNSColor: NSColor {
@@ -876,13 +884,23 @@ private struct ContextContent: View {
                         .frame(width: 160)
                 }
             } else if snapshot.kind == .ai {
-                if hasLiveClaudeSurface {
-                    ClaudeVibeActivitySurface(
-                        sessions: coordinator.context.claude.sessions,
+                if hasLiveVibeSurface {
+                    AgentVibeActivitySurface(
+                        activities: snapshot.aiActivities,
+                        recent: snapshot.aiRecentActivities,
                         subtitle: snapshot.subtitle,
+                        claudeSessions: coordinator.context.claude.sessions,
                         onApprovePermission: { coordinator.approveClaudePermission(sessionID: $0) },
                         onDenyPermission: { coordinator.denyClaudePermission(sessionID: $0) },
-                        onDismiss: { coordinator.context.claude.dismiss(sessionID: $0) }
+                        onDismiss: { activity in
+                            if activity.source == .claude,
+                               coordinator.context.claude.session(for: activity.id) != nil {
+                                coordinator.context.claude.dismiss(sessionID: activity.id)
+                            } else {
+                                coordinator.dismissAIActivity(activity)
+                            }
+                        },
+                        onClearHistory: { coordinator.clearAIActivityHistory() }
                     )
                 } else {
                     AgentActivityList(

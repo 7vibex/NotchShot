@@ -47,3 +47,67 @@ struct ClaudeVibeNotchTests {
         #expect(ordered.map(\.id) == ["permission", "working", "finished"])
     }
 }
+
+struct AgentVibeNotchTests {
+    @Test("Every supported agent gets the same Vibe status grammar")
+    func statusGrammarCoversAllSources() {
+        for source in AISource.allCases {
+            let activity = AIActivitySnapshot(
+                id: source.rawValue,
+                source: source,
+                state: .working,
+                title: "Inspecting the workspace"
+            )
+
+            #expect(AgentVibePresentation.statusText(for: activity) == "Processing")
+        }
+    }
+
+    @Test("Vibe activity ordering keeps Codex and other attention states visible")
+    func crossProviderOrdering() {
+        let now = Date()
+        let terminal = AIActivitySnapshot(
+            id: "terminal",
+            source: .terminal,
+            state: .finished,
+            title: "Build",
+            updatedAt: now.addingTimeInterval(30)
+        )
+        let cursor = AIActivitySnapshot(
+            id: "cursor",
+            source: .cursor,
+            state: .working,
+            title: "Editing",
+            updatedAt: now
+        )
+        let codex = AIActivitySnapshot(
+            id: "codex",
+            source: .codex,
+            state: .waiting,
+            title: "Needs a decision",
+            updatedAt: now.addingTimeInterval(-30)
+        )
+
+        let ordered = AgentVibePresentation.sorted([terminal, cursor, codex])
+        #expect(ordered.map(\.source) == [.codex, .cursor, .terminal])
+    }
+
+    @Test("A mixed provider surface uses the neutral AI Agents header")
+    func mixedHeaderTitle() {
+        let codex = AIActivitySnapshot(
+            id: "codex",
+            source: .codex,
+            state: .working,
+            title: "Codex task"
+        )
+        let terminal = AIActivitySnapshot(
+            id: "terminal",
+            source: .terminal,
+            state: .working,
+            title: "Build"
+        )
+
+        #expect(AgentVibePresentation.headerTitle(for: [codex, terminal]) == "AI Agents")
+        #expect(AgentVibePresentation.headerTitle(for: [codex]) == "Codex Agents")
+    }
+}
