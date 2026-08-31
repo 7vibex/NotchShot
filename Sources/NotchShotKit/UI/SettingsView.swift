@@ -526,7 +526,7 @@ private struct ContextModuleSettings: View {
                 if let hookMessage {
                     Text(hookMessage).font(.caption).foregroundStyle(.secondary)
                 }
-                Text("The bundled reporter accepts explicit local hook events. NotchShot does not scrape AI windows, read transcripts, or send this activity over the network.")
+                Text("The bundled reporter accepts explicit local hook events. Claude sessions can show permission actions and an on-demand local conversation view. NotchShot does not scrape AI windows or send this activity over the network.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

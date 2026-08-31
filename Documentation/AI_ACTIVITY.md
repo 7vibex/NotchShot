@@ -4,7 +4,8 @@ NotchShot ships a small local command named `notchshot-ai`. Claude Code,
 Codex, Cursor, shell scripts, and build tools can use it to publish a task's
 state into the island. The command writes owner-only JSON files under
 `~/Library/Application Support/NotchShot/AI Activity`; it does not use the
-network, inspect another app's UI, or parse a transcript.
+network, inspect another app's UI, or parse a transcript during normal hook
+activity. The Claude conversation control is a separate, on-demand local read.
 
 The installed reporter is normally here:
 
@@ -61,7 +62,9 @@ Use the same command for each lifecycle event you want to surface:
 
 The reporter uses only the event name, session id, current working-directory
 name, prompt title, and tool name. It deliberately ignores transcript paths,
-tool input, tool output, and assistant messages.
+tool input, tool output, and assistant messages on the hook path. Claude's
+permission event uses the same local socket to wait for an Allow or Deny action;
+the response contains only the decision and an optional bounded reason.
 
 Do not replace an existing hooks file. Add the handler to its existing event
 arrays so current formatters, notifications, and policy hooks keep working.
@@ -93,10 +96,18 @@ removed or replaced. See the official [Codex hooks reference](https://learn.chat
 
 Claude Code uses the same event → matcher group → command handler shape in
 `~/.claude/settings.json`. Add the reporter command above with source `claude`
-to `UserPromptSubmit`, `PreToolUse`, `PermissionRequest`, `Notification`,
-`PostToolUseFailure`, `Stop`, and `SessionEnd`. See the official
+to `SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PermissionRequest`,
+`PostToolUse`, `PostToolUseFailure`, `PermissionDenied`, `Notification`, `Stop`,
+`StopFailure`, `PreCompact`, `PostCompact`, and `SessionEnd`. See the official
 [Claude Code hooks reference](https://code.claude.com/docs/en/hooks) for the
 settings scopes and merge rules.
+
+When Claude hooks are connected and the Claude source is enabled, NotchShot
+listens on `/tmp/notchshot-claude.sock` with owner-only permissions. The expanded
+Claude activity card lists live sessions, keeps a PermissionRequest visible, and
+returns Claude's documented `hookSpecificOutput` decision after Allow or Deny.
+The conversation button reads at most 4 MB of the matching local JSONL file on
+demand, shows at most 80 visible messages, and does not persist the transcript.
 
 ### Cursor
 

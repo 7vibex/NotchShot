@@ -9,6 +9,7 @@ public final class ContextCoordinator {
     public private(set) var snapshot: ContextSnapshot?
     public let calendar = CalendarGlanceService.shared
     public let ai = AIActivityMonitor.shared
+    public let claude = ClaudeCodeSessionMonitor.shared
     public let timer = FocusTimerCoordinator.shared
     public let voiceNotes = VoiceNoteCoordinator.shared
     public var onSnapshotChange: ((ContextSnapshot?) -> Void)?
@@ -17,6 +18,7 @@ public final class ContextCoordinator {
     private let audio = AudioRouteMonitor()
     private var calendarSnapshot: ContextSnapshot?
     private var aiSnapshot: ContextSnapshot?
+    private var claudeSnapshot: ContextSnapshot?
     private var timerSnapshot: ContextSnapshot?
     private var voiceNoteSnapshot: ContextSnapshot?
     private var expiryTask: Task<Void, Never>?
@@ -28,6 +30,7 @@ public final class ContextCoordinator {
         audio.onTransition = { [weak self] snapshot in self?.present(snapshot) }
         calendar.onSnapshotChange = { [weak self] snapshot in self?.updateCalendar(snapshot) }
         ai.onSnapshotChange = { [weak self] snapshot in self?.updateAI(snapshot) }
+        claude.onSnapshotChange = { [weak self] snapshot in self?.updateClaude(snapshot) }
         timer.onSnapshotChange = { [weak self] snapshot in self?.updateTimer(snapshot) }
         voiceNotes.onSnapshotChange = { [weak self] snapshot in self?.updateVoiceNote(snapshot) }
         refreshPreferences()
@@ -40,9 +43,11 @@ public final class ContextCoordinator {
         audio.stop()
         calendar.stop()
         ai.stop()
+        claude.stop()
         voiceNotes.finalizeForTermination()
         calendarSnapshot = nil
         aiSnapshot = nil
+        claudeSnapshot = nil
         timerSnapshot = nil
         voiceNoteSnapshot = nil
         snapshot = nil
@@ -56,8 +61,14 @@ public final class ContextCoordinator {
         if Preferences.shared.aiActivityEnabled {
             ai.setEnabledSources(Preferences.shared.enabledAISources)
             ai.start(mayInterruptMedia: Preferences.shared.showsAIActivityOverMedia)
+            if Preferences.shared.enabledAISources.contains(.claude) {
+                claude.start(mayInterruptMedia: Preferences.shared.showsAIActivityOverMedia)
+            } else {
+                claude.stop()
+            }
         } else {
             ai.stop()
+            claude.stop()
         }
     }
 
@@ -90,6 +101,16 @@ public final class ContextCoordinator {
             updated?.presentation = .expanded
         }
         aiSnapshot = updated
+        guard snapshot == nil
+                || snapshot?.kind == .ai
+                || snapshot?.kind == .calendar
+                || snapshot?.isExpired == true
+        else { return }
+        restorePersistentSnapshot()
+    }
+
+    public func updateClaude(_ claude: ContextSnapshot?) {
+        claudeSnapshot = claude
         guard snapshot == nil
                 || snapshot?.kind == .ai
                 || snapshot?.kind == .calendar
@@ -136,7 +157,7 @@ public final class ContextCoordinator {
             restored = voiceNoteSnapshot
         } else if let timerSnapshot, !timerSnapshot.isExpired {
             restored = timerSnapshot
-        } else if let aiSnapshot, !aiSnapshot.isExpired {
+        } else if let aiSnapshot = effectiveAISnapshot(), !aiSnapshot.isExpired {
             restored = aiSnapshot
         } else if let calendarSnapshot, !calendarSnapshot.isExpired {
             restored = calendarSnapshot
@@ -145,5 +166,30 @@ public final class ContextCoordinator {
         }
         snapshot = restored
         onSnapshotChange?(restored)
+    }
+
+    /// The generic reporter still supplies Codex, Cursor, Terminal, and older
+    /// Claude records. Once the live Claude socket is running, its session list
+    /// is authoritative for Claude so a hook event cannot appear twice.
+    private func effectiveAISnapshot() -> ContextSnapshot? {
+        guard claude.isRunning else { return aiSnapshot }
+
+        let generic = aiSnapshot?.aiActivities.filter { $0.source != .claude } ?? []
+        let direct = claudeSnapshot?.aiActivities ?? []
+        var merged = AIActivityPolicy.contextSnapshot(
+            from: generic + direct,
+            mayInterruptMedia: claudeSnapshot?.mayInterruptMedia
+                ?? aiSnapshot?.mayInterruptMedia
+                ?? false
+        )
+        merged?.aiRecentActivities = Array(
+            (aiSnapshot?.aiRecentActivities ?? [])
+                .filter { $0.source != .claude }
+                .prefix(5)
+        )
+        if snapshot?.kind == .ai, snapshot?.presentation == .expanded {
+            merged?.presentation = .expanded
+        }
+        return merged
     }
 }

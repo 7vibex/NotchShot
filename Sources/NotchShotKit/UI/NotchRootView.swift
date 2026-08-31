@@ -861,7 +861,10 @@ private struct ContextContent: View {
                     recent: snapshot.aiRecentActivities,
                     subtitle: snapshot.subtitle,
                     onDismiss: { coordinator.dismissAIActivity($0) },
-                    onClearHistory: { coordinator.clearAIActivityHistory() }
+                    onClearHistory: { coordinator.clearAIActivityHistory() },
+                    claudeSessions: coordinator.context.claude.sessions,
+                    onApprovePermission: { coordinator.approveClaudePermission(sessionID: $0) },
+                    onDenyPermission: { coordinator.denyClaudePermission(sessionID: $0) }
                 )
             } else if snapshot.kind == .timer {
                 focusTimerControls

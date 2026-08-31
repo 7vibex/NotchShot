@@ -177,9 +177,11 @@ Low-battery transitions reveal a compact alert that reads the public Low Power M
 opens macOS Battery settings from its action pill. Foundation exposes that state as read-only,
 so NotchShot does not run privileged power commands or present the pill as a direct system toggle.
 An explicit local reporter lets Claude Code, Codex, Cursor, scripts, and build tools show
-working, waiting, finished, failed, step, and measured-progress states in the island. Hook
-events never manufacture a percentage, read private app UI, or leave the Mac. Setup and the
-wire-format boundary are documented in [`Documentation/AI_ACTIVITY.md`](Documentation/AI_ACTIVITY.md).
+working, waiting, finished, failed, step, and measured-progress states in the island. Claude
+Code sessions can also expose multiple live sessions, approve or deny a pending permission,
+and open a bounded, on-demand local conversation view. Hook events never manufacture a
+percentage, read private app UI, or leave the Mac. Setup and the wire-format boundary are
+documented in [`Documentation/AI_ACTIVITY.md`](Documentation/AI_ACTIVITY.md).
 Voice Notes show progressive words in the island while the microphone is recording, save the
 complete audio independently, and run a final on-device pass after Stop. A missing local speech
 model or live-analysis failure never uploads or discards the recording; the island shows the
@@ -329,7 +331,9 @@ invisible copy of the full source text.
 AI activity is written only after an explicitly connected hook or reporter command. Records
 live in the owner-only `AI Activity` support folder, never enter capture History or bug
 reports, and are ignored after their bounded display lifetime. The hook bridge reads lifecycle
-labels and short task metadata, not transcript files or tool contents.
+labels and short task metadata, not tool contents. A Claude conversation is read only after
+the user opens that session's button, stays in memory, and omits hidden reasoning and tool
+payloads.
 
 ## Distribution boundary
 

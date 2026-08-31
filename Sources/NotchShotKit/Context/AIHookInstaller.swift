@@ -19,7 +19,21 @@ public enum AIHookIntegration: String, CaseIterable, Identifiable, Sendable {
     var events: [String] {
         switch self {
         case .claude:
-            ["UserPromptSubmit", "PreToolUse", "PermissionRequest", "Notification", "PostToolUseFailure", "Stop", "SessionEnd"]
+            [
+                "SessionStart",
+                "UserPromptSubmit",
+                "PreToolUse",
+                "PermissionRequest",
+                "PostToolUse",
+                "PostToolUseFailure",
+                "PermissionDenied",
+                "Notification",
+                "Stop",
+                "StopFailure",
+                "PreCompact",
+                "PostCompact",
+                "SessionEnd",
+            ]
         case .codex:
             ["UserPromptSubmit", "SessionStart", "PreToolUse", "PostToolUse", "Stop"]
         case .cursor:

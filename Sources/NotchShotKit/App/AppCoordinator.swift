@@ -3281,6 +3281,14 @@ public final class AppCoordinator {
 
     public func clearAIActivityHistory() { context.ai.clearHistory() }
 
+    public func approveClaudePermission(sessionID: String) {
+        context.claude.approve(sessionID: sessionID)
+    }
+
+    public func denyClaudePermission(sessionID: String, reason: String? = nil) {
+        context.claude.deny(sessionID: sessionID, reason: reason)
+    }
+
     private struct ValidatedDropMetadata: Sendable {
         var url: URL
         var kind: CaptureAssetKind

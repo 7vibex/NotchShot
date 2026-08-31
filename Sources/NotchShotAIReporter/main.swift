@@ -102,7 +102,8 @@ private enum Reporter {
       --step STATE:LABEL      Repeatable; pending, working, completed, or failed
 
     Hook mode intentionally extracts only lifecycle labels, prompt titles, tool
-    names, and a workspace name. It does not copy transcripts or tool contents.
+    names, and a workspace name. The Claude bridge also supports local permission
+    decisions; it does not copy tool inputs, outputs, or hidden reasoning.
     """
 
     static var directory: URL {
@@ -126,9 +127,9 @@ private enum Reporter {
         case "update":
             try update(Options(arguments.dropFirst()))
         case "hook":
-            try hook(Options(arguments.dropFirst()))
+            let response = try hook(Options(arguments.dropFirst()))
             // A neutral JSON response is accepted by hook runners that parse stdout.
-            print("{}")
+            print(response ?? "{}")
         case "clear":
             try clear(Options(arguments.dropFirst()))
         case "run":
@@ -192,7 +193,7 @@ private enum Reporter {
         print(fileURL(source: source, identifier: identifier).path)
     }
 
-    private static func hook(_ options: Options) throws {
+    private static func hook(_ options: Options) throws -> String? {
         let source = try parsedSource(options.required("source"))
         let input = FileHandle.standardInput.readDataToEndOfFile()
         let json = (try? JSONSerialization.jsonObject(with: input)) as? [String: Any] ?? [:]
@@ -232,6 +233,17 @@ private enum Reporter {
             startedAt: existing?.startedAt ?? Date(),
             updatedAt: Date()
         ))
+
+        guard source == .claude else { return nil }
+        return sendClaudeHook(
+            event: event,
+            identifier: identifier,
+            title: title,
+            tool: tool,
+            workspacePath: workspacePath,
+            notificationType: firstString(in: json, keys: ["notification_type", "notificationType"]),
+            message: firstString(in: json, keys: ["message", "error", "reason"])
+        )
     }
 
     private static func runCommand(_ arguments: [String]) throws {
@@ -364,7 +376,7 @@ private enum Reporter {
 
     private static func state(for event: String) -> ActivityState {
         let normalized = event.lowercased().filter(\.isLetter)
-        if normalized.contains("failure") || normalized.contains("failed") {
+        if normalized.contains("failure") || normalized.contains("failed") || normalized.contains("denied") {
             return .failed
         }
         if normalized.contains("permission") || normalized.contains("notification") {
@@ -391,6 +403,136 @@ private enum Reporter {
         if normalized.contains("permission") { return "Waiting for permission" }
         if normalized.contains("notification") { return "Needs attention" }
         return nil
+    }
+
+    private static let claudeSocketPath = "/tmp/notchshot-claude.sock"
+
+    /// Sends only the bounded labels already used by the generic activity
+    /// record. In particular, `tool_input`, tool output, and transcript fields
+    /// never cross the hook boundary.
+    private static func sendClaudeHook(
+        event: String,
+        identifier: String,
+        title: String,
+        tool: String?,
+        workspacePath: String?,
+        notificationType: String?,
+        message: String?
+    ) -> String? {
+        var payload: [String: Any] = [
+            "session_id": identifier,
+            "hook_event_name": event,
+            "event": event,
+            "status": bridgeStatus(for: event),
+            "pid": Int(getppid()),
+            "prompt": bounded(CommandSecretRedactor.redactText(title), maximum: 160),
+        ]
+        if let workspacePath = boundedOptional(workspacePath, maximum: 240) {
+            payload["cwd"] = workspacePath
+        }
+        if let tool = boundedOptional(tool, maximum: 80) {
+            payload["tool_name"] = tool
+        }
+        if let notificationType = boundedOptional(notificationType, maximum: 80) {
+            payload["notification_type"] = notificationType
+        }
+        if let message = boundedOptional(message.map(CommandSecretRedactor.redactText), maximum: 180) {
+            payload["message"] = message
+        }
+
+        guard let data = try? JSONSerialization.data(withJSONObject: payload),
+              let fileDescriptor = connectToClaudeSocket() else { return nil }
+        defer { close(fileDescriptor) }
+        guard writeAll(data + Data([10]), to: fileDescriptor) else { return nil }
+
+        let expectsResponse = event.lowercased().filter(\.isLetter).contains("permissionrequest")
+            && bridgeStatus(for: event) == "waiting_for_approval"
+        guard expectsResponse else { return nil }
+
+        var descriptor = pollfd()
+        descriptor.fd = fileDescriptor
+        descriptor.events = Int16(POLLIN)
+        guard Darwin.poll(&descriptor, 1, 300_000) > 0 else { return nil }
+
+        var responseBytes = [UInt8](repeating: 0, count: 4_096)
+        let count = Darwin.read(fileDescriptor, &responseBytes, responseBytes.count)
+        guard count > 0 else { return nil }
+        return permissionHookOutput(from: Data(responseBytes.prefix(count)))
+    }
+
+    private static func bridgeStatus(for event: String) -> String {
+        let normalized = event.lowercased().filter(\.isLetter)
+        if normalized.contains("permissionrequest") { return "waiting_for_approval" }
+        if normalized.contains("sessionend") { return "ended" }
+        if normalized == "stop" || normalized.contains("stopfailure") || normalized.contains("sessionstart") {
+            return "waiting_for_input"
+        }
+        if normalized.contains("notification") { return "waiting_for_input" }
+        if normalized.contains("failure") || normalized.contains("denied") { return "failed" }
+        return "processing"
+    }
+
+    private static func connectToClaudeSocket() -> Int32? {
+        let fileDescriptor = socket(AF_UNIX, SOCK_STREAM, 0)
+        guard fileDescriptor >= 0 else { return nil }
+
+        var address = sockaddr_un()
+        address.sun_family = sa_family_t(AF_UNIX)
+        claudeSocketPath.withCString { path in
+            withUnsafeMutablePointer(to: &address.sun_path) { pathPointer in
+                let buffer = UnsafeMutableRawPointer(pathPointer).assumingMemoryBound(to: CChar.self)
+                strcpy(buffer, path)
+            }
+        }
+        let result = withUnsafePointer(to: &address) { pointer in
+            pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { sockaddrPointer in
+                connect(fileDescriptor, sockaddrPointer, socklen_t(MemoryLayout<sockaddr_un>.size))
+            }
+        }
+        guard result == 0 else {
+            close(fileDescriptor)
+            return nil
+        }
+        return fileDescriptor
+    }
+
+    private static func writeAll(_ data: Data, to fileDescriptor: Int32) -> Bool {
+        data.withUnsafeBytes { rawBuffer in
+            guard let baseAddress = rawBuffer.baseAddress else { return true }
+            var pointer = baseAddress.assumingMemoryBound(to: UInt8.self)
+            var remaining = rawBuffer.count
+            while remaining > 0 {
+                let written = Darwin.write(fileDescriptor, pointer, remaining)
+                guard written > 0 else { return false }
+                pointer = pointer.advanced(by: written)
+                remaining -= written
+            }
+            return true
+        }
+    }
+
+    private static func permissionHookOutput(from data: Data) -> String? {
+        let line = String(data: data, encoding: .utf8)?.split(separator: "\n", maxSplits: 1).first
+        guard let line,
+              let object = try? JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any],
+              let decision = object["decision"] as? String,
+              decision == "allow" || decision == "deny" else { return nil }
+
+        var decisionObject: [String: Any] = ["behavior": decision]
+        if decision == "deny" {
+            decisionObject["message"] = (object["reason"] as? String)
+                ?? "Denied by user via NotchShot"
+        }
+        let output: [String: Any] = [
+            "hookSpecificOutput": [
+                "hookEventName": "PermissionRequest",
+                "decision": decisionObject,
+            ],
+        ]
+        guard let outputData = try? JSONSerialization.data(withJSONObject: output, options: [.sortedKeys]) else {
+            return nil
+        }
+        return String(data: outputData, encoding: .utf8)
     }
 
     private static func firstString(in json: [String: Any], keys: [String]) -> String? {

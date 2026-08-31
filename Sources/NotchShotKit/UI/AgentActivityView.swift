@@ -239,6 +239,10 @@ struct AgentActivityRow: View {
     var activity: AIActivitySnapshot
     var isRecent: Bool
     var onDismiss: () -> Void
+    var claudeSession: ClaudeCodeSession? = nil
+    var onApprovePermission: (() -> Void)? = nil
+    var onDenyPermission: (() -> Void)? = nil
+    var onOpenConversation: (() -> Void)? = nil
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
@@ -283,6 +287,7 @@ struct AgentActivityRow: View {
             }
 
             focusRail
+            permissionBar
         }
         .padding(.horizontal, NotchIsland.Spacing.group)
         .padding(.vertical, NotchIsland.Spacing.element)
@@ -359,8 +364,25 @@ struct AgentActivityRow: View {
 
             Spacer(minLength: NotchIsland.Spacing.tight)
 
+            if onOpenConversation != nil {
+                conversationButton
+            }
             elapsedLabel
             dismissButton
+        }
+    }
+
+    @ViewBuilder
+    private var permissionBar: some View {
+        if let request = claudeSession?.permission,
+           let onApprovePermission,
+           let onDenyPermission,
+           !isRecent {
+            ClaudePermissionBar(
+                request: request,
+                onApprove: onApprovePermission,
+                onDeny: onDenyPermission
+            )
         }
     }
 
@@ -484,6 +506,26 @@ struct AgentActivityRow: View {
             : "\(activity.source.title) app unavailable")
     }
 
+    private var conversationButton: some View {
+        Button {
+            onOpenConversation?()
+        } label: {
+            Image(systemName: "bubble.left.and.bubble.right")
+                .font(.system(size: 9, weight: .semibold))
+                .foregroundStyle(Color.islandInk(NotchIsland.Ink.secondary))
+                .frame(width: 18, height: 18)
+                .background {
+                    Circle().fill(Color.islandInk(NotchIsland.Ink.fill))
+                }
+                .frame(width: NotchIsland.Hit.control, height: NotchIsland.Hit.control)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(NotchPressButtonStyle())
+        .help("Open Claude Code conversation")
+        .accessibilityLabel("Open Claude Code conversation")
+        .accessibilityHint("Read the recent local transcript")
+    }
+
     private var canActivateAgentApp: Bool {
         AgentIconCatalog.applicationURL(for: activity.source) != nil
     }
@@ -523,6 +565,9 @@ struct AgentActivityRow: View {
         if let progress = activity.progress {
             parts.append("\(Int((progress * 100).rounded())) percent")
         }
+        if claudeSession?.permission != nil {
+            parts.append("Permission requested")
+        }
         return parts.joined(separator: ", ")
     }
 }
@@ -540,9 +585,18 @@ struct AgentActivityList: View {
     var subtitle: String?
     var onDismiss: (AIActivitySnapshot) -> Void
     var onClearHistory: () -> Void
+    var claudeSessions: [ClaudeCodeSession] = []
+    var onApprovePermission: (String) -> Void = { _ in }
+    var onDenyPermission: (String) -> Void = { _ in }
+
+    @State private var selectedClaudeSession: ClaudeCodeSession?
 
     var body: some View {
-        if activities.isEmpty && recent.isEmpty {
+        if let selectedClaudeSession {
+            ClaudeConversationPanel(session: selectedClaudeSession) {
+                self.selectedClaudeSession = nil
+            }
+        } else if activities.isEmpty && recent.isEmpty {
             emptyState
         } else {
             ScrollView(.vertical) {
@@ -551,17 +605,32 @@ struct AgentActivityList: View {
                 // correctness anywhere the view is laid out outside a window.
                 VStack(spacing: NotchIsland.Spacing.element) {
                     ForEach(activities, id: \.displayIdentifier) { activity in
-                        AgentActivityRow(activity: activity, isRecent: false) {
-                            onDismiss(activity)
-                        }
+                        let session = claudeSession(for: activity)
+                        AgentActivityRow(
+                            activity: activity,
+                            isRecent: false,
+                            onDismiss: { onDismiss(activity) },
+                            claudeSession: session,
+                            onApprovePermission: session?.permission == nil
+                                ? nil
+                                : { onApprovePermission(activity.id) },
+                            onDenyPermission: session?.permission == nil
+                                ? nil
+                                : { onDenyPermission(activity.id) },
+                            onOpenConversation: session.map { session in
+                                { selectedClaudeSession = session }
+                            }
+                        )
                     }
 
                     if !recent.isEmpty {
                         historyHeader
                         ForEach(recent, id: \.displayIdentifier) { activity in
-                            AgentActivityRow(activity: activity, isRecent: true) {
-                                onDismiss(activity)
-                            }
+                            AgentActivityRow(
+                                activity: activity,
+                                isRecent: true,
+                                onDismiss: { onDismiss(activity) }
+                            )
                         }
                     }
                 }
@@ -569,6 +638,11 @@ struct AgentActivityList: View {
             .scrollIndicators(.visible)
             .accessibilityLabel("AI activities")
         }
+    }
+
+    private func claudeSession(for activity: AIActivitySnapshot) -> ClaudeCodeSession? {
+        guard activity.source == .claude else { return nil }
+        return claudeSessions.first { $0.id == activity.id }
     }
 
     /// A waiting panel still has to look designed — this is the state a user
