@@ -715,18 +715,33 @@ private struct ContextContent: View {
             expanded
         } else if isPreviewing {
             if let agent = headlineAgent {
-                AgentPeekHeader(activity: agent) { coordinator.setContextExpanded(true) }
+                if hasLiveClaudeSurface {
+                    ClaudeVibePeekHeader(
+                        activity: agent,
+                        sessionCount: coordinator.context.claude.sessions.count
+                    ) { coordinator.setContextExpanded(true) }
+                } else {
+                    AgentPeekHeader(activity: agent) { coordinator.setContextExpanded(true) }
+                }
             } else {
                 preview
             }
         } else {
             if let agent = headlineAgent {
-                AgentCompactStrip(
-                    activity: agent,
-                    otherAgentCount: max(0, snapshot.aiActivities.count - 1),
-                    physicalNotchWidth: physicalNotchWidth
-                ) {
-                    coordinator.setContextExpanded(true)
+                if hasLiveClaudeSurface {
+                    ClaudeVibeCompactStrip(
+                        activity: agent,
+                        sessionCount: coordinator.context.claude.sessions.count,
+                        physicalNotchWidth: physicalNotchWidth
+                    ) { coordinator.setContextExpanded(true) }
+                } else {
+                    AgentCompactStrip(
+                        activity: agent,
+                        otherAgentCount: max(0, snapshot.aiActivities.count - 1),
+                        physicalNotchWidth: physicalNotchWidth
+                    ) {
+                        coordinator.setContextExpanded(true)
+                    }
                 }
             } else {
                 compact
@@ -739,6 +754,11 @@ private struct ContextContent: View {
     private var headlineAgent: AIActivitySnapshot? {
         guard snapshot.kind == .ai else { return nil }
         return snapshot.aiActivities.first
+    }
+
+    private var hasLiveClaudeSurface: Bool {
+        headlineAgent?.source == .claude
+            && !coordinator.context.claude.sessions.isEmpty
     }
 
     private var accentNSColor: NSColor {
@@ -856,16 +876,26 @@ private struct ContextContent: View {
                         .frame(width: 160)
                 }
             } else if snapshot.kind == .ai {
-                AgentActivityList(
-                    activities: snapshot.aiActivities,
-                    recent: snapshot.aiRecentActivities,
-                    subtitle: snapshot.subtitle,
-                    onDismiss: { coordinator.dismissAIActivity($0) },
-                    onClearHistory: { coordinator.clearAIActivityHistory() },
-                    claudeSessions: coordinator.context.claude.sessions,
-                    onApprovePermission: { coordinator.approveClaudePermission(sessionID: $0) },
-                    onDenyPermission: { coordinator.denyClaudePermission(sessionID: $0) }
-                )
+                if hasLiveClaudeSurface {
+                    ClaudeVibeActivitySurface(
+                        sessions: coordinator.context.claude.sessions,
+                        subtitle: snapshot.subtitle,
+                        onApprovePermission: { coordinator.approveClaudePermission(sessionID: $0) },
+                        onDenyPermission: { coordinator.denyClaudePermission(sessionID: $0) },
+                        onDismiss: { coordinator.context.claude.dismiss(sessionID: $0) }
+                    )
+                } else {
+                    AgentActivityList(
+                        activities: snapshot.aiActivities,
+                        recent: snapshot.aiRecentActivities,
+                        subtitle: snapshot.subtitle,
+                        onDismiss: { coordinator.dismissAIActivity($0) },
+                        onClearHistory: { coordinator.clearAIActivityHistory() },
+                        claudeSessions: coordinator.context.claude.sessions,
+                        onApprovePermission: { coordinator.approveClaudePermission(sessionID: $0) },
+                        onDenyPermission: { coordinator.denyClaudePermission(sessionID: $0) }
+                    )
+                }
             } else if snapshot.kind == .timer {
                 focusTimerControls
             } else if snapshot.kind == .voiceNote {

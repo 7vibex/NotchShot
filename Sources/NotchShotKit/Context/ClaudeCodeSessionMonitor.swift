@@ -502,6 +502,16 @@ public final class ClaudeCodeSessionMonitor {
         sessions.first { $0.id == id }
     }
 
+    /// Removes a session from the focused Claude surface until Claude emits a
+    /// subsequent hook event for it. This is presentation state only: it does
+    /// not delete Claude's local transcript or alter Claude Code itself.
+    public func dismiss(sessionID: String) {
+        let previousCount = sessions.count
+        sessions.removeAll { $0.id == sessionID }
+        guard sessions.count != previousCount else { return }
+        publish()
+    }
+
     public func approve(sessionID: String) {
         guard let index = sessions.firstIndex(where: { $0.id == sessionID }),
               sessions[index].permission != nil else { return }
