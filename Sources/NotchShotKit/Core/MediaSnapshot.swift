@@ -19,6 +19,15 @@ public enum MediaSourceKind: String, Sendable, Codable {
     }
 }
 
+/// Which list the expanded player has open. Only one at a time: two stacked
+/// lists would push the island past the height at which it still reads as part
+/// of the notch.
+public enum MediaPanelKind: Sendable, Equatable {
+    case none
+    case audioRoutes
+    case playingNext
+}
+
 public struct MediaSnapshot: Sendable, Equatable {
     public var source: MediaSourceKind
     /// Bundle id of the app that owns playback, when known.
@@ -34,6 +43,10 @@ public struct MediaSnapshot: Sendable, Equatable {
     /// without polling the source.
     public var positionTimestamp: Date?
     public var isPlaying: Bool
+    /// Content flags, when the source publishes them. Nothing infers these:
+    /// an absent flag means "not stated", never "false" with confidence.
+    public var isExplicit: Bool
+    public var isLossless: Bool
     public var supportedCommands: Set<MediaCommandKind>
 
     public init(
@@ -48,6 +61,8 @@ public struct MediaSnapshot: Sendable, Equatable {
         position: TimeInterval? = nil,
         positionTimestamp: Date? = nil,
         isPlaying: Bool = false,
+        isExplicit: Bool = false,
+        isLossless: Bool = false,
         supportedCommands: Set<MediaCommandKind> = []
     ) {
         self.source = source
@@ -61,6 +76,8 @@ public struct MediaSnapshot: Sendable, Equatable {
         self.position = position
         self.positionTimestamp = positionTimestamp
         self.isPlaying = isPlaying
+        self.isExplicit = isExplicit
+        self.isLossless = isLossless
         self.supportedCommands = supportedCommands
     }
 
@@ -94,6 +111,8 @@ public struct MediaSnapshot: Sendable, Equatable {
             && artist == other.artist
             && album == other.album
             && isPlaying == other.isPlaying
+            && isExplicit == other.isExplicit
+            && isLossless == other.isLossless
             && duration == other.duration
             && artworkData == other.artworkData
             && supportedCommands == other.supportedCommands

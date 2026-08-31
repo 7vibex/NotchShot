@@ -7,11 +7,14 @@ import SwiftUI
 /// Application lifecycle: brings up the notch panels, the menu-bar item, global
 /// shortcuts, and the auxiliary windows.
 @MainActor
-public final class AppDelegate: NSObject, NSApplicationDelegate {
+public final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
 
     private let coordinator = AppCoordinator()
     private var windowController: NotchWindowController?
     private var statusItem: NSStatusItem?
+    /// Held rather than assigned to the status item: see `showStatusMenu`.
+    private var statusMenu: NSMenu?
+    private var statusPanel: NSPopover?
     private var secureUpdates: SecureUpdateController?
 
     private var settingsWindow: NSWindow?
@@ -25,6 +28,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     private var bugReportWindows: [ObjectIdentifier: NSWindow] = [:]
     private var comparisonWindows: [ObjectIdentifier: NSWindow] = [:]
     private var smartExportWindows: [ObjectIdentifier: NSWindow] = [:]
+    private var recordingExportWindows: [ObjectIdentifier: NSWindow] = [:]
     private var videoTrimWindows: [ObjectIdentifier: NSWindow] = [:]
     private var inspectorWindows: [ObjectIdentifier: NSWindow] = [:]
     private var capturePreviewWindows: [UUID: NSWindow] = [:]
@@ -38,7 +42,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
 
     public func applicationDidFinishLaunching(_ notification: Notification) {
         AppPaths.ensureDirectories()
-        secureUpdates = SecureUpdateController()
+        secureUpdates = SecureUpdateController.shared
         NotchShotAppShortcuts.updateAppShortcutParameters()
 
         NSApp.setActivationPolicy(Preferences.shared.showsDockIcon ? .regular : .accessory)
@@ -88,6 +92,9 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         coordinator.onOpenSmartExport = { [weak self] session in
             self?.showSmartExport(session)
+        }
+        coordinator.onOpenRecordingExport = { [weak self] session in
+            self?.showRecordingExport(session)
         }
         coordinator.onOpenVideoTrim = { [weak self] session in
             self?.showVideoTrim(session)
@@ -175,6 +182,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             Log.history.error("Final History save failed: \(error.localizedDescription)")
         }
         coordinator.history.removeUntrackedManagedFiles()
+        LockedMediaNotificationController.shared.clear()
         windowController?.stop()
         FloatingCaptureManager.shared.closeAll()
     }
@@ -437,6 +445,8 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             // Press and release are handled by `phaseHandler`; doing work here
             // would turn the initial press into an accidental toggle.
             break
+        case .showShelf:
+            coordinator.showShelf()
         }
     }
 
@@ -449,8 +459,60 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             accessibilityDescription: "NotchShot"
         )
         item.button?.image?.isTemplate = true
-        item.menu = makeMenu()
+        // Left click opens the quick panel, right click the full menu. The menu
+        // is deliberately not assigned to `item.menu`: doing that makes AppKit
+        // swallow every click to show it, and the panel would never open.
+        item.button?.target = self
+        item.button?.action = #selector(statusItemClicked)
+        item.button?.sendAction(on: [.leftMouseUp, .rightMouseUp])
+        statusMenu = makeMenu()
         statusItem = item
+    }
+
+    @objc private func statusItemClicked() {
+        let isRightClick = NSApp.currentEvent?.type == .rightMouseUp
+            || NSApp.currentEvent?.modifierFlags.contains(.control) == true
+        if isRightClick {
+            showStatusMenu()
+        } else {
+            toggleStatusPanel()
+        }
+    }
+
+    private func showStatusMenu() {
+        guard let item = statusItem, let menu = statusMenu else { return }
+        item.menu = menu
+        item.button?.performClick(nil)
+        // Handing the menu back immediately would leave AppKit owning every
+        // future click, so the panel could never open again.
+        DispatchQueue.main.async { [weak item] in item?.menu = nil }
+    }
+
+    private func toggleStatusPanel() {
+        if let popover = statusPanel, popover.isShown {
+            popover.performClose(nil)
+            return
+        }
+        guard let button = statusItem?.button else { return }
+        let popover = statusPanel ?? makeStatusPanel()
+        statusPanel = popover
+        popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+        // Without this the panel opens behind whatever app is frontmost, which
+        // for a menu-bar utility is always something else.
+        popover.contentViewController?.view.window?.makeKey()
+    }
+
+    private func makeStatusPanel() -> NSPopover {
+        let popover = NSPopover()
+        popover.behavior = .transient
+        popover.animates = true
+        popover.contentViewController = NSHostingController(
+            rootView: MenuBarPanelView(
+                coordinator: coordinator,
+                onDismiss: { [weak self] in self?.statusPanel?.performClose(nil) }
+            )
+        )
+        return popover
     }
 
     private func makeMenu() -> NSMenu {
@@ -478,6 +540,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         add(menu, title: "Clear Stack", action: #selector(clearStack))
 
         menu.addItem(.separator())
+        add(menu, title: "Show Shelf", action: #selector(showShelfFromMenu))
         add(menu, title: "History…", action: #selector(showHistoryFromMenu))
         add(menu, title: "Clipboard History…", action: #selector(showClipboardFromMenu))
         add(menu, title: "Productivity Center…", action: #selector(showProductivityFromMenu))
@@ -515,6 +578,25 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func unlockPins() { FloatingCaptureManager.shared.unlockAll() }
     @objc private func closePins() { FloatingCaptureManager.shared.closeAll() }
     @objc private func showSettingsFromMenu() { showSettings() }
+    @objc private func showShelfFromMenu() {
+        coordinator.showShelf()
+    }
+
+    /// Greys out the two items that have nothing to act on.
+    ///
+    /// Both used to stay enabled and quietly do nothing when there was no
+    /// capture parked — which is indistinguishable from a broken menu item.
+    public func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        switch menuItem.action {
+        case #selector(showShelfFromMenu):
+            coordinator.canShowShelf
+        case #selector(restoreLastCapture):
+            coordinator.canRestoreDismissed
+        default:
+            true
+        }
+    }
+
     @objc private func showHistoryFromMenu() { showHistory() }
     @objc private func showClipboardFromMenu() { showClipboard() }
     @objc private func showProductivityFromMenu() { showProductivity() }
@@ -794,6 +876,24 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.smartExportWindows.removeValue(forKey: key)
         }
         smartExportWindows[key] = window
+        bringToFront(window)
+    }
+
+    private func showRecordingExport(_ session: RecordingExportSession) {
+        let key = ObjectIdentifier(session)
+        if let existing = recordingExportWindows[key] {
+            bringToFront(existing)
+            return
+        }
+        let window = makeWindow(
+            title: "Export Recording — \(session.asset.displayName)",
+            content: RecordingExportView(session: session),
+            size: CGSize(width: 600, height: 390)
+        )
+        attachCloseHandler(to: window) { [weak self] in
+            self?.recordingExportWindows.removeValue(forKey: key)
+        }
+        recordingExportWindows[key] = window
         bringToFront(window)
     }
 

@@ -13,6 +13,7 @@ public enum Log {
     public static let annotation = Logger(subsystem: subsystem, category: "annotation")
     public static let permissions = Logger(subsystem: subsystem, category: "permissions")
     public static let ocr = Logger(subsystem: subsystem, category: "ocr")
+    public static let dictation = Logger(subsystem: subsystem, category: "dictation")
 }
 
 public enum NotchShotError: LocalizedError, Equatable {

@@ -392,10 +392,16 @@ public enum AnnotationRenderer {
         context.setLineWidth(2)
         context.setLineDash(phase: 0, lengths: [8, 6])
         for seam in seams where seam.isSuspect {
-            let y = CGFloat(height - seam.y)
             context.setStrokeColor(NSColor.systemOrange.withAlphaComponent(0.9).cgColor)
-            context.move(to: CGPoint(x: 0, y: y))
-            context.addLine(to: CGPoint(x: CGFloat(width), y: y))
+            if seam.axis == .horizontal {
+                let x = CGFloat(seam.y)
+                context.move(to: CGPoint(x: x, y: 0))
+                context.addLine(to: CGPoint(x: x, y: CGFloat(height)))
+            } else {
+                let y = CGFloat(height - seam.y)
+                context.move(to: CGPoint(x: 0, y: y))
+                context.addLine(to: CGPoint(x: CGFloat(width), y: y))
+            }
             context.strokePath()
         }
     }

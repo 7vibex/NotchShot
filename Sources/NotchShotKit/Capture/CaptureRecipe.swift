@@ -41,6 +41,10 @@ public struct CaptureRecipe: Sendable, Identifiable, Equatable, Codable {
     public var filenameTemplate: String
     public var destination: RecipeDestination
     public var imageFormat: ImageFormat?
+    public var targetMaximumBytes: Int? = nil
+    public var libraryTags: [String]? = nil
+    public var collectionName: String? = nil
+    public var runsOCR: Bool? = nil
 
     public var sizeDescription: String {
         guard let outputPixelSize else { return "Original size" }

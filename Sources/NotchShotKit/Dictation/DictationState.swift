@@ -52,6 +52,15 @@ public enum DictationState: Sendable, Equatable {
         toggleIntent == .stop
     }
 
+    /// Whether a fresh session may begin from here.
+    ///
+    /// One definition, used by both `start()` and the push-to-talk gate — they
+    /// disagreed before, and the stricter gate silently swallowed every hold
+    /// after the first until the finished state happened to reset.
+    public var canStartNewSession: Bool {
+        toggleIntent == .start
+    }
+
     public var toggleIntent: DictationToggleIntent {
         switch self {
         case .idle, .completed, .cancelled, .failed, .copied: .start

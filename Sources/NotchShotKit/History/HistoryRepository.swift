@@ -30,6 +30,11 @@ public struct HistoryEntry: Codable, Sendable, Identifiable, Equatable {
     public var externalFileIdentity: ExternalFileIdentity?
     public var captionFileIdentity: ExternalFileIdentity?
     public var projectFileIdentity: ExternalFileIdentity?
+    /// User-authored library organization. Optional storage keeps older JSON
+    /// documents source-compatible without a migration gate.
+    public var tags: [String]?
+    public var collectionName: String?
+    public var isFavorite: Bool?
 
     public init(asset: CaptureAsset, thumbnailFilename: String?, indexedText: String?) {
         self.id = asset.id
@@ -50,6 +55,9 @@ public struct HistoryEntry: Codable, Sendable, Identifiable, Equatable {
         self.externalFileIdentity = asset.externalFileIdentity
         self.captionFileIdentity = asset.captionFileIdentity
         self.projectFileIdentity = asset.projectFileIdentity
+        self.tags = nil
+        self.collectionName = nil
+        self.isFavorite = nil
     }
 
     public var pixelSize: CGSize {
@@ -57,6 +65,8 @@ public struct HistoryEntry: Codable, Sendable, Identifiable, Equatable {
     }
 
     public var dimensionsDescription: String { "\(pixelWidth) × \(pixelHeight)" }
+    public var libraryTags: [String] { tags ?? [] }
+    public var favorite: Bool { isFavorite ?? false }
 
     public var thumbnailURL: URL? {
         HistoryRepository.validatedThumbnailURL(filename: thumbnailFilename, id: id)
@@ -111,6 +121,8 @@ public struct HistoryEntry: Codable, Sendable, Identifiable, Equatable {
             || query.appears(in: sourceApplicationName)
             || query.appears(in: kind.displayName)
             || query.appears(in: indexedText)
+            || libraryTags.contains { query.appears(in: $0) }
+            || query.appears(in: collectionName)
     }
 }
 
@@ -344,6 +356,40 @@ public final class HistoryRepository {
         Array(entries.prefix(50))
     }
 
+    public var collectionNames: [String] {
+        Array(Set(entries.compactMap(\.collectionName))).sorted()
+    }
+
+    public func updateLibraryMetadata(
+        id: UUID,
+        tags: [String],
+        collectionName: String?,
+        isFavorite: Bool
+    ) {
+        guard let index = entries.firstIndex(where: { $0.id == id }) else { return }
+        let cleanedTags = Array(Set(tags.compactMap(Self.sanitizedLibraryLabel))).sorted()
+        entries[index].tags = cleanedTags.isEmpty ? nil : cleanedTags
+        entries[index].collectionName = collectionName.flatMap(Self.sanitizedLibraryLabel)
+        entries[index].isFavorite = isFavorite ? true : nil
+        searchCache = nil
+        scheduleSave()
+        syncSpotlightIfEnabled()
+    }
+
+    public func setFavorite(id: UUID, _ favorite: Bool) {
+        guard let entry = entry(id: id) else { return }
+        updateLibraryMetadata(
+            id: id,
+            tags: entry.libraryTags,
+            collectionName: entry.collectionName,
+            isFavorite: favorite
+        )
+    }
+
+    public func refreshSpotlightIndex() {
+        syncSpotlightIfEnabled()
+    }
+
     // MARK: Mutation
 
     /// Records a capture. `image` is used to make the thumbnail; `text` is only
@@ -385,6 +431,9 @@ public final class HistoryRepository {
         var inheritedCaptionPath: String?
         var inheritedProjectIdentity: ExternalFileIdentity?
         var inheritedCaptionIdentity: ExternalFileIdentity?
+        var inheritedTags: [String]?
+        var inheritedCollection: String?
+        var inheritedFavorite: Bool?
 
         for candidate in entries {
             let isSameRow = candidate.id == entry.id
@@ -406,6 +455,9 @@ public final class HistoryRepository {
                 inheritedCaptionIdentity = inheritedCaptionIdentity
                     ?? candidate.captionFileIdentity
             }
+            inheritedTags = inheritedTags ?? candidate.tags
+            inheritedCollection = inheritedCollection ?? candidate.collectionName
+            inheritedFavorite = inheritedFavorite ?? candidate.isFavorite
         }
 
         if entry.projectPath == nil {
@@ -416,6 +468,9 @@ public final class HistoryRepository {
             entry.captionPath = inheritedCaptionPath
             entry.captionFileIdentity = inheritedCaptionIdentity
         }
+        entry.tags = inheritedTags
+        entry.collectionName = inheritedCollection
+        entry.isFavorite = inheritedFavorite
 
         for old in removed {
             if let thumbnailURL = old.thumbnailURL,
@@ -428,6 +483,7 @@ public final class HistoryRepository {
         enforceStoreBudget()
         Self.removeUnreferencedManagedSidecars(from: removed, retainedEntries: entries)
         scheduleSave()
+        syncSpotlightIfEnabled()
     }
 
     /// Keeps the store inside the limits `load()` enforces.
@@ -632,6 +688,7 @@ public final class HistoryRepository {
             try? FileManager.default.removeItem(at: thumbnailURL)
         }
         scheduleSave()
+        syncSpotlightIfEnabled()
     }
 
     /// Returns files that could not be moved to Trash. Their history rows are
@@ -672,6 +729,7 @@ public final class HistoryRepository {
         }
         entries = retained
         scheduleSave()
+        syncSpotlightIfEnabled()
         return failed
     }
 
@@ -1405,6 +1463,24 @@ public final class HistoryRepository {
         }
     }
 
+    private func syncSpotlightIfEnabled() {
+        guard usesManagedStore else { return }
+        if Preferences.shared.indexesCapturesInSpotlight {
+            CaptureSpotlightIndexer.shared.replaceIndex(with: entries)
+        } else {
+            CaptureSpotlightIndexer.shared.clear()
+        }
+    }
+
+    private nonisolated static func sanitizedLibraryLabel(_ value: String) -> String? {
+        let collapsed = value
+            .replacingOccurrences(of: "\n", with: " ")
+            .replacingOccurrences(of: "\r", with: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !collapsed.isEmpty else { return nil }
+        return String(collapsed.prefix(80))
+    }
+
     private nonisolated static func sanitizedEntry(_ entry: HistoryEntry) -> HistoryEntry {
         var entry = entry
         if validatedThumbnailURL(filename: entry.thumbnailFilename, id: entry.id) == nil {
@@ -1432,6 +1508,10 @@ public final class HistoryRepository {
         if entry.ownership == .managedTemporary, !AppPaths.owns(entry.fileURL) {
             entry.ownership = .userDocument
         }
+        let tags = Array(Set((entry.tags ?? []).compactMap(sanitizedLibraryLabel))).sorted()
+        entry.tags = tags.isEmpty ? nil : tags
+        entry.collectionName = entry.collectionName.flatMap(sanitizedLibraryLabel)
+        if entry.isFavorite != true { entry.isFavorite = nil }
         return entry
     }
 }

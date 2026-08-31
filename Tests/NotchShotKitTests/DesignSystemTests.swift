@@ -75,6 +75,19 @@ struct DesignSystemTests {
             reduceTransparency: false,
             increaseContrast: true
         ))
+        #expect(LockedNowPlayingGlassPolicy.usesLiquidGlass(
+            reduceTransparency: false,
+            increaseContrast: false
+        ))
+        #expect(LockedNowPlayingGlassPolicy.dimmingOpacity <= 0.08)
+        #expect(!LockedNowPlayingGlassPolicy.usesLiquidGlass(
+            reduceTransparency: true,
+            increaseContrast: false
+        ))
+        #expect(!LockedNowPlayingGlassPolicy.usesLiquidGlass(
+            reduceTransparency: false,
+            increaseContrast: true
+        ))
         #expect(NotchActivityGlassPolicy.tintOpacity <= 0.12)
 
         let packageRoot = URL(fileURLWithPath: #filePath)
@@ -88,6 +101,27 @@ struct DesignSystemTests {
         #expect(source.contains(".notchShotActivityGlassSurface("))
         #expect(!source.contains(".fill(.ultraThinMaterial)"))
         #expect(!source.contains("Color.black.opacity(0.50)"))
+
+        let designSystemURL = packageRoot.appending(
+            path: "Sources/NotchShotKit/UI/NotchShotDesignSystem.swift"
+        )
+        let designSystem = try String(contentsOf: designSystemURL, encoding: .utf8)
+        #expect(designSystem.contains(".glassEffect(.clear, in: shape)"))
+        #expect(designSystem.contains("LockedNowPlayingGlassPolicy.dimmingOpacity"))
+        #expect(!designSystem.contains("LockedNowPlayingGlassPolicy.surfaceOpacity"))
+        #expect(!designSystem.contains("LockedNowPlayingGlassPolicy.tintOpacity"))
+
+        let lockedCardURL = packageRoot.appending(
+            path: "Sources/NotchShotKit/UI/LockedNowPlayingCard.swift"
+        )
+        let lockedCard = try String(contentsOf: lockedCardURL, encoding: .utf8)
+        #expect(lockedCard.contains("Image(systemName: \"waveform\")"))
+        #expect(lockedCard.contains("transportSymbol(\"heart.fill\""))
+        #expect(lockedCard.contains("transportSymbol(\"display\""))
+        #expect(!lockedCard.contains("transportSymbol(\"shuffle\""))
+        #expect(!lockedCard.contains("transportSymbol(\"headphones\""))
+        #expect(LockedNowPlayingLayout.artworkSize == 64)
+        #expect(LockedNowPlayingLayout.cornerRadius == 20)
     }
 
     @Test("Accessibility appearances replace Liquid Glass with stable chrome")
@@ -126,7 +160,7 @@ struct DesignSystemTests {
         ))
     }
 
-    @Test("Now Playing keeps an opaque shell and puts colour in the keyline")
+    @Test("Now Playing keeps an opaque shell and never tints it with the artwork")
     func nowPlayingUsesKeylineInsteadOfShellTint() throws {
         let packageRoot = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
@@ -145,8 +179,12 @@ struct DesignSystemTests {
 
         #expect(shellSource.contains(".fill(.black)"))
         #expect(shellSource.contains("mediaShellKeyline"))
-        #expect(shellSource.contains("NotchMediaGlowPolicy.keylineOpacity"))
         #expect(!shellSource.contains("LinearGradient("))
+        // The shell's edge is a neutral hairline. Tracing it in the cover's
+        // accent turned the island's corners red for one album and green for
+        // the next, which read as a status signal the app never meant.
+        #expect(!shellSource.contains("artworkAccentColor"))
+        #expect(!shellSource.contains("NotchMediaGlowPolicy.haloOpacity"))
 
         let mediaStart = try #require(source.range(of: "private struct MediaContent"))
         let scrubberStart = try #require(source.range(
@@ -157,7 +195,7 @@ struct DesignSystemTests {
         #expect(!mediaSource.contains("NotchMediaGlowPolicy.keylineOpacity"))
     }
 
-    @Test("Audio output selector uses a rounded device card instead of a generic menu")
+    @Test("Audio output selector opens inside the island as rounded device rows")
     func audioOutputSelectorUsesDeviceCard() throws {
         let packageRoot = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
@@ -174,12 +212,16 @@ struct DesignSystemTests {
         ))
         let mediaSource = String(source[mediaStart.lowerBound..<scrubberStart.lowerBound])
 
-        #expect(mediaSource.contains(".popover(isPresented:"))
-        #expect(mediaSource.contains("private struct AudioOutputPickerPopover"))
+        // The list grows the island itself: a popover would be a second window
+        // with its own shadow and arrow, which reads as a menu escaping the
+        // notch rather than the player expanding.
+        #expect(!mediaSource.contains(".popover(isPresented:"))
+        #expect(mediaSource.contains("coordinator.setMediaPanel"))
+        #expect(mediaSource.contains("LazyVStack(spacing: NotchLayout.mediaPanelRowSpacing)"))
+        #expect(!mediaSource.contains("Menu {"))
+
         #expect(mediaSource.contains("private struct AudioOutputDeviceRow"))
         #expect(mediaSource.contains("checkmark.circle.fill"))
-        #expect(mediaSource.contains("LazyVStack(spacing: 6)"))
-        #expect(!mediaSource.contains("Menu {"))
     }
 
     @Test("Annotation tools adapt instead of exposing a horizontal scrollbar")

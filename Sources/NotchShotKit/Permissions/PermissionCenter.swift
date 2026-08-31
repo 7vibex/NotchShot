@@ -30,8 +30,8 @@ public enum PermissionKind: String, Sendable, CaseIterable, Identifiable {
         case .screenRecording: "Required for every screenshot and recording."
         case .microphone: "Only used when you record your voice."
         case .automation: "Only used if the system Now Playing bridge is unavailable."
-        case .inputMonitoring: "Only used when you choose to replace the macOS volume and brightness overlay."
-        case .accessibility: "Used only for features you enable: inserting dictation into another app, mirroring visible notification banners, and—on some macOS builds—replacing media-key overlays."
+        case .inputMonitoring: "Only used when you choose to replace the macOS volume and brightness overlay or show keyboard shortcuts in a recording."
+        case .accessibility: "Used only for features you enable: automatic scrolling capture, inserting dictation into another app, mirroring visible notification banners, and—on some macOS builds—replacing media-key overlays."
         }
     }
 

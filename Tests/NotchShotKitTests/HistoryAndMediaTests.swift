@@ -4,6 +4,7 @@ import CoreMedia
 import Darwin
 import Foundation
 import Testing
+import UserNotifications
 @testable import NotchShotKit
 
 @Suite("History retention")
@@ -138,6 +139,46 @@ struct HistoryRetentionTests {
         // Nil indexedText models the opt-in being off at capture time.
         let notIndexed = entry(ageDays: 1, text: nil)
         #expect(!notIndexed.matches("balance"))
+    }
+
+    @Test("Library organization is sanitized, searchable, and persisted")
+    @MainActor
+    func libraryOrganizationRoundTrip() throws {
+        let store = FileManager.default.temporaryDirectory
+            .appendingPathComponent("notchshot-library-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: store) }
+        let repository = HistoryRepository(
+            storeURL: store,
+            managedArtifactDirectories: [],
+            historyEnabled: true,
+            indexesCaptureText: false
+        )
+        let asset = CaptureAsset(
+            url: URL(fileURLWithPath: "/tmp/library-entry.png"),
+            kind: .screenshot,
+            pixelSize: CGSize(width: 100, height: 100)
+        )
+        repository.record(asset: asset, image: nil)
+        repository.updateLibraryMetadata(
+            id: asset.id,
+            tags: [" launch ", "launch", "team\nreview"],
+            collectionName: " Product Demos ",
+            isFavorite: true
+        )
+        try repository.save()
+
+        let reloaded = HistoryRepository(
+            storeURL: store,
+            managedArtifactDirectories: [],
+            historyEnabled: true,
+            indexesCaptureText: false
+        )
+        let entry = try #require(reloaded.entry(id: asset.id))
+        #expect(entry.libraryTags == ["launch", "team review"])
+        #expect(entry.collectionName == "Product Demos")
+        #expect(entry.favorite)
+        #expect(reloaded.search("product demos").map(\.id) == [asset.id])
+        #expect(reloaded.search("launch").map(\.id) == [asset.id])
     }
 
     @Test("An empty query matches everything")
@@ -400,6 +441,119 @@ struct HistoryRetentionTests {
 
 @Suite("Media snapshot")
 struct MediaSnapshotTests {
+
+    @Test("Playing media becomes a bounded system Lock Screen notification")
+    func lockedMediaNotificationPayload() throws {
+        let snapshot = MediaSnapshot(
+            source: .mediaRemote,
+            applicationName: "Music",
+            title: "Song\nTitle",
+            artist: String(repeating: "Artist", count: 40),
+            isPlaying: true
+        )
+        let payload = try #require(LockedMediaNotificationPolicy.payload(
+            snapshot: snapshot,
+            screenIsLocked: true,
+            enabled: true
+        ))
+
+        #expect(payload.title == "Song Title")
+        #expect(payload.subtitle.count == LockedMediaNotificationPolicy.maximumFieldLength)
+        #expect(payload.body == "Playing in Music")
+    }
+
+    @Test("Lock notifications never expose disabled, unlocked, paused, or empty media")
+    func lockedMediaNotificationPrivacyGate() {
+        let playing = MediaSnapshot(
+            source: .mediaRemote,
+            title: "Song",
+            artist: "Artist",
+            isPlaying: true
+        )
+        var paused = playing
+        paused.isPlaying = false
+
+        #expect(LockedMediaNotificationPolicy.payload(
+            snapshot: playing,
+            screenIsLocked: false,
+            enabled: true
+        ) == nil)
+        #expect(LockedMediaNotificationPolicy.payload(
+            snapshot: playing,
+            screenIsLocked: true,
+            enabled: false
+        ) == nil)
+        #expect(LockedMediaNotificationPolicy.payload(
+            snapshot: playing,
+            screenIsLocked: true,
+            enabled: true,
+            customPresentationIsAvailable: true
+        ) == nil)
+        #expect(LockedMediaNotificationPolicy.payload(
+            snapshot: paused,
+            screenIsLocked: true,
+            enabled: true
+        ) == nil)
+        #expect(LockedMediaNotificationPolicy.payload(
+            snapshot: .empty,
+            screenIsLocked: true,
+            enabled: true
+        ) == nil)
+    }
+
+    @Test("An unsupported Lock Screen setting still delivers")
+    func readinessTreatsUnsupportedAsAllowed() {
+        // macOS reports `notSupported` for settings it does not model per app.
+        // Reading that as "disabled" suppressed every post, so the feature
+        // looked broken while System Settings showed nothing wrong.
+        #expect(LockedMediaNotificationPolicy.readiness(
+            authorization: .authorized,
+            lockScreen: .notSupported
+        ) == .ready)
+        #expect(LockedMediaNotificationPolicy.readiness(
+            authorization: .authorized,
+            lockScreen: .enabled
+        ) == .ready)
+        #expect(LockedMediaNotificationPolicy.readiness(
+            authorization: .provisional,
+            lockScreen: .enabled
+        ) == .ready)
+    }
+
+    @Test("Every reason the song cannot reach the Lock Screen is reportable")
+    func readinessNamesItsBlockers() {
+        #expect(LockedMediaNotificationPolicy.readiness(
+            authorization: .notDetermined,
+            lockScreen: .enabled
+        ) == .notRequested)
+        #expect(LockedMediaNotificationPolicy.readiness(
+            authorization: .denied,
+            lockScreen: .enabled
+        ) == .denied)
+        #expect(LockedMediaNotificationPolicy.readiness(
+            authorization: .authorized,
+            lockScreen: .disabled
+        ) == .lockScreenDisabled)
+
+        // Denial outranks the Lock Screen switch: fixing the switch would not
+        // help, so the remedy must not point there.
+        #expect(LockedMediaNotificationPolicy.readiness(
+            authorization: .denied,
+            lockScreen: .disabled
+        ) == .denied)
+
+        // Anything that is not ready has to tell the user where to go.
+        for readiness in [
+            LockedMediaNotificationReadiness.notRequested,
+            .denied,
+            .lockScreenDisabled
+        ] {
+            #expect(readiness.needsAttention)
+            #expect(readiness.remedy != nil)
+        }
+        #expect(!LockedMediaNotificationReadiness.ready.needsAttention)
+        #expect(!LockedMediaNotificationReadiness.unknown.needsAttention)
+    }
 
     @Test("A transient empty bridge result cannot erase opted-in locked media")
     func lockedSnapshotRetention() {
@@ -693,6 +847,21 @@ struct AdapterPayloadTests {
         #expect(result.duration == nil)
         #expect(result.position == nil)
         #expect(result.positionTimestamp == nil)
+    }
+
+    @Test("Content flags are read when stated and stay off when absent")
+    func contentFlags() throws {
+        let flagged = try #require(snapshot("""
+        {"title":"Song","artist":"Band","isExplicitTrack":true,"lossless":1}
+        """))
+        #expect(flagged.isExplicit)
+        #expect(flagged.isLossless)
+
+        // Absent means "not stated". A badge claiming a track is clean, on a
+        // source that never reports the flag, would be worse than no badge.
+        let silent = try #require(snapshot(#"{"title":"Song","artist":"Band"}"#))
+        #expect(!silent.isExplicit)
+        #expect(!silent.isLossless)
     }
 
     @Test("A payload with no track means nothing is playing")
@@ -1076,5 +1245,362 @@ struct RecordingConfigurationTests {
         #expect(status.microphoneLevel == 0)
         #expect(status.systemWaveform.allSatisfy { $0 == 0 })
         #expect(status.microphoneWaveform.allSatisfy { $0 == 0 })
+    }
+}
+
+@Suite("Playing Next queue")
+struct MediaQueueServiceTests {
+
+    private func output(_ rows: [(String, String)]) -> String {
+        rows
+            .map { "\($0.0)\(MediaQueueService.fieldSeparator)\($0.1)" }
+            .joined(separator: MediaQueueService.recordSeparator)
+            + MediaQueueService.recordSeparator
+    }
+
+    @Test("Only Music can be asked for a queue")
+    func supportedPlayers() {
+        #expect(MediaQueueService.supportsQueue(bundleID: "com.apple.Music"))
+        // Spotify's scripting dictionary exposes no queue, so the control must
+        // not appear for it — an always-empty list is worse than none.
+        #expect(!MediaQueueService.supportsQueue(bundleID: "com.spotify.client"))
+        #expect(!MediaQueueService.supportsQueue(bundleID: nil))
+    }
+
+    @Test("Rows are parsed in order")
+    func parsesRows() {
+        let entries = MediaQueueService.parse(output([
+            ("Blue Skies", "Revelation"),
+            ("Stop Crying", "The Straikerz"),
+        ]))
+        #expect(entries.count == 2)
+        #expect(entries[0].title == "Blue Skies")
+        #expect(entries[1].artist == "The Straikerz")
+    }
+
+    @Test("The same track queued twice keeps distinct identities")
+    func duplicateTracksStayDistinct() {
+        let entries = MediaQueueService.parse(output([
+            ("Blue Skies", "Revelation"),
+            ("Blue Skies", "Revelation"),
+        ]))
+        #expect(entries.count == 2)
+        // Two rows sharing an id makes SwiftUI drop one of them.
+        #expect(entries[0].id != entries[1].id)
+    }
+
+    @Test("An empty or partial answer yields no rows rather than blank ones")
+    func toleratesEmptyOutput() {
+        #expect(MediaQueueService.parse("").isEmpty)
+        #expect(MediaQueueService.parse("no separators here").isEmpty)
+        // A record missing its artist field is incomplete, not a nameless track.
+        #expect(MediaQueueService.parse("Title only\(MediaQueueService.recordSeparator)").isEmpty)
+    }
+
+    @Test("Whitespace-only titles are dropped")
+    func dropsBlankTitles() {
+        let entries = MediaQueueService.parse(output([("   ", "Band")]))
+        #expect(entries.isEmpty)
+    }
+
+    @Test("A stopped player is distinguishable from a genuinely empty queue")
+    func stoppedMarkerNeverReadsAsRows() {
+        // The marker must differ from the empty script answer an error path
+        // returns, so `upcoming` can map it to nil ("not playing") while ""
+        // stays "answered, nothing queued".
+        #expect(MediaQueueService.stoppedMarker != "")
+        // And it must never survive parsing as rows, whatever a track is named.
+        #expect(MediaQueueService.parse(MediaQueueService.stoppedMarker).isEmpty)
+        #expect(MediaQueueService.parse(
+            output([("Not the marker", "Artist")])
+        ).count == 1)
+    }
+}
+
+@Suite("Expanded player panels")
+struct MediaPanelStateTests {
+
+    @Test("A list opens one at a time and closes with the peek")
+    @MainActor
+    func panelsAreMutuallyExclusive() {
+        let coordinator = AppCoordinator()
+        coordinator.setPeeking(true)
+
+        coordinator.setMediaPanel(.audioRoutes, rowCount: 3)
+        #expect(coordinator.mediaPanel == .audioRoutes)
+        #expect(coordinator.mediaPanelRowCount == 3)
+
+        // Two stacked lists would push the island past the height at which it
+        // still reads as part of the notch.
+        coordinator.setMediaPanel(.playingNext, rowCount: 2)
+        #expect(coordinator.mediaPanel == .playingNext)
+        #expect(coordinator.mediaPanelRowCount == 2)
+
+        // A list left open would otherwise reserve height in a collapsed
+        // island, which reads as a stuck, empty gap under the player.
+        coordinator.setPeeking(false)
+        #expect(coordinator.mediaPanel == .none)
+        #expect(coordinator.mediaPanelRowCount == 0)
+    }
+
+    @Test("An empty list still claims a row for its own message")
+    @MainActor
+    func emptyListKeepsOneRow() {
+        let coordinator = AppCoordinator()
+        coordinator.setPeeking(true)
+
+        // Zero rows means closed; a list with nothing in it still has to show
+        // why it is empty.
+        coordinator.setMediaPanel(.playingNext, rowCount: 0)
+        #expect(coordinator.mediaPanel == .none)
+
+        coordinator.setMediaPanel(.playingNext, rowCount: 1)
+        #expect(coordinator.mediaPanelRowCount == 1)
+    }
+
+    @Test("The island grows by exactly the rows a list will draw")
+    func panelHeightMatchesItsRows() {
+        let metrics = NotchMetrics(
+            screenFrame: CGRect(x: 0, y: 0, width: 1512, height: 982),
+            hasPhysicalNotch: true,
+            notchSize: CGSize(width: 250, height: 37),
+            menuBarHeight: 37
+        )
+        func height(rows: Int) -> CGFloat {
+            NotchLayout.layout(
+                for: .media,
+                metrics: metrics,
+                isPeeking: true,
+                resultCount: 0,
+                mediaPanelRows: rows
+            ).size.height
+        }
+
+        let oneRow = height(rows: 1)
+        let twoRows = height(rows: 2)
+        #expect(
+            twoRows - oneRow
+                == NotchLayout.mediaPanelRowHeight + NotchLayout.mediaPanelRowSpacing
+        )
+    }
+}
+
+@Suite("Shuffle and repeat")
+struct MediaPlaybackModeServiceTests {
+
+    private func output(_ shuffle: String, _ repeatValue: String) -> String {
+        "\(shuffle)\(MediaPlaybackModeService.fieldSeparator)\(repeatValue)"
+    }
+
+    @Test("Only the two scriptable players expose these controls")
+    func supportedPlayers() {
+        #expect(MediaPlaybackModeService.supportsModes(bundleID: "com.apple.Music"))
+        #expect(MediaPlaybackModeService.supportsModes(bundleID: "com.spotify.client"))
+        // A browser tab on the MediaRemote bridge reports nothing back, so the
+        // buttons must not be offered for it.
+        #expect(!MediaPlaybackModeService.supportsModes(bundleID: "com.apple.Safari"))
+        #expect(!MediaPlaybackModeService.supportsModes(bundleID: nil))
+    }
+
+    @Test("Both players' vocabularies parse")
+    func parsesBothDialects() throws {
+        // Music answers off/one/all.
+        let music = try #require(MediaPlaybackModeService.parse(output("true", "one")))
+        #expect(music.isShuffling)
+        #expect(music.repeatMode == .one)
+
+        // Spotify answers with booleans.
+        let spotify = try #require(MediaPlaybackModeService.parse(output("false", "true")))
+        #expect(!spotify.isShuffling)
+        #expect(spotify.repeatMode == .all)
+
+        let off = try #require(MediaPlaybackModeService.parse(output("false", "off")))
+        #expect(off.repeatMode == .off)
+    }
+
+    @Test("A partial or empty answer yields no state rather than a wrong one")
+    func toleratesBadOutput() {
+        #expect(MediaPlaybackModeService.parse("") == nil)
+        #expect(MediaPlaybackModeService.parse("true") == nil)
+    }
+
+    @Test("Spotify's repeat cycle skips the position it cannot hold")
+    func repeatCycleMatchesThePlayer() {
+        // Music has three positions.
+        #expect(MediaPlaybackModeService.next(after: .off, supportsSingleTrack: true) == .all)
+        #expect(MediaPlaybackModeService.next(after: .all, supportsSingleTrack: true) == .one)
+        #expect(MediaPlaybackModeService.next(after: .one, supportsSingleTrack: true) == .off)
+
+        // Spotify has two: offering "repeat one" there would set a state the
+        // player cannot hold, and the button would spring back on the next read.
+        #expect(MediaPlaybackModeService.next(after: .off, supportsSingleTrack: false) == .all)
+        #expect(MediaPlaybackModeService.next(after: .all, supportsSingleTrack: false) == .off)
+    }
+
+    @Test("Repeat reports whether it is on, for the control's tint")
+    func repeatKnowsWhenItIsActive() {
+        #expect(!MediaRepeatMode.off.isOn)
+        #expect(MediaRepeatMode.all.isOn)
+        #expect(MediaRepeatMode.one.isOn)
+        #expect(MediaRepeatMode.one.symbolName == "repeat.1")
+        #expect(MediaRepeatMode.all.symbolName == "repeat")
+    }
+}
+
+@Suite("Push to talk")
+struct DictationPushToTalkTests {
+
+    @Test("A hold can begin from every state a session can end in")
+    func holdStartsFromTerminalStates() {
+        // The push-to-talk gate used to accept only `.idle`, so the first
+        // dictation worked and every hold after it was dropped until the
+        // finished state happened to reset.
+        for state in [
+            DictationState.idle,
+            .completed,
+            .cancelled,
+            .copied,
+            .failed("microphone unavailable"),
+        ] {
+            #expect(state.canStartNewSession, "\(state) should accept a new hold")
+        }
+    }
+
+    @Test("A hold cannot begin on top of a session already running")
+    func holdRefusesLiveStates() {
+        for state in [
+            DictationState.requestingMicrophone,
+            .preparingModel(progress: 0.5),
+            .listening,
+            .finalizing,
+            .inserting,
+        ] {
+            #expect(!state.canStartNewSession, "\(state) should not start a second session")
+        }
+    }
+
+    @Test("The start gate and the toggle intent stay in agreement")
+    func gateMatchesToggleIntent() {
+        for state in [
+            DictationState.idle,
+            .completed,
+            .cancelled,
+            .copied,
+            .failed("x"),
+            .requestingMicrophone,
+            .preparingModel(progress: 0),
+            .listening,
+            .finalizing,
+            .inserting,
+        ] {
+            #expect(state.canStartNewSession == (state.toggleIntent == .start))
+        }
+    }
+}
+
+@Suite("Accessory battery")
+struct BluetoothAccessoryBatteryTests {
+
+    /// Shaped exactly like a real `system_profiler SPBluetoothDataType -json`
+    /// answer on macOS 26, with the owner's name replaced.
+    private let report = """
+    {"SPBluetoothDataType":[{"device_connected":[
+      {"Test AirPods Pro":{
+        "device_address":"40:DA:5C:BA:0D:2F",
+        "device_batteryLevelCase":"15%",
+        "device_batteryLevelLeft":"100%",
+        "device_batteryLevelRight":"95%",
+        "device_minorType":"Headphones"}},
+      {"Some Mouse":{"device_batteryLevel":"62%","device_minorType":"Mouse"}},
+      {"Silent Speaker":{"device_minorType":"Speaker"}}
+    ]}]}
+    """
+
+    @Test("Levels are read from the nested report")
+    func parsesConnectedAccessories() throws {
+        let parsed = BluetoothAccessoryBatteryService.parse(Data(report.utf8))
+        let airpods = try #require(BluetoothAccessoryBatteryService.match(
+            routeName: "Test AirPods Pro",
+            in: parsed
+        ))
+        #expect(airpods.left == 100)
+        #expect(airpods.right == 95)
+        #expect(airpods.enclosure == 15)
+        #expect(airpods.hasCase)
+        // The number worth showing when only one fits is the one about to run out.
+        #expect(airpods.lowestLevel == 15)
+    }
+
+    @Test("An accessory that reports nothing is not invented")
+    func silentAccessoriesAreOmitted() {
+        let parsed = BluetoothAccessoryBatteryService.parse(Data(report.utf8))
+        #expect(BluetoothAccessoryBatteryService.match(
+            routeName: "Silent Speaker",
+            in: parsed
+        ) == nil)
+    }
+
+    @Test("A single-level accessory still reports")
+    func singleLevelAccessory() throws {
+        let parsed = BluetoothAccessoryBatteryService.parse(Data(report.utf8))
+        let mouse = try #require(BluetoothAccessoryBatteryService.match(
+            routeName: "Some Mouse",
+            in: parsed
+        ))
+        #expect(mouse.single == 62)
+        #expect(!mouse.hasCase)
+    }
+
+    @Test("Route names match across punctuation and spelling differences")
+    func matchesRouteNamesLoosely() {
+        let parsed = BluetoothAccessoryBatteryService.parse(Data(report.utf8))
+        // Core Audio and Bluetooth disagree about apostrophes and casing.
+        #expect(BluetoothAccessoryBatteryService.match(
+            routeName: "test airpods pro",
+            in: parsed
+        ) != nil)
+        #expect(BluetoothAccessoryBatteryService.match(
+            routeName: "MacBook Pro Speakers",
+            in: parsed
+        ) == nil)
+    }
+
+    @Test("A containment match prefers the most specific accessory")
+    func longestNameWins() {
+        let accessories = [
+            BluetoothAccessoryBatteryService.normalized("AirPods"):
+                AccessoryBattery(name: "AirPods", single: 50),
+            BluetoothAccessoryBatteryService.normalized("Marius's AirPods Pro"):
+                AccessoryBattery(name: "Marius's AirPods Pro", single: 80),
+        ]
+        // Core Audio appends a qualifier to the route name, so both entries
+        // containment-match. The specific accessory must win over the generic
+        // one — dictionary order must not decide.
+        let matched = BluetoothAccessoryBatteryService.match(
+            routeName: "Marius's AirPods Pro (2)",
+            in: accessories
+        )
+        #expect(matched?.name == "Marius's AirPods Pro")
+        #expect(matched?.single == 80)
+    }
+
+    @Test("Percentages survive their formatting, and nonsense is dropped")
+    func parsesPercentStrings() {
+        #expect(BluetoothAccessoryBatteryService.percent("15%") == 15)
+        #expect(BluetoothAccessoryBatteryService.percent("100%") == 100)
+        #expect(BluetoothAccessoryBatteryService.percent(42) == 42)
+        #expect(BluetoothAccessoryBatteryService.percent("") == nil)
+        #expect(BluetoothAccessoryBatteryService.percent("120%") == nil)
+        #expect(BluetoothAccessoryBatteryService.percent(nil) == nil)
+    }
+
+    @Test("Artwork comes from Apple's own symbols, and never guesses a brand")
+    func symbolMatchesTheModel() {
+        #expect(AccessoryBattery(name: "Test AirPods Max", single: 80).symbolName == "airpodsmax")
+        #expect(AccessoryBattery(name: "AirPods Pro", enclosure: 50).symbolName
+            == "airpodspro.chargingcase.wireless.fill")
+        // An unrecognised accessory stays generic rather than claiming to be
+        // an Apple product.
+        #expect(AccessoryBattery(name: "OPPO Enco Air4 Pro", single: 70).symbolName == "headphones")
     }
 }

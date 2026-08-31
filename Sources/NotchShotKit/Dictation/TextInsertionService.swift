@@ -188,7 +188,7 @@ public final class TextInsertionService {
         _ text: String,
         into target: DictationInsertionTarget,
         mode: DictationInsertMode
-    ) -> TextInsertionResult {
+    ) async -> TextInsertionResult {
         guard !text.isEmpty else { return .failed("No speech detected") }
         if mode == .copyOnly {
             return copyToPasteboard(text)
@@ -205,15 +205,39 @@ public final class TextInsertionService {
         if let element = target.axElement, AXIsProcessTrusted(), isEditableAndNotSecure(element) {
             // Re-verify element is still focused and belongs to same app
             if verifyTargetStillValid(target, element: element) {
-                if insertViaAX(text, into: element) {
+                switch insertViaAX(text, into: element) {
+                case .landed:
                     return .inserted
-                }
-                // Web editors and several Electron apps expose an editable AX
-                // target but reject AXSelectedText. Unicode keyboard events are
-                // a clipboard-free fallback and remain scoped to the same
-                // re-verified focused element.
-                if typeViaUnicodeEvents(text) {
-                    return .inserted
+                case .unverifiable:
+                    // The field publishes nothing we can compare, so there is
+                    // no way to tell an insertion from a no-op. Typing it a
+                    // second time would risk two copies of the transcript, so
+                    // take the recoverable outcome and say so.
+                    return copyToPasteboard(text)
+                case .misdelivered:
+                    // `insertViaAX` sets the element directly rather than
+                    // posting keyboard events, so this outcome cannot arise
+                    // here; falling through keeps the switch total.
+                    break
+                case .rejected:
+                    // Web editors and several Electron apps expose an editable
+                    // AX target but reject AXSelectedText. Unicode keyboard
+                    // events are a clipboard-free fallback and remain scoped to
+                    // the same re-verified focused element. Nothing was
+                    // inserted above, so this cannot double up.
+                    switch await typeViaUnicodeEvents(text, into: target, element: element) {
+                    case .landed:
+                        return .inserted
+                    case .misdelivered:
+                        // The target moved away while the keystrokes were in
+                        // flight. The events may have landed in whatever the
+                        // user focused instead, and a clipboard write would
+                        // deliver the transcript a second time in a place the
+                        // user did not ask for. Stop and say so.
+                        return .failed("The insertion target changed while typing; the text was not copied or re-inserted")
+                    default:
+                        break
+                    }
                 }
             }
             // If verification fails or insertion fails, fall through to copy fallback
@@ -296,28 +320,94 @@ public final class TextInsertionService {
         return CFEqual(focused, element)
     }
 
-    private func insertViaAX(_ text: String, into element: AXUIElement) -> Bool {
-        // Try kAXSelectedTextAttribute or kAXValueAttribute
-        // For text fields, setting selected text inserts at cursor.
-        // First try to set selected text
-        var rangeValue: CFTypeRef?
-        var hasSelection = false
-        if AXUIElementCopyAttributeValue(element, kAXSelectedTextRangeAttribute as CFString, &rangeValue) == .success,
-           let val = rangeValue {
-            var r = CFRange()
-            if AXValueGetValue(val as! AXValue, .cfRange, &r) {
-                hasSelection = true
-            }
+    /// What actually became of an insertion attempt.
+    ///
+    /// `.success` from the Accessibility API means the target accepted the
+    /// message, not that it changed anything — several web and Electron editors
+    /// return success from `AXSelectedText` and then ignore it — and posted key
+    /// events are fire-and-forget by construction. Both used to be reported as
+    /// an insertion, which is how dictation came to announce text it had never
+    /// delivered.
+    private enum InsertionOutcome {
+        /// The field moved: the text is in.
+        case landed
+        /// The field publishes a state to compare and it did not move, so
+        /// nothing was inserted and another method may safely try.
+        case rejected
+        /// The field publishes nothing to compare. No retry is allowed here —
+        /// a second attempt would double the text if the first one did work.
+        case unverifiable
+        /// The target stopped being the focused element while the events were
+        /// in flight. Whatever received the keystrokes, it was not the field
+        /// the user dictated into, and no further delivery may be attempted.
+        case misdelivered
+    }
+
+    /// A content-free fingerprint of a text element: how many characters it
+    /// holds and where the caret sits. Both are numbers, so verifying an
+    /// insertion does not weaken the rule that this service never reads what
+    /// the user already has in the field.
+    ///
+    /// Any real insertion moves at least one of them — even replacing a
+    /// selection with text of the same length, which leaves the count alone,
+    /// collapses the caret to the end of what was inserted.
+    private struct TextFieldState: Equatable {
+        var characters: Int?
+        var caret: Int?
+
+        var isObservable: Bool { characters != nil || caret != nil }
+    }
+
+    private func fieldState(of element: AXUIElement) -> TextFieldState {
+        var state = TextFieldState()
+
+        var count: CFTypeRef?
+        if AXUIElementCopyAttributeValue(
+            element,
+            kAXNumberOfCharactersAttribute as CFString,
+            &count
+        ) == .success {
+            state.characters = count as? Int
         }
 
-        // Try AXSelectedText
-        if hasSelection {
-            let axErr = AXUIElementSetAttributeValue(element, kAXSelectedTextAttribute as CFString, text as CFTypeRef)
-            if axErr == .success { return true }
+        var rangeValue: CFTypeRef?
+        if AXUIElementCopyAttributeValue(
+            element,
+            kAXSelectedTextRangeAttribute as CFString,
+            &rangeValue
+        ) == .success, let value = rangeValue {
+            var range = CFRange()
+            if AXValueGetValue(value as! AXValue, .cfRange, &range) {
+                state.caret = range.location + range.length
+            }
         }
-        // Fallback: try setting value (may replace entire contents) – only if selection method failed and we have empty field?
-        // Safer not to use kAXValue as it would overwrite. So we fail.
-        return false
+        return state
+    }
+
+    /// Compares the field either side of an attempt. An element that told us
+    /// nothing before is unverifiable however it looks afterwards.
+    private func outcome(
+        before: TextFieldState,
+        after: TextFieldState
+    ) -> InsertionOutcome {
+        guard before.isObservable, after.isObservable else { return .unverifiable }
+        return before == after ? .rejected : .landed
+    }
+
+    private func insertViaAX(_ text: String, into element: AXUIElement) -> InsertionOutcome {
+        // Setting the selected text inserts at the cursor. Setting kAXValue
+        // would overwrite the whole field, so a target that has no selection
+        // range to insert into is left to the fallback instead.
+        let before = fieldState(of: element)
+        guard before.caret != nil else { return .rejected }
+
+        let axErr = AXUIElementSetAttributeValue(
+            element,
+            kAXSelectedTextAttribute as CFString,
+            text as CFTypeRef
+        )
+        guard axErr == .success else { return .rejected }
+        return outcome(before: before, after: fieldState(of: element))
     }
 
     private func copyToPasteboard(_ text: String) -> TextInsertionResult {
@@ -347,11 +437,20 @@ public final class TextInsertionService {
         return .copied
     }
 
-    private func typeViaUnicodeEvents(_ text: String) -> Bool {
-        guard AXIsProcessTrusted() else { return false }
+    /// Posted key events are fire-and-forget: `post` returns nothing about
+    /// whether the front app was listening, so this reports what the field did,
+    /// not what was sent. The events need a moment to cross to the other
+    /// process and be handled before that reading means anything.
+    private func typeViaUnicodeEvents(
+        _ text: String,
+        into target: DictationInsertionTarget,
+        element: AXUIElement
+    ) async -> InsertionOutcome {
+        guard AXIsProcessTrusted() else { return .rejected }
         let source = CGEventSource(stateID: .hidSystemState)
         let utf16 = Array(text.utf16)
-        guard !utf16.isEmpty else { return false }
+        guard !utf16.isEmpty else { return .rejected }
+        let before = fieldState(of: element)
 
         // Keep individual events small; very large Unicode payloads are ignored
         // by some AppKit and Chromium controls.
@@ -360,18 +459,34 @@ public final class TextInsertionService {
             let chunk = Array(utf16[start..<end])
             guard let keyDown = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: true),
                   let keyUp = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: false)
-            else { return false }
+            else { return .rejected }
+            // Virtual key 0 is 'a'. Posting the pair without the payload
+            // attached would type that letter instead of the transcript, so a
+            // chunk that cannot be addressed is abandoned rather than sent.
+            var attached = false
             chunk.withUnsafeBufferPointer { buffer in
                 guard let baseAddress = buffer.baseAddress else { return }
                 keyDown.keyboardSetUnicodeString(
                     stringLength: buffer.count,
                     unicodeString: baseAddress
                 )
+                attached = true
             }
+            guard attached else { return .rejected }
             keyDown.post(tap: .cghidEventTap)
             keyUp.post(tap: .cghidEventTap)
         }
-        return true
+
+        try? await Task.sleep(for: .milliseconds(120))
+        // The focus was verified before the first chunk was posted, but the
+        // user can click or type during the settle window. Events go to
+        // whatever is focused now, so a moved target is reported as
+        // misdelivered rather than compared against a field that legitimately
+        // never received them.
+        guard verifyTargetStillValid(target, element: element) else {
+            return .misdelivered
+        }
+        return outcome(before: before, after: fieldState(of: element))
     }
 
     /// Restores previous clipboard only if no other process has written since our copy.

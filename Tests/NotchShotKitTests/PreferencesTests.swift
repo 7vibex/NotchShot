@@ -76,8 +76,12 @@ struct PreferencesTests {
         first.historyRetentionDays = 7
         first.recordingFrameRate = 30
         first.recordingTargetMode = .window
+        first.recordingSmoothsCursor = true
+        first.recordingShowsKeystrokes = true
+        first.recordingPresenterCamera = true
         first.updateChannel = .beta
         first.indexesCaptureText = true
+        first.indexesCapturesInSpotlight = true
         first.notchDisplayPlacement = .allDisplays
         first.clipboardClearsOnQuit = true
         first.shelfPresentationStyle = .grid
@@ -88,8 +92,12 @@ struct PreferencesTests {
         #expect(second.historyRetentionDays == 7)
         #expect(second.recordingFrameRate == 30)
         #expect(second.recordingTargetMode == .window)
+        #expect(second.recordingSmoothsCursor)
+        #expect(second.recordingShowsKeystrokes)
+        #expect(second.recordingPresenterCamera)
         #expect(second.updateChannel == .beta)
         #expect(second.indexesCaptureText)
+        #expect(second.indexesCapturesInSpotlight)
         #expect(second.notchDisplayPlacement == .allDisplays)
         #expect(second.clipboardClearsOnQuit)
         #expect(second.shelfPresentationStyle == .grid)
@@ -101,9 +109,11 @@ struct PreferencesTests {
         let sanitized = ShareAction.sanitizedShelfQuickActions([
             .airDrop, .airDrop, .delete, .removeBackground,
         ])
-        #expect(sanitized.count == 4)
+        #expect(sanitized.count == ShareAction.shelfQuickActionSlots)
+        // A customized order survives; the widened row is filled from the
+        // defaults rather than resetting what the user already chose.
         #expect(sanitized.prefix(2) == [.airDrop, .removeBackground])
-        #expect(Set(sanitized).count == 4)
+        #expect(Set(sanitized).count == ShareAction.shelfQuickActionSlots)
         #expect(!sanitized.contains(.delete))
         #expect(ShareAction.customizableShelfCases.contains(.open))
 
@@ -111,6 +121,23 @@ struct PreferencesTests {
         preferences.setShelfQuickAction(.share, at: 0)
         #expect(preferences.shelfQuickActions[0] == .share)
         #expect(preferences.shelfQuickActions[3] == .copy)
+    }
+
+    @Test("The shelf row leads with the actions a capture is usually made for")
+    func shelfQuickActionDefaults() {
+        let defaults = ShareAction.defaultShelfQuickActions
+        #expect(defaults.count == ShareAction.shelfQuickActionSlots)
+        // Pulling the text out of a screenshot and getting it onto another
+        // device are the two reasons people open More most often.
+        #expect(defaults.contains(.ocr))
+        #expect(defaults.contains(.airDrop))
+        // Every default has to be legal in a slot, and none may be destructive.
+        for action in defaults {
+            #expect(ShareAction.customizableShelfCases.contains(action))
+        }
+        #expect(!ShareAction.customizableShelfCases.contains(.delete))
+        #expect(!ShareAction.customizableShelfCases.contains(.moveTo))
+        #expect(!ShareAction.customizableShelfCases.contains(.rename))
     }
 
     @Test("The notch defaults to the built-in MacBook display")
@@ -173,7 +200,12 @@ struct PreferencesTests {
 
     @Test("Text indexing is off by default, since it stores screen contents")
     func textIndexingDefaultsOff() {
-        #expect(!makePreferences().indexesCaptureText)
+        let preferences = makePreferences()
+        #expect(!preferences.indexesCaptureText)
+        #expect(!preferences.indexesCapturesInSpotlight)
+        #expect(!preferences.recordingSmoothsCursor)
+        #expect(!preferences.recordingShowsKeystrokes)
+        #expect(!preferences.recordingPresenterCamera)
     }
 
     @Test("Locked-session media is privacy opt-in and persists explicitly")

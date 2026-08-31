@@ -136,6 +136,9 @@ public final class Preferences {
     public var recordingShowsCursor = true { didSet { write(recordingShowsCursor, .recordingShowsCursor) } }
     public var recordingHighlightsClicks = false { didSet { write(recordingHighlightsClicks, .recordingHighlightsClicks) } }
     public var recordingAutoZoomsOnClicks = false { didSet { write(recordingAutoZoomsOnClicks, .recordingAutoZoomsOnClicks) } }
+    public var recordingSmoothsCursor = false { didSet { write(recordingSmoothsCursor, .recordingSmoothsCursor) } }
+    public var recordingShowsKeystrokes = false { didSet { write(recordingShowsKeystrokes, .recordingShowsKeystrokes) } }
+    public var recordingPresenterCamera = false { didSet { write(recordingPresenterCamera, .recordingPresenterCamera) } }
     public var recordingFramesWithBackground = false { didSet { write(recordingFramesWithBackground, .recordingFramesWithBackground) } }
     public var recordingGeneratesCaptions = false { didSet { write(recordingGeneratesCaptions, .recordingGeneratesCaptions) } }
 
@@ -161,6 +164,7 @@ public final class Preferences {
     public var historyEnabled = true { didSet { write(historyEnabled, .historyEnabled) } }
     /// Opt-in: OCR text only enters the search index when this is on.
     public var indexesCaptureText = false { didSet { write(indexesCaptureText, .indexesCaptureText) } }
+    public var indexesCapturesInSpotlight = false { didSet { write(indexesCapturesInSpotlight, .indexesCapturesInSpotlight) } }
 
     // MARK: Clipboard
 
@@ -253,6 +257,7 @@ public final class Preferences {
     }
     public var powerStatusEnabled = true { didSet { write(powerStatusEnabled, .powerStatus) } }
     public var audioRouteStatusEnabled = false { didSet { write(audioRouteStatusEnabled, .audioRouteStatus) } }
+    public var networkStatusEnabled = true { didSet { write(networkStatusEnabled, .networkStatus) } }
     /// Reads only NotchShot's explicit local reporter files. It does not inspect
     /// other apps until the user chooses to connect one through a hook.
     public var aiActivityEnabled = true { didSet { write(aiActivityEnabled, .aiActivity) } }
@@ -427,13 +432,14 @@ public final class Preferences {
         case recordingTargetMode, recordingResolution, recordingFrameRate
         case recordsSystemAudio, recordsMicrophone, preferredMicrophone
         case recordingShowsCursor, recordingHighlightsClicks, recordingAutoZoomsOnClicks
+        case recordingSmoothsCursor, recordingShowsKeystrokes, recordingPresenterCamera
         case recordingFramesWithBackground
         case recordingGeneratesCaptions
         case dictationEnabled, dictationTriggerMode, dictationLanguage, dictationEngine
         case dictationInsertMode, dictationPostProcessing, dictationAppendMode
         case dictationRemovesFillerWords, dictationSpokenFormatting, dictationMaximumDuration
         case dictationCustomWords, dictationReplacements, dictationMicrophone
-        case historyRetentionDays, historyEnabled, indexesCaptureText
+        case historyRetentionDays, historyEnabled, indexesCaptureText, indexesCapturesInSpotlight
         case clipboardEnabled, clipboardRetentionDays, clipboardClearsOnQuit, clipboardExcluded
         case notchEnabled, notchDisplayPlacement, islandOnExternal, mirrorPassiveContext, hoverPeek, hoverPeekDelay, systemLevelHUD
         case mirrorsBrightness, suppressesSystemOSD, usesSystemShortcuts
@@ -441,7 +447,8 @@ public final class Preferences {
         case appleEventsFallback, adapterPath, adapterIdentity
         case calendarGlance, selectedCalendars, hiddenTitleCalendars, calendarTitles, calendarOverMedia
         case customCalendarSelection
-        case powerStatus, audioRouteStatus, aiActivity, aiActivityOverMedia, enabledAISources
+        case powerStatus, audioRouteStatus, networkStatus
+        case aiActivity, aiActivityOverMedia, enabledAISources
         case backgroundPreset, annotationColor, annotationLineWidth
         case launchAtLogin, showsDockIcon, firstRun, pendingFirstCaptureIntent, updateChannel
         case recoveredLegacySystemOSD, adapterCheckBuild
@@ -498,6 +505,9 @@ public final class Preferences {
         recordingShowsCursor = bool(.recordingShowsCursor, true)
         recordingHighlightsClicks = bool(.recordingHighlightsClicks, false)
         recordingAutoZoomsOnClicks = bool(.recordingAutoZoomsOnClicks, false)
+        recordingSmoothsCursor = bool(.recordingSmoothsCursor, false)
+        recordingShowsKeystrokes = bool(.recordingShowsKeystrokes, false)
+        recordingPresenterCamera = bool(.recordingPresenterCamera, false)
         recordingFramesWithBackground = bool(.recordingFramesWithBackground, false)
         recordingGeneratesCaptions = bool(.recordingGeneratesCaptions, false)
 
@@ -525,6 +535,7 @@ public final class Preferences {
         historyRetentionDays = int(.historyRetentionDays, 30)
         historyEnabled = bool(.historyEnabled, true)
         indexesCaptureText = bool(.indexesCaptureText, false)
+        indexesCapturesInSpotlight = bool(.indexesCapturesInSpotlight, false)
         clipboardEnabled = bool(.clipboardEnabled, false)
         clipboardRetentionDays = int(.clipboardRetentionDays, 7)
         clipboardClearsOnQuit = bool(.clipboardClearsOnQuit, false)
@@ -598,6 +609,7 @@ public final class Preferences {
         showsImminentEventsOverMedia = bool(.calendarOverMedia, false)
         powerStatusEnabled = bool(.powerStatus, true)
         audioRouteStatusEnabled = bool(.audioRouteStatus, false)
+        networkStatusEnabled = bool(.networkStatus, true)
         aiActivityEnabled = bool(.aiActivity, true)
         showsAIActivityOverMedia = bool(.aiActivityOverMedia, true)
         enabledAISourceRawValues = defaults.stringArray(

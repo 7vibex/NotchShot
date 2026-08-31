@@ -906,7 +906,9 @@ public final class RecordingService {
                 )
             )
         )
-        streamConfiguration.showsCursor = configuration.showsCursor
+        // Cursor smoothing redraws a sampled pointer during post-processing;
+        // baking the native cursor in as well would produce two pointers.
+        streamConfiguration.showsCursor = configuration.showsCursor && !configuration.smoothsCursor
         streamConfiguration.showMouseClicks = configuration.highlightsClicks
         streamConfiguration.scalesToFit = configuration.framesWithBackground
         streamConfiguration.captureResolution = .best

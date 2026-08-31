@@ -561,6 +561,11 @@ enum AdapterPayload {
         let duration = number(payload, "duration", "playbackDuration", "totalDuration")
         let elapsed = number(payload, "elapsedTime", "currentTime", "position")
         let isPlaying = boolean(payload, "playing", "isPlaying", "playbackRate") ?? false
+        // Spelled several ways across adapter releases, and absent entirely on
+        // most sources. Absent means "not stated": the badge stays hidden
+        // rather than asserting a track is clean or lossy.
+        let isExplicit = boolean(payload, "isExplicitTrack", "explicit", "isExplicit") ?? false
+        let isLossless = boolean(payload, "isLossless", "lossless", "isAudioLossless") ?? false
 
         var artworkData: Data?
         if let base64 = string(payload, "artworkData", "artwork") {
@@ -586,6 +591,8 @@ enum AdapterPayload {
             position: elapsed,
             positionTimestamp: elapsed != nil ? Date() : nil,
             isPlaying: isPlaying,
+            isExplicit: isExplicit,
+            isLossless: isLossless,
             supportedCommands: [.play, .pause, .togglePlayPause, .nextTrack, .previousTrack, .seek]
         )
     }

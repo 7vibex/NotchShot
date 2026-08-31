@@ -60,13 +60,23 @@ public final class NotchPanel: NSPanel {
         NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.mainMenuWindow)) + 2)
     }
 
-    /// The secure lock experience occupies the standard screen-saver layer.
-    /// Sharing that exact level leaves our window behind loginwindow according
-    /// to cross-process ordering. One level above makes the opted-in card
-    /// visible while remaining below AppKit's assistive-technology band; the
-    /// panel is still display-only, mouse-transparent, and notch-sized.
+    /// Above loginwindow's shield inside the dedicated Lock Screen Space.
+    ///
+    /// The previous value — `NSWindow.Level.screenSaver + 1`, i.e. 1001 — was
+    /// measured wrong. Enumerating on-screen windows while the shield is up
+    /// shows loginwindow drawing its own layers at **2001, 2003 and 2004**, so
+    /// 1001 sat underneath all of them and the card was never visible; the
+    /// feature looked broken while every permission and code path was correct.
+    /// `CGShieldingWindowLevel()` is the documented level of the shield window
+    /// itself (2147483628 here), so one above it clears any shield without
+    /// reaching the cursor (2147483630) or the reserved maximum.
+    ///
+    /// Level alone cannot cross WindowServer Spaces. `LockScreenSpaceBridge`
+    /// performs the separate, unsupported Space attachment; this value only
+    /// establishes ordering after that move. A future macOS may close either
+    /// mechanism, so the system notification stays as the supported fallback.
     static let lockedMediaLevel = NSWindow.Level(
-        rawValue: NSWindow.Level.screenSaver.rawValue + 1
+        rawValue: Int(CGShieldingWindowLevel()) + 1
     )
 
     static func level(sessionIsActive: Bool) -> NSWindow.Level {

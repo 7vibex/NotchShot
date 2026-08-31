@@ -35,6 +35,15 @@ public final class DictationCoordinator {
     private var startedAt: Date?
     private var maxDurationTimer: Timer?
     private var successCollapseTask: Task<Void, Never>?
+    /// When the current push-to-talk key went down, so a tap can be told from
+    /// a hold on release.
+    private var pushToTalkPressedAt: Date?
+    /// True while a tap is holding dictation open without the key being down.
+    private var isLatched = false
+    /// A press that arrived while the previous session was still finalising.
+    private var pendingPushToTalkStart = false
+    /// Anything shorter than this is a tap, not a hold.
+    private static let latchDuration: TimeInterval = 0.6
 
     // Published transcript parts
     private var finalizedParts: [String] = []
@@ -80,11 +89,10 @@ public final class DictationCoordinator {
     }
 
     public func start() async {
-        // Duplicate start protection via generation – only allow idle/terminal states
-        switch state {
-        case .idle, .completed, .cancelled, .copied, .failed: break
-        default: return
-        }
+        // Duplicate start protection via generation – only allow idle/terminal
+        // states. Shares `canStartNewSession` with the push-to-talk gate so the
+        // two can never disagree about when a hold is allowed to begin.
+        guard state.canStartNewSession else { return }
         // Cross-feature exclusivity is enforced by AppCoordinator before this
         // dedicated transient session is started.
 
@@ -112,6 +120,10 @@ public final class DictationCoordinator {
         publish()
         announce("Dictation started")
 
+        Log.dictation.notice(
+            "Starting dictation session \(currentSession, privacy: .public) in \(Preferences.shared.dictationLanguage, privacy: .public)"
+        )
+
         // Check Notch Dictation enabled
         guard Preferences.shared.dictationEnabled else {
             fail("Dictation is disabled in Settings", session: currentSession)
@@ -129,6 +141,8 @@ public final class DictationCoordinator {
         // Model preparation
         state = .preparingModel(progress: 0)
         publish()
+
+        Log.dictation.notice("Microphone granted; preparing the language model")
 
         let locale = Locale(identifier: Preferences.shared.dictationLanguage)
         // Check installed locales; if missing, show download progress
@@ -270,9 +284,9 @@ public final class DictationCoordinator {
 
         let result: TextInsertionResult
         if let target = insertionTarget {
-            result = insertionService.insert(processed, into: target, mode: Preferences.shared.dictationInsertMode)
+            result = await insertionService.insert(processed, into: target, mode: Preferences.shared.dictationInsertMode)
         } else {
-            result = insertionService.insert(processed, into: DictationInsertionTarget(), mode: Preferences.shared.dictationInsertMode)
+            result = await insertionService.insert(processed, into: DictationInsertionTarget(), mode: Preferences.shared.dictationInsertMode)
         }
 
         guard checkSession(currentSession) else { return }
@@ -283,13 +297,19 @@ public final class DictationCoordinator {
             snapshot.finalizedText = processed
             snapshot.volatileText = ""
             publish()
-                scheduleCollapseAfterSuccess(session: currentSession)
+            Log.dictation.notice("Inserted \(processed.count, privacy: .public) characters")
+            isLatched = false
+            scheduleCollapseAfterSuccess(session: currentSession)
+            startQueuedPushToTalkIfNeeded()
         case .copied:
             state = .copied
             snapshot.finalizedText = processed
             snapshot.volatileText = ""
             publish()
-                scheduleCollapseAfterSuccess(session: currentSession)
+            Log.dictation.notice("Copied \(processed.count, privacy: .public) characters to the clipboard")
+            isLatched = false
+            scheduleCollapseAfterSuccess(session: currentSession)
+            startQueuedPushToTalkIfNeeded()
         case .failed(let msg):
             fail(msg, session: currentSession)
         }
@@ -320,6 +340,7 @@ public final class DictationCoordinator {
         snapshot.finalizedText = ""
         snapshot.volatileText = ""
         publish()
+        isLatched = false
         successCollapseTask?.cancel()
         // Collapse quickly (150ms) vs normal 500-800ms
         successCollapseTask = Task { [weak self] in
@@ -337,11 +358,57 @@ public final class DictationCoordinator {
         }
     }
 
+    /// Press and release of the push-to-talk key.
+    ///
+    /// Two behaviours share one key, because holding is only half of how people
+    /// actually use it. A real hold records for as long as the key is down. A
+    /// *tap* — anything shorter than `latchDuration`, which in practice is
+    /// someone pressing and letting go before the microphone has even opened —
+    /// latches dictation on instead, and the next tap ends it. Without the
+    /// latch a tap captured a few hundred milliseconds of silence and reported
+    /// "No speech detected", which reads as the feature being broken.
     public func handlePushToTalk(pressed: Bool) {
         if pressed {
-            guard state == .idle else { return }
+            // A tap has latched dictation on; this press is the one that ends
+            // it, not the start of a new session.
+            if isLatched, state == .listening {
+                isLatched = false
+                Log.dictation.notice("Latched dictation ended by a second press")
+                Task { await stop() }
+                return
+            }
+
+            // Finalising the previous session can take a second or more, and a
+            // press during that window used to be dropped on the floor. Queue
+            // it instead, so a quick second attempt still records.
+            if state == .finalizing || state == .inserting {
+                pendingPushToTalkStart = true
+                Log.dictation.notice("Push-to-talk queued behind the session still finishing")
+                return
+            }
+
+            guard state.canStartNewSession else {
+                Log.dictation.notice(
+                    "Push-to-talk press ignored in state \(String(describing: self.state), privacy: .public)"
+                )
+                return
+            }
+            pushToTalkPressedAt = Date()
+            isLatched = false
+            Log.dictation.notice("Push-to-talk pressed")
             Task { await start() }
         } else {
+            guard !isLatched else { return }
+
+            let held = pushToTalkPressedAt.map { Date().timeIntervalSince($0) } ?? .infinity
+            if held < Self.latchDuration, state != .idle {
+                isLatched = true
+                Log.dictation.notice(
+                    "Push-to-talk tapped (\(Int(held * 1000), privacy: .public) ms); latching until the next press"
+                )
+                return
+            }
+
             let shouldStop: Bool = {
                 switch state {
                 case .listening, .requestingMicrophone, .preparingModel: return true
@@ -350,12 +417,31 @@ public final class DictationCoordinator {
             }()
             if shouldStop {
                 if state == .listening {
+                    Log.dictation.notice("Push-to-talk released while listening; finalising")
                     Task { await stop() }
                 } else {
+                    // Released before the microphone was open. Nothing was
+                    // heard, so there is nothing to finalise.
+                    Log.dictation.notice(
+                        "Push-to-talk released during \(String(describing: self.state), privacy: .public); nothing captured yet"
+                    )
                     cancel()
                 }
             }
         }
+    }
+
+    /// Starts the session a press asked for while the previous one was still
+    /// finishing. Called from every terminal transition.
+    private func startQueuedPushToTalkIfNeeded() {
+        guard pendingPushToTalkStart else { return }
+        pendingPushToTalkStart = false
+        // Treated as a fresh hold: the key is still down, so it latches or
+        // stops on the same rules as any other.
+        pushToTalkPressedAt = Date()
+        isLatched = false
+        Log.dictation.notice("Starting the queued push-to-talk session")
+        Task { await start() }
     }
 
     public func handleEscape() {
@@ -463,6 +549,9 @@ public final class DictationCoordinator {
 
     private func fail(_ message: String, session: UInt64) {
         guard checkSession(session) else { return }
+        // Public on purpose: this is the line that says why dictation stopped,
+        // and a redacted one is useless in a bug report.
+        Log.dictation.error("Dictation failed: \(message, privacy: .public)")
         stopTimers()
         maxDurationTimer?.invalidate()
         maxDurationTimer = nil
@@ -474,6 +563,8 @@ public final class DictationCoordinator {
         state = .failed(message)
         snapshot.errorMessage = message
         publish()
+        isLatched = false
+        startQueuedPushToTalkIfNeeded()
         // Keep island expanded enough to show problem and recovery action; do not auto-collapse immediately
         // Caller UI will show retry/open settings actions.
     }

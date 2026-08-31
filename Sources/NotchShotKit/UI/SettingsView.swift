@@ -8,6 +8,7 @@ import SwiftUI
 public struct SettingsView: View {
     @Bindable var coordinator: AppCoordinator
     @Bindable private var preferences = Preferences.shared
+    @ObservedObject private var updates = SecureUpdateController.shared
     @State private var selection: SettingsSection? = .general
     @State private var searchText = ""
 
@@ -22,20 +23,18 @@ public struct SettingsView: View {
                 SettingsSidebarIdentity()
 
                 List(selection: $selection) {
-                    ForEach(SettingsSidebarGroup.allCases) { group in
-                        let sections = filteredSections.filter { $0.sidebarGroup == group }
-                        if !sections.isEmpty {
-                            Section(group.title) {
-                                ForEach(sections) { section in
-                                    SettingsSidebarLabel(
-                                        section: section,
-                                        isSelected: selection == section
-                                    )
-                                    .tag(section)
-                                    .accessibilityLabel(section.title)
-                                }
-                            }
+                    if updates.pendingUpdateVersion != nil {
+                        SettingsSidebarUpdateRow {
+                            updates.checkForUpdates(nil)
                         }
+                    }
+                    ForEach(filteredSections) { section in
+                        SettingsSidebarLabel(
+                            section: section,
+                            isSelected: selection == section
+                        )
+                        .tag(section)
+                        .accessibilityLabel(section.title)
                     }
                 }
                 .listStyle(.sidebar)
@@ -58,7 +57,6 @@ public struct SettingsView: View {
 
                 if let selection {
                     VStack(spacing: 0) {
-                        SettingsPaneHeader(section: selection)
                         settingsPane(for: selection)
                     }
                     .notchShotContentSwap(id: selection)
@@ -124,20 +122,6 @@ enum SettingsWindowMetrics {
     static let sidebarMaximumWidth: CGFloat = 294
 }
 
-fileprivate enum SettingsSidebarGroup: String, CaseIterable, Identifiable {
-    case workspace
-    case system
-
-    var id: String { rawValue }
-
-    var title: String {
-        switch self {
-        case .workspace: "Workspace"
-        case .system: "System"
-        }
-    }
-}
-
 enum SettingsSection: String, CaseIterable, Identifiable {
     case general
     case capture
@@ -182,15 +166,6 @@ enum SettingsSection: String, CaseIterable, Identifiable {
         }
     }
 
-    fileprivate var sidebarGroup: SettingsSidebarGroup {
-        switch self {
-        case .general, .capture, .presets, .recording, .dictation, .appearance:
-            .workspace
-        case .integrations, .context, .privacy, .shortcuts:
-            .system
-        }
-    }
-
     var symbolName: String {
         switch self {
         case .general: "gearshape"
@@ -218,31 +193,6 @@ enum SettingsSection: String, CaseIterable, Identifiable {
         case .context: .teal
         case .privacy: .green
         case .shortcuts: .gray
-        }
-    }
-
-    var summary: String {
-        switch self {
-        case .general:
-            "Startup, storage, updates, and the everyday defaults for NotchShot."
-        case .capture:
-            "Choose how screenshots are selected, saved, copied, and surfaced."
-        case .presets:
-            "Build reusable capture recipes for the workflows you repeat most."
-        case .recording:
-            "Tune video quality, audio, captions, pointer effects, and export."
-        case .dictation:
-            "Configure private voice input, language, cleanup, and insertion."
-        case .appearance:
-            "Shape how the notch, displays, system HUD, and floating basket behave."
-        case .integrations:
-            "Control trusted media bridges and Now Playing fallbacks."
-        case .context:
-            "Bring focused calendar, timer, agent, and voice-note context to the notch."
-        case .privacy:
-            "Review permissions, local history, clipboard access, and retention."
-        case .shortcuts:
-            "Set global hotkeys and automation entry points for fast capture."
         }
     }
 
@@ -276,7 +226,6 @@ private enum SettingsWorkbenchStyle {
     static let accent = Color.accentColor
     static let sidebarBackground = Color(nsColor: .controlBackgroundColor)
     static let detailBackground = Color(nsColor: .underPageBackgroundColor)
-    static let groupedSurface = Color(nsColor: .controlBackgroundColor)
     static let keyline = Color(nsColor: .separatorColor).opacity(0.7)
 }
 
@@ -323,29 +272,87 @@ private struct SettingsSidebarSearchField: View {
 
 private struct SettingsSidebarIdentity: View {
     var body: some View {
-        HStack(spacing: 12) {
+        HStack(spacing: 10) {
             ZStack {
-                RoundedRectangle(cornerRadius: 13, style: .continuous)
-                    .fill(SettingsWorkbenchStyle.accent.gradient)
-                Image(systemName: "camera.aperture")
-                    .font(.system(size: 20, weight: .semibold))
+                Circle()
+                    .fill(Color(nsColor: .systemGray).gradient)
+                Text(UserIdentity.initials)
+                    .font(.system(size: 14, weight: .medium))
                     .foregroundStyle(.white)
             }
-            .frame(width: 48, height: 48)
+            .frame(width: 38, height: 38)
 
-            VStack(alignment: .leading, spacing: 2) {
-                Text("NotchShot")
-                    .font(.system(size: 15, weight: .semibold))
-                Text("Local-first capture")
-                    .font(.system(size: 12))
+            VStack(alignment: .leading, spacing: 1) {
+                Text(UserIdentity.fullName)
+                    .font(.system(size: 13, weight: .semibold))
+                    .lineLimit(1)
+                Text("Apple Account")
+                    .font(.system(size: 11))
                     .foregroundStyle(.secondary)
             }
 
             Spacer(minLength: 0)
         }
         .padding(.horizontal, 16)
-        .padding(.bottom, 12)
+        .padding(.bottom, 10)
         .accessibilityElement(children: .combine)
+    }
+}
+
+enum UserIdentity {
+    static var fullName: String { NSFullUserName() }
+
+    static var initials: String {
+        let words = fullName.split(separator: " ")
+        let letters = words.compactMap(\.first)
+        if letters.count >= 2 {
+            return String(letters.prefix(2)).uppercased()
+        }
+        return String(fullName.prefix(2)).uppercased()
+    }
+}
+
+private struct SettingsSidebarUpdateRow: View {
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 10) {
+                Image(systemName: "arrow.triangle.2.circlepath")
+                    .font(.system(size: 13, weight: .semibold))
+                    .symbolRenderingMode(.monochrome)
+                    .foregroundStyle(.white)
+                    .frame(width: 28, height: 28)
+                    .background {
+                        RoundedRectangle(cornerRadius: 8, style: .continuous)
+                            .fill(Color.gray.gradient)
+                    }
+
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("Software Update")
+                        .font(.system(size: 14))
+                        .lineLimit(1)
+                    Text("Available")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                }
+
+                Spacer(minLength: 4)
+
+                Text("1")
+                    .font(.system(size: 11, weight: .semibold))
+                    .padding(.horizontal, 7)
+                    .padding(.vertical, 2)
+                    .background {
+                        Capsule().fill(Color.primary.opacity(0.12))
+                    }
+                    .accessibilityLabel("One update available")
+            }
+            .padding(.vertical, 4)
+            .contentShape(.rect)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Software update available. Check for updates.")
     }
 }
 
@@ -373,55 +380,6 @@ private struct SettingsSidebarLabel: View {
         }
         .padding(.vertical, 4)
         .contentShape(.rect)
-    }
-}
-
-private struct SettingsPaneHeader: View {
-    let section: SettingsSection
-
-    var body: some View {
-        VStack(spacing: 9) {
-            ZStack {
-                RoundedRectangle(cornerRadius: 17, style: .continuous)
-                    .fill(section.symbolTint.gradient)
-                Image(systemName: section.symbolName)
-                    .font(.system(size: 28, weight: .semibold))
-                    .foregroundStyle(.white)
-            }
-            .frame(width: 68, height: 68)
-            .shadow(color: .black.opacity(0.15), radius: 3, y: 2)
-            .accessibilityHidden(true)
-
-            Text(section.title)
-                .font(.system(size: 27, weight: .bold))
-
-            Text(section.summary)
-                .font(.system(size: 14, weight: .medium))
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-                .lineLimit(2)
-                .frame(maxWidth: 620)
-
-            Label("Stored on this Mac", systemImage: "lock.fill")
-                .font(.system(size: 11, weight: .medium))
-                .foregroundStyle(.secondary)
-        }
-        .padding(.horizontal, 28)
-        .padding(.vertical, 22)
-        .frame(maxWidth: .infinity)
-        .background {
-            RoundedRectangle(cornerRadius: 20, style: .continuous)
-                .fill(SettingsWorkbenchStyle.groupedSurface)
-        }
-        .overlay {
-            RoundedRectangle(cornerRadius: 20, style: .continuous)
-                .stroke(SettingsWorkbenchStyle.keyline, lineWidth: 0.75)
-        }
-        .padding(.horizontal, 24)
-        .padding(.top, 20)
-        .padding(.bottom, 8)
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(section.title). \(section.summary) Settings are stored on this Mac")
     }
 }
 
@@ -683,7 +641,14 @@ private struct ContextModuleSettings: View {
                         coordinator.refreshContextPreferences()
                     }
                 ))
-                Text("Low-battery alerts show the public Low Power Mode state and open Battery Settings; NotchShot cannot switch that system mode itself. Audio feedback uses the public Core Audio output route only and never guesses accessory battery level.")
+                Toggle("Show when the internet connection drops", isOn: Binding(
+                    get: { preferences.networkStatusEnabled },
+                    set: { value in
+                        preferences.networkStatusEnabled = value
+                        coordinator.refreshContextPreferences()
+                    }
+                ))
+                Text("Low-battery alerts show the public Low Power Mode state and open Battery Settings; NotchShot cannot switch that system mode itself. Audio feedback uses the public Core Audio output route only and never guesses accessory battery level. Connectivity uses the system's own routing verdict — no probe traffic leaves this Mac, and the network's name is never read or stored.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -861,6 +826,32 @@ private struct RecipeSettings: View {
                             Text(format.title).tag(Optional(format))
                         }
                     }
+                    Toggle("Fit to a file-size limit", isOn: recipeTargetSizeEnabled)
+                    if store.activeRecipe.targetMaximumBytes != nil {
+                        Stepper(
+                            "Maximum size: \(recipeTargetMegabytes) MB",
+                            value: Binding(
+                                get: { recipeTargetMegabytes },
+                                set: { recipeTargetMegabytes = $0 }
+                            ),
+                            in: 1 ... 100
+                        )
+                    }
+                    Toggle("Run OCR after capture", isOn: Binding(
+                        get: { store.activeRecipe.runsOCR == true },
+                        set: { recipeBinding(\.runsOCR).wrappedValue = $0 ? true : nil }
+                    ))
+                    TextField("Library tags, comma separated", text: Binding(
+                        get: { (store.activeRecipe.libraryTags ?? []).joined(separator: ", ") },
+                        set: { value in
+                            recipeBinding(\.libraryTags).wrappedValue = value
+                                .split(separator: ",").map { String($0).trimmingCharacters(in: .whitespaces) }
+                        }
+                    ))
+                    TextField("Library collection", text: Binding(
+                        get: { store.activeRecipe.collectionName ?? "" },
+                        set: { recipeBinding(\.collectionName).wrappedValue = $0.isEmpty ? nil : $0 }
+                    ))
                 } else {
                     Text(store.activeRecipe.detail)
                         .foregroundStyle(.secondary)
@@ -913,6 +904,26 @@ private struct RecipeSettings: View {
                 store.update(recipe)
             }
         )
+    }
+
+    private var recipeTargetSizeEnabled: Binding<Bool> {
+        Binding(
+            get: { store.activeRecipe.targetMaximumBytes != nil },
+            set: { enabled in
+                var recipe = store.activeRecipe
+                recipe.targetMaximumBytes = enabled ? (recipe.targetMaximumBytes ?? 5 * 1_024 * 1_024) : nil
+                store.update(recipe)
+            }
+        )
+    }
+
+    private var recipeTargetMegabytes: Int {
+        get { max(1, (store.activeRecipe.targetMaximumBytes ?? 1_024 * 1_024) / (1_024 * 1_024)) }
+        nonmutating set {
+            var recipe = store.activeRecipe
+            recipe.targetMaximumBytes = newValue * 1_024 * 1_024
+            store.update(recipe)
+        }
     }
 
     private func recipeDimensionBinding(_ dimension: RecipeDimension) -> Binding<Double> {
@@ -1096,7 +1107,7 @@ private struct CaptureSettings: View {
                         }
                     }
                 }
-                Text("These four actions stay visible on every result. Actions that do not apply to the selected file are replaced temporarily; everything else remains under More.")
+                Text("These six actions stay visible on every result. Actions that do not apply to the selected file are replaced temporarily; everything else remains under More.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -1150,11 +1161,16 @@ private struct RecordingSettings: View {
             Section("Pointer") {
                 Toggle("Show the pointer", isOn: $preferences.recordingShowsCursor)
                 Toggle("Highlight clicks", isOn: $preferences.recordingHighlightsClicks)
+                Toggle("Smooth pointer movement after recording", isOn: $preferences.recordingSmoothsCursor)
+                    .disabled(!preferences.recordingShowsCursor)
+                Toggle("Zoom around clicks after recording", isOn: $preferences.recordingAutoZoomsOnClicks)
             }
 
             Section("Presentation") {
+                Toggle("Presenter camera overlay", isOn: $preferences.recordingPresenterCamera)
+                Toggle("Show keyboard shortcuts", isOn: $preferences.recordingShowsKeystrokes)
                 Toggle("Frame the recording on a dark background", isOn: $preferences.recordingFramesWithBackground)
-                Text("Adds a clean matte around the capture while keeping the selected output resolution.")
+                Text("Presenter overlays are visible and movable. Shortcut display excludes ordinary typing so passwords are never shown. Camera and shortcut overlays are composited into area and display recordings.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -1632,6 +1648,7 @@ private struct NotchSettings: View {
 private struct MediaSettings: View {
     @Bindable var coordinator: AppCoordinator
     @Bindable var preferences: Preferences
+    @Bindable private var lockedMedia = LockedMediaNotificationController.shared
 
     var body: some View {
         Form {
@@ -1643,17 +1660,38 @@ private struct MediaSettings: View {
                         coordinator.media.restart()
                     }
                 ))
-                Toggle("Show cover and wave while Mac is locked", isOn: Binding(
+                Toggle("Show current song on the Lock Screen", isOn: Binding(
                     get: { preferences.showsMediaWhileLocked },
                     set: { newValue in
-                        preferences.showsMediaWhileLocked = newValue
-                        coordinator.windowController?.refreshLockedPresentation()
+                        coordinator.setLockedMediaNotificationsEnabled(newValue)
                     }
                 ))
                 .disabled(!preferences.mediaIntegrationEnabled)
-                Text("Experimental and off by default. The locked view is display-only: no title, controls, captures, history, settings, or pointer interaction.")
+                Text("Experimental direct-download feature: draws a display-only card above the password area using an unsupported macOS window-space API. It also posts a supported system notification as a fallback. For that fallback, enable Notifications › when screen is locked and set previews to Always. A macOS update may disable the custom card.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                // macOS drops a notification an unauthorised app posts without
+                // telling anyone, so the state it reports back is the only way
+                // to tell "off in System Settings" from "broken".
+                if preferences.showsMediaWhileLocked {
+                    LabeledContent("Lock Screen status", value: lockedMedia.readiness.title)
+                    if let remedy = lockedMedia.readiness.remedy {
+                        Text(remedy)
+                            .font(.caption)
+                            .foregroundStyle(.orange)
+                        HStack(spacing: 8) {
+                            Button("Open Notification Settings") {
+                                coordinator.openNotificationSettings()
+                            }
+                            if lockedMedia.readiness == .notRequested {
+                                Button("Ask macOS Now") {
+                                    LockedMediaNotificationController.shared
+                                        .prepareIfNeeded(enabled: true)
+                                }
+                            }
+                        }
+                    }
+                }
                 Toggle("Show activity stack while Mac is locked", isOn: Binding(
                     get: { preferences.showsActivityStackWhileLocked },
                     set: { newValue in
@@ -1740,6 +1778,13 @@ private struct MediaSettings: View {
             }
         }
         .settingsWorkbenchFormStyle()
+        // The user can change any of this in System Settings while this pane
+        // is open, so the reported state is re-read rather than cached from
+        // whenever the toggle was last touched.
+        .task(id: preferences.showsMediaWhileLocked) {
+            guard preferences.showsMediaWhileLocked else { return }
+            await LockedMediaNotificationController.shared.refreshReadiness()
+        }
     }
 
     private func chooseAdapter() {
@@ -1863,6 +1908,14 @@ private struct PrivacySettings: View {
                     }
                 ))
                 Text("When on, recognised text is stored alongside history so you can search it. Turning this off deletes the text already stored.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                Toggle("Find captures with Spotlight", isOn: Binding(
+                    get: { preferences.indexesCapturesInSpotlight },
+                    set: { coordinator.setCaptureSpotlightIndexEnabled($0) }
+                ))
+                Text("Off by default. When enabled, filenames, tags, collections, source app, and already-opted-in recognised text are indexed locally by macOS Spotlight.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
 

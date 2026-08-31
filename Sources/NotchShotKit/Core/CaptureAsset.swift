@@ -221,7 +221,15 @@ public enum ShareAction: String, Sendable, CaseIterable, Identifiable {
 
     public var id: String { rawValue }
 
-    /// Actions that can occupy the four immediate shelf slots. Destructive
+    /// How many actions sit on the shelf itself, ahead of More.
+    ///
+    /// Four covered the file verbs and left the two things people actually
+    /// reach for after a screenshot — pulling the text out of it, and getting
+    /// it onto another device — buried one click deep. The row had the width
+    /// for more all along.
+    public static let shelfQuickActionSlots = 6
+
+    /// Actions that can occupy the immediate shelf slots. Destructive
     /// and location-changing operations stay in More so a customized layout
     /// cannot turn a common click into an accidental delete or move.
     public static let customizableShelfCases: [ShareAction] = [
@@ -231,11 +239,14 @@ public enum ShareAction: String, Sendable, CaseIterable, Identifiable {
     ]
 
     public static let defaultShelfQuickActions: [ShareAction] = [
-        .copy, .save, .annotate, .share,
+        .copy, .save, .annotate, .share, .ocr, .airDrop,
     ]
 
-    /// Migrates malformed, duplicated, or now-unsupported stored choices to
-    /// four safe actions without discarding the user's valid ordering.
+    /// Migrates malformed, duplicated, or now-unsupported stored choices to a
+    /// full row of safe actions without discarding the user's valid ordering.
+    ///
+    /// Someone who customized the old four keeps their order and picks up the
+    /// new slots on the end, rather than being reset to the defaults.
     public static func sanitizedShelfQuickActions(
         _ actions: [ShareAction]
     ) -> [ShareAction] {
@@ -243,7 +254,7 @@ public enum ShareAction: String, Sendable, CaseIterable, Identifiable {
         for action in actions + defaultShelfQuickActions + customizableShelfCases
             where customizableShelfCases.contains(action) && !result.contains(action) {
             result.append(action)
-            if result.count == 4 { break }
+            if result.count == shelfQuickActionSlots { break }
         }
         return result
     }
@@ -302,7 +313,7 @@ public enum ShareAction: String, Sendable, CaseIterable, Identifiable {
         case .rename: "character.cursor.ibeam"
         case .moveTo: "folder.badge.gearshape"
         case .compress: "doc.zipper"
-        case .airDrop: "airplayaudio"
+        case .airDrop: "dot.radiowaves.right"
         case .localSend: "paperplane"
         case .reveal: "folder"
         case .delete: "trash"

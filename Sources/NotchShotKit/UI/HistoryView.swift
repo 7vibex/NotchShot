@@ -7,13 +7,18 @@ public struct HistoryView: View {
     @Bindable var coordinator: AppCoordinator
     @State private var query = ""
     @State private var selection: UUID?
+    @State private var favoritesOnly = false
+    @State private var collectionFilter: String?
 
     public init(coordinator: AppCoordinator) {
         self.coordinator = coordinator
     }
 
     private var entries: [HistoryEntry] {
-        coordinator.history.search(query)
+        coordinator.history.search(query).filter { entry in
+            (!favoritesOnly || entry.favorite)
+                && (collectionFilter == nil || entry.collectionName == collectionFilter)
+        }
     }
 
     public var body: some View {
@@ -57,6 +62,19 @@ public struct HistoryView: View {
             .notchShotContentSwap(id: selection)
         }
         .frame(minWidth: 760, minHeight: 460)
+        .toolbar {
+            Toggle(isOn: $favoritesOnly) {
+                Label("Favorites", systemImage: favoritesOnly ? "star.fill" : "star")
+            }
+            Menu {
+                Button("All Collections") { collectionFilter = nil }
+                ForEach(coordinator.history.collectionNames, id: \.self) { name in
+                    Button(name) { collectionFilter = name }
+                }
+            } label: {
+                Label(collectionFilter ?? "All Collections", systemImage: "folder")
+            }
+        }
     }
 
     private var searchPrompt: String {
@@ -82,12 +100,19 @@ public struct HistoryView: View {
             Button("Share…") {
                 coordinator.share(entry.asset)
             }
+            Button(entry.favorite ? "Remove Favorite" : "Favorite") {
+                coordinator.history.setFavorite(id: entry.id, !entry.favorite)
+            }
             if entry.kind.isImage {
                 Button("Annotate") {
                     coordinator.openEditor(for: entry)
                 }
                 Button("Inspect") { coordinator.openInspector(for: entry.asset) }
                 Button("Optimize Export…") { coordinator.openSmartExport(for: entry.asset) }
+            } else if entry.kind == .recording {
+                Button("Export GIF or Exact-Size Video…") {
+                    coordinator.openRecordingExport(for: entry.asset)
+                }
             }
         }
         Divider()
@@ -190,6 +215,9 @@ private struct HistoryDetail: View {
     @Bindable var coordinator: AppCoordinator
     @State private var image: NSImage?
     @State private var finishedLoading = false
+    @State private var tagsText = ""
+    @State private var collectionText = ""
+    @State private var showsTranslation = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -219,6 +247,25 @@ private struct HistoryDetail: View {
             .padding()
             .notchShotContentSwap(id: previewPhase)
 
+            HStack(spacing: 10) {
+                TextField("Tags (comma separated)", text: $tagsText)
+                    .onSubmit { saveLibraryMetadata() }
+                TextField("Collection", text: $collectionText)
+                    .onSubmit { saveLibraryMetadata() }
+                Button {
+                    coordinator.history.setFavorite(id: entry.id, !entry.favorite)
+                } label: {
+                    Label(
+                        entry.favorite ? "Remove Favorite" : "Favorite",
+                        systemImage: entry.favorite ? "star.fill" : "star"
+                    )
+                }
+                Button("Save Organization") { saveLibraryMetadata() }
+            }
+            .textFieldStyle(.roundedBorder)
+            .padding(.horizontal, 12)
+            .padding(.bottom, 10)
+
             Divider()
 
             HStack(spacing: 10) {
@@ -237,12 +284,18 @@ private struct HistoryDetail: View {
                         ImageExport.copyToPasteboard(fileURL: entry.fileURL)
                     }
                     Button("Share…") { coordinator.share(entry.asset) }
+                    if entry.kind.isImage || entry.kind == .text || entry.kind == .recording {
+                        Button("Translate…") { showsTranslation = true }
+                    }
                     if entry.kind.isImage {
                         Menu("More") {
                             Button("Inspect") { coordinator.openInspector(for: entry.asset) }
                             Button("Optimize Export…") { coordinator.openSmartExport(for: entry.asset) }
                         }
                         Button("Annotate") { coordinator.openEditor(for: entry) }
+                            .notchShotPrimaryActionStyle()
+                    } else if entry.kind == .recording {
+                        Button("Export…") { coordinator.openRecordingExport(for: entry.asset) }
                             .notchShotPrimaryActionStyle()
                     }
                 } else {
@@ -253,6 +306,8 @@ private struct HistoryDetail: View {
             .padding(12)
         }
         .task(id: entry.id) {
+            tagsText = entry.libraryTags.joined(separator: ", ")
+            collectionText = entry.collectionName ?? ""
             finishedLoading = false
             image = nil
             guard entry.fileExists else {
@@ -266,6 +321,18 @@ private struct HistoryDetail: View {
             }
             finishedLoading = true
         }
+        .sheet(isPresented: $showsTranslation) {
+            CaptureTranslationView(asset: entry.asset)
+        }
+    }
+
+    private func saveLibraryMetadata() {
+        coordinator.history.updateLibraryMetadata(
+            id: entry.id,
+            tags: tagsText.split(separator: ",").map(String.init),
+            collectionName: collectionText,
+            isFavorite: entry.favorite
+        )
     }
 
     private var previewPhase: Int {

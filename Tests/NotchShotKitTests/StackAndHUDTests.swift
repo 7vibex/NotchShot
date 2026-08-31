@@ -468,6 +468,57 @@ struct SystemLevelTests {
         #expect(stacked.size.height <= NotchLayout.maximumSize.height)
         #expect(stacked.size.width <= NotchLayout.maximumSize.width)
     }
+
+    @Test("The shelf is exactly as tall as the rows it draws")
+    func shelfHeightFollowsItsContent() {
+        // Detail adds a pager as soon as there is a second capture to page to.
+        // A single fixed height clipped that row behind the island's own edge.
+        let oneDetail = NotchLayout.shelfContentHeight(
+            style: .detail, itemCount: 1, hasStack: false
+        )
+        let twoDetail = NotchLayout.shelfContentHeight(
+            style: .detail, itemCount: 2, hasStack: false
+        )
+        #expect(twoDetail > oneDetail)
+
+        // Grid has neither the thumbnail block nor the pager, so it must not
+        // reserve their height and leave empty island under the buttons.
+        let twoGrid = NotchLayout.shelfContentHeight(
+            style: .grid, itemCount: 2, hasStack: false
+        )
+        #expect(twoGrid < twoDetail)
+        #expect(NotchLayout.shelfContentHeight(style: .grid, itemCount: 5, hasStack: false)
+            == twoGrid)
+
+        // The stack strip is a real row in both layouts.
+        #expect(NotchLayout.shelfContentHeight(style: .grid, itemCount: 2, hasStack: true)
+            > twoGrid)
+        #expect(NotchLayout.shelfContentHeight(style: .detail, itemCount: 2, hasStack: true)
+            > twoDetail)
+    }
+
+    @Test("The tallest shelf still fits the island")
+    func tallestShelfFits() {
+        let metrics = NotchMetrics(
+            screenFrame: CGRect(x: 0, y: 0, width: 1512, height: 982),
+            hasPhysicalNotch: true,
+            notchSize: CGSize(width: 250, height: 37),
+            menuBarHeight: 37
+        )
+        let layout = NotchLayout.layout(
+            for: .result,
+            metrics: metrics,
+            isPeeking: false,
+            resultCount: 5,
+            hasStack: true,
+            shelfStyle: .detail
+        )
+        // Nothing is clipped: the island carries the full content plus the
+        // band the physical cutout occupies.
+        #expect(layout.size.height
+            == NotchLayout.shelfContentHeight(style: .detail, itemCount: 5, hasStack: true) + 37)
+        #expect(layout.size.height <= NotchLayout.maximumSize.height)
+    }
 }
 
 @Suite("Brightness change classification")

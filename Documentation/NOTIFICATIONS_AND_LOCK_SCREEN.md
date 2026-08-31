@@ -17,7 +17,7 @@ a WidgetKit Lock Screen widget.
 | Reply to a WhatsApp, Messages, Slack, or other third-party notification | The posting app owns its notification category, text-input action, and response callback | NotchShot can open a recognized source app so the user can reply there. It does not show an inline send control or claim that a message was sent. |
 | Add an iPhone-style accessory widget to the Mac Lock Screen | WidgetKit does not offer the accessory Lock Screen families on macOS | Not implemented. |
 | Start a native ActivityKit Live Activity from a macOS app | The macOS 26 SDK marks `ActivityAttributes`, `ActivityContent`, and `Activity` unavailable on macOS | Not implemented. A Mac may display activities originating on a paired iPhone; that is not a native NotchShot macOS activity. |
-| Show opted-in app content while the login session is inactive | AppKit provides an app-window policy using `NSWindow.canBecomeVisibleWithoutLogin` | Uses the existing mouse-transparent panel one level above the standard screen-saver band, only after a separate privacy opt-in. |
+| Show the current song on the Mac Lock Screen | No supported API adds arbitrary app UI to the Mac Lock Screen. `canBecomeVisibleWithoutLogin` does not attach a normal app window to loginwindow's separate WindowServer Space. | Two surfaces, both opt-in. A soundless UserNotifications request, which macOS places and privacy-gates itself; and an experimental direct-distribution card. The card dynamically resolves private SkyLight Space functions, creates a screen-lock-level Space, and moves its mouse-transparent window there. Missing symbols or any WindowServer error fail open to the system notification. This private path is not App Store compatible and may break on any macOS update. |
 
 Primary references:
 
@@ -39,10 +39,14 @@ Primary references:
 - Apple's WidgetKit family table marks the accessory circular, rectangular, and
   inline Lock Screen families unavailable on Mac:
   [Developing a WidgetKit strategy](https://developer.apple.com/documentation/widgetkit/developing-a-widgetkit-strategy).
-- The public AppKit flag used by the opt-in panel is
-  [`NSWindow.canBecomeVisibleWithoutLogin`](https://developer.apple.com/documentation/appkit/nswindow/canbecomevisiblewithoutlogin).
-  Session lock transitions are observed with
-  [`NSWorkspace.sessionDidResignActiveNotification`](https://developer.apple.com/documentation/appkit/nsworkspace/sessiondidresignactivenotification).
+- Apple exposes whether this app's notifications may appear while locked through
+  [`UNNotificationSettings.lockScreenSetting`](https://developer.apple.com/documentation/usernotifications/unnotificationsettings/lockscreensetting).
+- AppKit's public
+  [`NSWindow.canBecomeVisibleWithoutLogin`](https://developer.apple.com/documentation/appkit/nswindow/canbecomevisiblewithoutlogin)
+  is a permission to become visible before login, not a Lock Screen widget or
+  Space-placement API.
+- `NSWorkspace.sessionDidResignActiveNotification` is retained for user-session
+  switching; a normal Control-Command-Q lock is a different transition.
 
 An Accessibility client can inspect and press some UI elements belonging to
 other processes, but Notification Center's view hierarchy is not a documented
@@ -81,15 +85,19 @@ semantics.
 
 Settings exposes two independent options under Integrations:
 
-1. **Show cover and wave while Mac is locked** preserves the compact,
-   privacy-reduced media presentation.
+1. **Show current song in Lock Screen notifications** submits the playing title
+   and artist to macOS without drawing above the password screen.
 2. **Show activity stack while Mac is locked** may show the current media
    title, Focus state, and latest due NotchShot alert.
 
-Both are off by default. The activity stack ignores pointer input while the
-session is inactive; replies, playback controls, scheduling, captures, history,
-and settings remain unavailable until unlock. No private notification database,
-screen scraping, or cross-app action injection is involved.
+Both are off by default. The song notification is removed after unlock, pause,
+or opt-out and contains no controls. The experimental custom card is attached
+to a screen-lock-level Space only after the dedicated loginwindow lock signal;
+its panel is discarded and rebuilt in ordinary user Spaces after unlock. The
+card and activity stack ignore pointer input while the session is inactive;
+replies, playback controls, scheduling, captures, history, and settings remain
+unavailable until unlock. No private notification database, screen scraping,
+or cross-app action injection is involved.
 
 ## Runtime proof boundary
 
@@ -97,8 +105,11 @@ Source checks and automated tests can prove the app-owned state machine,
 persistence bounds, private file mode, selection policy, and locked-window input
 policy. A normal desktop launch can validate the unlocked visual composition.
 
-Showing above the actual macOS login shield is environment-dependent and must be
-validated by explicitly locking a test Mac after enabling the opt-in. Build or
-Simulator-style evidence alone does not prove that secure-session presentation,
-and automated verification must not lock a person's active session without
-their approval.
+Lock Screen notification delivery still depends on the user's macOS
+Notifications settings. Source and tests can prove the opt-in, playing-state,
+text-bounding, and cleanup policy, but physical delivery must be validated by
+locking a test Mac after enabling **when screen is locked** and setting previews
+to **Always**. Source and tests can also prove the custom bridge's symbol,
+ordering, failure, and non-interaction policies. They cannot prove that
+loginwindow displays the card on a particular OS build; that requires an
+explicit physical lock/unlock test on the freshly built app.

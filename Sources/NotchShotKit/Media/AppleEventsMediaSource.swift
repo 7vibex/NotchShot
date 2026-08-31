@@ -11,22 +11,42 @@ struct AppleEventsSnapshotFields: Equatable {
     var isPlaying: Bool
 }
 
-private struct AppleScriptExecution: Sendable {
+struct AppleScriptExecution: Sendable {
     var stringValue: String?
     var data: Data?
     var errorNumber: Int?
 }
 
 /// `NSAppleScript` is synchronous and may wait several seconds for another
-/// application. Serializing it on its own actor keeps those waits off AppKit's
-/// main thread while also avoiding concurrent use of the scripting runtime.
-private actor AppleScriptExecutor {
+/// application. The class is also main-thread-only by contract — scripting
+/// additions and the event machinery behind a script are main-thread
+/// residents — so compilation, the script cache, and execution all live on
+/// the main actor. The waits are bounded by the script timeout, and every
+/// caller is an actor, so a slow script delays a poll tick rather than
+/// freezing the interface.
+actor AppleScriptExecutor {
+    private let timeoutSeconds = 2
+
+    func execute(_ source: String) async -> AppleScriptExecution {
+        await MainThreadScriptRunner.shared.execute(source, timeoutSeconds: timeoutSeconds)
+    }
+}
+
+/// Owns every `NSAppleScript` on the thread its contract requires. One
+/// shared runner also means one shared cache: the queue, shuffle/repeat, and
+/// Now Playing services read the same compiled scripts instead of each
+/// keeping their own.
+@MainActor
+private final class MainThreadScriptRunner {
+    static let shared = MainThreadScriptRunner()
+
     private var scripts: [String: NSAppleScript] = [:]
     private var scriptOrder: [String] = []
-    private let timeoutSeconds = 2
     private let maximumCachedScripts = 16
 
-    func execute(_ source: String) -> AppleScriptExecution {
+    private init() {}
+
+    func execute(_ source: String, timeoutSeconds: Int) -> AppleScriptExecution {
         let boundedSource = """
         with timeout of \(timeoutSeconds) seconds
             \(source)

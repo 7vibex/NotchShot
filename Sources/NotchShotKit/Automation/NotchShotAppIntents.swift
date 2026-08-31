@@ -93,6 +93,29 @@ public struct CapturePreviousAreaAppIntent: AppIntent {
     }
 }
 
+public struct CaptureScrollingAppIntent: AppIntent {
+    public static let title: LocalizedStringResource = "Capture Scrolling Content"
+    public static let description = IntentDescription(
+        "Select scrolling content, then choose automatic or manual vertical or horizontal capture."
+    )
+    public static let supportedModes: IntentModes = .foreground(.immediate)
+
+    public init() {}
+
+    @MainActor
+    public func perform() async throws -> some IntentResult {
+#if !NOTCHSHOT_METADATA_EXTRACTION
+        try NotchShotIntentRunner.run(.capture(URLCaptureCommand(
+            intent: .scrolling,
+            displayNumber: nil,
+            presetID: nil,
+            action: .defaultBehavior
+        )))
+#endif
+        return .result()
+    }
+}
+
 public struct RecordAreaAppIntent: AppIntent {
     public static let title: LocalizedStringResource = "Record Area"
     public static let description = IntentDescription(
@@ -166,6 +189,12 @@ public struct NotchShotAppShortcuts: AppShortcutsProvider {
             phrases: ["Capture the previous area with \(.applicationName)"],
             shortTitle: "Capture Previous Area",
             systemImageName: "arrow.counterclockwise"
+        )
+        AppShortcut(
+            intent: CaptureScrollingAppIntent(),
+            phrases: ["Capture scrolling content with \(.applicationName)"],
+            shortTitle: "Scrolling Capture",
+            systemImageName: "arrow.up.and.down.text.horizontal"
         )
         AppShortcut(
             intent: RecordAreaAppIntent(),

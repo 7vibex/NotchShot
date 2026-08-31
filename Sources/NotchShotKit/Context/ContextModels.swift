@@ -8,6 +8,7 @@ public enum ContextKind: String, Sendable, Codable, Equatable {
     case power
     case audioRoute
     case document
+    case network
 
     public var symbolName: String {
         switch self {
@@ -18,6 +19,7 @@ public enum ContextKind: String, Sendable, Codable, Equatable {
         case .power: "battery.100percent.bolt"
         case .audioRoute: "airpodspro"
         case .document: "doc.text.magnifyingglass"
+        case .network: "wifi.slash"
         }
     }
 }
@@ -161,6 +163,9 @@ public struct ContextSnapshot: Sendable, Codable, Equatable {
     public var aiRecentActivities: [AIActivitySnapshot]
     public var focusTimer: FocusTimerSnapshot?
     public var voiceNote: VoiceNoteSnapshot?
+    /// Battery for the accessory this card is about, when the system reports
+    /// one. Nil means "not stated", never "empty".
+    public var accessory: AccessoryBattery?
     public var createdAt: Date
     public var expiresAt: Date?
     public var mayInterruptMedia: Bool
@@ -177,6 +182,7 @@ public struct ContextSnapshot: Sendable, Codable, Equatable {
         aiRecentActivities: [AIActivitySnapshot] = [],
         focusTimer: FocusTimerSnapshot? = nil,
         voiceNote: VoiceNoteSnapshot? = nil,
+        accessory: AccessoryBattery? = nil,
         createdAt: Date = Date(),
         expiresAt: Date? = nil,
         mayInterruptMedia: Bool = false
@@ -192,6 +198,7 @@ public struct ContextSnapshot: Sendable, Codable, Equatable {
         self.aiRecentActivities = aiRecentActivities
         self.focusTimer = focusTimer
         self.voiceNote = voiceNote
+        self.accessory = accessory
         self.createdAt = createdAt
         self.expiresAt = expiresAt
         self.mayInterruptMedia = mayInterruptMedia

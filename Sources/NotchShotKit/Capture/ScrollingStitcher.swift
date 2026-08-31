@@ -1,16 +1,44 @@
 import CoreGraphics
 import Foundation
 
+public enum ScrollingAxis: String, Sendable, Codable, CaseIterable, Identifiable {
+    case vertical
+    case horizontal
+
+    public var id: String { rawValue }
+
+    public var title: String {
+        switch self {
+        case .vertical: "Vertical"
+        case .horizontal: "Horizontal"
+        }
+    }
+}
+
 /// Where two frames were joined, and how sure we are about it.
 public struct StitchSeam: Sendable, Equatable {
-    /// Y position of the seam in the finished image, in pixels.
+    /// Position along `axis` in the finished image, in pixels. The legacy name
+    /// remains source-compatible with the original vertical-only model.
     public var y: Int
+    public var axis: ScrollingAxis
     /// 0…1. Below `StitchSettings.warningConfidence` the UI flags the seam.
     public var confidence: Double
     /// Rows of new content the frame contributed.
     public var addedRows: Int
 
     public var isSuspect: Bool { confidence < StitchSettings.warningConfidence }
+
+    public init(
+        y: Int,
+        axis: ScrollingAxis = .vertical,
+        confidence: Double,
+        addedRows: Int
+    ) {
+        self.y = y
+        self.axis = axis
+        self.confidence = confidence
+        self.addedRows = addedRows
+    }
 }
 
 public struct StitchSettings: Sendable {
@@ -81,6 +109,7 @@ public enum ScrollingStitcher {
 
     public static func stitch(
         frames: [CGImage],
+        axis: ScrollingAxis = .vertical,
         settings: StitchSettings = StitchSettings(),
         limits: StitchLimits = StitchLimits(),
         progress: (@Sendable (Double) -> Void)? = nil
@@ -118,19 +147,26 @@ public enum ScrollingStitcher {
             return StitchOutput(image: first, seams: [], warnings: [], droppedFrameIndices: [])
         }
 
-        let width = first.width
-        guard frames.allSatisfy({ $0.width == width }) else {
-            throw NotchShotError.stitchFailed("Frames have different widths")
+        let crossLength = axis == .vertical ? first.width : first.height
+        guard frames.allSatisfy({
+            axis == .vertical ? $0.width == crossLength : $0.height == crossLength
+        }) else {
+            throw NotchShotError.stitchFailed(
+                axis == .vertical ? "Frames have different widths" : "Frames have different heights"
+            )
         }
 
         var buffers: [GrayBuffer] = []
         buffers.reserveCapacity(frames.count)
         for (index, frame) in frames.enumerated() {
             try Task.checkCancellation()
-            guard let buffer = GrayBuffer(image: frame, columnStride: settings.columnStride) else {
+            let decodeStride = axis == .vertical ? settings.columnStride : 1
+            guard let decoded = GrayBuffer(image: frame, columnStride: decodeStride) else {
                 throw NotchShotError.stitchFailed("Could not read frame pixels")
             }
-            buffers.append(buffer)
+            buffers.append(axis == .vertical
+                ? decoded
+                : decoded.transposed().stridingColumns(by: settings.columnStride))
             progress?(0.05 + (0.20 * Double(index + 1) / Double(frames.count)))
         }
 
@@ -141,17 +177,22 @@ public enum ScrollingStitcher {
         progress?(0.28)
         var warnings: [String] = []
         if sticky.top > 0 {
-            warnings.append("Ignored a \(sticky.top)px fixed header while matching.")
+            warnings.append(axis == .vertical
+                ? "Ignored a \(sticky.top)px fixed header while matching."
+                : "Ignored a \(sticky.top)px fixed leading edge while matching.")
         }
         if sticky.bottom > 0 {
-            warnings.append("Ignored a \(sticky.bottom)px fixed footer while matching.")
+            warnings.append(axis == .vertical
+                ? "Ignored a \(sticky.bottom)px fixed footer while matching."
+                : "Ignored a \(sticky.bottom)px fixed trailing edge while matching.")
         }
 
         var seams: [StitchSeam] = []
         var dropped: [Int] = []
         // (sourceFrameIndex, sourceTopRow, rowCount) draw instructions.
-        var segments: [(frame: Int, top: Int, rows: Int)] = [(0, 0, frames[0].height)]
-        var totalHeight = frames[0].height
+        let firstLength = axis == .vertical ? frames[0].height : frames[0].width
+        var segments: [(frame: Int, top: Int, rows: Int)] = [(0, 0, firstLength)]
+        var totalLength = axis == .vertical ? frames[0].height : frames[0].width
         var previousIndex = 0
 
         for index in 1 ..< frames.count {
@@ -173,18 +214,21 @@ public enum ScrollingStitcher {
                 continue
             }
 
-            let (nextHeight, heightOverflow) = totalHeight.addingReportingOverflow(match.addedRows)
-            guard !heightOverflow else {
-                throw NotchShotError.stitchFailed("The composite height overflowed")
+            let (nextLength, lengthOverflow) = totalLength.addingReportingOverflow(match.addedRows)
+            guard !lengthOverflow else {
+                throw NotchShotError.stitchFailed("The composite length overflowed")
             }
-            try validateComposite(width: width, height: nextHeight, limits: limits)
+            let nextWidth = axis == .vertical ? crossLength : nextLength
+            let nextHeight = axis == .vertical ? nextLength : crossLength
+            try validateComposite(width: nextWidth, height: nextHeight, limits: limits)
             segments.append((index, match.sourceTop, match.addedRows))
             seams.append(StitchSeam(
-                y: totalHeight,
+                y: totalLength,
+                axis: axis,
                 confidence: match.confidence,
                 addedRows: match.addedRows
             ))
-            totalHeight = nextHeight
+            totalLength = nextLength
             previousIndex = index
             progress?(0.30 + (0.60 * Double(index) / Double(frames.count - 1)))
         }
@@ -203,7 +247,13 @@ public enum ScrollingStitcher {
 
         try Task.checkCancellation()
         progress?(0.92)
-        let composite = try compose(frames: frames, segments: segments, width: width, height: totalHeight)
+        let composite = try compose(
+            frames: frames,
+            segments: segments,
+            axis: axis,
+            crossLength: crossLength,
+            totalLength: totalLength
+        )
         progress?(1)
         return StitchOutput(
             image: composite,
@@ -446,9 +496,12 @@ public enum ScrollingStitcher {
     private static func compose(
         frames: [CGImage],
         segments: [(frame: Int, top: Int, rows: Int)],
-        width: Int,
-        height: Int
+        axis: ScrollingAxis,
+        crossLength: Int,
+        totalLength: Int
     ) throws -> CGImage {
+        let width = axis == .vertical ? crossLength : totalLength
+        let height = axis == .vertical ? totalLength : crossLength
         guard let context = CGContext(
             data: nil,
             width: width,
@@ -462,26 +515,35 @@ public enum ScrollingStitcher {
         }
 
         context.interpolationQuality = .none
-        var y = 0
+        var offset = 0
         for segment in segments {
             try Task.checkCancellation()
             guard segment.rows > 0 else { continue }
-            let cropRect = CGRect(x: 0, y: segment.top, width: width, height: segment.rows)
+            let cropRect = axis == .vertical
+                ? CGRect(x: 0, y: segment.top, width: crossLength, height: segment.rows)
+                : CGRect(x: segment.top, y: 0, width: segment.rows, height: crossLength)
             guard let slice = frames[segment.frame].cropping(to: cropRect) else {
                 throw NotchShotError.stitchFailed("Could not crop a frame segment for composition")
             }
             // CGContext draws bottom-up, so the first segment goes at the top.
-            let destination = CGRect(
-                x: 0,
-                y: height - y - segment.rows,
-                width: width,
-                height: segment.rows
-            )
+            let destination = axis == .vertical
+                ? CGRect(
+                    x: 0,
+                    y: height - offset - segment.rows,
+                    width: crossLength,
+                    height: segment.rows
+                )
+                : CGRect(
+                    x: offset,
+                    y: 0,
+                    width: segment.rows,
+                    height: crossLength
+                )
             context.draw(slice, in: destination)
-            y += segment.rows
+            offset += segment.rows
         }
 
-        guard y == height else {
+        guard offset == totalLength else {
             throw NotchShotError.stitchFailed("The composed segments did not fill the output image")
         }
         try Task.checkCancellation()
@@ -532,6 +594,32 @@ struct GrayBuffer: @unchecked Sendable {
         self.pixels = pixels
         self.width = width
         self.height = height
+    }
+
+    /// Reflects the matching buffer across its main diagonal. Horizontal page
+    /// motion then becomes the same one-dimensional problem as vertical page
+    /// motion, while the full-resolution source pixels stay untouched.
+    func transposed() -> GrayBuffer {
+        var output = Array(repeating: UInt8.zero, count: pixels.count)
+        for row in 0 ..< height {
+            for column in 0 ..< width {
+                output[column * height + row] = pixels[row * width + column]
+            }
+        }
+        return GrayBuffer(pixels: output, width: height, height: width)
+    }
+
+    func stridingColumns(by stride: Int) -> GrayBuffer {
+        let stride = max(1, stride)
+        guard stride > 1 else { return self }
+        let targetWidth = max(1, width / stride)
+        var output = Array(repeating: UInt8.zero, count: targetWidth * height)
+        for row in 0 ..< height {
+            for column in 0 ..< targetWidth {
+                output[row * targetWidth + column] = pixels[row * width + column * stride]
+            }
+        }
+        return GrayBuffer(pixels: output, width: targetWidth, height: height)
     }
 
     func rowsMatch(_ other: GrayBuffer, row: Int, tolerance: Int) -> Bool {

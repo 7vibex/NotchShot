@@ -5,10 +5,11 @@ import Testing
 
 @Suite("Automation export inspection")
 struct AutomationExportInspectionTests {
-    @Test("All six user-facing shortcuts remain exported")
+    @Test("All seven user-facing shortcuts remain exported")
     func shortcutCount() {
-        #expect(NotchShotAppShortcuts.appShortcuts.count == 6)
+        #expect(NotchShotAppShortcuts.appShortcuts.count == 7)
         _ = NotchShotKitAppIntentsPackage()
+        _ = CaptureScrollingAppIntent()
     }
 
     @Test("Packaging uses the current SwiftPM bin directory and requires intent metadata")

@@ -2,12 +2,33 @@ import AppKit
 import CoreGraphics
 import Foundation
 
-/// Drives a manual vertical scrolling capture.
-///
-/// The user picks a region, then scrolls it themselves; a frame is grabbed each
-/// time scrolling settles. Automating the scroll would need synthetic events
-/// (and Accessibility permission) and breaks on any custom scroll view, so V1
-/// stays manual and honest about it.
+public enum ScrollingCaptureMode: String, Sendable, CaseIterable, Identifiable {
+    case manualVertical
+    case automaticVertical
+    case manualHorizontal
+    case automaticHorizontal
+
+    public var id: String { rawValue }
+    public var axis: ScrollingAxis {
+        switch self {
+        case .manualVertical, .automaticVertical: .vertical
+        case .manualHorizontal, .automaticHorizontal: .horizontal
+        }
+    }
+    public var isAutomatic: Bool {
+        self == .automaticVertical || self == .automaticHorizontal
+    }
+    public var title: String {
+        switch self {
+        case .manualVertical: "Manual Vertical"
+        case .automaticVertical: "Automatic Vertical"
+        case .manualHorizontal: "Manual Horizontal"
+        case .automaticHorizontal: "Automatic Horizontal"
+        }
+    }
+}
+
+/// Drives manual or automatic scrolling capture on either axis.
 @MainActor
 public final class ScrollingCaptureSession {
 
@@ -28,10 +49,12 @@ public final class ScrollingCaptureSession {
     public private(set) var isRunning = false
 
     private let region: CGRect
+    public let mode: ScrollingCaptureMode
     private let onEvent: (Event) -> Void
     private let limits: StitchLimits
     private let frameProvider: FrameProvider
     private var scrollMonitors: [Any] = []
+    private var automaticTask: Task<Void, Never>?
     private var settleWorkItem: DispatchWorkItem?
     private var hasPendingScroll = false
     private var scrollRevision: UInt64 = 0
@@ -45,17 +68,25 @@ public final class ScrollingCaptureSession {
     private var capturedPixels = 0
     private var capturedBytes = 0
     private var consecutiveCaptureFailures = 0
+    private var consecutiveDuplicateFrames = 0
+    private var lastFrameFingerprint: UInt64?
     private var lastStitchProgress = 0.0
     private var hasEmittedStitchProgress = false
 
     typealias FrameProvider = @MainActor @Sendable () async throws -> CGImage
     typealias FrameWriter = @Sendable (CGImage, URL) throws -> Void
+    typealias ScrollDriver = @MainActor @Sendable (ScrollingAxis, CGRect) -> Bool
 
     private let recoveryRoot: URL
     private let frameWriter: FrameWriter
+    private let scrollDriver: ScrollDriver
 
-    public convenience init(region: CGRect, onEvent: @escaping (Event) -> Void) {
-        self.init(region: region, onEvent: onEvent, limits: StitchLimits()) {
+    public convenience init(
+        region: CGRect,
+        mode: ScrollingCaptureMode = .manualVertical,
+        onEvent: @escaping (Event) -> Void
+    ) {
+        self.init(region: region, mode: mode, onEvent: onEvent, limits: StitchLimits()) {
             let excluded = WindowExclusionRegistry.shared.excludedWindowNumbers
             return try await CaptureService.shared.captureArea(
                 region,
@@ -69,19 +100,36 @@ public final class ScrollingCaptureSession {
     /// always uses the public initializer above.
     init(
         region: CGRect,
+        mode: ScrollingCaptureMode = .manualVertical,
         onEvent: @escaping (Event) -> Void,
         limits: StitchLimits,
         recoveryRoot: URL = AppPaths.captures,
         frameWriter: @escaping FrameWriter = { image, url in
             _ = try ImageExport.write(image, to: url, format: .png, quality: 1, dpiScale: 2)
         },
+        scrollDriver: @escaping ScrollDriver = { axis, region in
+            let primary = Int32(max(80, (axis == .vertical ? region.height : region.width) * 0.72))
+            let event = CGEvent(
+                scrollWheelEvent2Source: nil,
+                units: .pixel,
+                wheelCount: 2,
+                wheel1: axis == .vertical ? -primary : 0,
+                wheel2: axis == .horizontal ? -primary : 0,
+                wheel3: 0
+            )
+            event?.location = CGPoint(x: region.midX, y: region.midY)
+            event?.post(tap: .cghidEventTap)
+            return event != nil
+        },
         frameProvider: @escaping FrameProvider
     ) {
         self.region = region
+        self.mode = mode
         self.onEvent = onEvent
         self.limits = limits
         self.recoveryRoot = recoveryRoot
         self.frameWriter = frameWriter
+        self.scrollDriver = scrollDriver
         self.frameProvider = frameProvider
     }
 
@@ -95,6 +143,8 @@ public final class ScrollingCaptureSession {
         capturedPixels = 0
         capturedBytes = 0
         consecutiveCaptureFailures = 0
+        consecutiveDuplicateFrames = 0
+        lastFrameFingerprint = nil
         hasPendingScroll = false
         scrollRevision = 0
         lastStitchProgress = 0
@@ -103,7 +153,11 @@ public final class ScrollingCaptureSession {
         let activeGeneration = generation
         await captureFrame(for: activeGeneration, whileFinishing: false)
         guard canEmit(for: activeGeneration), isRunning else { return }
-        installScrollMonitors()
+        if mode.isAutomatic {
+            startAutomaticScrolling(for: activeGeneration)
+        } else {
+            installScrollMonitors()
+        }
     }
 
     /// Explicit "grab now", for content that doesn't emit scroll events.
@@ -144,12 +198,14 @@ public final class ScrollingCaptureSession {
         emitStitchProgress(0, for: activeGeneration)
         let box = FrameBox(frames: captured)
         let stitchLimits = limits
+        let stitchAxis = mode.axis
         let progressTarget = self
         stitchTaskID &+= 1
         let taskID = stitchTaskID
         let task = Task.detached(priority: .userInitiated) {
             try ScrollingStitcher.stitch(
                 frames: box.frames,
+                axis: stitchAxis,
                 limits: stitchLimits
             ) { progress in
                 Task { @MainActor in
@@ -299,6 +355,8 @@ public final class ScrollingCaptureSession {
     }
 
     private func stopMonitoring() {
+        automaticTask?.cancel()
+        automaticTask = nil
         settleWorkItem?.cancel()
         settleWorkItem = nil
         for monitor in scrollMonitors { NSEvent.removeMonitor(monitor) }
@@ -306,6 +364,41 @@ public final class ScrollingCaptureSession {
     }
 
     // MARK: Frame grabbing
+
+    private func startAutomaticScrolling(for activeGeneration: UInt64) {
+        automaticTask?.cancel()
+        automaticTask = Task { [weak self] in
+            guard let self else { return }
+            while self.canCapture(for: activeGeneration, whileFinishing: false) {
+                do {
+                    try await Task.sleep(for: .milliseconds(520))
+                } catch {
+                    return
+                }
+                guard self.scrollDriver(self.mode.axis, self.region) else {
+                    await self.failAndPreserveFrames(
+                        self.frames,
+                        reason: "Automatic scrolling could not send a scroll event.",
+                        generation: activeGeneration
+                    )
+                    return
+                }
+                do {
+                    try await Task.sleep(for: .milliseconds(360))
+                } catch {
+                    return
+                }
+                await self.captureFrame(for: activeGeneration, whileFinishing: false)
+                guard self.canEmit(for: activeGeneration) else { return }
+                if self.consecutiveDuplicateFrames >= 2
+                    || self.frames.count >= min(Self.maximumFrames, self.limits.maximumFrames) {
+                    self.automaticTask = nil
+                    await self.finish()
+                    return
+                }
+            }
+        }
+    }
 
     private func installScrollMonitors() {
         // Scroll-wheel monitoring needs no Accessibility grant, unlike keyboard
@@ -373,6 +466,15 @@ public final class ScrollingCaptureSession {
                     self.capturedPixels += cost.pixels
                     self.capturedBytes += cost.decodedBytes
                     self.consecutiveCaptureFailures = 0
+                    let fingerprint = Self.fingerprint(image)
+                    if self.mode.isAutomatic,
+                       let previous = self.lastFrameFingerprint,
+                       previous == fingerprint {
+                        self.consecutiveDuplicateFrames += 1
+                    } else {
+                        self.consecutiveDuplicateFrames = 0
+                    }
+                    self.lastFrameFingerprint = fingerprint
                 } catch {
                     await self.failAndPreserveFrames(
                         self.frames,
@@ -425,6 +527,25 @@ public final class ScrollingCaptureSession {
         await task.value
         if captureTaskID == taskID {
             captureTask = nil
+        }
+    }
+
+    private nonisolated static func fingerprint(_ image: CGImage) -> UInt64 {
+        let dimension = 16
+        var pixels = Array(repeating: UInt8.zero, count: dimension * dimension)
+        guard let context = CGContext(
+            data: &pixels,
+            width: dimension,
+            height: dimension,
+            bitsPerComponent: 8,
+            bytesPerRow: dimension,
+            space: CGColorSpaceCreateDeviceGray(),
+            bitmapInfo: CGImageAlphaInfo.none.rawValue
+        ) else { return 0 }
+        context.interpolationQuality = .low
+        context.draw(image, in: CGRect(x: 0, y: 0, width: dimension, height: dimension))
+        return pixels.reduce(into: UInt64(0xcbf29ce484222325)) { hash, byte in
+            hash = (hash ^ UInt64(byte)) &* 0x100000001b3
         }
     }
 

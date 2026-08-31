@@ -45,6 +45,17 @@ enum TestImage {
         }
     }
 
+    /// A window onto a synthetic page that advances left-to-right.
+    static func horizontalPage(width: Int, height: Int, offset: Int) -> CGImage {
+        make(width: width, height: height) { context in
+            for column in 0 ..< width {
+                let intensity = CGFloat(rowValue(forPageRow: column + offset)) / 255
+                context.setFillColor(gray: intensity, alpha: 1)
+                context.fill(CGRect(x: column, y: 0, width: 1, height: height))
+            }
+        }
+    }
+
     /// Deterministic hash so a page row looks the same in every frame that
     /// shows it, while neighbouring rows stay uncorrelated.
     private static func rowValue(forPageRow row: Int) -> UInt8 {

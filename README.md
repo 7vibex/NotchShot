@@ -127,10 +127,12 @@ unrelated Apple overlays, is incompatible with App Sandbox, and is not an App St
 ## What is in V1
 
 Area / window / display / previous-area capture, 3s and 10s timers, crosshair, pixel
-magnifier, frozen-screen selection, aspect lock. PNG / JPEG / HEIC. Manual vertical
-scrolling capture with overlap stitching, seam confidence and preserved frames on failure.
-H.264 MP4 recording with system audio, microphone, a real live audio-history waveform,
-click highlights and background framing, optional on-device transcript / `.srt` captions,
+magnifier, frozen-screen selection, aspect lock. PNG / JPEG / HEIC. Manual or automatic
+vertical and horizontal scrolling capture with overlap stitching, seam confidence and
+preserved frames on failure. H.264 MP4 recording with system audio, microphone, a real
+live audio-history waveform, click highlights and background framing, optional presenter
+camera and privacy-filtered shortcut overlay, optional post-process click zoom and cursor
+smoothing, optional on-device transcript / `.srt` captions,
 pause/resume, video trimming, sleep prevention, and crash recovery. Recording audio sources are chosen before a take so
 the direct ScreenCaptureKit file cannot be silently finalized by a mid-recording stream
 reconfiguration. Annotation (arrow, rectangle, ellipse, line, text, pencil, highlighter, numbered
@@ -138,7 +140,9 @@ steps, blackout, pixelate) with crop, rotate, undo/redo. Background composer wit
 padding, radius, shadow, aspect presets and optical balancing. Editable `.notchshot`
 projects. On-device structured OCR with paragraphs, lists, table copy as TSV/Markdown,
 link/email/phone/address detection, and QR/barcode reading. Floating pinned captures. Local
-history with retention and opt-in text search. Now Playing with artwork, progress and
+history with retention, favorites, tags, collections, opt-in text search and opt-in local
+Spotlight discovery. Screenshots can be OCR'd and translated on-device; recording captions
+can use the same Translation framework flow. Now Playing with artwork, progress and
 transport controls, unlock refresh, and an off-by-default, media-only lock-window cover/wave.
 Capture Stack collection with reorder, per-shot annotation, numbered
 storyboard, long-image, filmstrip and PDF exports. Named GitHub Issue, App Store,
@@ -162,12 +166,21 @@ Background** uses Apple's on-device foreground-instance mask
 to lift noticeable subjects into a full-size transparent PNG; it needs no account, network,
 or additional permission.
 Pixel inspection with HEX/RGB/HSL, pixel measurement and WCAG contrast. Outcome-based image
-export presets with dimension, format and estimated-size previews. The system Share Sheet is
+export presets with dimension, format, real encoded-byte fitting and estimated-size previews.
+Recipes can add OCR, library tags, a collection and a target file-size ceiling. Recordings
+can export to an exact even-pixel MP4 canvas or a bounded animated GIF. Seven discoverable
+App Shortcuts cover area, display, previous-area and scrolling capture, area recording,
+clipboard OCR and the latest capture; the bundle build fails if App Intents metadata is absent.
+The system Share Sheet is
 available for results, History, annotations and comparison output. Inspectable bug report
 folders keep every diagnostic detail off until selected.
 
-The expanded Now Playing card also lists the current public Core Audio output and lets the
-user switch among available local, Bluetooth, display, and AirPlay routes. Opt-in Calendar
+The expanded Now Playing card stacks artwork, title and artist over a seek bar with elapsed
+and remaining times, and a transport row that also opens two in-island lists: the current
+public Core Audio output, for switching among available local, Bluetooth, display, and
+AirPlay routes, and Playing Next, which reads the next few tracks from Music's own scripting
+interface. Playing Next appears only for Music — Spotify publishes no queue and neither does
+MediaRemote — and it follows playlist order, so shuffled playback is not reflected. Opt-in Calendar
 Glance adds compact, hover, and expanded agenda/month states without
 persisting event titles. Explicit document drops can be summarized locally through PDFKit,
 Vision OCR, and Apple Intelligence when available, with a visible local extractive fallback
@@ -210,8 +223,7 @@ and AI activity place native macOS Liquid Glass only on interactive control chro
 shell, while Reduce Transparency and Increase Contrast use solid, outlined controls instead.
 Recording, processing, errors, and dense context content remain stable and opaque.
 
-Later (not built): horizontal and automatic scrolling, GIF, camera compositing/presenter mode,
-post-process click zoom and cursor smoothing, live audio-source changes, and keystroke overlay.
+Later (not built): live audio-source changes during an active ScreenCaptureKit recording.
 The Productivity Center now provides a standalone camera preview, window snapping, and an
 installed-app launcher; none is allowed to interfere with an in-flight capture or recording.
 

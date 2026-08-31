@@ -103,6 +103,9 @@ public struct RecordingConfiguration: Sendable, Equatable {
     public var showsCursor: Bool
     public var highlightsClicks: Bool
     public var autoZoomsOnClicks: Bool
+    public var smoothsCursor: Bool
+    public var showsKeystrokes: Bool
+    public var showsPresenterCamera: Bool
     public var framesWithBackground: Bool
 
     public init(
@@ -114,6 +117,9 @@ public struct RecordingConfiguration: Sendable, Equatable {
         showsCursor: Bool = true,
         highlightsClicks: Bool = false,
         autoZoomsOnClicks: Bool = false,
+        smoothsCursor: Bool = false,
+        showsKeystrokes: Bool = false,
+        showsPresenterCamera: Bool = false,
         framesWithBackground: Bool = false
     ) {
         self.target = target
@@ -124,6 +130,9 @@ public struct RecordingConfiguration: Sendable, Equatable {
         self.showsCursor = showsCursor
         self.highlightsClicks = highlightsClicks
         self.autoZoomsOnClicks = autoZoomsOnClicks
+        self.smoothsCursor = smoothsCursor
+        self.showsKeystrokes = showsKeystrokes
+        self.showsPresenterCamera = showsPresenterCamera
         self.framesWithBackground = framesWithBackground
     }
 

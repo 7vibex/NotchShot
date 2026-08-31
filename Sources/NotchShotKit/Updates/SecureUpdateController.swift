@@ -5,8 +5,14 @@ import Sparkle
 /// update-capable only after the HTTPS appcast and EdDSA public key have been
 /// injected into the assembled bundle by `build_app.sh`.
 @MainActor
-public final class SecureUpdateController: NSObject, SPUUpdaterDelegate {
+public final class SecureUpdateController: NSObject, ObservableObject, SPUUpdaterDelegate {
     public private(set) var updaterController: SPUStandardUpdaterController?
+
+    /// Set while a validated update has been found and not yet installed or
+    /// dismissed; drives the sidebar badge in Settings.
+    @Published public private(set) var pendingUpdateVersion: String?
+
+    public static let shared = SecureUpdateController()
 
     public init(bundle: Bundle = .main) {
         super.init()
@@ -29,6 +35,18 @@ public final class SecureUpdateController: NSObject, SPUUpdaterDelegate {
 
     public func allowedChannels(for updater: SPUUpdater) -> Set<String> {
         Self.allowedChannels(for: Preferences.shared.updateChannel)
+    }
+
+    public func updater(_ updater: SPUUpdater, didFindValidUpdate update: SUAppcastItem) {
+        pendingUpdateVersion = update.displayVersionString
+    }
+
+    public func updaterDidNotFindUpdate(_ updater: SPUUpdater) {
+        pendingUpdateVersion = nil
+    }
+
+    public func updater(_ updater: SPUUpdater, didDismissUpdate update: SUAppcastItem) {
+        pendingUpdateVersion = nil
     }
 
     public static func allowedChannels(for channel: UpdateChannel) -> Set<String> {

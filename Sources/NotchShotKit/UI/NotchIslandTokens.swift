@@ -25,6 +25,16 @@ enum NotchIsland {
         static let expandedCaptureHeight: CGFloat = 164
         static let expandedCornerRadius: CGFloat = 32
 
+        /// Inset for content inside the synthetic island's rounded ends.
+        ///
+        /// A physical notch is a hole in the bezel: its "edge" is invisible, so
+        /// 6pt of padding reads as generous. The synthetic island is a drawn
+        /// pill with a radius of half its height, and at the top and bottom of
+        /// a 20pt tile that curve comes within 3pt of the artwork — which is
+        /// what makes cover art look pressed against the border on an external
+        /// display while looking fine on the notch.
+        static let floatingContentInset: CGFloat = 10
+
         static let syntheticCoreSize = CGSize(
             width: syntheticCoreWidth,
             height: compactHeight

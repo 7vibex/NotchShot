@@ -599,3 +599,92 @@ struct AIActivityOrderingTests {
         #expect(selected.first == "session-39.json")
     }
 }
+
+@Suite("Connectivity card")
+struct NetworkContextTests {
+    @Test("The state the Mac was already in is never announced")
+    func firstReadingIsSilent() {
+        #expect(NetworkContextPolicy.snapshot(
+            previous: nil,
+            current: NetworkReachability(isOnline: false)
+        ) == nil)
+        #expect(NetworkContextPolicy.snapshot(
+            previous: nil,
+            current: NetworkReachability(isOnline: true, link: .wifi)
+        ) == nil)
+    }
+
+    @Test("Only a change in reachability produces a card")
+    func steadyStateIsSilent() {
+        // Roaming from Wi-Fi to Ethernet is still online, and the user does not
+        // need to be told that the internet continues to work.
+        #expect(NetworkContextPolicy.snapshot(
+            previous: NetworkReachability(isOnline: true, link: .wifi),
+            current: NetworkReachability(isOnline: true, link: .wired)
+        ) == nil)
+        #expect(NetworkContextPolicy.snapshot(
+            previous: NetworkReachability(isOnline: false),
+            current: NetworkReachability(isOnline: false)
+        ) == nil)
+    }
+
+    @Test("Losing the connection states the fact and outranks a track change")
+    func goingOfflineAlerts() throws {
+        let now = Date()
+        let snapshot = try #require(NetworkContextPolicy.snapshot(
+            previous: NetworkReachability(isOnline: true, link: .wifi),
+            current: NetworkReachability(isOnline: false),
+            now: now
+        ))
+        #expect(snapshot.kind == .network)
+        #expect(NetworkContextPolicy.isOfflineAlert(snapshot))
+        #expect(snapshot.accentHex == NetworkContextPolicy.offlineAccentHex)
+        #expect(snapshot.mayInterruptMedia)
+        #expect(snapshot.expiresAt == now.addingTimeInterval(NetworkContextPolicy.offlineDuration))
+    }
+
+    @Test("Regaining it names the link and does not interrupt")
+    func comingBackOnlineIsQuiet() throws {
+        let snapshot = try #require(NetworkContextPolicy.snapshot(
+            previous: NetworkReachability(isOnline: false),
+            current: NetworkReachability(isOnline: true, link: .wired)
+        ))
+        #expect(NetworkContextPolicy.isNetworkCard(snapshot))
+        #expect(!NetworkContextPolicy.isOfflineAlert(snapshot))
+        #expect(snapshot.subtitle == "Connected over Ethernet.")
+        #expect(!snapshot.mayInterruptMedia)
+    }
+
+    @Test("A card from another module is never mistaken for this one")
+    func otherKindsAreNotNetworkCards() {
+        let power = ContextSnapshot(kind: .power, title: "Low Battery")
+        #expect(!NetworkContextPolicy.isNetworkCard(power))
+        #expect(!NetworkContextPolicy.isOfflineAlert(power))
+        // Same kind, different state: the restored card must not take the
+        // alert's taller layout or its buttons.
+        let restored = ContextSnapshot(kind: .network, title: NetworkContextPolicy.restoredTitle)
+        #expect(!NetworkContextPolicy.isOfflineAlert(restored))
+    }
+
+    @Test("The alert reserves button height and the restored row does not")
+    func layoutMatchesTheState() {
+        let metrics = NotchMetrics(
+            screenFrame: CGRect(x: 0, y: 0, width: 1512, height: 982),
+            hasPhysicalNotch: true,
+            notchSize: CGSize(width: 250, height: 37),
+            menuBarHeight: 37
+        )
+        func height(_ title: String) -> CGFloat {
+            NotchLayout.layout(
+                for: .context(ContextSnapshot(kind: .network, title: title)),
+                metrics: metrics,
+                isPeeking: false,
+                resultCount: 0
+            ).size.height
+        }
+        let alert = height(NetworkContextPolicy.offlineTitle)
+        let restored = height(NetworkContextPolicy.restoredTitle)
+        #expect(alert > restored)
+        #expect(alert <= NotchLayout.maximumSize.height)
+    }
+}

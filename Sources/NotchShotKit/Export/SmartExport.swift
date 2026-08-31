@@ -48,6 +48,48 @@ public struct SmartExportPlan: Sendable, Equatable {
 }
 
 public enum SmartExportService {
+    /// Downscales until an encode fits the requested byte ceiling. The source
+    /// is never upscaled, and the real encoder output—not an estimate—drives
+    /// every iteration.
+    public static func renderToFit(
+        _ image: CGImage,
+        maximumBytes: Int,
+        format: ImageFormat,
+        quality: Double,
+        dpiScale: CGFloat
+    ) throws -> CGImage {
+        guard maximumBytes > 0 else { return image }
+        var candidate = image
+        for _ in 0 ..< 8 {
+            let encoded = try ImageExport.encode(
+                candidate,
+                format: format,
+                quality: quality,
+                dpiScale: dpiScale
+            ).data
+            guard encoded.count > maximumBytes else { return candidate }
+            let ratio = sqrt(Double(maximumBytes) / Double(max(encoded.count, 1))) * 0.94
+            let scale = min(max(ratio, 0.35), 0.92)
+            let size = CGSize(
+                width: max(1, (CGFloat(candidate.width) * scale).rounded(.down)),
+                height: max(1, (CGFloat(candidate.height) * scale).rounded(.down))
+            )
+            candidate = try render(candidate, to: size)
+        }
+        let finalBytes = try ImageExport.encode(
+            candidate,
+            format: format,
+            quality: quality,
+            dpiScale: dpiScale
+        ).data.count
+        guard finalBytes <= maximumBytes else {
+            throw NotchShotError.exportFailed(
+                "Could not fit this image below \(ByteCountFormatter.string(fromByteCount: Int64(maximumBytes), countStyle: .file))"
+            )
+        }
+        return candidate
+    }
+
     public static func plan(
         for asset: CaptureAsset,
         image: CGImage,

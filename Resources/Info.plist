@@ -67,7 +67,7 @@
 	<key>NSMicrophoneUsageDescription</key>
 	<string>NotchShot records your microphone only when you start a screen recording with microphone audio, explicitly start a Voice Note, or use Notch Dictation to transcribe speech locally.</string>
 	<key>NSCameraUsageDescription</key>
-	<string>NotchShot uses the camera only while you open the Presenter Camera preview.</string>
+	<string>NotchShot uses the camera only while you open Presenter Camera or explicitly enable its visible recording overlay.</string>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>NotchShot uses your local network only when you send selected files directly to a LocalSend receiver.</string>
 	<key>NSServices</key>

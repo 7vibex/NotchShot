@@ -440,8 +440,29 @@ final class AudioRouteMonitor {
     private func refresh() {
         let current = AudioOutputDeviceService.currentOutput()
         defer { previous = current }
-        if let snapshot = AudioRouteContextPolicy.snapshot(previous: previous, current: current) {
-            onTransition?(snapshot)
+        guard let snapshot = AudioRouteContextPolicy.snapshot(
+            previous: previous,
+            current: current
+        ) else { return }
+        onTransition?(snapshot)
+
+        // The card is shown immediately with what Core Audio knows, then
+        // amended once the system's Bluetooth report answers. Waiting for that
+        // first would delay the card by a second or more for every accessory,
+        // including the ones that report no battery at all.
+        guard let routeName = current?.name, snapshot.metric == "Connected" else { return }
+        Task { [weak self] in
+            guard let battery = await BluetoothAccessoryBatteryService.shared
+                .battery(forRouteNamed: routeName) else { return }
+            await MainActor.run {
+                guard let self else { return }
+                var amended = snapshot
+                amended.accessory = battery
+                // Long enough to read three numbers, where the plain
+                // "Connected" card only had to be glanced at.
+                amended.expiresAt = Date().addingTimeInterval(5)
+                self.onTransition?(amended)
+            }
         }
     }
 

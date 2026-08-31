@@ -18,6 +18,7 @@ public enum HotKeyAction: String, Sendable, CaseIterable, Identifiable, Codable 
     case showClipboard
     case toggleDictation
     case pushToTalk
+    case showShelf
 
     public var id: String { rawValue }
 
@@ -38,6 +39,7 @@ public enum HotKeyAction: String, Sendable, CaseIterable, Identifiable, Codable 
         case .showClipboard: "Clipboard History"
         case .toggleDictation: "Toggle Dictation"
         case .pushToTalk: "Push to Talk"
+        case .showShelf: "Show Shelf"
         }
     }
 
@@ -90,6 +92,10 @@ public enum HotKeyAction: String, Sendable, CaseIterable, Identifiable, Codable 
         case .showClipboard: nil
         case .toggleDictation: HotKeyBinding(keyCode: UInt32(kVK_Space), modifiers: UInt32(optionKey))
         case .pushToTalk: nil
+        // No default: the shelf is reachable from the menu bar, and claiming a
+        // global combination for a surface that is empty most of the time is
+        // not a trade the user asked for.
+        case .showShelf: nil
         }
     }
 }

@@ -255,13 +255,15 @@ struct NotchActivityCardStack: View {
     @Bindable var store: ProductivityNotificationStore
     var isLocked: Bool
     var showsPlaceholders: Bool
+    var showsMedia = true
 
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
 
     var body: some View {
         TimelineView(.periodic(from: .now, by: 1)) { timeline in
             VStack(spacing: 12) {
-                if coordinator.media.snapshot.hasContent || showsPlaceholders {
+                if showsMedia,
+                   coordinator.media.snapshot.hasContent || showsPlaceholders {
                     mediaCard(now: timeline.date)
                 }
                 if let item = notification(at: timeline.date) {

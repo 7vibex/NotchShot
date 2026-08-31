@@ -153,12 +153,74 @@ public struct NotchLayout: Sendable, Equatable {
     /// Slack around the island for shadows and spring overshoot.
     public static let shadowPadding: CGFloat = 40
 
+    /// Height of the expanded player, including whichever list it has open —
+    /// audio routes or Playing Next. Lists are capped at four rows: past that
+    /// they stop reading as part of the island and start reading as a window
+    /// hanging off the notch.
+    static func mediaPeekContentHeight(panelRows: Int) -> CGFloat {
+        // 10 + 56 artwork row + 22 scrubber + 40 transport + 12.
+        let player: CGFloat = 140
+        guard panelRows > 0 else { return player }
+        let visibleRows = min(panelRows, mediaPanelVisibleRowLimit)
+        let rows = CGFloat(visibleRows) * mediaPanelRowHeight
+        let gaps = CGFloat(visibleRows - 1) * mediaPanelRowSpacing
+        return player + rows + gaps + mediaPanelListInset
+    }
+
+    /// Floor for the expanded player: below this the five-slot transport bar
+    /// starts crowding, whatever the notch's own width is.
+    static let mediaPeekMinimumWidth: CGFloat = 400
+
+    static let mediaPanelRowHeight: CGFloat = 36
+    static let mediaPanelRowSpacing: CGFloat = 5
+    static let mediaPanelVisibleRowLimit = 4
+    /// Header line plus the gaps above and below the list.
+    static let mediaPanelListInset: CGFloat = 30
+
+    /// Height of the capture shelf, derived from the rows `ShelfContent`
+    /// actually draws.
+    ///
+    /// It used to be one of two constants. Neither matched: the detail layout
+    /// adds a pager once a second capture arrives, so the island was ~22pt too
+    /// short and clipped that row behind its own bottom edge, while the grid
+    /// layout has no thumbnail block or pager at all and was left with ~40pt of
+    /// empty island under the buttons.
+    static func shelfContentHeight(
+        style: ShelfPresentationStyle,
+        itemCount: Int,
+        hasStack: Bool
+    ) -> CGFloat {
+        let control = NotchShotDesignSystem.minimumControlTarget
+        // `ShelfContent`: 14pt padding all round, 10pt between rows.
+        let padding: CGFloat = 28
+        let rowSpacing: CGFloat = 10
+        // The header's segmented control carries 2pt of padding either side.
+        var rows: [CGFloat] = [control + 4]
+        // A 48pt grid strip, or the 66pt thumbnail beside its details column.
+        rows.append(style == .grid ? 50 : 66)
+        rows.append(control)
+        if hasStack {
+            // The stack strip pads its buttons by 5pt top and bottom.
+            rows.append(control + 10)
+        }
+        // The pager only exists in the detail layout, and only once there is a
+        // second capture to page to.
+        if style == .detail, itemCount > 1 {
+            rows.append(control)
+        }
+        return padding
+            + rows.reduce(0, +)
+            + rowSpacing * CGFloat(max(rows.count - 1, 0))
+    }
+
     public static func layout(
         for activity: NotchActivity,
         metrics: NotchMetrics,
         isPeeking: Bool,
         resultCount: Int,
-        hasStack: Bool = false
+        hasStack: Bool = false,
+        mediaPanelRows: Int = 0,
+        shelfStyle: ShelfPresentationStyle = .detail
     ) -> NotchLayout {
         let closed = CGSize(
             width: max(metrics.notchSize.width, 1),
@@ -217,13 +279,24 @@ public struct NotchLayout: Sendable, Equatable {
             let compactWidth = metrics.hasPhysicalNotch
                 ? closed.width + 76
                 : NotchIsland.Geometry.compactActivityWidth
+            // Narrower than the capture surface on purpose. The stacked player
+            // no longer competes for width with its own controls — the
+            // transport sits on its own row — so the extra 120pt it used to
+            // claim only spread five buttons further apart and made a hover
+            // card that reached well past the notch on either side.
             let width = isPeeking
-                ? max(closed.width + 290, NotchIsland.Geometry.expandedCaptureWidth)
+                ? max(closed.width + 170, Self.mediaPeekMinimumWidth)
                 : compactWidth
             if isPeeking {
-                // Taller and wider than the bare progress bar needed: the
-                // scrubber carries an elapsed and a total time either side of it.
-                return revealed(width: width, contentHeight: 122, cornerRadius: 18)
+                // Three stacked rows — artwork and titles, the scrubber with a
+                // time either side, then a full-width transport bar — rather
+                // than the old single row with the controls squeezed in beside
+                // the track name.
+                return revealed(
+                    width: width,
+                    contentHeight: mediaPeekContentHeight(panelRows: mediaPanelRows),
+                    cornerRadius: 22
+                )
             }
             // Compact media lives in the visible wings beside the camera and
             // intentionally shares the hardware notch's vertical band.
@@ -244,10 +317,11 @@ public struct NotchLayout: Sendable, Equatable {
                 cornerRadius: NotchIsland.Geometry.expandedCornerRadius
             )
         case .fileDrop:
-            // Four equal drop destinations plus a compact instruction line.
-            // The physical camera band is added by `revealed`, keeping every
-            // target below real hardware while the drag remains active.
-            return revealed(width: 500, contentHeight: 164, cornerRadius: 24)
+            // One dashed destination tile per action, plus a compact
+            // instruction line. The physical camera band is added by
+            // `revealed`, keeping every target below real hardware while the
+            // drag remains active.
+            return revealed(width: 500, contentHeight: 168, cornerRadius: 24)
         case .selecting:
             return revealed(width: 340, contentHeight: 54, cornerRadius: 18)
         case .countdown:
@@ -258,8 +332,15 @@ public struct NotchLayout: Sendable, Equatable {
             return revealed(width: 320, contentHeight: 62, cornerRadius: 18)
         case .result:
             let extra = min(max(resultCount - 1, 0), 4) * 12
-            let height: CGFloat = hasStack ? 246 : 202
-            return revealed(width: 470 + CGFloat(extra), contentHeight: height, cornerRadius: 24)
+            return revealed(
+                width: 470 + CGFloat(extra),
+                contentHeight: shelfContentHeight(
+                    style: shelfStyle,
+                    itemCount: resultCount,
+                    hasStack: hasStack
+                ),
+                cornerRadius: 24
+            )
         case .systemLevel:
             // A physical notch already provides the black centre of the HUD.
             // Keep feedback inside its two visible wings instead of growing a
@@ -278,6 +359,20 @@ public struct NotchLayout: Sendable, Equatable {
                 // The ten-second alert exposes its Battery Settings handoff
                 // immediately instead of hiding it behind a second expansion.
                 return revealed(width: 410, contentHeight: 78, cornerRadius: 22)
+            }
+            if NetworkContextPolicy.isNetworkCard(snapshot) {
+                // Losing the connection gets the headline plus a row of two
+                // controls; regaining it is a single quiet row with nothing to
+                // decide, so it must not reserve the button height.
+                return NetworkContextPolicy.isOfflineAlert(snapshot)
+                    ? revealed(width: 400, contentHeight: 152, cornerRadius: 26)
+                    : revealed(width: 410, contentHeight: 74, cornerRadius: 22)
+            }
+            // An accessory card carries artwork, a name and up to three battery
+            // readouts, so it gets a card rather than the compact wings the
+            // other passive contexts use.
+            if snapshot.kind == .audioRoute {
+                return revealed(width: 420, contentHeight: 78, cornerRadius: 22)
             }
             if snapshot.presentation == .expanded {
                 if snapshot.kind == .ai {

@@ -43,10 +43,21 @@ struct ShelfContent: View {
                 }
             }
             .scrollBounceBehavior(.basedOnSize)
+            // Switching view mode resizes the island on a spring while the
+            // rows swap at once, so for the length of that animation the
+            // content is taller than the panel and a scroller rode the whole
+            // transition. `.hidden` was not enough: with a mouse attached the
+            // system uses legacy scrollers, which `.hidden` lets through and
+            // which would also steal layout width from a fixed-size island.
+            .scrollIndicators(.never)
             .accessibilityLabel("Capture shelf content")
         }
         .padding(14)
         .focusable()
+        // Keyboard navigation without AppKit's blue focus ring. The ring traced
+        // this view's rounded rect inside the island, which read as the notch's
+        // corners randomly turning blue whenever the panel took key focus.
+        .focusEffectDisabled()
         .onKeyPress(.leftArrow) {
             coordinator.advanceShelfSelection(by: -1)
             return .handled
@@ -93,22 +104,33 @@ struct ShelfContent: View {
                     Button {
                         Preferences.shared.shelfPresentationStyle = style
                     } label: {
+                        let isSelected = Preferences.shared.shelfPresentationStyle == style
                         Image(systemName: style.symbolName)
                             .font(.system(size: 10, weight: .semibold))
-                            .foregroundStyle(
-                                Preferences.shared.shelfPresentationStyle == style
-                                    ? Color.black : Color.white.opacity(0.72)
-                            )
+                            .foregroundStyle(.white.opacity(isSelected ? 1 : 0.72))
                             .frame(
                                 width: NotchShotDesignSystem.minimumControlTarget,
                                 height: NotchShotDesignSystem.minimumControlTarget
                             )
+                            // The same accent fill and border the selected grid
+                            // cell uses. A solid white block here was the
+                            // loudest thing in the shelf, so the view switch
+                            // read as more important than the captures.
                             .background {
-                                RoundedRectangle(cornerRadius: 6)
+                                RoundedRectangle(cornerRadius: 6, style: .continuous)
                                     .fill(
-                                        Preferences.shared.shelfPresentationStyle == style
-                                            ? Color.white : Color.white.opacity(0.001)
+                                        isSelected
+                                            ? Color.accentColor.opacity(0.34)
+                                            : Color.white.opacity(0.001)
                                     )
+                                    .overlay {
+                                        RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                            .strokeBorder(
+                                                isSelected
+                                                    ? Color.accentColor.opacity(0.85)
+                                                    : Color.clear
+                                            )
+                                    }
                             }
                             .contentShape(Rectangle())
                     }
@@ -126,7 +148,12 @@ struct ShelfContent: View {
                 reduceTransparency: reduceTransparency
             )
 
-            NotchIconButton(systemName: "eye.slash", label: "Hide shelf", visualScale: 0.72) {
+            // Full size, deliberately. The old 0.72 was compensating for a
+            // bug: the scale reached the glass circle but not the glyph, so a
+            // shrunken button still drew a full-size 13pt mark. With the two
+            // in step, 0.72 made a 21pt button next to a 36pt segmented
+            // control — a peer control that read as an afterthought.
+            NotchIconButton(systemName: "eye.slash", label: "Hide shelf") {
                 coordinator.hideShelf()
             }
         }
@@ -162,7 +189,7 @@ struct ShelfContent: View {
                 }
             }
         }
-        .scrollIndicators(.hidden)
+        .scrollIndicators(.never)
         .frame(height: 50)
     }
 
@@ -283,22 +310,31 @@ struct ShelfContent: View {
 
             Spacer(minLength: 0)
 
+            // The surface goes around the menu, not inside its label: the
+            // borderless menu style hosts the label itself and dropped the
+            // glass chip, so this one control sat bare next to four buttons
+            // that all had one.
             Menu { shelfMenuContent(for: item) } label: {
                 Image(systemName: "ellipsis")
                     .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(.white)
                     .frame(
                         width: NotchIconButton.minimumHitSize,
                         height: NotchIconButton.minimumHitSize
                     )
-                    .foregroundStyle(.white)
-                    .notchControlSurface(
-                        in: RoundedRectangle(cornerRadius: 7, style: .continuous),
-                        reduceTransparency: reduceTransparency
-                    )
+                    .contentShape(Rectangle())
             }
             .menuStyle(.borderlessButton)
             .menuIndicator(.hidden)
             .fixedSize()
+            .frame(
+                width: NotchIconButton.minimumHitSize,
+                height: NotchIconButton.minimumHitSize
+            )
+            .notchControlSurface(
+                in: RoundedRectangle(cornerRadius: 7, style: .continuous),
+                reduceTransparency: reduceTransparency
+            )
             .help("More actions")
             .accessibilityLabel("More capture actions")
         }
@@ -383,10 +419,11 @@ struct ShelfContent: View {
     private func primaryActions(for asset: CaptureAsset) -> [ShareAction] {
         let available = ShareAction.customizableShelfCases.filter { $0.isAvailable(for: asset) }
         var result = Preferences.shared.shelfQuickActions.filter { available.contains($0) }
-        for action in available where !result.contains(action) && result.count < 4 {
+        for action in available
+        where !result.contains(action) && result.count < ShareAction.shelfQuickActionSlots {
             result.append(action)
         }
-        return Array(result.prefix(4))
+        return Array(result.prefix(ShareAction.shelfQuickActionSlots))
     }
 
     private func actionButton(_ action: ShareAction, item: ShelfItem) -> some View {
@@ -464,7 +501,7 @@ struct ShelfContent: View {
                     }
                 }
             }
-            .scrollIndicators(.hidden)
+            .scrollIndicators(.never)
             .frame(maxWidth: .infinity)
 
             Menu {
@@ -585,7 +622,7 @@ struct ShelfContent: View {
                     }
                 }
             }
-            .scrollIndicators(.hidden)
+            .scrollIndicators(.never)
             .frame(maxWidth: .infinity, alignment: .leading)
 
             if coordinator.canRestoreDismissed {

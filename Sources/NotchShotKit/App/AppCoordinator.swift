@@ -1,5 +1,6 @@
 import AVFoundation
 import AppKit
+@preconcurrency import ApplicationServices
 import CoreMedia
 import Observation
 import SwiftUI
@@ -57,6 +58,12 @@ public final class AppCoordinator {
     /// full interface on its own — that needs a click or a shortcut.
     public var isPeeking = false
 
+    /// Which list the expanded player has open, and how many rows it holds.
+    /// The island's height is derived from the activity rather than measured
+    /// from its content, so a list has to declare its size before it draws.
+    public private(set) var mediaPanel: MediaPanelKind = .none
+    public private(set) var mediaPanelRowCount = 0
+
     public let media = MediaCoordinator.shared
     public let context = ContextCoordinator.shared
     public let history = HistoryRepository.shared
@@ -92,6 +99,10 @@ public final class AppCoordinator {
     private var recordingStartOperationID: UUID?
     private var recordingCompletionTask: Task<Void, Never>?
     private var recordingSegments: [CaptureAsset] = []
+    private var recordingInteractionSegments: [RecordingInteractionTimeline] = []
+    private var pendingRecordingInteractionTimeline: RecordingInteractionTimeline?
+    private var recordingUsesSmoothCursor = false
+    private var recordingUsesClickZoom = false
     private var pausedRecordingConfiguration: RecordingConfiguration?
     private var completedRecordingDuration: TimeInterval = 0
     private var isPresentingRecordingCancellation = false
@@ -105,6 +116,7 @@ public final class AppCoordinator {
     public var onOpenBugReport: ((BugReportSession) -> Void)?
     public var onOpenComparison: ((VisualComparisonSession) -> Void)?
     public var onOpenSmartExport: ((SmartExportSession) -> Void)?
+    public var onOpenRecordingExport: ((RecordingExportSession) -> Void)?
     public var onOpenVideoTrim: ((VideoTrimSession) -> Void)?
     public var onOpenInspector: ((ImageInspectionSession) -> Void)?
     public var onOpenCapturePreview: ((ShelfItem) -> Void)?
@@ -157,6 +169,7 @@ public final class AppCoordinator {
         clipboard.applyRetention()
         clipboard.removeOrphanedImages()
         clipboardMonitor.reconcile()
+        history.refreshSpotlightIndex()
 
         RecordingService.shared.onStatusChange = { [weak self] status in
             guard let self else { return }
@@ -203,6 +216,9 @@ public final class AppCoordinator {
         // Media presence feeds the arbiter but can never outrank a capture.
         // `observeMedia` re-arms its own tracker, so it must be started exactly
         // once — arming it here as well doubled the trackers on every change.
+        LockedMediaNotificationController.shared.prepareIfNeeded(
+            enabled: Preferences.shared.showsMediaWhileLocked
+        )
         observeMedia()
         observeDictation()
         refreshActivity()
@@ -223,6 +239,11 @@ public final class AppCoordinator {
 
     private func observeMedia() {
         arbiter.hasMedia = media.snapshot.hasContent
+        LockedMediaNotificationController.shared.update(
+            snapshot: media.snapshot,
+            screenIsLocked: media.isScreenLocked,
+            enabled: Preferences.shared.showsMediaWhileLocked
+        )
         systemNotifications.setSessionActive(media.isSessionActive)
         if !media.isSessionActive {
             clearSystemNotifications()
@@ -230,10 +251,38 @@ public final class AppCoordinator {
         refreshActivity()
         withObservationTracking {
             _ = media.snapshot.hasContent
+            _ = media.snapshot.title
+            _ = media.snapshot.artist
+            _ = media.snapshot.applicationName
+            _ = media.snapshot.isPlaying
             _ = media.isSessionActive
+            // The workspace session can resign before loginwindow posts its
+            // secure-lock signal. Track the narrower state independently so
+            // the notification is re-evaluated when that second event arrives.
+            _ = media.isScreenLocked
         } onChange: { [weak self] in
             Task { @MainActor in self?.observeMedia() }
         }
+    }
+
+    /// Opens the pane that owns every switch this feature depends on. It is
+    /// not a Privacy pane, so it is not one of `PermissionKind`'s deep links.
+    public func openNotificationSettings() {
+        guard let url = URL(
+            string: "x-apple.systempreferences:com.apple.Notifications-Settings.extension"
+        ) else { return }
+        NSWorkspace.shared.open(url)
+    }
+
+    public func setLockedMediaNotificationsEnabled(_ enabled: Bool) {
+        Preferences.shared.showsMediaWhileLocked = enabled
+        windowController?.refreshLockedPresentation()
+        LockedMediaNotificationController.shared.prepareIfNeeded(enabled: enabled)
+        LockedMediaNotificationController.shared.update(
+            snapshot: media.snapshot,
+            screenIsLocked: media.isScreenLocked,
+            enabled: enabled
+        )
     }
 
     /// Last dictation state announced to VoiceOver, so republished snapshots
@@ -435,7 +484,8 @@ public final class AppCoordinator {
             hasStack: stack.isCollecting || !stack.isEmpty,
             hasMediaContent: media.snapshot.hasContent,
             hasLockedActivityContent: !notifications.activeItems.isEmpty
-                || context.timer.current != nil
+                || context.timer.current != nil,
+            mediaPanelRowCount: mediaPanelRowCount
         )
     }
 
@@ -542,9 +592,27 @@ public final class AppCoordinator {
         }
     }
 
+    /// Opens or closes one of the expanded player's lists. Routed through the
+    /// coordinator rather than held in the view because the island's height and
+    /// its click-through region are both derived from the activity.
+    public func setMediaPanel(_ panel: MediaPanelKind, rowCount: Int = 0) {
+        let kind = rowCount > 0 ? panel : .none
+        let clamped = kind == .none ? 0 : max(1, rowCount)
+        guard kind != mediaPanel || clamped != mediaPanelRowCount else { return }
+        mediaPanel = kind
+        mediaPanelRowCount = clamped
+        refreshActivity()
+    }
+
     public func setPeeking(_ peeking: Bool) {
         guard peeking != isPeeking else { return }
         isPeeking = peeking
+        // A list left open would otherwise reserve height in a collapsed
+        // island, which reads as a stuck, empty gap under the player.
+        if !peeking {
+            mediaPanel = .none
+            mediaPanelRowCount = 0
+        }
         refreshActivity()
     }
 
@@ -674,7 +742,19 @@ public final class AppCoordinator {
         // Scrolling takes over after the region is chosen.
         if intent == .scrolling {
             guard let rect = request.rect else { return }
-            await beginScrollingCapture(region: rect)
+            guard let mode = chooseScrollingCaptureMode() else { return }
+            if mode.isAutomatic, !permissions.accessibilityGranted {
+                let options = [
+                    kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true
+                ] as CFDictionary
+                guard AXIsProcessTrustedWithOptions(options) else {
+                    present(error: NotchShotError.captureFailed(
+                        "Automatic scrolling needs Accessibility permission to send scroll events. Manual scrolling still works without it."
+                    ))
+                    return
+                }
+            }
+            await beginScrollingCapture(region: rect, mode: mode)
             return
         }
 
@@ -808,7 +888,22 @@ public final class AppCoordinator {
         do {
             guard operationID.map(isCurrentCapture) ?? true else { return }
             let recipe = recipeOverride ?? CaptureRecipeStore.shared.activeRecipe
-            let prepared = try CaptureRecipeRenderer.render(image, recipe: recipe)
+            var prepared = try CaptureRecipeRenderer.render(image, recipe: recipe)
+            if let maximumBytes = recipe.targetMaximumBytes, maximumBytes > 0 {
+                let format = recipe.imageFormat ?? Preferences.shared.imageFormat
+                let fitted = try SmartExportService.renderToFit(
+                    prepared.cgImage,
+                    maximumBytes: maximumBytes,
+                    format: format,
+                    quality: Preferences.shared.jpegQuality,
+                    dpiScale: prepared.scale
+                )
+                prepared = CapturedImage(
+                    cgImage: fitted,
+                    scale: prepared.scale,
+                    sourceRect: prepared.sourceRect
+                )
+            }
             let asset = try await persist(
                 prepared,
                 kind: kind,
@@ -840,7 +935,24 @@ public final class AppCoordinator {
             let thumbnail = thumbnailImage.map {
                 NSImage(cgImage: $0, size: NSSize(width: $0.width, height: $0.height))
             }
-            history.record(asset: asset, image: prepared.cgImage, thumbnail: thumbnailImage)
+            let ocrResult = recipe.runsOCR == true
+                ? try? await OCRService.shared.recognizeText(in: prepared)
+                : nil
+            history.record(
+                asset: asset,
+                image: prepared.cgImage,
+                recognizedText: ocrResult?.fullText,
+                thumbnail: thumbnailImage
+            )
+            if !(recipe.libraryTags ?? []).isEmpty
+                || recipe.collectionName != nil {
+                history.updateLibraryMetadata(
+                    id: asset.id,
+                    tags: recipe.libraryTags ?? [],
+                    collectionName: recipe.collectionName,
+                    isFavorite: false
+                )
+            }
 
             let item = ShelfItem(
                 asset: asset,
@@ -849,6 +961,7 @@ public final class AppCoordinator {
                 stitchWarnings: warnings,
                 seams: seams
             )
+            item.ocrResult = ocrResult
             push(item)
 
             let annotationMode: RecipeAnnotationMode = automationAction == .annotate
@@ -1082,17 +1195,40 @@ public final class AppCoordinator {
         }
         Task {
             await RecordingService.shared.cancel()
+            _ = RecordingInteractionRecorder.shared.stop()
+            RecordingPresentationOverlayController.shared.stop()
         }
     }
 
     // MARK: Scrolling capture
 
-    private func beginScrollingCapture(region: CGRect) async {
+    private func chooseScrollingCaptureMode() -> ScrollingCaptureMode? {
+        let popup = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 260, height: 28))
+        for mode in ScrollingCaptureMode.allCases {
+            popup.addItem(withTitle: mode.title)
+        }
+        popup.selectItem(at: 1)
+        popup.setAccessibilityLabel("Scrolling capture mode")
+
+        let alert = NSAlert()
+        alert.messageText = "Choose Scrolling Direction"
+        alert.informativeText = "Automatic modes scroll until the content stops changing. Manual modes capture whenever scrolling settles."
+        alert.accessoryView = popup
+        alert.addButton(withTitle: "Start Capture")
+        alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else { return nil }
+        return ScrollingCaptureMode.allCases[popup.indexOfSelectedItem]
+    }
+
+    private func beginScrollingCapture(
+        region: CGRect,
+        mode: ScrollingCaptureMode
+    ) async {
         scrollingSession?.cancel()
 
         let sessionID = UUID()
         scrollingRegion = region
-        let session = ScrollingCaptureSession(region: region) { [weak self] event in
+        let session = ScrollingCaptureSession(region: region, mode: mode) { [weak self] event in
             Task { @MainActor in
                 self?.handleScrollingEvent(event, sessionID: sessionID)
             }
@@ -1100,7 +1236,9 @@ public final class AppCoordinator {
         scrollingSession = session
         scrollingSessionID = sessionID
         scrollingFrameCount = 0
-        arbiter.isProcessing = "Scroll to capture · Return when done"
+        arbiter.isProcessing = mode.isAutomatic
+            ? "Auto-scrolling \(mode.axis.title.lowercased()) · Return to finish"
+            : "Scroll \(mode.axis.title.lowercased()) to capture · Return when done"
         refreshActivity()
         await session.start()
         guard scrollingSessionID == sessionID else {
@@ -1237,6 +1375,8 @@ public final class AppCoordinator {
               !isRecordingPaused,
               !RecordingService.shared.hasActiveSession else { return }
         recordingSegments.removeAll()
+        recordingInteractionSegments.removeAll()
+        pendingRecordingInteractionTimeline = nil
         completedRecordingDuration = 0
         pausedRecordingConfiguration = nil
         isRecordingPaused = false
@@ -1303,21 +1443,70 @@ public final class AppCoordinator {
             // SCRecordingOutput finalizes the file if its stream
             // configuration changes. Smooth click zoom therefore belongs in
             // a post-processing pipeline, not the live recording stream.
-            autoZoomsOnClicks: false,
+            autoZoomsOnClicks: preferences.recordingAutoZoomsOnClicks,
+            smoothsCursor: preferences.recordingSmoothsCursor,
+            showsKeystrokes: preferences.recordingShowsKeystrokes,
+            showsPresenterCamera: preferences.recordingPresenterCamera,
             framesWithBackground: preferences.recordingFramesWithBackground
         )
 
         do {
+            try await startRecordingPresentation(for: configuration)
             try await RecordingService.shared.start(configuration)
             guard isCurrentRecordingStart(operationID) else {
                 await RecordingService.shared.cancel()
+                RecordingPresentationOverlayController.shared.stop()
                 return
             }
             arbiter.isRecording = true
+            recordingUsesSmoothCursor = configuration.smoothsCursor && configuration.showsCursor
+            recordingUsesClickZoom = configuration.autoZoomsOnClicks
+            RecordingInteractionRecorder.shared.start(configuration: configuration)
             refreshActivity()
         } catch {
+            RecordingPresentationOverlayController.shared.stop()
             guard isCurrentRecordingStart(operationID), !(error is CancellationError) else { return }
             present(error: error)
+        }
+    }
+
+    private func startRecordingPresentation(
+        for configuration: RecordingConfiguration
+    ) async throws {
+        guard configuration.showsPresenterCamera || configuration.showsKeystrokes else { return }
+        guard configuration.target.displayID != nil else {
+            // A desktop-independent window recording contains exactly one
+            // window; ScreenCaptureKit cannot add a second presenter window.
+            throw NotchShotError.recordingFailed(
+                "Presenter camera and shortcut overlays are available for area and display recordings, not a single-window recording."
+            )
+        }
+        if configuration.showsKeystrokes, !CGPreflightListenEventAccess() {
+            _ = CGRequestListenEventAccess()
+            guard CGPreflightListenEventAccess() else {
+                throw NotchShotError.recordingFailed(
+                    "Keyboard shortcut display needs Input Monitoring permission. Turn it on in Privacy & Security, then start the recording again."
+                )
+            }
+        }
+        let captureFrame: CGRect? = switch configuration.target {
+        case .area(let rect, _):
+            ScreenGeometry.cocoaRect(fromCG: rect, primaryFrame: ScreenLookup.primaryFrame)
+        case .display, .window:
+            nil
+        }
+        let didStart = await RecordingPresentationOverlayController.shared.start(
+            options: RecordingPresentationOptions(
+                showsCamera: configuration.showsPresenterCamera,
+                showsKeystrokes: configuration.showsKeystrokes
+            ),
+            displayID: configuration.target.displayID,
+            captureFrame: captureFrame
+        )
+        guard didStart else {
+            throw NotchShotError.recordingFailed(
+                "The selected recording area is too small to contain the presenter overlay. Choose a larger area or turn the overlay off."
+            )
         }
     }
 
@@ -1350,11 +1539,25 @@ public final class AppCoordinator {
         }
         do {
             var asset = try await finishRecordingSegments()
-            // Persist the base MP4 before any optional caption or thumbnail
-            // await. If the user quits during post-processing, the finished
-            // recording is still discoverable on the next launch.
+            // Register the intact base file before optional effects. If an
+            // encoder fails, the user's finished recording remains findable.
             history.record(asset: asset, image: nil)
             persistHistory()
+            if let timeline = pendingRecordingInteractionTimeline,
+               recordingUsesSmoothCursor || recordingUsesClickZoom {
+                arbiter.isProcessing = "Smoothing pointer and click zoom"
+                refreshActivity()
+                try await RecordingEffectsProcessor.process(
+                    recordingURL: asset.url,
+                    timeline: timeline,
+                    smoothsCursor: recordingUsesSmoothCursor,
+                    autoZoomsOnClicks: recordingUsesClickZoom
+                )
+                asset.refreshOwnedFileIdentities()
+                history.record(asset: asset, image: nil)
+                persistHistory()
+            }
+            pendingRecordingInteractionTimeline = nil
             var captionWarning: Error?
 
             if Preferences.shared.recordingGeneratesCaptions {
@@ -1419,12 +1622,15 @@ public final class AppCoordinator {
         recordingCompletionTask = Task { [weak self] in
             guard let self else { return }
             do {
+                let interaction = RecordingInteractionRecorder.shared.stop()
                 let url = AppPaths.uniqueURL(
                     in: AppPaths.inProgress,
                     name: "Paused Segment",
                     extension: "mp4"
                 )
                 let segment = try await RecordingService.shared.stop(destination: url)
+                RecordingPresentationOverlayController.shared.stop()
+                appendInteractionSegment(interaction, duration: segment.duration)
                 self.recordingSegments.append(segment)
                 self.completedRecordingDuration += segment.duration ?? 0
                 self.pausedRecordingConfiguration = configuration
@@ -1433,6 +1639,9 @@ public final class AppCoordinator {
                 self.recordingCompletionTask = nil
                 self.refreshActivity()
             } catch {
+                if RecordingService.shared.isRecording {
+                    RecordingInteractionRecorder.shared.start(configuration: configuration)
+                }
                 self.recordingCompletionTask = nil
                 self.present(error: error)
             }
@@ -1447,11 +1656,14 @@ public final class AppCoordinator {
         recordingStartTask = Task { [weak self] in
             guard let self else { return }
             do {
+                try await self.startRecordingPresentation(for: configuration)
                 try await RecordingService.shared.start(configuration)
+                RecordingInteractionRecorder.shared.start(configuration: configuration)
                 self.isRecordingPaused = false
                 self.recordingStartTask = nil
                 self.refreshActivity()
             } catch {
+                RecordingPresentationOverlayController.shared.stop()
                 self.recordingStartTask = nil
                 self.present(error: error)
             }
@@ -1460,8 +1672,16 @@ public final class AppCoordinator {
 
     private func finishRecordingSegments() async throws -> CaptureAsset {
         if RecordingService.shared.isRecording {
+            let interaction = RecordingInteractionRecorder.shared.stop()
             if recordingSegments.isEmpty {
-                return try await RecordingService.shared.stop()
+                let asset = try await RecordingService.shared.stop()
+                RecordingPresentationOverlayController.shared.stop()
+                appendInteractionSegment(interaction, duration: asset.duration)
+                pendingRecordingInteractionTimeline = RecordingInteractionTimeline.joined(
+                    recordingInteractionSegments
+                )
+                recordingInteractionSegments.removeAll()
+                return asset
             }
             let url = AppPaths.uniqueURL(
                 in: AppPaths.inProgress,
@@ -1469,6 +1689,8 @@ public final class AppCoordinator {
                 extension: "mp4"
             )
             let segment = try await RecordingService.shared.stop(destination: url)
+            RecordingPresentationOverlayController.shared.stop()
+            appendInteractionSegment(interaction, duration: segment.duration)
             recordingSegments.append(segment)
         }
         guard !recordingSegments.isEmpty else {
@@ -1494,6 +1716,10 @@ public final class AppCoordinator {
             try RecordingService.retireCommittedPausedSegments(urls)
         }
         let metadata = await VideoThumbnail.metadata(for: destination)
+        pendingRecordingInteractionTimeline = RecordingInteractionTimeline.joined(
+            recordingInteractionSegments
+        )
+        recordingInteractionSegments.removeAll()
         recordingSegments.removeAll()
         pausedRecordingConfiguration = nil
         isRecordingPaused = false
@@ -1506,6 +1732,17 @@ public final class AppCoordinator {
             duration: metadata?.duration,
             ownership: AppPaths.owns(destination) ? .managedTemporary : .userDocument
         )
+    }
+
+    private func appendInteractionSegment(
+        _ timeline: RecordingInteractionTimeline?,
+        duration: TimeInterval?
+    ) {
+        guard var timeline else { return }
+        if let duration, duration.isFinite, duration > 0 {
+            timeline.duration = duration
+        }
+        recordingInteractionSegments.append(timeline)
     }
 
     public func finishRecordingForTermination() async throws -> CaptureAsset? {
@@ -1540,6 +1777,8 @@ public final class AppCoordinator {
                     retainedURLs.append(retained)
                 }
             }
+            _ = RecordingInteractionRecorder.shared.stop()
+            RecordingPresentationOverlayController.shared.stop()
             for segment in self.recordingSegments where AppPaths.owns(segment.url) {
                 do {
                     try FileManager.default.trashItem(at: segment.url, resultingItemURL: nil)
@@ -1568,6 +1807,8 @@ public final class AppCoordinator {
                 }
             }
             self.recordingSegments.removeAll()
+            self.recordingInteractionSegments.removeAll()
+            self.pendingRecordingInteractionTimeline = nil
             self.pausedRecordingConfiguration = nil
             self.completedRecordingDuration = 0
             self.isRecordingPaused = false
@@ -1608,6 +1849,8 @@ public final class AppCoordinator {
         recoveryURL: URL?
     ) async {
         arbiter.isRecording = false
+        _ = RecordingInteractionRecorder.shared.stop()
+        RecordingPresentationOverlayController.shared.stop()
         // Recover this exact session. Picking the newest global orphan could
         // move an unrelated file left by an older crash.
         guard let recoveryURL,
@@ -1751,6 +1994,25 @@ public final class AppCoordinator {
         onOpenCapturePreview?(item)
         scheduleShelfDismissal()
     }
+
+    /// Brings the shelf back for captures that are still parked on it.
+    ///
+    /// Until this existed the shelf could only be reached in the seconds after
+    /// a capture: dismiss it, or let it time out, and the files were still
+    /// there with no way left to see them.
+    public func showShelf() {
+        guard !shelfItems.isEmpty else { return }
+        selectedShelfIndex = min(selectedShelfIndex, max(0, shelfItems.count - 1))
+        arbiter.hasResult = true
+        // Deliberately *not* on the dismissal timer: a shelf the user opened on
+        // purpose should stay until they close it, unlike one that appeared by
+        // itself after a capture.
+        shelfTimer?.invalidate()
+        refreshActivity()
+        windowController?.focusActivePanel()
+    }
+
+    public var canShowShelf: Bool { !shelfItems.isEmpty }
 
     /// Hides the shelf without discarding the capture.
     public func hideShelf() {
@@ -2431,6 +2693,21 @@ public final class AppCoordinator {
         }
     }
 
+    public func openRecordingExport(for asset: CaptureAsset) {
+        guard asset.kind == .recording, SafeAssetFile.isCurrentAndSafe(asset) else {
+            present(error: NotchShotError.exportFailed(
+                "That recording changed or is no longer safely readable"
+            ))
+            return
+        }
+        let session = RecordingExportSession(asset: asset)
+        session.onExported = { [weak self] exported in
+            self?.history.record(asset: exported, image: nil)
+            self?.persistHistory()
+        }
+        onOpenRecordingExport?(session)
+    }
+
     public func openInspector(for asset: CaptureAsset) {
         do {
             onOpenInspector?(try ImageInspectionSession(asset: asset))
@@ -2986,6 +3263,17 @@ public final class AppCoordinator {
         }
     }
 
+    public func openNetworkSettings() {
+        guard NetworkSettingsService.open() else {
+            present(error: NotchShotError.exportFailed("Network Settings could not be opened"))
+            return
+        }
+        context.dismissTransient()
+    }
+
+    /// Closes a context card that carries its own dismiss control.
+    public func dismissContextAlert() { context.dismissTransient() }
+
     public func refreshContextPreferences() { context.refreshPreferences() }
 
     // MARK: Clipboard
@@ -3000,6 +3288,11 @@ public final class AppCoordinator {
             clipboard.clear()
             clipboard.removeOrphanedImages()
         }
+    }
+
+    public func setCaptureSpotlightIndexEnabled(_ enabled: Bool) {
+        Preferences.shared.indexesCapturesInSpotlight = enabled
+        history.refreshSpotlightIndex()
     }
 
     /// Puts a stored clipping back on the pasteboard.

@@ -118,6 +118,21 @@ struct StitchingTests {
         #expect(abs(output.image.height - expected) <= 3)
     }
 
+    @Test("Horizontal frames produce the expected width and vertical seams")
+    func knownHorizontalScrollAmount() throws {
+        let step = 40
+        let width = 240
+        let list = (0 ..< 4).map { index in
+            TestImage.horizontalPage(width: width, height: 80, offset: index * step)
+        }
+        let output = try ScrollingStitcher.stitch(frames: list, axis: .horizontal)
+
+        #expect(abs(output.image.width - (width + step * 3)) <= 3)
+        #expect(output.image.height == 80)
+        #expect(output.seams.count == 3)
+        #expect(output.seams.allSatisfy { $0.axis == .horizontal })
+    }
+
     @Test("Seams from clean frames report high confidence")
     func confidence() throws {
         let output = try ScrollingStitcher.stitch(frames: frames(count: 3, step: 50))

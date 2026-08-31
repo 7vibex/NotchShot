@@ -341,6 +341,19 @@ struct NotchMetricsTests {
             mediaOptedIn: false,
             hasMediaContent: false
         ))
+        // A workspace-session resign precedes the real secure-lock signal and
+        // also occurs during Fast User Switching. It must not flash the locked
+        // media card on the user's ordinary desktop.
+        #expect(!LockedMediaPresentationPolicy.shouldShowPanel(
+            sessionIsActive: false,
+            screenIsLocked: false,
+            activity: .media,
+            mediaOptedIn: true,
+            hasMediaContent: true
+        ))
+        // The song opt-in shows the compact card, whatever the app was doing
+        // when the screen locked: a capture result from before the lock is not
+        // shown, but the track is.
         #expect(LockedMediaPresentationPolicy.shouldShowPanel(
             sessionIsActive: false,
             activity: .media,
@@ -353,6 +366,56 @@ struct NotchMetricsTests {
             mediaOptedIn: true,
             hasMediaContent: true
         ))
+        #expect(LockedMediaPresentationPolicy.content(
+            mediaOptedIn: true,
+            hasMediaContent: true,
+            activityStackOptedIn: false,
+            hasActivityContent: false
+        ) == .compactMedia)
+        #expect(LockedMediaPresentationPolicy.content(
+            mediaOptedIn: true,
+            hasMediaContent: true,
+            activityStackOptedIn: true,
+            hasActivityContent: false,
+            isPrimaryDisplay: false
+        ) == .none)
+        #expect(LockedMediaPresentationPolicy.content(
+            mediaOptedIn: true,
+            hasMediaContent: true,
+            activityStackOptedIn: true,
+            hasActivityContent: true,
+            isPrimaryDisplay: false
+        ) == .activityStack)
+        #expect(!LockedMediaPresentationPolicy.shouldShowPanel(
+            sessionIsActive: false,
+            activity: .media,
+            mediaOptedIn: true,
+            hasMediaContent: true,
+            isPrimaryDisplay: false
+        ))
+        #expect(LockedMediaPresentationPolicy.effectiveActivity(
+            sessionIsActive: false,
+            currentActivity: .media,
+            mediaOptedIn: true,
+            hasMediaContent: true,
+            isPrimaryDisplay: false
+        ) == .idle)
+        // With both opt-ins on and a track playing, the song card wins: it is
+        // what the user is looking for at a locked screen, and it is the one
+        // drawn where they are looking rather than in the notch band.
+        #expect(LockedMediaPresentationPolicy.content(
+            mediaOptedIn: true,
+            hasMediaContent: true,
+            activityStackOptedIn: true,
+            hasActivityContent: false
+        ) == .compactMedia)
+        // With nothing playing, the stack still owns the locked screen.
+        #expect(LockedMediaPresentationPolicy.content(
+            mediaOptedIn: true,
+            hasMediaContent: false,
+            activityStackOptedIn: true,
+            hasActivityContent: true
+        ) == .activityStack)
         #expect(!LockedMediaPresentationPolicy.shouldShowPanel(
             sessionIsActive: false,
             activity: .media,
@@ -397,14 +460,128 @@ struct NotchMetricsTests {
             mediaOptedIn: false,
             activityStackOptedIn: true
         ))
+        #expect(LockedMediaPresentationPolicy.canBecomeVisibleWithoutLogin(
+            mediaOptedIn: true,
+            activityStackOptedIn: false
+        ))
+        // Neither opt-in ever makes the locked panel interactive.
+        #expect(!LockedMediaPresentationPolicy.canBecomeVisibleWithoutLogin(
+            mediaOptedIn: false,
+            activityStackOptedIn: false
+        ))
         #expect(!LockedMediaPresentationPolicy.acceptsInput(sessionIsActive: false))
         #expect(LockedMediaPresentationPolicy.acceptsInput(sessionIsActive: true))
         #expect(NotchPanel.level(sessionIsActive: true) == NotchPanel.notchLevel)
         #expect(NotchPanel.level(sessionIsActive: false) == NotchPanel.lockedMediaLevel)
-        #expect(NotchPanel.lockedMediaLevel.rawValue > NSWindow.Level.screenSaver.rawValue)
-        #expect(NotchPanel.lockedMediaLevel.rawValue < Int(CGWindowLevelForKey(
-            .assistiveTechHighWindow
-        )))
+        // Measured, not assumed: loginwindow draws its shield at layers 2001,
+        // 2003 and 2004 while the screen is locked, so the previous ceiling —
+        // below the 1500 assistive-technology band — put the card underneath
+        // the lock screen and nothing was ever visible.
+        #expect(NotchPanel.lockedMediaLevel.rawValue > Int(CGShieldingWindowLevel()))
+        #expect(NotchPanel.lockedMediaLevel.rawValue > 2004)
+        // Still below the pointer and the reserved ceiling: the card is
+        // display-only and must never sit on top of the cursor.
+        #expect(NotchPanel.lockedMediaLevel.rawValue < Int(CGWindowLevelForKey(.cursorWindow)))
+        #expect(NotchPanel.lockedMediaLevel.rawValue < Int(CGWindowLevelForKey(.maximumWindow)))
+    }
+
+    @Test("The loginwindow lock signal is distinct from a user-session switch")
+    func screenLockSignalMapping() {
+        #expect(ScreenLockSignal.sessionIsActive(
+            for: ScreenLockSignal.lockedNotification
+        ) == false)
+        #expect(ScreenLockSignal.sessionIsActive(
+            for: ScreenLockSignal.unlockedNotification
+        ) == true)
+        #expect(ScreenLockSignal.sessionIsActive(
+            for: Notification.Name("unrelated")
+        ) == nil)
+    }
+
+    @Test("The experimental bridge creates one screen-lock Space and moves each window once")
+    @MainActor
+    func lockScreenSpaceBridgeSequence() {
+        var calls: [String] = []
+        let bridge = LockScreenSpaceBridge(
+            mainConnection: {
+                calls.append("connect")
+                return 41
+            },
+            createSpace: { connection, type, options in
+                calls.append("create:\(connection):\(type):\(options)")
+                return 73
+            },
+            setAbsoluteLevel: { connection, space, level in
+                calls.append("level:\(connection):\(space):\(level)")
+                return 0
+            },
+            showSpaces: { connection, spaces in
+                let ids = spaces as NSArray
+                calls.append("show:\(connection):\(ids.firstObject ?? "missing")")
+                return 0
+            },
+            moveWindows: { connection, space, windows, options in
+                let ids = windows as NSArray
+                calls.append("move:\(connection):\(space):\(ids.firstObject ?? "missing"):\(options)")
+                return 0
+            }
+        )
+
+        #expect(bridge.attach(windowNumber: 901) == .attached(spaceID: 73))
+        #expect(bridge.attach(windowNumber: 901) == .alreadyAttached(spaceID: 73))
+        #expect(bridge.attach(windowNumber: 902) == .attached(spaceID: 73))
+        #expect(bridge.hasAttachedWindows)
+        #expect(calls == [
+            "connect",
+            "create:41:\(LockScreenSpaceBridge.sharedSpaceType):\(LockScreenSpaceBridge.sharedSpaceOptions)",
+            "level:41:73:\(LockScreenSpaceBridge.screenLockAbsoluteLevel)",
+            "show:41:73",
+            "move:41:73:901:\(LockScreenSpaceBridge.moveWindowOptions)",
+            "move:41:73:902:\(LockScreenSpaceBridge.moveWindowOptions)",
+        ])
+
+        bridge.resetAttachedWindows()
+        #expect(!bridge.hasAttachedWindows)
+    }
+
+    @Test("Missing or failed private APIs preserve the notification fallback")
+    @MainActor
+    func lockScreenSpaceBridgeFailsClosed() {
+        let unavailable = LockScreenSpaceBridge(
+            mainConnection: nil,
+            createSpace: nil,
+            setAbsoluteLevel: nil,
+            showSpaces: nil,
+            moveWindows: nil
+        )
+        #expect(unavailable.attach(windowNumber: 1) == .unavailable)
+
+        var moveAttempts = 0
+        let failed = LockScreenSpaceBridge(
+            mainConnection: { 11 },
+            createSpace: { _, _, _ in 22 },
+            setAbsoluteLevel: { _, _, _ in 0 },
+            showSpaces: { _, _ in 0 },
+            moveWindows: { _, _, _, _ in
+                moveAttempts += 1
+                return -50
+            }
+        )
+        let moveFailure = LockScreenSpaceBridge.AttachmentResult.failed(
+            operation: "SLSSpaceAddWindowsAndRemoveFromSpaces",
+            code: -50
+        )
+        #expect(failed.attach(windowNumber: 7) == moveFailure)
+        #expect(failed.attach(windowNumber: 7) == moveFailure)
+        #expect(moveAttempts == 1)
+        #expect(!failed.hasAttachedWindows)
+        failed.resetAttachedWindows()
+        #expect(failed.attach(windowNumber: 7) == moveFailure)
+        #expect(moveAttempts == 2)
+        #expect(failed.attach(windowNumber: 0) == .failed(
+            operation: "windowNumber",
+            code: -1
+        ))
     }
 
     @Test("Only the physical cutout needs AppKit click bridging")
@@ -630,11 +807,42 @@ struct NotchMetricsTests {
             resultCount: 0
         )
         #expect(mediaPeek.contentTopInset == 37)
-        // 122pt of content plus the 37pt cutout band. The expanded player now
-        // includes elapsed/total time and the public Core Audio output picker.
-        #expect(mediaPeek.size.height == 159)
+        // 140pt of content plus the 37pt cutout band. The expanded player
+        // stacks artwork and titles, the scrubber with a time either side, and
+        // a full-width transport bar.
+        #expect(mediaPeek.size.height == 177)
         // Whatever the content height, it must clear the camera.
-        #expect(mediaPeek.size.height - mediaPeek.contentTopInset == 122)
+        #expect(mediaPeek.size.height - mediaPeek.contentTopInset == 140)
+
+        // Opening a list — audio routes or Playing Next — grows the same
+        // island rather than opening a popover beside it.
+        let mediaPeekWithRoutes = NotchLayout.layout(
+            for: .media,
+            metrics: metrics,
+            isPeeking: true,
+            resultCount: 0,
+            mediaPanelRows: 3
+        )
+        #expect(mediaPeekWithRoutes.size.height > mediaPeek.size.height)
+        #expect(mediaPeekWithRoutes.size.width == mediaPeek.size.width)
+
+        // A long device list is capped so the player stops growing instead of
+        // hanging a window-sized list off the notch.
+        let cappedRoutes = NotchLayout.layout(
+            for: .media,
+            metrics: metrics,
+            isPeeking: true,
+            resultCount: 0,
+            mediaPanelRows: 12
+        )
+        let fourRoutes = NotchLayout.layout(
+            for: .media,
+            metrics: metrics,
+            isPeeking: true,
+            resultCount: 0,
+            mediaPanelRows: 4
+        )
+        #expect(cappedRoutes.size.height == fourRoutes.size.height)
 
         let compactMedia = NotchLayout.layout(
             for: .media,
@@ -682,5 +890,134 @@ struct NotchMetricsTests {
         #expect(fromHeights == 96)
         // The notch itself is 32pt here, so the correct value stays close to it.
         #expect(abs(fromTops - 32) <= 2)
+    }
+}
+
+@Suite("Locked card placement")
+struct LockedCardGeometryTests {
+
+    private let screen = CGRect(x: 0, y: 0, width: 1512, height: 982)
+
+    @Test("The card is compact and sits above the unlock controls")
+    func sitsInTheLowerMiddle() {
+        let frame = LockedCardGeometry.panelFrame(in: screen)
+        let card = LockedCardGeometry.cardSize(in: screen)
+        #expect(card == LockedCardGeometry.preferredCardSize)
+        #expect(card.width == 310)
+        #expect(card.height == 153)
+
+        let cocoaCenterFromBottom = frame.midY - screen.minY
+        #expect(abs(
+            cocoaCenterFromBottom
+                - screen.height * LockedCardGeometry.verticalCenterFraction
+        ) < 0.001)
+
+        // Convert AppKit's bottom-origin result to the top-origin screenshot
+        // coordinates used for the reference comparison.
+        let visualCenterFromTop = screen.height - cocoaCenterFromBottom
+        let visualTop = visualCenterFromTop - card.height / 2
+        let visualBottom = visualCenterFromTop + card.height / 2
+        #expect(visualTop > screen.height * 0.62)
+        #expect(visualBottom > screen.height * 0.78)
+        #expect(visualBottom < screen.height * 0.84)
+        #expect(frame.midX == screen.midX)
+        #expect(frame.maxY < screen.maxY)
+    }
+
+    @Test("A short display keeps the whole card on screen")
+    func clampsToShortDisplays() {
+        for height in [600.0, 800.0, 982.0, 1440.0] {
+            let display = CGRect(x: 0, y: 0, width: 1440, height: height)
+            let frame = LockedCardGeometry.panelFrame(in: display)
+            #expect(frame.minY >= display.minY)
+            #expect(frame.maxY <= display.maxY)
+        }
+    }
+
+    @Test("The panel leaves room for the card's shadow")
+    func panelExceedsTheCard() {
+        let frame = LockedCardGeometry.panelFrame(in: screen)
+        let card = LockedCardGeometry.cardSize(in: screen)
+        #expect(frame.width > card.width)
+        #expect(frame.height > card.height)
+    }
+
+    @Test("A narrow display shrinks the card without clipping it")
+    func shrinksOnNarrowDisplays() {
+        let narrow = CGRect(x: 0, y: 0, width: 360, height: 600)
+        let card = LockedCardGeometry.cardSize(in: narrow)
+        let frame = LockedCardGeometry.panelFrame(in: narrow)
+        #expect(card.width == narrow.width - LockedCardGeometry.padding * 2)
+        #expect(narrow.contains(frame))
+    }
+
+    @Test("An external display places the card on that screen, not the main one")
+    func followsTheScreenItIsGiven() {
+        let external = CGRect(x: 1512, y: 0, width: 2560, height: 1440)
+        let frame = LockedCardGeometry.panelFrame(in: external)
+        #expect(frame.midX == external.midX)
+        #expect(external.contains(frame))
+    }
+}
+
+@Suite("Accessory card layout")
+struct AudioAccessoryCardLayoutTests {
+
+    private let metrics = NotchMetrics(
+        screenFrame: CGRect(x: 0, y: 0, width: 1512, height: 982),
+        hasPhysicalNotch: true,
+        notchSize: CGSize(width: 250, height: 37),
+        menuBarHeight: 37
+    )
+
+    private func layout(for snapshot: ContextSnapshot) -> NotchLayout {
+        NotchLayout.layout(
+            for: .context(snapshot),
+            metrics: metrics,
+            isPeeking: false,
+            resultCount: 0
+        )
+    }
+
+    @Test("An accessory card gets a card, not the compact wings")
+    func accessoryGetsACard() {
+        let connected = ContextSnapshot(
+            kind: .audioRoute,
+            title: "Audio Connected",
+            subtitle: "Test AirPods Pro",
+            metric: "Connected",
+            accessory: AccessoryBattery(name: "Test AirPods Pro", left: 100, right: 95, enclosure: 15)
+        )
+        let card = layout(for: connected)
+        // The compact context strip is the notch plus two 75pt wings; the card
+        // has to be wider than that to hold artwork, a name and three levels.
+        #expect(card.size.width > metrics.notchSize.width + NotchLayout.compactContextWing * 2)
+        #expect(card.size.height - card.contentTopInset == 78)
+    }
+
+    @Test("A card with no battery is still a card, not a collapsed strip")
+    func silentAccessoryKeepsItsCard() {
+        let disconnected = ContextSnapshot(
+            kind: .audioRoute,
+            title: "Audio Disconnected",
+            subtitle: "Test AirPods Pro",
+            metric: "Disconnected"
+        )
+        #expect(layout(for: disconnected).size.height - layout(for: disconnected).contentTopInset == 78)
+    }
+
+    @Test("Other passive contexts keep the compact strip")
+    func otherContextsAreUnchanged() {
+        let timer = ContextSnapshot(kind: .timer, title: "Focus", metric: "24:59")
+        let strip = layout(for: timer)
+        #expect(strip.size.width == metrics.notchSize.width + NotchLayout.compactContextWing * 2)
+    }
+
+    @Test("Low levels are the ones that get the warning colour")
+    func batteryTintTracksTheLevel() {
+        #expect(AccessoryBatteryPolicy.tint(forPercent: 15) == .red)
+        #expect(AccessoryBatteryPolicy.tint(forPercent: 20) == .red)
+        #expect(AccessoryBatteryPolicy.tint(forPercent: 45) == .orange)
+        #expect(AccessoryBatteryPolicy.tint(forPercent: 100) == .green)
     }
 }

@@ -13,13 +13,22 @@ enum LockedMediaPresentationPolicy {
         mediaOptedIn: Bool,
         hasMediaContent: Bool,
         activityStackOptedIn: Bool,
-        hasActivityContent: Bool
+        hasActivityContent: Bool,
+        isPrimaryDisplay: Bool = true
     ) -> Content {
-        if activityStackOptedIn, hasMediaContent || hasActivityContent {
-            return .activityStack
-        }
-        if mediaOptedIn, hasMediaContent {
+        // A playing track wins over the stack. The song card is the one the
+        // user is looking for at a locked screen, and the stack renders in the
+        // notch band at the top of the display where it went unnoticed; the
+        // stack still owns the screen whenever there is no track to show.
+        if mediaOptedIn, hasMediaContent, isPrimaryDisplay {
             return .compactMedia
+        }
+        // Activity cards may still be useful on another display, but the song
+        // itself belongs only on the configured Main Display. Media alone must
+        // never create an external stack containing a second player.
+        if activityStackOptedIn,
+           hasActivityContent || (hasMediaContent && isPrimaryDisplay) {
+            return .activityStack
         }
         return .none
     }
@@ -30,35 +39,48 @@ enum LockedMediaPresentationPolicy {
         mediaOptedIn: Bool,
         hasMediaContent: Bool,
         activityStackOptedIn: Bool = false,
-        hasActivityContent: Bool = false
+        hasActivityContent: Bool = false,
+        isPrimaryDisplay: Bool = true
     ) -> NotchActivity {
         guard !sessionIsActive else { return currentActivity }
         return content(
             mediaOptedIn: mediaOptedIn,
             hasMediaContent: hasMediaContent,
             activityStackOptedIn: activityStackOptedIn,
-            hasActivityContent: hasActivityContent
+            hasActivityContent: hasActivityContent,
+            isPrimaryDisplay: isPrimaryDisplay
         ) == .none ? .idle : .media
     }
 
     static func shouldShowPanel(
         sessionIsActive: Bool,
+        screenIsLocked: Bool = true,
         activity: NotchActivity,
         mediaOptedIn: Bool,
         hasMediaContent: Bool,
         activityStackOptedIn: Bool = false,
-        hasActivityContent: Bool = false
+        hasActivityContent: Bool = false,
+        isPrimaryDisplay: Bool = true
     ) -> Bool {
-        sessionIsActive || effectiveActivity(
+        if sessionIsActive { return true }
+        // `sessionDidResignActive` arrives before loginwindow publishes the
+        // secure-lock signal (and also covers Fast User Switching). Showing the
+        // card in that gap flashes the Lock Screen layout on the ordinary
+        // desktop. Only the narrower secure-lock state may reveal it.
+        guard screenIsLocked else { return false }
+        return effectiveActivity(
             sessionIsActive: false,
             currentActivity: activity,
             mediaOptedIn: mediaOptedIn,
             hasMediaContent: hasMediaContent,
             activityStackOptedIn: activityStackOptedIn,
-            hasActivityContent: hasActivityContent
+            hasActivityContent: hasActivityContent,
+            isPrimaryDisplay: isPrimaryDisplay
         ) == .media
     }
 
+    /// Either opt-in permits the panel to draw over loginwindow. Neither one
+    /// makes it interactive: `acceptsInput` stays false for a locked session.
     static func canBecomeVisibleWithoutLogin(
         mediaOptedIn: Bool,
         activityStackOptedIn: Bool
@@ -119,8 +141,17 @@ public final class NotchWindowController {
     private var mouseMonitors: [Any] = []
     private var applicationObservers: [NSObjectProtocol] = []
     private var workspaceObservers: [NSObjectProtocol] = []
+    private var distributedObservers: [NSObjectProtocol] = []
     private var rebuildWorkItem: DispatchWorkItem?
     private var presenceTimer: Timer?
+    /// Re-asserts the locked card's level and ordering while the shield is up.
+    ///
+    /// loginwindow raises its shield *after* it posts `com.apple.screenIsLocked`,
+    /// and it re-orders the display when it redraws — a wake, a failed unlock,
+    /// a second display coming back. A card ordered once at the moment of the
+    /// notification can therefore end up behind a shield that appeared after
+    /// it, which looks exactly like the card never being drawn at all.
+    private var lockedPresenceTimer: Timer?
     /// Cadence the live timer was created with, so a tick that changes nothing
     /// does not tear the timer down and build it again.
     private var presenceTimerInterval: TimeInterval?
@@ -128,6 +159,11 @@ public final class NotchWindowController {
     /// whether that panel is currently swallowing mouse events.
     private var isPointerOverIsland = false
     private var isSessionActive = true
+    /// Unlike a workspace resign (which also covers Fast User Switching), this
+    /// is true only after loginwindow publishes its secure-lock signal.
+    private var isScreenLocked = false
+
+    private let lockScreenSpace = LockScreenSpaceBridge.shared
 
     private let makeContent: (NotchDisplayContext) -> AnyView
 
@@ -171,6 +207,7 @@ public final class NotchWindowController {
     private var hasStack = false
     private var hasMediaContent = false
     private var hasLockedActivityContent = false
+    private var mediaPanelRowCount = 0
 
     public init(makeContent: @escaping (NotchDisplayContext) -> AnyView) {
         self.makeContent = makeContent
@@ -190,6 +227,8 @@ public final class NotchWindowController {
         presenceTimer?.invalidate()
         presenceTimer = nil
         presenceTimerInterval = nil
+        lockedPresenceTimer?.invalidate()
+        lockedPresenceTimer = nil
         for monitor in mouseMonitors { NSEvent.removeMonitor(monitor) }
         mouseMonitors.removeAll()
         for observer in applicationObservers {
@@ -200,11 +239,17 @@ public final class NotchWindowController {
             NSWorkspace.shared.notificationCenter.removeObserver(observer)
         }
         workspaceObservers.removeAll()
+        for observer in distributedObservers {
+            DistributedNotificationCenter.default().removeObserver(observer)
+        }
+        distributedObservers.removeAll()
         for entry in entries.values {
             WindowExclusionRegistry.shared.unregister(entry.panel)
             entry.panel.orderOut(nil)
         }
         entries.removeAll()
+        lockScreenSpace.resetAttachedWindows()
+        LockedMediaNotificationController.shared.setCustomPresentationAvailable(false)
         onPanelAvailabilityChange?(false)
     }
 
@@ -240,8 +285,39 @@ public final class NotchWindowController {
             object: nil,
             queue: .main
         ) { [weak self] _ in
-            MainActor.assumeIsolated { self?.setSessionActive(true) }
+            MainActor.assumeIsolated { self?.setScreenLocked(false) }
         })
+
+        let distributed = DistributedNotificationCenter.default()
+        for name in [ScreenLockSignal.lockedNotification, ScreenLockSignal.unlockedNotification] {
+            distributedObservers.append(distributed.addObserver(
+                forName: name,
+                object: nil,
+                queue: .main
+            ) { [weak self] notification in
+                let name = notification.name
+                MainActor.assumeIsolated {
+                    guard let active = ScreenLockSignal.sessionIsActive(for: name) else {
+                        return
+                    }
+                    self?.setScreenLocked(!active)
+                }
+            })
+        }
+    }
+
+    private func setScreenLocked(_ locked: Bool) {
+        let lockStateChanged = locked != isScreenLocked
+        isScreenLocked = locked
+        let sessionStateChanged = (isSessionActive == locked)
+        setSessionActive(!locked)
+        // The workspace session normally resigns just before the narrower
+        // secure-lock notification. In that common ordering the active state
+        // is already false, so the lock event still has to attach and redraw.
+        if lockStateChanged, !sessionStateChanged {
+            if !locked, rebuildPanelsAfterLockSpaceIfNeeded() { return }
+            applyLayout()
+        }
     }
 
     private func setSessionActive(_ active: Bool) {
@@ -256,8 +332,33 @@ public final class NotchWindowController {
             isPeeking = false
             onHoverChange?(nil)
         }
+        if active, rebuildPanelsAfterLockSpaceIfNeeded() { return }
         applyLayout()
         if active { scheduleRebuild() }
+    }
+
+    /// SkyLight moves an attached panel out of its ordinary user Spaces. A
+    /// fresh AppKit panel after unlock is both safer and less dependent on
+    /// undocumented inverse flags than trying to move that window back.
+    @discardableResult
+    private func rebuildPanelsAfterLockSpaceIfNeeded() -> Bool {
+        guard lockScreenSpace.hasAttachedWindows else { return false }
+        for entry in entries.values {
+            WindowExclusionRegistry.shared.unregister(entry.panel)
+            entry.panel.orderOut(nil)
+            // An SLS-attached surface can remain in the private Space even
+            // after `orderOut`. Destroy the old WindowServer surface before
+            // rebuilding so the next lock cannot resurrect a stale card on a
+            // previous display or at its previous frame.
+            entry.panel.contentView = nil
+            entry.panel.close()
+        }
+        entries.removeAll()
+        lockScreenSpace.resetAttachedWindows()
+        LockedMediaNotificationController.shared.setCustomPresentationAvailable(false)
+        rebuildPanels()
+        Log.window.notice("Rebuilt notch panels after leaving the Lock Screen Space")
+        return true
     }
 
     /// Screen-parameter notifications arrive in bursts while a display wakes or
@@ -290,7 +391,11 @@ public final class NotchWindowController {
         }
 
         let placement = Preferences.shared.notchDisplayPlacement
-        let mainDisplayID = NSScreen.main.flatMap { ScreenLookup.displayID(for: $0) }
+        // `NSScreen.main` follows the key window and can change as loginwindow
+        // takes focus. The configured Main Display is the stable CoreGraphics
+        // display with the menu bar; using it prevents the song card from
+        // jumping to an external monitor during the lock transition.
+        let mainDisplayID = CGMainDisplayID()
 
         var seen = Set<CGDirectDisplayID>()
         for screen in NSScreen.screens {
@@ -313,7 +418,7 @@ public final class NotchWindowController {
             if var entry = entries[displayID] {
                 entry.context = context
                 entry.hosting.rootView = makeContent(context)
-                position(panel: entry.panel, for: metrics)
+                position(panel: entry.panel, for: context)
                 entries[displayID] = entry
             } else {
                 let panel = NotchPanel(contentRect: panelFrame(for: metrics))
@@ -323,7 +428,7 @@ public final class NotchWindowController {
                 hosting.autoresizingMask = [.width, .height]
                 hosting.frame = CGRect(origin: .zero, size: panel.frame.size)
                 panel.contentView = hosting
-                applyVisibilityPolicy(to: panel)
+                applyVisibilityPolicy(to: panel, context: context)
                 WindowExclusionRegistry.shared.register(panel)
                 entries[displayID] = PanelEntry(panel: panel, hosting: hosting, context: context)
                 Log.window.info("Created notch panel for display \(displayID), notch: \(metrics.hasPhysicalNotch)")
@@ -364,8 +469,35 @@ public final class NotchWindowController {
         )
     }
 
-    private func position(panel: NotchPanel, for metrics: NotchMetrics) {
-        let frame = panelFrame(for: metrics)
+    /// The frame this panel should occupy right now.
+    ///
+    /// While locked with the song card showing, that is not the notch: the card
+    /// moves into the lower-middle part of the screen, clear of the password field.
+    private func targetFrame(for context: NotchDisplayContext) -> CGRect {
+        // Only the song card moves. The activity stack is laid out against the
+        // notch band and would clip in the narrower card frame.
+        guard isScreenLocked,
+              !isSessionActive,
+              lockedContent(for: context) == .compactMedia else {
+            return panelFrame(for: context.metrics)
+        }
+        return LockedCardGeometry.panelFrame(in: context.metrics.screenFrame)
+    }
+
+    private func lockedContent(
+        for context: NotchDisplayContext
+    ) -> LockedMediaPresentationPolicy.Content {
+        LockedMediaPresentationPolicy.content(
+            mediaOptedIn: Preferences.shared.showsMediaWhileLocked,
+            hasMediaContent: hasMediaContent,
+            activityStackOptedIn: Preferences.shared.showsActivityStackWhileLocked,
+            hasActivityContent: hasLockedActivityContent,
+            isPrimaryDisplay: context.isPrimary
+        )
+    }
+
+    private func position(panel: NotchPanel, for context: NotchDisplayContext) {
+        let frame = targetFrame(for: context)
         if panel.frame != frame {
             panel.setFrame(frame, display: true)
             panel.contentView?.frame = CGRect(origin: .zero, size: frame.size)
@@ -373,7 +505,7 @@ public final class NotchWindowController {
         // Re-assert the level: a Space change or fullscreen transition can drop
         // a panel behind the menu bar.
         panel.level = NotchPanel.notchLevel
-        applyVisibilityPolicy(to: panel)
+        applyVisibilityPolicy(to: panel, context: context)
     }
 
     // MARK: Layout / hit testing
@@ -384,7 +516,8 @@ public final class NotchWindowController {
         resultCount: Int,
         hasStack: Bool,
         hasMediaContent: Bool,
-        hasLockedActivityContent: Bool
+        hasLockedActivityContent: Bool,
+        mediaPanelRowCount: Int = 0
     ) {
         self.currentActivity = activity
         self.isPeeking = isPeeking
@@ -392,6 +525,7 @@ public final class NotchWindowController {
         self.hasStack = hasStack
         self.hasMediaContent = hasMediaContent
         self.hasLockedActivityContent = hasLockedActivityContent
+        self.mediaPanelRowCount = mediaPanelRowCount
         applyLayout()
     }
 
@@ -402,7 +536,8 @@ public final class NotchWindowController {
             metrics: context.metrics,
             isPeeking: isPeeking && context.displayID == activeDisplayID,
             resultCount: resultCount,
-            hasStack: hasStack
+            hasStack: hasStack,
+            mediaPanelRows: mediaPanelRowCount
         )
     }
 
@@ -419,14 +554,34 @@ public final class NotchWindowController {
                 entry.panel.canBecomeVisibleWithoutLogin = allowsLockedPresentation
                 entry.panel.setInteractiveRectFromScreenRect(.zero)
                 entry.panel.ignoresMouseEvents = true
-                applyVisibilityPolicy(to: entry.panel)
+                applyFrame(to: entry)
+                if isScreenLocked, shouldShowLockedPanel(on: entry.context) {
+                    attachToLockScreenSpace(
+                        entry.panel,
+                        context: entry.context,
+                        reportFailure: true
+                    )
+                }
+                applyVisibilityPolicy(to: entry.panel, context: entry.context)
+            }
+            // Marked public: this is the line that says whether the card was
+            // even asked for, and it is unreadable in a bug report otherwise.
+            Log.window.notice("Locked presentation: show=\(self.shouldShowLockedPanel, privacy: .public), songOptIn=\(Preferences.shared.showsMediaWhileLocked, privacy: .public), stackOptIn=\(Preferences.shared.showsActivityStackWhileLocked, privacy: .public), hasMedia=\(self.hasMediaContent, privacy: .public), level=\(NotchPanel.lockedMediaLevel.rawValue, privacy: .public)")
+            if isScreenLocked {
+                startLockedPresenceTimer()
+            } else {
+                stopLockedPresenceTimer()
+                LockedMediaNotificationController.shared
+                    .setCustomPresentationAvailable(false)
             }
             return
         }
+        stopLockedPresenceTimer()
         for entry in entries.values {
             entry.panel.level = NotchPanel.level(sessionIsActive: true)
             entry.panel.canBecomeVisibleWithoutLogin = allowsLockedPresentation
-            applyVisibilityPolicy(to: entry.panel)
+            applyFrame(to: entry)
+            applyVisibilityPolicy(to: entry.panel, context: entry.context)
             entry.panel.setInteractiveRectFromScreenRect(
                 interactiveRect(for: entry.context)
             )
@@ -508,7 +663,8 @@ public final class NotchWindowController {
                 mediaOptedIn: Preferences.shared.showsMediaWhileLocked,
                 hasMediaContent: hasMediaContent,
                 activityStackOptedIn: Preferences.shared.showsActivityStackWhileLocked,
-                hasActivityContent: hasLockedActivityContent
+                hasActivityContent: hasLockedActivityContent,
+                isPrimaryDisplay: context.isPrimary
             )
         }
         if case .dictation(let snap) = currentActivity, let did = snap.displayID {
@@ -754,7 +910,7 @@ public final class NotchWindowController {
     public func reassertPanels() {
         for entry in entries.values {
             entry.panel.level = NotchPanel.notchLevel
-            position(panel: entry.panel, for: entry.context.metrics)
+            position(panel: entry.panel, for: entry.context)
         }
         applyLayout()
     }
@@ -770,14 +926,123 @@ public final class NotchWindowController {
 
     public func refreshLockedMediaPresentation() { refreshLockedPresentation() }
 
-    private func applyVisibilityPolicy(to panel: NotchPanel) {
-        if LockedMediaPresentationPolicy.shouldShowPanel(
+    /// Whether the locked card is currently wanted on screen.
+    private var shouldShowLockedPanel: Bool {
+        entries.values.contains { shouldShowLockedPanel(on: $0.context) }
+    }
+
+    private func shouldShowLockedPanel(on context: NotchDisplayContext) -> Bool {
+        LockedMediaPresentationPolicy.shouldShowPanel(
             sessionIsActive: isSessionActive,
+            screenIsLocked: isScreenLocked,
             activity: currentActivity,
             mediaOptedIn: Preferences.shared.showsMediaWhileLocked,
             hasMediaContent: hasMediaContent,
             activityStackOptedIn: Preferences.shared.showsActivityStackWhileLocked,
-            hasActivityContent: hasLockedActivityContent
+            hasActivityContent: hasLockedActivityContent,
+            isPrimaryDisplay: context.isPrimary
+        )
+    }
+
+    private func applyFrame(to entry: PanelEntry) {
+        let frame = targetFrame(for: entry.context)
+        guard entry.panel.frame != frame else { return }
+        entry.panel.setFrame(frame, display: true)
+        entry.panel.contentView?.frame = CGRect(origin: .zero, size: frame.size)
+    }
+
+    private func startLockedPresenceTimer() {
+        guard lockedPresenceTimer == nil else { return }
+        let timer = Timer(timeInterval: 1.0, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self, !self.isSessionActive else { return }
+                guard self.shouldShowLockedPanel else { return }
+                for entry in self.entries.values {
+                    guard self.shouldShowLockedPanel(on: entry.context) else {
+                        entry.panel.orderOut(nil)
+                        continue
+                    }
+                    entry.panel.level = NotchPanel.lockedMediaLevel
+                    self.applyFrame(to: entry)
+                    if self.isScreenLocked {
+                        self.attachToLockScreenSpace(
+                            entry.panel,
+                            context: entry.context,
+                            reportFailure: false
+                        )
+                    }
+                    entry.panel.orderFrontRegardless()
+                }
+            }
+        }
+        // Common mode so the tick survives a tracking loop, and tolerant so a
+        // locked, throttled app never stacks up missed fires.
+        timer.tolerance = 0.4
+        RunLoop.main.add(timer, forMode: .common)
+        lockedPresenceTimer = timer
+    }
+
+    private func attachToLockScreenSpace(
+        _ panel: NotchPanel,
+        context: NotchDisplayContext,
+        reportFailure: Bool
+    ) {
+        let isPrimaryMediaCard = lockedContent(for: context) == .compactMedia
+        switch lockScreenSpace.attach(panel) {
+        case .attached(let spaceID):
+            if isPrimaryMediaCard {
+                LockedMediaNotificationController.shared
+                    .setCustomPresentationAvailable(true)
+            }
+            Log.window.notice(
+                "Attached Lock Screen card window \(panel.windowNumber, privacy: .public) to Space \(spaceID, privacy: .public)"
+            )
+        case .alreadyAttached:
+            if isPrimaryMediaCard {
+                LockedMediaNotificationController.shared
+                    .setCustomPresentationAvailable(true)
+            }
+        case .unavailable:
+            if isPrimaryMediaCard {
+                LockedMediaNotificationController.shared
+                    .setCustomPresentationAvailable(false)
+            }
+            if reportFailure {
+                Log.window.error(
+                    "Lock Screen Space APIs are unavailable; using the system notification fallback"
+                )
+            }
+        case .failed(let operation, let code):
+            if isPrimaryMediaCard {
+                LockedMediaNotificationController.shared
+                    .setCustomPresentationAvailable(false)
+            }
+            if reportFailure {
+                Log.window.error(
+                    "Lock Screen Space operation \(operation, privacy: .public) failed with code \(code, privacy: .public); using the system notification fallback"
+                )
+            }
+        }
+    }
+
+    private func stopLockedPresenceTimer() {
+        lockedPresenceTimer?.invalidate()
+        lockedPresenceTimer = nil
+    }
+
+    private func applyVisibilityPolicy(
+        to panel: NotchPanel,
+        context: NotchDisplayContext
+    ) {
+        if LockedMediaPresentationPolicy.shouldShowPanel(
+            sessionIsActive: isSessionActive,
+            screenIsLocked: isScreenLocked,
+            activity: currentActivity,
+            mediaOptedIn: Preferences.shared.showsMediaWhileLocked,
+            hasMediaContent: hasMediaContent,
+            activityStackOptedIn: Preferences.shared.showsActivityStackWhileLocked,
+            hasActivityContent: hasLockedActivityContent,
+            isPrimaryDisplay: context.isPrimary
         ) {
             panel.orderFrontRegardless()
         } else {

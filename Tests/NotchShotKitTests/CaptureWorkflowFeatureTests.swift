@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import Testing
 @testable import NotchShotKit
@@ -339,6 +340,36 @@ struct FinderShelfServiceTests {
 
 @Suite("Recording presentation")
 struct RecordingPresentationTests {
+    @Test("Keystroke overlay reveals shortcuts but never ordinary typing")
+    func keystrokePrivacy() throws {
+        let plain = try #require(NSEvent.keyEvent(
+            with: .keyDown,
+            location: .zero,
+            modifierFlags: [],
+            timestamp: 0,
+            windowNumber: 0,
+            context: nil,
+            characters: "p",
+            charactersIgnoringModifiers: "p",
+            isARepeat: false,
+            keyCode: 35
+        ))
+        let shortcut = try #require(NSEvent.keyEvent(
+            with: .keyDown,
+            location: .zero,
+            modifierFlags: [.command],
+            timestamp: 0,
+            windowNumber: 0,
+            context: nil,
+            characters: "p",
+            charactersIgnoringModifiers: "p",
+            isARepeat: false,
+            keyCode: 35
+        ))
+        #expect(RecordingPresentationOverlayController.safeDescription(for: plain) == nil)
+        #expect(RecordingPresentationOverlayController.safeDescription(for: shortcut) == "⌘P")
+    }
+
     @Test("Background framing keeps content inside the selected output size")
     func backgroundFrame() {
         let configuration = RecordingConfiguration(

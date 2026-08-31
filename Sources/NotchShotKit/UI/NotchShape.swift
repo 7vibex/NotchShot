@@ -306,23 +306,31 @@ struct NotchIconButton: View {
     @State private var isHovered = false
 
     var body: some View {
+        // Sized, not transformed. The island's content is wrapped in a glass
+        // effect container, which draws each glass shape from the geometry it
+        // recorded for that element — a `scaleEffect` layered on top is
+        // invisible to that pass. The circle came out at 72% while the glyph
+        // stayed full size and pinned itself to the shrunken circle's
+        // top-left, so `eye.slash` and the capture menu's `xmark` sat low and
+        // right of their own buttons, spilling over the edge.
+        let scale = visualScale * NotchShotMotion.activeScale(
+            isActive: isHovered && isEnabled,
+            reduceMotion: reduceMotion,
+            activeScale: 1.07
+        )
         Button(action: action) {
             Image(systemName: systemName)
-                .font(.system(size: 13, weight: .semibold))
+                .font(.system(size: 13 * scale, weight: .semibold))
                 .foregroundStyle(isProminent ? Color.black : tint)
-                .frame(width: Self.visualDiameter, height: Self.visualDiameter)
+                .frame(
+                    width: Self.visualDiameter * scale,
+                    height: Self.visualDiameter * scale
+                )
                 .notchControlSurface(
                     in: Circle(),
                     reduceTransparency: reduceTransparency,
                     tint: isProminent ? tint : nil,
                     emphasized: isProminent || isHovered
-                )
-                .scaleEffect(
-                    visualScale * NotchShotMotion.activeScale(
-                        isActive: isHovered && isEnabled,
-                        reduceMotion: reduceMotion,
-                        activeScale: 1.07
-                    )
                 )
                 .offset(y: NotchShotMotion.activeOffset(
                     isActive: isHovered && isEnabled,

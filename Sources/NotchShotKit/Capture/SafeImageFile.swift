@@ -45,7 +45,9 @@ enum SafeImageFile {
 
         let options = [kCGImageSourceShouldCache: false] as CFDictionary
         guard let source = CGImageSourceCreateWithData(data as CFData, options),
-              CGImageSourceGetCount(source) == 1,
+              (1 ... RecordingExportService.maximumGIFFrames).contains(
+                  CGImageSourceGetCount(source)
+              ),
               let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil)
                 as? [CFString: Any],
               let width = (properties[kCGImagePropertyPixelWidth] as? NSNumber)?.intValue,

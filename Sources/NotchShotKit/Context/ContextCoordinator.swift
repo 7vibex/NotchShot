@@ -16,6 +16,7 @@ public final class ContextCoordinator {
 
     private let power = PowerSourceMonitor()
     private let audio = AudioRouteMonitor()
+    private let network = NetworkReachabilityMonitor()
     private var calendarSnapshot: ContextSnapshot?
     private var aiSnapshot: ContextSnapshot?
     private var claudeSnapshot: ContextSnapshot?
@@ -28,6 +29,7 @@ public final class ContextCoordinator {
     public func start() {
         power.onTransition = { [weak self] snapshot in self?.present(snapshot) }
         audio.onTransition = { [weak self] snapshot in self?.present(snapshot) }
+        network.onTransition = { [weak self] snapshot in self?.present(snapshot) }
         calendar.onSnapshotChange = { [weak self] snapshot in self?.updateCalendar(snapshot) }
         ai.onSnapshotChange = { [weak self] snapshot in self?.updateAI(snapshot) }
         claude.onSnapshotChange = { [weak self] snapshot in self?.updateClaude(snapshot) }
@@ -41,6 +43,7 @@ public final class ContextCoordinator {
         expiryTask = nil
         power.stop()
         audio.stop()
+        network.stop()
         calendar.stop()
         ai.stop()
         claude.stop()
@@ -57,6 +60,7 @@ public final class ContextCoordinator {
     public func refreshPreferences() {
         if Preferences.shared.powerStatusEnabled { power.start() } else { power.stop() }
         if Preferences.shared.audioRouteStatusEnabled { audio.start() } else { audio.stop() }
+        if Preferences.shared.networkStatusEnabled { network.start() } else { network.stop() }
         if Preferences.shared.calendarGlanceEnabled { calendar.start() } else { calendar.stop() }
         if Preferences.shared.aiActivityEnabled {
             ai.setEnabledSources(Preferences.shared.enabledAISources)
@@ -148,6 +152,13 @@ public final class ContextCoordinator {
         current.presentation = expanded ? .expanded : .compact
         snapshot = current
         onSnapshotChange?(current)
+    }
+
+    /// Closes a transient card early instead of waiting out its expiry, for
+    /// the cards that carry their own dismiss control.
+    public func dismissTransient() {
+        expiryTask?.cancel()
+        restorePersistentSnapshot()
     }
 
     private func restorePersistentSnapshot() {

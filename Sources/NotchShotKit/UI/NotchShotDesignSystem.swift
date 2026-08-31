@@ -40,6 +40,26 @@ enum NotchActivityGlassPolicy {
     }
 }
 
+/// Optical rules for the compact display-only player shown over the wallpaper
+/// while loginwindow owns the secure Lock Screen.
+enum LockedNowPlayingGlassPolicy {
+    /// Apple's clear variant keeps media-rich wallpaper visible. A restrained
+    /// local dimming layer protects the bold white labels without turning the
+    /// complete player into the opaque navy slab produced by regular glass.
+    static let dimmingOpacity = 0.06
+    static let highlightOpacity = 0.20
+
+    static func usesLiquidGlass(
+        reduceTransparency: Bool,
+        increaseContrast: Bool
+    ) -> Bool {
+        NotchShotDesignSystem.usesLiquidGlass(
+            reduceTransparency: reduceTransparency,
+            increaseContrast: increaseContrast
+        )
+    }
+}
+
 /// Contrast rules shared by every colour drawn on the black island.
 ///
 /// Album artwork already enforced a measured contrast floor, but calendar and
@@ -110,12 +130,16 @@ enum NotchShotColorPolicy {
     }
 }
 
-/// The media accent is a restrained keyline around an opaque-black shell, not
-/// a tint over the shell itself. Keeping the policy here makes the visual and
-/// its accessibility fallback agree wherever the shell is presented.
+/// Whether the playing island draws an edge at all.
+///
+/// The line itself is a neutral hairline: the artwork accent used to trace the
+/// shell and cast a halo of its colour, which turned the island's corners a
+/// different colour per album and read as a status signal. The opacity
+/// constants that drove that tint are gone with it — what remains is the
+/// question of whether an edge is drawn, which still has an accessibility
+/// answer, since a hairline is exactly what Reduce Transparency and Increase
+/// Contrast replace with a solid surface.
 enum NotchMediaGlowPolicy {
-    static let keylineOpacity = 0.34
-    static let haloOpacity = 0.14
 
     static func shouldShow(
         isMedia: Bool,
@@ -242,6 +266,18 @@ extension View {
         reduceTransparency: Bool
     ) -> some View {
         modifier(NotchShotActivityGlassSurfaceModifier(
+            cornerRadius: cornerRadius,
+            reduceTransparency: reduceTransparency
+        ))
+    }
+
+    /// A single compact glass surface for the Lock Screen player. The opaque
+    /// accessibility path uses the same silhouette and explicit border.
+    func notchShotLockedNowPlayingSurface(
+        cornerRadius: CGFloat,
+        reduceTransparency: Bool
+    ) -> some View {
+        modifier(NotchShotLockedNowPlayingSurfaceModifier(
             cornerRadius: cornerRadius,
             reduceTransparency: reduceTransparency
         ))
@@ -441,5 +477,63 @@ private struct NotchShotActivityGlassSurfaceModifier: ViewModifier {
             reduceTransparency: reduceTransparency,
             increaseContrast: increaseContrast
         )
+    }
+}
+
+private struct NotchShotLockedNowPlayingSurfaceModifier: ViewModifier {
+    var cornerRadius: CGFloat
+    var reduceTransparency: Bool
+
+    @Environment(\.colorSchemeContrast) private var colorSchemeContrast
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+        if usesLiquidGlass {
+            content
+                .glassEffect(.clear, in: shape)
+                .background {
+                    shape
+                        .fill(.black.opacity(LockedNowPlayingGlassPolicy.dimmingOpacity))
+                }
+                .overlay { border(shape) }
+        } else {
+            content
+                .background {
+                    shape.fill(
+                        Color(white: increaseContrast ? 0.08 : 0.12).opacity(0.96)
+                    )
+                }
+                .overlay { border(shape) }
+        }
+    }
+
+    private var increaseContrast: Bool {
+        colorSchemeContrast == .increased
+    }
+
+    private var usesLiquidGlass: Bool {
+        LockedNowPlayingGlassPolicy.usesLiquidGlass(
+            reduceTransparency: reduceTransparency,
+            increaseContrast: increaseContrast
+        )
+    }
+
+    private func border(_ shape: RoundedRectangle) -> some View {
+        shape
+            .strokeBorder(
+                LinearGradient(
+                    colors: [
+                        .white.opacity(LockedNowPlayingGlassPolicy.highlightOpacity),
+                        .white.opacity(0.05),
+                        .white.opacity(0.16),
+                    ],
+                    startPoint: .topLeading,
+                    endPoint: .bottomTrailing
+                ),
+                lineWidth: increaseContrast ? 1.5 : 1
+            )
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
     }
 }
