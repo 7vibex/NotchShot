@@ -50,8 +50,11 @@ public enum NotchShotPackage {
     private static let maximumJSONBytes = 8_000_000
     private static let maximumImageBytes = 100_000_000
     private static let maximumImageDimension = 16_384
+    // Scrolling captures can be long and narrow. Keep the existing aggregate
+    // pixel budgets while allowing their supported per-axis extent.
+    private static let maximumSourceDimension = 65_535
     private static let maximumImagePixels = 50_000_000
-    private static let maximumRenderDimension = 32_768
+    private static let maximumRenderDimension = 65_535
     private static let maximumRenderPixels = 80_000_000
     private static let maximumElements = 5_000
     private static let maximumPoints = 500_000
@@ -65,9 +68,18 @@ public enum NotchShotPackage {
         source: CGImage,
         to url: URL
     ) throws -> URL {
+        // A successful save must remain readable under the same constraints.
+        // Check geometry before rendering and all encoded sizes before the
+        // atomic replacement, so a rejected save preserves an existing project.
+        try validate(document: document, source: source)
+        if case .image(let path) = document.background.fill,
+           !(path as NSString).isAbsolutePath {
+            throw NotchShotError.exportFailed("The custom background is not a readable local image")
+        }
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         encoder.dateEncodingStrategy = .iso8601
+        let documentData = try boundedJSON(document, encoder: encoder)
 
         let info = Info(
             formatVersion: document.version,
@@ -82,6 +94,9 @@ public enum NotchShotPackage {
             quality: 1,
             dpiScale: document.sourceScale
         )
+        guard sourceData.count <= maximumImageBytes else {
+            throw NotchShotError.exportFailed("Project source image is too large")
+        }
         let preview = try AnnotationRenderer.render(document: document, source: source)
         let (previewData, _) = try ImageExport.encode(
             preview,
@@ -89,20 +104,21 @@ public enum NotchShotPackage {
             quality: 1,
             dpiScale: document.sourceScale
         )
+        guard previewData.count <= maximumImageBytes else {
+            throw NotchShotError.exportFailed("Project preview image is too large")
+        }
 
         var children: [String: FileWrapper] = [
-            Entry.info: FileWrapper(regularFileWithContents: try encoder.encode(info)),
-            Entry.document: FileWrapper(regularFileWithContents: try encoder.encode(document)),
-            Entry.background: FileWrapper(regularFileWithContents: try encoder.encode(document.background)),
+            Entry.info: FileWrapper(regularFileWithContents: try boundedJSON(info, encoder: encoder)),
+            Entry.document: FileWrapper(regularFileWithContents: documentData),
+            Entry.background: FileWrapper(regularFileWithContents: try boundedJSON(document.background, encoder: encoder)),
             Entry.source: FileWrapper(regularFileWithContents: sourceData),
             Entry.preview: FileWrapper(regularFileWithContents: previewData),
         ]
 
         // A custom background image is copied in, so the project stays valid if
         // the user later moves or deletes the original file.
-        if case .image(let path) = document.background.fill,
-           !path.isEmpty,
-           !path.hasPrefix(Entry.assets) {
+        if case .image(let path) = document.background.fill {
             guard let backgroundImage = SafeImageFile.cgImage(
                 at: URL(fileURLWithPath: path),
                 limits: .background
@@ -115,6 +131,9 @@ public enum NotchShotPackage {
                 quality: 1,
                 dpiScale: 1
             )
+            guard data.count <= maximumImageBytes else {
+                throw NotchShotError.exportFailed("Project background image is too large")
+            }
             let name = "background.png"
             let assets = FileWrapper(directoryWithFileWrappers: [
                 name: FileWrapper(regularFileWithContents: data),
@@ -123,9 +142,9 @@ public enum NotchShotPackage {
 
             var copy = document
             copy.background.fill = .image(path: "\(Entry.assets)/\(name)")
-            children[Entry.document] = FileWrapper(regularFileWithContents: try encoder.encode(copy))
+            children[Entry.document] = FileWrapper(regularFileWithContents: try boundedJSON(copy, encoder: encoder))
             children[Entry.background] = FileWrapper(
-                regularFileWithContents: try encoder.encode(copy.background)
+                regularFileWithContents: try boundedJSON(copy.background, encoder: encoder)
             )
         }
 
@@ -142,6 +161,14 @@ public enum NotchShotPackage {
         // it is flagged as a bundle.
         try? (url as NSURL).setResourceValue(true, forKey: .isPackageKey)
         return url
+    }
+
+    private static func boundedJSON<T: Encodable>(_ value: T, encoder: JSONEncoder) throws -> Data {
+        let data = try encoder.encode(value)
+        guard data.count <= maximumJSONBytes else {
+            throw NotchShotError.exportFailed("Project annotation data is too large")
+        }
+        return data
     }
 
     // MARK: Read
@@ -194,6 +221,8 @@ public enum NotchShotPackage {
             at: url.appendingPathComponent(Entry.source),
             maximumBytes: maximumImageBytes
         )
+        try validateEncodedImage(sourceData, entryName: Entry.source,
+                                 maximumDimension: maximumSourceDimension)
         guard let provider = CGDataProvider(data: sourceData as CFData),
               let source = CGImage(
                   pngDataProviderSource: provider,
@@ -204,8 +233,8 @@ public enum NotchShotPackage {
             throw NotchShotError.exportFailed("Project is missing a valid source image")
         }
         guard source.width > 0, source.height > 0,
-              source.width <= maximumImageDimension,
-              source.height <= maximumImageDimension,
+              source.width <= maximumSourceDimension,
+              source.height <= maximumSourceDimension,
               source.width <= maximumImagePixels / source.height else {
             throw NotchShotError.exportFailed("Project source image is too large")
         }
@@ -268,15 +297,20 @@ public enum NotchShotPackage {
         // Existing projects can contain off-canvas annotations after a crop or
         // resize. Permit a generous but finite editing margin.
         let coordinateSlack = CGFloat(maximumRenderDimension) * 2
-        guard document.elements.count <= maximumElements,
+        guard document.version <= 1,
+              document.elements.count <= maximumElements,
               pointCount <= maximumPoints,
+              source.width > 0, source.height > 0,
+              source.width <= maximumSourceDimension,
+              source.height <= maximumSourceDimension,
+              source.width <= maximumImagePixels / source.height,
               sourceWidth.isFinite,
               sourceHeight.isFinite,
               document.sourceScale.isFinite,
               sourceWidth > 0,
               sourceHeight > 0,
-              sourceWidth <= CGFloat(maximumImageDimension),
-              sourceHeight <= CGFloat(maximumImageDimension),
+              sourceWidth <= CGFloat(maximumSourceDimension),
+              sourceHeight <= CGFloat(maximumSourceDimension),
               sourceWidth * sourceHeight <= CGFloat(maximumImagePixels),
               abs(sourceWidth - CGFloat(source.width)) <= 1,
               abs(sourceHeight - CGFloat(source.height)) <= 1,
@@ -360,7 +394,11 @@ public enum NotchShotPackage {
 
     /// Reads only encoded metadata, avoiding an attacker-controlled full
     /// background decode before dimensions are bounded.
-    private static func validateEncodedImage(_ data: Data, entryName: String) throws {
+    private static func validateEncodedImage(
+        _ data: Data,
+        entryName: String,
+        maximumDimension: Int = maximumImageDimension
+    ) throws {
         guard let source = CGImageSourceCreateWithData(data as CFData, nil),
               CGImageSourceGetCount(source) == 1,
               let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil)
@@ -368,8 +406,8 @@ public enum NotchShotPackage {
               let width = (properties[kCGImagePropertyPixelWidth] as? NSNumber)?.intValue,
               let height = (properties[kCGImagePropertyPixelHeight] as? NSNumber)?.intValue,
               width > 0, height > 0,
-              width <= maximumImageDimension,
-              height <= maximumImageDimension,
+              width <= maximumDimension,
+              height <= maximumDimension,
               width <= maximumImagePixels / height else {
             throw NotchShotError.exportFailed(
                 "Project entry \(entryName) is not a safe image"

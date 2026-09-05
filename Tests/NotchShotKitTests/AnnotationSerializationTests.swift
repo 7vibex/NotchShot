@@ -288,9 +288,12 @@ struct AnnotationSerializationTests {
 
         let source = TestImage.solid(width: 20, height: 20)
         var document = AnnotationDocument(sourcePixelSize: CGSize(width: 20, height: 20), sourceScale: 1)
-        document.background.fill = .image(path: "Assets/../source.png")
         let url = directory.appendingPathComponent("Traversal.notchshot")
         _ = try NotchShotPackage.write(document: document, source: source, to: url)
+        document.background.fill = .image(path: "Assets/../source.png")
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        try encoder.encode(document).write(to: url.appendingPathComponent("document.json"))
 
         #expect(throws: NotchShotError.self) {
             _ = try NotchShotPackage.read(from: url)

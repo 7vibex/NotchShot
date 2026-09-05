@@ -36,6 +36,29 @@ struct ShelfFileOperationsTests {
         )
     }
 
+    private func extractedFiles(from archive: URL) throws -> [String: Data] {
+        let directory = try makeDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/ditto")
+        process.arguments = ["-x", "-k", archive.path, directory.path]
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        try process.run()
+        process.waitUntilExit()
+        try #require(process.terminationStatus == 0, "The output must be a ZIP that macOS can extract")
+        let enumerator = try #require(FileManager.default.enumerator(
+            at: directory, includingPropertiesForKeys: [.isRegularFileKey]
+        ))
+        var files: [String: Data] = [:]
+        for case let url as URL in enumerator {
+            if try url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile == true {
+                files[url.lastPathComponent] = try Data(contentsOf: url)
+            }
+        }
+        return files
+    }
+
     // MARK: Names
 
     @Test("A typed name keeps the original extension")
@@ -175,6 +198,7 @@ struct ShelfFileOperationsTests {
     @Test("One file compresses to a readable archive")
     func compressesSingleFile() throws {
         let directory = try makeDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
         let original = try makeFile("Shot.png", in: directory, bytes: 4_096)
         let archive = directory.appendingPathComponent("Shot.zip")
 
@@ -185,11 +209,13 @@ struct ShelfFileOperationsTests {
         #expect(size > 0)
         // The source is an input, not something the archive consumes.
         #expect(FileManager.default.fileExists(atPath: original.path))
+        #expect(try extractedFiles(from: archive) == ["Shot.png": Data(contentsOf: original)])
     }
 
     @Test("Several files compress into one archive")
     func compressesSeveralFiles() throws {
         let directory = try makeDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
         let assets = try (0 ..< 3).map { index in
             asset(at: try makeFile("Shot \(index).png", in: directory, bytes: 2_048))
         }
@@ -200,11 +226,17 @@ struct ShelfFileOperationsTests {
         #expect(FileManager.default.fileExists(atPath: archive.path))
         let size = try archive.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
         #expect(size > 0)
+        let extracted = try extractedFiles(from: archive)
+        #expect(extracted.count == assets.count)
+        for asset in assets {
+            #expect(try extracted[asset.url.lastPathComponent] == Data(contentsOf: asset.url))
+        }
     }
 
     @Test("Compressing over an existing archive replaces it")
     func compressReplacesExistingArchive() throws {
         let directory = try makeDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
         let original = try makeFile("Shot.png", in: directory, bytes: 4_096)
         let archive = try makeFile("Shot.zip", in: directory, bytes: 8)
 
@@ -212,6 +244,7 @@ struct ShelfFileOperationsTests {
 
         let size = try archive.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
         #expect(size > 8)
+        #expect(try extractedFiles(from: archive) == ["Shot.png": Data(contentsOf: original)])
     }
 
     @Test("An archive cannot replace the source it is compressing")

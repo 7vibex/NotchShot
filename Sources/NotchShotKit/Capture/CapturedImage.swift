@@ -299,7 +299,11 @@ public enum ImageExport {
 
     @MainActor
     public static func copyToPasteboard(text: String) {
-        let pasteboard = NSPasteboard.general
+        copyToPasteboard(text: text, to: .general)
+    }
+
+    @MainActor
+    static func copyToPasteboard(text: String, to pasteboard: NSPasteboard) {
         pasteboard.clearContents()
         pasteboard.setString(text, forType: .string)
         noteSelfWrite(pasteboard.changeCount, to: pasteboard)

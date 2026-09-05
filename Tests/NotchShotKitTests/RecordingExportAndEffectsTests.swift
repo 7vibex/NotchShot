@@ -1,4 +1,5 @@
 @preconcurrency import AVFoundation
+import AppKit
 import CoreGraphics
 import Foundation
 import ImageIO
@@ -35,6 +36,8 @@ struct RecordingExportAndEffectsTests {
         let video = folder.appendingPathComponent("exact.mp4")
         let gif = folder.appendingPathComponent("animated.gif")
         try await Self.makeFixtureVideo(at: source)
+        try Data("old video".utf8).write(to: video)
+        try Data("old gif".utf8).write(to: gif)
 
         try await RecordingExportService.exportVideo(
             from: source,
@@ -54,6 +57,111 @@ struct RecordingExportAndEffectsTests {
         )
         let gifSource = try #require(CGImageSourceCreateWithURL(gif as CFURL, nil))
         #expect(CGImageSourceGetCount(gifSource) > 1)
+    }
+
+    @Test("A failed export session preserves the selected existing document")
+    @MainActor
+    func failedExportPreservesDestination() async throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let source = folder.appendingPathComponent("invalid.mp4")
+        let destination = folder.appendingPathComponent("existing.mp4")
+        try Data("invalid video".utf8).write(to: source)
+        let original = Data("irreplaceable existing document".utf8)
+        try original.write(to: destination)
+        let asset = CaptureAsset(url: source, kind: .recording,
+                                 pixelSize: CGSize(width: 64, height: 48), scale: 1)
+        let session = RecordingExportSession(asset: asset)
+        await session.export(to: destination)
+        #expect(session.errorMessage != nil)
+        #expect(session.exportedAsset == nil)
+        #expect(!session.isExporting)
+        #expect(try Data(contentsOf: destination) == original)
+        #expect(try FileManager.default.contentsOfDirectory(atPath: folder.path).sorted()
+                == ["existing.mp4", "invalid.mp4"])
+    }
+
+    @Test("A capped long GIF retains its timeline and final content")
+    @MainActor
+    func longGIFPreservesDuration() async throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let source = folder.appendingPathComponent("long.mp4")
+        let destination = folder.appendingPathComponent("long.gif")
+        try await Self.makeFixtureVideo(at: source, duration: 601)
+        let actualDuration = try await AVURLAsset(url: source).load(.duration).seconds
+        try await RecordingExportService.exportGIF(
+            from: source, to: destination,
+            options: GIFExportOptions(framesPerSecond: 12, maximumWidth: 160)
+        )
+        let imageSource = try #require(CGImageSourceCreateWithURL(destination as CFURL, nil))
+        let count = CGImageSourceGetCount(imageSource)
+        #expect(count == RecordingExportService.maximumGIFFrames)
+        var total = 0.0
+        for index in 0..<count {
+            let properties = try #require(CGImageSourceCopyPropertiesAtIndex(imageSource, index, nil)
+                                          as? [String: Any])
+            let gif = try #require(properties[kCGImagePropertyGIFDictionary as String] as? [String: Any])
+            total += try #require(gif[kCGImagePropertyGIFUnclampedDelayTime as String] as? Double)
+        }
+        #expect(abs(total - actualDuration) < 0.02)
+        let first = try #require(CGImageSourceCreateImageAtIndex(imageSource, 0, nil))
+        let last = try #require(CGImageSourceCreateImageAtIndex(imageSource, count - 1, nil))
+        #expect(first.dataProvider?.data != last.dataProvider?.data)
+        // The distinct bright marker starts at 600.2s, beyond the old cutoff.
+        let tailColor = try #require(NSBitmapImageRep(cgImage: last)
+            .colorAt(x: 0, y: 0)?.usingColorSpace(.deviceRGB))
+        #expect(tailColor.redComponent > 0.86)
+    }
+
+    @Test("Cancellation and publication failure preserve existing content", arguments: [false, true])
+    @MainActor
+    func interruptedExportPreservesDestination(gif: Bool) async throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let source = folder.appendingPathComponent("source.mp4")
+        try await Self.makeFixtureVideo(at: source)
+        let destination = folder.appendingPathComponent("existing")
+        let sentinel = Data("existing document".utf8)
+        try sentinel.write(to: destination)
+        let operation = Task { @MainActor in
+            if gif {
+                try await RecordingExportService.exportGIF(from: source, to: destination, options: .init())
+            } else {
+                try await RecordingExportService.exportVideo(from: source, to: destination,
+                    options: .init(pixelSize: CGSize(width: 64, height: 48)))
+            }
+        }
+        operation.cancel()
+        do {
+            try await operation.value
+            Issue.record("Cancelled export unexpectedly succeeded")
+        } catch {}
+        #expect(try Data(contentsOf: destination) == sentinel)
+        let names = try FileManager.default.contentsOfDirectory(atPath: folder.path).sorted()
+        #expect(names == ["existing", "source.mp4"])
+
+        // A nonempty directory cannot be replaced by a file. This reaches the
+        // publication failure after a valid encode and must clean up staging.
+        try FileManager.default.removeItem(at: destination)
+        try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true)
+        let child = destination.appendingPathComponent("document.txt")
+        try sentinel.write(to: child)
+        do {
+            if gif {
+                try await RecordingExportService.exportGIF(from: source, to: destination, options: .init())
+            } else {
+                try await RecordingExportService.exportVideo(from: source, to: destination,
+                    options: .init(pixelSize: CGSize(width: 64, height: 48)))
+            }
+            Issue.record("Replacing a nonempty directory unexpectedly succeeded")
+        } catch {}
+        #expect(try Data(contentsOf: child) == sentinel)
+        let finalNames = try FileManager.default.contentsOfDirectory(atPath: folder.path).sorted()
+        #expect(finalNames == ["existing", "source.mp4"])
     }
 
     @Test("Scrolling capture modes preserve axis and automation intent")
@@ -168,7 +276,7 @@ struct RecordingExportAndEffectsTests {
     }
 
     @MainActor
-    private static func makeFixtureVideo(at url: URL) async throws {
+    private static func makeFixtureVideo(at url: URL, duration: Double = 1) async throws {
         let writer = try AVAssetWriter(outputURL: url, fileType: .mp4)
         let input = AVAssetWriterInput(
             mediaType: .video,
@@ -192,7 +300,7 @@ struct RecordingExportAndEffectsTests {
         try #require(writer.startWriting())
         writer.startSession(atSourceTime: .zero)
 
-        for frame in 0 ..< 10 {
+        for frame in 0 ..< (duration > 600 ? 11 : 10) {
             while !input.isReadyForMoreMediaData {
                 try await Task.sleep(for: .milliseconds(2))
             }
@@ -218,9 +326,10 @@ struct RecordingExportAndEffectsTests {
             CVPixelBufferUnlockBaseAddress(pixelBuffer, [])
             try #require(adaptor.append(
                 pixelBuffer,
-                withPresentationTime: CMTime(value: CMTimeValue(frame), timescale: 10)
+                withPresentationTime: CMTime(seconds: frame == 10 ? duration - 0.8 : Double(frame) * duration / 10, preferredTimescale: 600)
             ))
         }
+        writer.endSession(atSourceTime: CMTime(seconds: duration, preferredTimescale: 600))
         input.markAsFinished()
         await writer.finishWriting()
         try #require(writer.status == .completed)

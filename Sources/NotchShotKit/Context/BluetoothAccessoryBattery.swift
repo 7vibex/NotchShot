@@ -141,7 +141,7 @@ public actor BluetoothAccessoryBatteryService {
             return nil
         }
         return await withTaskGroup(of: Data?.self) { group in
-            group.addTask { await report.read() }
+            group.addTask { report.read() }
             group.addTask {
                 try? await Task.sleep(for: .seconds(Self.reportTimeout))
                 report.terminateIfRunning()

@@ -34,6 +34,11 @@ public final class ClipboardStore {
     private let storeURL: URL
     private let imageDirectory: URL
     private let usesManagedStore: Bool
+    private let isEnabled: @MainActor () -> Bool
+    private let imageWriter: @Sendable (CGImage, UUID, URL) async -> String?
+    private let now: @MainActor () -> Date
+    private var clearGeneration: UInt64 = 0
+    private var clearedThrough: Date?
     private var saveWorkItem: DispatchWorkItem?
     private var mutationRevision: UInt64 = 0
     private var persistedRevision: UInt64 = 0
@@ -52,12 +57,33 @@ public final class ClipboardStore {
         var revision: UInt64
     }
 
-    public init(
+    public convenience init(
         storeURL: URL = AppPaths.clipboardStore,
         imageDirectory: URL = AppPaths.clipboard
     ) {
+        self.init(
+            storeURL: storeURL,
+            imageDirectory: imageDirectory,
+            isEnabled: { Preferences.shared.clipboardEnabled }
+        )
+    }
+
+    init(
+        storeURL: URL,
+        imageDirectory: URL,
+        isEnabled: @escaping @MainActor () -> Bool,
+        now: @escaping @MainActor () -> Date = { Date() },
+        imageWriter: @escaping @Sendable (CGImage, UUID, URL) async -> String? = { image, id, directory in
+            await Task.detached(priority: .utility) {
+                ClipboardStore.writeImage(image, id: id, in: directory)
+            }.value
+        }
+    ) {
         self.storeURL = storeURL
         self.imageDirectory = imageDirectory
+        self.isEnabled = isEnabled
+        self.imageWriter = imageWriter
+        self.now = now
         usesManagedStore = storeURL.standardizedFileURL == AppPaths.clipboardStore.standardizedFileURL
         guard !usesManagedStore || AppPaths.ensureDirectories() else { return }
         load()
@@ -94,7 +120,7 @@ public final class ClipboardStore {
     /// `image` is written beside the store; the caller has already bounded it.
     @discardableResult
     public func record(_ entry: ClipboardEntry, image: CGImage? = nil) -> ClipboardEntry? {
-        guard Preferences.shared.clipboardEnabled else { return nil }
+        guard isEnabled() else { return nil }
 
         // Re-copying something already held is the common case, and it should
         // feel like the row moving to the top rather than the list growing a
@@ -131,17 +157,18 @@ public final class ClipboardStore {
     /// happen here off the main actor before the completed row is committed.
     @discardableResult
     public func recordImage(_ entry: ClipboardEntry, image: CGImage) async -> ClipboardEntry? {
-        guard Preferences.shared.clipboardEnabled else { return nil }
+        // Decoding in the monitor can finish after Clear, before this method
+        // even starts. The copy timestamp closes that earlier suspension gap.
+        guard isEnabled(), clearedThrough.map({ entry.createdAt > $0 }) ?? true else { return nil }
         if entries.contains(where: { $0.contentHash == entry.contentHash }) {
             return record(entry)
         }
 
         let directory = imageDirectory
-        let filename = await Task.detached(priority: .utility) {
-            Self.writeImage(image, id: entry.id, in: directory)
-        }.value
+        let generation = clearGeneration
+        let filename = await imageWriter(image, entry.id, directory)
         guard let filename else { return nil }
-        guard Preferences.shared.clipboardEnabled else {
+        guard isEnabled(), generation == clearGeneration else {
             try? FileManager.default.removeItem(at: directory.appendingPathComponent(filename))
             return nil
         }
@@ -222,6 +249,8 @@ public final class ClipboardStore {
 
     /// Clears everything, or everything the user has not pinned.
     public func clear(keepingPinned: Bool = false) {
+        clearGeneration &+= 1
+        clearedThrough = now()
         let removed = keepingPinned ? entries.filter { !$0.isPinned } : entries
         entries = keepingPinned ? entries.filter(\.isPinned) : []
         for entry in removed {

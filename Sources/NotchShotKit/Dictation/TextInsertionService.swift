@@ -142,8 +142,11 @@ public final class TextInsertionService {
     /// Tracks NotchShot's own pasteboard writes so ClipboardMonitor doesn't record them.
     /// Reuses ImageExport's tracking for history suppression.
     private var lastSelfWriteChangeCount: Int?
+    private let pasteboard: NSPasteboard
 
-    public init() {}
+    public init() { pasteboard = .general }
+
+    init(pasteboard: NSPasteboard) { self.pasteboard = pasteboard }
 
     /// Captures insertion target before UI expands. Never reads surrounding text.
     public func captureTarget() -> DictationInsertionTarget {
@@ -328,13 +331,14 @@ public final class TextInsertionService {
     /// events are fire-and-forget by construction. Both used to be reported as
     /// an insertion, which is how dictation came to announce text it had never
     /// delivered.
-    private enum InsertionOutcome {
+    enum InsertionOutcome: Equatable {
         /// The field moved: the text is in.
         case landed
-        /// The field publishes a state to compare and it did not move, so
-        /// nothing was inserted and another method may safely try.
+        /// The insertion method refused the operation or no change was observed
+        /// after unacknowledged keyboard delivery.
         case rejected
-        /// The field publishes nothing to compare. No retry is allowed here —
+        /// The field exposes no comparable state or acknowledges an operation
+        /// without an observable change. No retry is allowed here —
         /// a second attempt would double the text if the first one did work.
         case unverifiable
         /// The target stopped being the focused element while the events were
@@ -348,14 +352,11 @@ public final class TextInsertionService {
     /// insertion does not weaken the rule that this service never reads what
     /// the user already has in the field.
     ///
-    /// Any real insertion moves at least one of them — even replacing a
-    /// selection with text of the same length, which leaves the count alone,
-    /// collapses the caret to the end of what was inserted.
-    private struct TextFieldState: Equatable {
+    /// Retain the whole selection: an equal-length replacement leaves both
+    /// character count and selection end unchanged, but collapses its length.
+    struct TextFieldState: Equatable {
         var characters: Int?
-        var caret: Int?
-
-        var isObservable: Bool { characters != nil || caret != nil }
+        var selection: NSRange?
     }
 
     private func fieldState(of element: AXUIElement) -> TextFieldState {
@@ -377,8 +378,9 @@ public final class TextInsertionService {
             &rangeValue
         ) == .success, let value = rangeValue {
             var range = CFRange()
-            if AXValueGetValue(value as! AXValue, .cfRange, &range) {
-                state.caret = range.location + range.length
+            if AXValueGetValue(value as! AXValue, .cfRange, &range),
+               range.location >= 0, range.length >= 0 {
+                state.selection = NSRange(location: range.location, length: range.length)
             }
         }
         return state
@@ -386,12 +388,19 @@ public final class TextInsertionService {
 
     /// Compares the field either side of an attempt. An element that told us
     /// nothing before is unverifiable however it looks afterwards.
-    private func outcome(
+    static func outcome(
         before: TextFieldState,
-        after: TextFieldState
+        after: TextFieldState,
+        acknowledged: Bool = false
     ) -> InsertionOutcome {
-        guard before.isObservable, after.isObservable else { return .unverifiable }
-        return before == after ? .rejected : .landed
+        let counts = before.characters.flatMap { count in after.characters.map { count != $0 } }
+        let selections = before.selection.flatMap { range in after.selection.map { range != $0 } }
+        if counts == true || selections == true { return .landed }
+        // Missing/changing AX observability is not evidence that text landed.
+        // An acknowledged but unchanged snapshot may also be stale: never type
+        // a second copy solely because the target has not published its edit.
+        if acknowledged || (counts == nil && selections == nil) { return .unverifiable }
+        return .rejected
     }
 
     private func insertViaAX(_ text: String, into element: AXUIElement) -> InsertionOutcome {
@@ -399,7 +408,7 @@ public final class TextInsertionService {
         // would overwrite the whole field, so a target that has no selection
         // range to insert into is left to the fallback instead.
         let before = fieldState(of: element)
-        guard before.caret != nil else { return .rejected }
+        guard before.selection != nil else { return .rejected }
 
         let axErr = AXUIElementSetAttributeValue(
             element,
@@ -407,11 +416,11 @@ public final class TextInsertionService {
             text as CFTypeRef
         )
         guard axErr == .success else { return .rejected }
-        return outcome(before: before, after: fieldState(of: element))
+        return Self.outcome(before: before, after: fieldState(of: element), acknowledged: true)
     }
 
     private func copyToPasteboard(_ text: String) -> TextInsertionResult {
-        let pb = NSPasteboard.general
+        let pb = pasteboard
         // Check for concealed/ transient content that should not be overwritten
         if let types = pb.types {
             for marker in ClipboardMonitor.excludedMarkerTypes where types.contains(marker) {
@@ -429,8 +438,8 @@ public final class TextInsertionService {
         let previousString = pb.string(forType: .string)
 
         // Use the tracked helper so ClipboardMonitor skips this write
-        ImageExport.copyToPasteboard(text: text)
-        lastSelfWriteChangeCount = NSPasteboard.general.changeCount
+        ImageExport.copyToPasteboard(text: text, to: pb)
+        lastSelfWriteChangeCount = pb.changeCount
 
         _ = previousChangeCount
         _ = previousString
@@ -486,12 +495,12 @@ public final class TextInsertionService {
         guard verifyTargetStillValid(target, element: element) else {
             return .misdelivered
         }
-        return outcome(before: before, after: fieldState(of: element))
+        return Self.outcome(before: before, after: fieldState(of: element))
     }
 
     /// Restores previous clipboard only if no other process has written since our copy.
     public func restorePreviousClipboardIfNeeded(previousChangeCount: Int, previousString: String?) {
-        let pb = NSPasteboard.general
+        let pb = pasteboard
         guard pb.changeCount == lastSelfWriteChangeCount else { return }
         // Only restore ordinary previous string if it was plain text and not sensitive
         if let str = previousString {

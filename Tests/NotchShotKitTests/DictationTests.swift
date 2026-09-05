@@ -411,16 +411,6 @@ struct DictationPreferencesTests {
 
 @Suite("Secure field refusal")
 struct SecureFieldTests {
-    @Test("Secure fields must not be inserted into – check via role string")
-    func secure() {
-        // We test the helper logic directly: the service should refuse AXSecureTextField
-        // Since we cannot create real AXUIElement in test, we verify the string constant check
-        let secureRole = "AXSecureTextField"
-        #expect(secureRole == "AXSecureTextField")
-        // The insertion service checks this string explicitly; if it matches, isEditableAndNotSecure returns false
-    }
-
-
     @Test("Insertion target remembers secure-field classification")
     func secureClassification() {
         let target = DictationInsertionTarget(kind: .secure)

@@ -101,7 +101,7 @@ enum SafeAssetFile {
             ? maximumExternalBytes : maximumOwnedBytes
         let sourceDescriptor = Darwin.open(
             asset.url.standardizedFileURL.path,
-            O_RDONLY | O_CLOEXEC | O_NOFOLLOW
+            O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK
         )
         guard sourceDescriptor >= 0 else {
             throw NotchShotError.exportFailed("The source file is no longer safely readable")
@@ -163,7 +163,10 @@ enum SafeAssetFile {
         }
         let descriptor = Darwin.open(
             url.standardizedFileURL.path,
-            O_RDONLY | O_CLOEXEC | O_NOFOLLOW
+            // Type validation must not wait for a writer on an untrusted FIFO.
+            // O_NONBLOCK has no effect on reads from the regular files allowed
+            // below, and retains descriptor-based validation against path swaps.
+            O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK
         )
         guard descriptor >= 0 else {
             throw NotchShotError.exportFailed("The source file is no longer safely readable")

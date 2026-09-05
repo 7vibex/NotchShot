@@ -1,9 +1,45 @@
 import Foundation
+import Darwin
 import Testing
 @testable import NotchShotKit
 
 @Suite("Safe raw file actions")
 struct SafeAssetFileTests {
+    @Test("Nonregular inputs are rejected without waiting for a FIFO writer",
+          arguments: ["read", "copy", "project"])
+    func rejectsFIFOWithoutBlocking(operation: String) throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("notchshot-fifo-test-\(UUID()).notchshot", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let fifo = directory.appendingPathComponent("document.json")
+        try #require(mkfifo(fifo.path, 0o600) == 0)
+
+        // A regression must fail rather than hang the test runner. Opening a
+        // writer after two seconds releases a mistakenly blocking read-open;
+        // O_NONBLOCK keeps this rescue itself bounded when no reader exists.
+        let rescue = DispatchWorkItem {
+            let descriptor = Darwin.open(fifo.path, O_WRONLY | O_NONBLOCK | O_CLOEXEC)
+            if descriptor >= 0 { Darwin.close(descriptor) }
+        }
+        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 2, execute: rescue)
+        defer { rescue.cancel() }
+        let started = ContinuousClock.now
+        #expect(throws: NotchShotError.self) {
+            switch operation {
+            case "copy":
+                let asset = CaptureAsset(url: fifo, kind: .document, pixelSize: .zero,
+                                         captureMissingFileIdentities: false)
+                try SafeAssetFile.copy(asset, to: directory.appendingPathComponent("copy.bin"))
+            case "project":
+                _ = try NotchShotPackage.read(from: directory)
+            default:
+                _ = try SafeAssetFile.readData(at: fifo, maximumBytes: 1_024)
+            }
+        }
+        #expect(started.duration(to: .now) < .seconds(1))
+    }
+
     @Test("A Finder file is copied only while its captured identity matches")
     func identityPinnedCopy() throws {
         let directory = FileManager.default.temporaryDirectory

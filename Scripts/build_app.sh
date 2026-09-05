@@ -313,7 +313,7 @@ fi
 
 echo "==> Signing with identity: $IDENTITY"
 # --options runtime enables the Hardened Runtime; the entitlements grant back
-# exactly the two things it would otherwise block.
+# the microphone, camera, and Apple Events integrations it would otherwise block.
 TIMESTAMP_OPTION=(--timestamp=none)
 APP_ENTITLEMENTS="$ROOT/Resources/NotchShot.entitlements"
 if [[ "$IS_DEVELOPER_ID" == true ]]; then

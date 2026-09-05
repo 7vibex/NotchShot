@@ -209,27 +209,22 @@ public enum ShelfFileOperations {
         try fileManager.createDirectory(at: staging, withIntermediateDirectories: true)
         defer { try? fileManager.removeItem(at: staging) }
 
-        let source: URL
-        if assets.count == 1 {
-            let only = staging.appendingPathComponent(assets[0].url.lastPathComponent)
-            try SafeAssetFile.copy(assets[0], to: only, mode: SafeAssetFile.userVisibleMode)
-            source = only
-        } else {
-            let folderName = suggestedArchiveName(for: assets)
-            let folder = staging.appendingPathComponent(folderName, isDirectory: true)
-            try fileManager.createDirectory(at: folder, withIntermediateDirectories: true)
-            var used = Set<String>()
-            for asset in assets {
-                // Two captures can legitimately share a filename once they come
-                // from different folders; the archive has to keep both.
-                let name = uniqueName(asset.url.lastPathComponent, in: &used)
-                try SafeAssetFile.copy(
-                    asset,
-                    to: folder.appendingPathComponent(name),
-                    mode: SafeAssetFile.userVisibleMode
-                )
-            }
-            source = folder
+        // `.forUploading` zips directories only. A regular-file snapshot is
+        // still the original bytes, even if the destination is named `.zip`.
+        let source = staging.appendingPathComponent(
+            suggestedArchiveName(for: assets), isDirectory: true
+        )
+        try fileManager.createDirectory(at: source, withIntermediateDirectories: true)
+        var used = Set<String>()
+        for asset in assets {
+            // Two captures can legitimately share a filename once they come
+            // from different folders; the archive has to keep both.
+            let name = uniqueName(asset.url.lastPathComponent, in: &used)
+            try SafeAssetFile.copy(
+                asset,
+                to: source.appendingPathComponent(name),
+                mode: SafeAssetFile.userVisibleMode
+            )
         }
 
         var coordinationError: NSError?

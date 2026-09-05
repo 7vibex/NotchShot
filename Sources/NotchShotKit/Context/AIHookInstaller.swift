@@ -64,13 +64,16 @@ public enum AIHookInstallerError: LocalizedError {
     case unsafeConfiguration
     case oversizedConfiguration
     case malformedConfiguration
+    case unsupportedCodexConfiguration
 
     public var errorDescription: String? {
         switch self {
         case .invalidReporter: "The bundled notchshot-ai reporter could not be found."
         case .unsafeConfiguration: "The hook configuration is a symbolic link or another unsafe file type."
         case .oversizedConfiguration: "The existing hook configuration is unexpectedly large and was left untouched."
-        case .malformedConfiguration: "The existing hook configuration is not a JSON object and was left untouched."
+        case .malformedConfiguration: "The existing hook configuration is malformed and was left untouched."
+        case .unsupportedCodexConfiguration:
+            "The existing Codex feature settings cannot be safely edited automatically and were left untouched. Use an explicit [features] table with a codex_hooks boolean, then try again."
         }
     }
 }
@@ -100,6 +103,10 @@ public final class AIHookInstaller {
         guard reporterValues?.isRegularFile == true, reporterValues?.isExecutable == true else {
             throw AIHookInstallerError.invalidReporter
         }
+
+        // Validate the TOML edit before installing JSON hooks, so unsupported
+        // syntax cannot leave a partially installed integration behind.
+        let codexConfiguration = integration == .codex ? try preparedCodexHookConfiguration() : nil
 
         let destination = configurationURL(for: integration)
         let manager = FileManager.default
@@ -164,7 +171,8 @@ public final class AIHookInstaller {
             }
             try manager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: destination.path)
         }
-        let enabledRuntime = integration == .codex ? try enableCodexHookRuntime() : false
+        if let codexConfiguration { try writeCodexHookConfiguration(codexConfiguration) }
+        let enabledRuntime = codexConfiguration != nil
         return AIHookInstallationResult(
             integration: integration,
             addedEvents: added,
@@ -173,10 +181,9 @@ public final class AIHookInstaller {
         )
     }
 
-    private func enableCodexHookRuntime() throws -> Bool {
+    private func preparedCodexHookConfiguration() throws -> String? {
         let url = home.appendingPathComponent(".codex/config.toml")
         let manager = FileManager.default
-        try manager.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
         var text = ""
         if manager.fileExists(atPath: url.path) {
             let values = try url.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey])
@@ -193,51 +200,17 @@ public final class AIHookInstaller {
             text = decoded
         }
 
-        var lines = text.components(separatedBy: .newlines)
-        var sectionStart: Int?
-        var sectionEnd = lines.count
-        for (index, line) in lines.enumerated() {
-            let trimmed = line.trimmingCharacters(in: .whitespaces)
-            if trimmed == "[features]" {
-                sectionStart = index
-                continue
-            }
-            if sectionStart != nil, trimmed.hasPrefix("["), trimmed.hasSuffix("]") {
-                sectionEnd = index
-                break
-            }
-        }
+        return try CodexHookConfigurationEditor.enablingHooks(in: text)
+    }
 
-        var changed = false
-        if let sectionStart {
-            var found = false
-            for index in (sectionStart + 1)..<sectionEnd {
-                let trimmed = lines[index].trimmingCharacters(in: .whitespaces)
-                guard trimmed.hasPrefix("codex_hooks") else { continue }
-                found = true
-                if trimmed != "codex_hooks = true" {
-                    lines[index] = "codex_hooks = true"
-                    changed = true
-                }
-                break
-            }
-            if !found {
-                lines.insert("codex_hooks = true", at: sectionStart + 1)
-                changed = true
-            }
-        } else {
-            if !lines.isEmpty, lines.last?.isEmpty == false { lines.append("") }
-            lines.append("[features]")
-            lines.append("codex_hooks = true")
-            changed = true
-        }
-        guard changed else { return false }
-
+    private func writeCodexHookConfiguration(_ output: String) throws {
+        let url = home.appendingPathComponent(".codex/config.toml")
+        let manager = FileManager.default
+        try manager.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
         if manager.fileExists(atPath: url.path) {
             let backup = url.appendingPathExtension("notchshot-backup-\(UUID().uuidString.prefix(8))")
             try manager.copyItem(at: url, to: backup)
         }
-        let output = lines.joined(separator: "\n")
         let temporary = url.deletingLastPathComponent()
             .appendingPathComponent(".notchshot-config-\(UUID().uuidString).tmp")
         try Data(output.utf8).write(to: temporary, options: .atomic)
@@ -248,7 +221,6 @@ public final class AIHookInstaller {
             try manager.moveItem(at: temporary, to: url)
         }
         try manager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
-        return true
     }
 
     private static func containsNotchShotCommand(_ entries: [[String: Any]]) -> Bool {

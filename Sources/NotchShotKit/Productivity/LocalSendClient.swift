@@ -258,7 +258,7 @@ public actor LocalSendClient {
     }
 }
 
-private final class LocalSendTrustDelegate: NSObject, URLSessionDelegate, @unchecked Sendable {
+final class LocalSendTrustDelegate: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
     private let expectedFingerprint: String?
     private let lock = NSLock()
     private var storedFingerprint: String?

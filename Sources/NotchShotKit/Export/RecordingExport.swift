@@ -1,5 +1,6 @@
 import AVFoundation
 import AppKit
+import Darwin
 import Foundation
 import ImageIO
 import Observation
@@ -131,8 +132,10 @@ public enum RecordingExportService {
         if let maximum = options.maximumFileBytes, maximum > 0 {
             exporter.fileLengthLimit = maximum
         }
-        try await exporter.export(to: destinationURL, as: .mp4)
-        try validateOutput(at: destinationURL)
+        let staging = try stagingURL(for: destinationURL, fileExtension: "mp4")
+        defer { try? FileManager.default.removeItem(at: staging.deletingLastPathComponent()) }
+        try await exporter.export(to: staging, as: .mp4)
+        try publishOutput(at: staging, to: destinationURL)
     }
 
     public static func exportGIF(
@@ -151,39 +154,93 @@ public enum RecordingExportService {
         generator.requestedTimeToleranceBefore = .zero
         generator.requestedTimeToleranceAfter = .zero
 
-        let requestedFrames = max(1, Int(ceil(duration.seconds * Double(options.framesPerSecond))))
-        let frameCount = min(requestedFrames, maximumGIFFrames)
-        let effectiveFPS = min(Double(options.framesPerSecond), Double(frameCount) / duration.seconds)
+        let frames = try gifFrames(duration: duration.seconds, requestedFPS: options.framesPerSecond)
+        let staging = try stagingURL(for: destinationURL, fileExtension: "gif")
+        defer { try? FileManager.default.removeItem(at: staging.deletingLastPathComponent()) }
+        try await encodeGIF(generator: generator, frames: frames, at: staging,
+                            loopsForever: options.loopsForever)
+        try publishOutput(at: staging, to: destinationURL)
+    }
+
+    // ImageIO can flush a partially written file when its destination is
+    // released. Keep that lifetime inside this call so cleanup always happens
+    // after the encoder has released its file, including on cancellation.
+    private static func encodeGIF(
+        generator: AVAssetImageGenerator,
+        frames: [(time: TimeInterval, delay: TimeInterval)],
+        at url: URL,
+        loopsForever: Bool
+    ) async throws {
         guard let destination = CGImageDestinationCreateWithURL(
-            destinationURL as CFURL,
+            url as CFURL,
             UTType.gif.identifier as CFString,
-            frameCount,
+            frames.count,
             nil
         ) else {
             throw NotchShotError.exportFailed("Could not create the GIF destination")
         }
         CGImageDestinationSetProperties(destination, [
             kCGImagePropertyGIFDictionary: [
-                kCGImagePropertyGIFLoopCount: options.loopsForever ? 0 : 1,
+                kCGImagePropertyGIFLoopCount: loopsForever ? 0 : 1,
             ],
         ] as CFDictionary)
 
-        let delay = max(1.0 / max(effectiveFPS, 1), 0.02)
-        for index in 0 ..< frameCount {
+        for frame in frames {
             try Task.checkCancellation()
-            let seconds = min(duration.seconds, Double(index) / max(effectiveFPS, 1))
-            let result = try await generator.image(at: CMTime(seconds: seconds, preferredTimescale: 600))
+            let result = try await generator.image(at: CMTime(seconds: frame.time, preferredTimescale: 60_000))
             CGImageDestinationAddImage(destination, result.image, [
                 kCGImagePropertyGIFDictionary: [
-                    kCGImagePropertyGIFDelayTime: delay,
-                    kCGImagePropertyGIFUnclampedDelayTime: delay,
+                    kCGImagePropertyGIFDelayTime: frame.delay,
+                    kCGImagePropertyGIFUnclampedDelayTime: frame.delay,
                 ],
             ] as CFDictionary)
         }
         guard CGImageDestinationFinalize(destination) else {
             throw NotchShotError.exportFailed("The GIF encoder could not finish the file")
         }
-        try validateOutput(at: destinationURL)
+    }
+
+    /// GIF stores each delay in hundredths of a second. Distribute the rounding
+    /// across the timeline so 600 rounded delays don't lose seconds of footage.
+    private static func gifFrames(
+        duration: TimeInterval,
+        requestedFPS: Int
+    ) throws -> [(time: TimeInterval, delay: TimeInterval)] {
+        guard duration.isFinite, duration > 0,
+              duration <= Double(maximumGIFFrames * 65_535) / 100 else {
+            throw NotchShotError.exportFailed("That recording is too long for a complete GIF export")
+        }
+        let fps = min(max(requestedFPS, 1), 30)
+        let count = max(1, Int(min(ceil(duration * Double(fps)), Double(maximumGIFFrames))))
+        let ticks = max(count * 2, Int((duration * 100).rounded()))
+        return (0 ..< count).map { index in
+            let start = index * ticks / count
+            let end = (index + 1) * ticks / count
+            // Keep the first frame, then sample inside each interval. The last
+            // interval therefore represents the tail even below one frame/sec.
+            let time = index == 0 ? 0 : (Double(index) + 0.5) * duration / Double(count)
+            return (time, Double(end - start) / 100)
+        }
+    }
+
+    private static func stagingURL(for destination: URL, fileExtension: String) throws -> URL {
+        // ImageIO may leave its own temporary sidecar when encoding is cancelled.
+        // A private sibling directory contains every file owned by this attempt.
+        let directory = destination.deletingLastPathComponent()
+            .appendingPathComponent(".notchshot-export-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false,
+                                                attributes: [.posixPermissions: 0o700])
+        return directory.appendingPathComponent("output.\(fileExtension)")
+    }
+
+    private static func publishOutput(at staging: URL, to destination: URL) throws {
+        try validateOutput(at: staging)
+        try Task.checkCancellation()
+        // The staging directory is a sibling on the same volume. POSIX rename
+        // atomically replaces the directory entry; failure keeps the old file.
+        guard Darwin.rename(staging.path, destination.path) == 0 else {
+            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+        }
     }
 
     private static func validateOutput(at url: URL) throws {
@@ -225,49 +282,66 @@ public final class RecordingExportSession {
             + "-export.\(format.fileExtension)"
         guard panel.runModal() == .OK, let url = panel.url else { return }
 
+        Task { await export(to: url) }
+    }
+
+    /// The Save panel owns user destination approval; this entry point also
+    /// lets filesystem failure checks exercise the actual session error path.
+    func export(to url: URL) async {
+        guard !isExporting else { return }
+        guard SafeAssetFile.isCurrentAndSafe(asset) else {
+            errorMessage = "That recording changed or is no longer safely readable. Add it again before exporting."
+            return
+        }
         isExporting = true
         errorMessage = nil
-        Task {
-            defer { isExporting = false }
-            do {
-                if format == .video {
-                    try await RecordingExportService.exportVideo(
-                        from: asset.url,
-                        to: url,
-                        options: ExactVideoExportOptions(
-                            pixelSize: CGSize(width: width, height: height),
-                            maximumFileBytes: maximumMegabytes > 0
-                                ? Int64(maximumMegabytes) * 1_024 * 1_024 : nil
-                        )
-                    )
-                } else {
-                    try await RecordingExportService.exportGIF(
-                        from: asset.url,
-                        to: url,
-                        options: GIFExportOptions(
-                            framesPerSecond: gifFramesPerSecond,
-                            maximumWidth: gifMaximumWidth,
-                            loopsForever: gifLoopsForever
-                        )
-                    )
-                }
-                let metadata = await VideoThumbnail.metadata(for: url)
-                let exported = CaptureAsset(
-                    url: url,
-                    kind: format == .video ? .recording : .screenshot,
-                    pixelSize: metadata?.pixelSize ?? CGSize(width: width, height: height),
-                    scale: 1,
-                    duration: format == .video ? metadata?.duration : nil,
-                    ownership: .userDocument
+        defer { isExporting = false }
+        // Controls remain editable while encoding. Each operation keeps the
+        // choices it began with, including the format used for its result.
+        let exportFormat = format
+        let exportSize = CGSize(width: width, height: height)
+        let videoOptions = ExactVideoExportOptions(
+            pixelSize: exportSize,
+            maximumFileBytes: maximumMegabytes > 0
+                ? Int64(maximumMegabytes) * 1_024 * 1_024 : nil
+        )
+        let gifOptions = GIFExportOptions(
+            framesPerSecond: gifFramesPerSecond,
+            maximumWidth: gifMaximumWidth,
+            loopsForever: gifLoopsForever
+        )
+        do {
+            if exportFormat == .video {
+                try await RecordingExportService.exportVideo(
+                    from: asset.url,
+                    to: url,
+                    options: videoOptions
                 )
-                exportedAsset = exported
-                onExported?(exported)
-            } catch {
-                try? FileManager.default.removeItem(at: url)
-                errorMessage = error.localizedDescription
+            } else {
+                try await RecordingExportService.exportGIF(
+                    from: asset.url,
+                    to: url,
+                    options: gifOptions
+                )
             }
+            let metadata = await VideoThumbnail.metadata(for: url)
+            let exported = CaptureAsset(
+                url: url,
+                kind: exportFormat == .video ? .recording : .screenshot,
+                pixelSize: metadata?.pixelSize ?? exportSize,
+                scale: 1,
+                duration: exportFormat == .video ? metadata?.duration : nil,
+                ownership: .userDocument
+            )
+            exportedAsset = exported
+            onExported?(exported)
+        } catch {
+            // Only the service's staging file belongs to a failed attempt.
+            // The selected destination may still be the user's previous file.
+            errorMessage = error.localizedDescription
         }
     }
+
 }
 
 public struct RecordingExportView: View {
