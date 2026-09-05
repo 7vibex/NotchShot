@@ -524,7 +524,8 @@ struct NotchMetricsTests {
                 let ids = windows as NSArray
                 calls.append("move:\(connection):\(space):\(ids.firstObject ?? "missing"):\(options)")
                 return 0
-            }
+            },
+            now: { 0 }
         )
 
         #expect(bridge.attach(windowNumber: 901) == .attached(spaceID: 73))
@@ -565,7 +566,8 @@ struct NotchMetricsTests {
             moveWindows: { _, _, _, _ in
                 moveAttempts += 1
                 return -50
-            }
+            },
+            now: { 0 }
         )
         let moveFailure = LockScreenSpaceBridge.AttachmentResult.failed(
             operation: "SLSSpaceAddWindowsAndRemoveFromSpaces",
@@ -903,8 +905,8 @@ struct LockedCardGeometryTests {
         let frame = LockedCardGeometry.panelFrame(in: screen)
         let card = LockedCardGeometry.cardSize(in: screen)
         #expect(card == LockedCardGeometry.preferredCardSize)
-        #expect(card.width == 310)
-        #expect(card.height == 153)
+        #expect(card.width == 360)
+        #expect(card.height == 172)
 
         let cocoaCenterFromBottom = frame.midY - screen.minY
         #expect(abs(

@@ -43,10 +43,21 @@ final class LockScreenSpaceBridge {
     private var connectionID: Int32?
     private var spaceID: Int32?
     private var attachedWindowNumbers: Set<Int> = []
-    /// Prevents the one-second presence timer from repeatedly creating Spaces
-    /// or hammering a private operation after it has failed this lock session.
-    private var setupFailure: AttachmentResult?
-    private var windowFailures: [Int: AttachmentResult] = [:]
+    private struct Failure {
+        let result: AttachmentResult
+        let attempts: Int
+        let retryAt: TimeInterval
+    }
+
+    // The lock shield and its Space can settle after the distributed lock
+    // event. Retry transient failures with a bound, rather than disabling the
+    // card for the entire lock session after the first race.
+    private static let maximumAttempts = 3
+    private static let presentationRefreshInterval: TimeInterval = 1
+    private let now: () -> TimeInterval
+    private var setupFailure: Failure?
+    private var windowFailures: [Int: Failure] = [:]
+    private var lastPresentationAt: TimeInterval?
 
     var hasAttachedWindows: Bool { !attachedWindowNumbers.isEmpty }
     var isAvailable: Bool {
@@ -107,8 +118,10 @@ final class LockScreenSpaceBridge {
         createSpace: CreateSpace?,
         setAbsoluteLevel: SetAbsoluteLevel?,
         showSpaces: ShowSpaces?,
-        moveWindows: MoveWindows?
+        moveWindows: MoveWindows?,
+        now: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }
     ) {
+        self.now = now
         self.mainConnection = mainConnection
         self.createSpace = createSpace
         self.setAbsoluteLevel = setAbsoluteLevel
@@ -124,107 +137,97 @@ final class LockScreenSpaceBridge {
         guard windowNumber > 0 else {
             return .failed(operation: "windowNumber", code: -1)
         }
-        if let failure = windowFailures[windowNumber] { return failure }
-        if let setupFailure { return setupFailure }
+        let instant = now()
+        if let failure = windowFailures[windowNumber], !canRetry(failure, at: instant) {
+            return failure.result
+        }
+        if let failure = setupFailure, !canRetry(failure, at: instant) {
+            return failure.result
+        }
         guard isAvailable,
-              let mainConnection,
-              let createSpace,
-              let setAbsoluteLevel,
-              let showSpaces,
-              let moveWindows else {
-            setupFailure = .unavailable
-            return .unavailable
-        }
-
-        if attachedWindowNumbers.contains(windowNumber), let spaceID {
-            return .alreadyAttached(spaceID: spaceID)
-        }
+              let mainConnection, let createSpace, let setAbsoluteLevel,
+              let showSpaces, let moveWindows else { return .unavailable }
 
         let connection: Int32
-        let lockSpace: Int32
-        if let connectionID, let spaceID {
-            connection = connectionID
-            lockSpace = spaceID
+        if let existing = connectionID {
+            connection = existing
         } else {
             connection = mainConnection()
             guard connection > 0 else {
-                let result = AttachmentResult.failed(
-                    operation: "SLSMainConnectionID",
-                    code: connection
-                )
-                setupFailure = result
-                return result
+                return failSetup("SLSMainConnectionID", code: connection, at: instant)
             }
-
-            lockSpace = createSpace(
-                connection,
-                Self.sharedSpaceType,
-                Self.sharedSpaceOptions
-            )
-            guard lockSpace > 0 else {
-                let result = AttachmentResult.failed(
-                    operation: "SLSSpaceCreate",
-                    code: lockSpace
-                )
-                setupFailure = result
-                return result
-            }
-
-            let levelCode = setAbsoluteLevel(
-                connection,
-                lockSpace,
-                Self.screenLockAbsoluteLevel
-            )
-            guard levelCode == 0 else {
-                let result = AttachmentResult.failed(
-                    operation: "SLSSpaceSetAbsoluteLevel",
-                    code: levelCode
-                )
-                setupFailure = result
-                return result
-            }
-
-            let spaces = NSArray(object: NSNumber(value: lockSpace)) as CFArray
-            let showCode = showSpaces(connection, spaces)
-            guard showCode == 0 else {
-                let result = AttachmentResult.failed(
-                    operation: "SLSShowSpaces",
-                    code: showCode
-                )
-                setupFailure = result
-                return result
-            }
-
             connectionID = connection
+        }
+        let lockSpace: Int32
+        if let existing = spaceID {
+            lockSpace = existing
+        } else {
+            lockSpace = createSpace(connection, Self.sharedSpaceType, Self.sharedSpaceOptions)
+            guard lockSpace > 0 else {
+                return failSetup("SLSSpaceCreate", code: lockSpace, at: instant)
+            }
+            // Retain the allocated Space even if level/show fails, so retries
+            // configure that same Space rather than leaking another one.
             spaceID = lockSpace
         }
 
-        let windows = NSArray(object: NSNumber(value: windowNumber)) as CFArray
-        let moveCode = moveWindows(
-            connection,
-            lockSpace,
-            windows,
-            Self.moveWindowOptions
-        )
-        guard moveCode == 0 else {
-            let result = AttachmentResult.failed(
-                operation: "SLSSpaceAddWindowsAndRemoveFromSpaces",
-                code: moveCode
-            )
-            windowFailures[windowNumber] = result
-            return result
+        if lastPresentationAt.map({ instant - $0 >= Self.presentationRefreshInterval }) ?? true {
+            let levelCode = setAbsoluteLevel(connection, lockSpace, Self.screenLockAbsoluteLevel)
+            guard levelCode == 0 else {
+                return failSetup("SLSSpaceSetAbsoluteLevel", code: levelCode, at: instant)
+            }
+            let spaces = NSArray(object: NSNumber(value: lockSpace)) as CFArray
+            let showCode = showSpaces(connection, spaces)
+            guard showCode == 0 else {
+                return failSetup("SLSShowSpaces", code: showCode, at: instant)
+            }
+            lastPresentationAt = instant
+            setupFailure = nil
         }
 
+        if attachedWindowNumbers.contains(windowNumber) {
+            return .alreadyAttached(spaceID: lockSpace)
+        }
+        let windows = NSArray(object: NSNumber(value: windowNumber)) as CFArray
+        let moveCode = moveWindows(connection, lockSpace, windows, Self.moveWindowOptions)
+        guard moveCode == 0 else {
+            let result = AttachmentResult.failed(operation: "SLSSpaceAddWindowsAndRemoveFromSpaces", code: moveCode)
+            windowFailures[windowNumber] = failure(result, previous: windowFailures[windowNumber], at: instant)
+            return result
+        }
+        windowFailures[windowNumber] = nil
         attachedWindowNumbers.insert(windowNumber)
         return .attached(spaceID: lockSpace)
     }
 
-    /// Attached panels are discarded and rebuilt after unlock. Forgetting the
-    /// old window numbers is enough; the process-owned Space is reused on the
-    /// next lock and is reclaimed by WindowServer when the process exits.
-    func resetAttachedWindows() {
-        attachedWindowNumbers.removeAll()
+    private func canRetry(_ failure: Failure, at instant: TimeInterval) -> Bool {
+        failure.attempts < Self.maximumAttempts && instant >= failure.retryAt
+    }
+
+    private func failure(_ result: AttachmentResult, previous: Failure?, at instant: TimeInterval) -> Failure {
+        let attempts = (previous?.attempts ?? 0) + 1
+        return Failure(result: result, attempts: attempts, retryAt: instant + Double(attempts))
+    }
+
+    private func failSetup(_ operation: String, code: Int32, at instant: TimeInterval) -> AttachmentResult {
+        let result = AttachmentResult.failed(operation: operation, code: code)
+        setupFailure = failure(result, previous: setupFailure, at: instant)
+        lastPresentationAt = nil
+        return result
+    }
+
+    /// Wake can hide the process-owned Space without detaching its windows.
+    /// Request its presentation again, retaining those window identities.
+    func refreshPresentation() {
+        lastPresentationAt = nil
         setupFailure = nil
         windowFailures.removeAll()
+    }
+
+    /// Reuse the allocated Space after unlock, but always show it again on the
+    /// next lock. WindowServer can hide it while the ordinary session resumes.
+    func resetAttachedWindows() {
+        attachedWindowNumbers.removeAll()
+        refreshPresentation()
     }
 }

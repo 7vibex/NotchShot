@@ -1,12 +1,14 @@
 import AppKit
+import CoreAudio
+import Observation
 import SwiftUI
 
 enum LockedNowPlayingLayout {
-    static let cornerRadius: CGFloat = 20
-    static let artworkSize: CGFloat = 64
-    static let artworkCornerRadius: CGFloat = 14
-    static let titleSize: CGFloat = 15
-    static let artistSize: CGFloat = 11.5
+    static let cornerRadius: CGFloat = 24
+    static let artworkSize: CGFloat = 72
+    static let artworkCornerRadius: CGFloat = 16
+    static let titleSize: CGFloat = 15.5
+    static let artistSize: CGFloat = 12.5
 }
 
 /// The compact, display-only Now Playing surface drawn over loginwindow.
@@ -19,27 +21,67 @@ struct LockedNowPlayingCard: View {
     @Bindable var coordinator: AppCoordinator
     var cardSize: CGSize
 
-    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @State private var now = Date()
+    @State private var output = LockedNowPlayingAudioOutput()
 
     private var snapshot: MediaSnapshot { coordinator.media.snapshot }
 
     var body: some View {
-        card
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            // Advance the position locally without polling the media source.
-            // A paused card performs no once-per-second work.
-            .task(id: snapshot.isPlaying && coordinator.media.areScreensAwake) {
-                guard snapshot.isPlaying, coordinator.media.areScreensAwake else { return }
-                while !Task.isCancelled {
-                    try? await Task.sleep(for: .seconds(1))
-                    guard !Task.isCancelled else { return }
-                    now = Date()
-                }
+        LockedNowPlayingPresentation(
+            snapshot: snapshot,
+            artwork: coordinator.media.artwork,
+            cardSize: cardSize,
+            now: now,
+            audioRoute: output.route
+        )
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .onAppear { output.start() }
+        .onDisappear { output.stop() }
+        // Advance locally; paused playback does not need a progress timer.
+        .task(id: snapshot.isPlaying && coordinator.media.areScreensAwake) {
+            now = Date()
+            guard snapshot.isPlaying, coordinator.media.areScreensAwake else { return }
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(1))
+                guard !Task.isCancelled else { return }
+                now = Date()
             }
+        }
+    }
+}
+
+/// A side-effect-free presentation seam for previews and pixel validation.
+/// It never starts media sources, opens the clipboard, or accesses a coordinator.
+struct LockedNowPlayingPresentation: View {
+    var snapshot: MediaSnapshot
+    var artwork: NSImage?
+    var cardSize: CGSize = LockedCardGeometry.preferredCardSize
+    var now: Date = Date()
+    var audioRoute: AudioRouteReading? = nil
+    /// Previews can exercise the accessibility fallback without changing
+    /// system preferences; production follows the environment by default.
+    var reduceTransparencyOverride: Bool? = nil
+
+    @Environment(\.accessibilityReduceTransparency) private var environmentReduceTransparency
+
+    private var reduceTransparency: Bool {
+        reduceTransparencyOverride ?? environmentReduceTransparency
+    }
+
+    var body: some View {
+        card
+            .scaleEffect(scale)
+            .frame(width: cardSize.width, height: cardSize.height)
+            .allowsHitTesting(false)
             .accessibilityElement(children: .ignore)
             .accessibilityLabel("Now playing")
             .accessibilityValue(accessibilityValue)
+            .accessibilityHint("Playback controls are unavailable while the Mac is locked.")
+    }
+
+    private var scale: CGFloat {
+        min(cardSize.width / LockedCardGeometry.preferredCardSize.width,
+            cardSize.height / LockedCardGeometry.preferredCardSize.height)
     }
 
     private var card: some View {
@@ -47,36 +89,33 @@ struct LockedNowPlayingCard: View {
             header
 
             progress
-                .padding(.top, 9)
+                .padding(.top, 11)
 
             transport
-                .padding(.top, 5)
+                .padding(.top, 10)
         }
         .padding(.horizontal, 16)
-        .padding(.vertical, 12)
-        .frame(width: cardSize.width, height: cardSize.height)
+        .padding(.vertical, 14)
+        .frame(width: LockedCardGeometry.preferredCardSize.width, height: LockedCardGeometry.preferredCardSize.height)
         .notchShotLockedNowPlayingSurface(
             cornerRadius: LockedNowPlayingLayout.cornerRadius,
             reduceTransparency: reduceTransparency
         )
         .shadow(color: .black.opacity(reduceTransparency ? 0.24 : 0.08), radius: 12, y: 5)
-        // Read `now` so the progress view refreshes without rebuilding the
-        // artwork/title subtree every second.
-        .opacity(now == .distantPast ? 0 : 1)
     }
 
     private var header: some View {
-        HStack(spacing: 14) {
-            artwork
+        HStack(spacing: 15) {
+            albumArtwork
 
             VStack(alignment: .leading, spacing: 3) {
-                Text(snapshot.title ?? "Not Playing")
+                Text(LockedNowPlayingPresentationPolicy.title(snapshot))
                     .font(.system(size: LockedNowPlayingLayout.titleSize, weight: .bold, design: .rounded))
                     .foregroundStyle(.white)
                     .lineLimit(1)
                     .minimumScaleFactor(0.78)
 
-                Text(snapshot.artist ?? snapshot.applicationName ?? "")
+                Text(LockedNowPlayingPresentationPolicy.subtitle(snapshot))
                     .font(.system(size: LockedNowPlayingLayout.artistSize, weight: .medium, design: .rounded))
                     .foregroundStyle(.white.opacity(0.72))
                     .lineLimit(1)
@@ -94,9 +133,9 @@ struct LockedNowPlayingCard: View {
     }
 
     @ViewBuilder
-    private var artwork: some View {
+    private var albumArtwork: some View {
         Group {
-            if let image = coordinator.media.artwork {
+            if let image = artwork {
                 Image(nsImage: image)
                     .resizable()
                     .aspectRatio(contentMode: .fill)
@@ -140,7 +179,7 @@ struct LockedNowPlayingCard: View {
                         .frame(height: 3)
                     Capsule()
                         .fill(.white.opacity(0.94))
-                        .frame(width: max(3, geometry.size.width * fraction), height: 3)
+                        .frame(width: geometry.size.width * fraction, height: 3)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
@@ -152,18 +191,18 @@ struct LockedNowPlayingCard: View {
 
     private var transport: some View {
         HStack(spacing: 0) {
-            transportSymbol("heart.fill", size: 15)
+            transportSymbol("shuffle", size: 16, opacity: 0.78)
             Spacer()
-            transportSymbol("backward.fill", size: 21)
+            transportSymbol("backward.fill", size: 24)
             Spacer()
-            transportSymbol(snapshot.isPlaying ? "pause.fill" : "play.fill", size: 26)
+            transportSymbol(snapshot.isPlaying ? "pause.fill" : "play.fill", size: 29)
                 .frame(width: 34)
             Spacer()
-            transportSymbol("forward.fill", size: 21)
+            transportSymbol("forward.fill", size: 24)
             Spacer()
-            transportSymbol("display", size: 17)
+            transportSymbol(LockedNowPlayingPresentationPolicy.routeSymbol(audioRoute), size: 18)
         }
-        .frame(height: 32)
+        .frame(height: 35)
         .accessibilityHidden(true)
     }
 
@@ -180,7 +219,7 @@ struct LockedNowPlayingCard: View {
 
     private func timeLabel(_ value: TimeInterval?, countdown: Bool = false) -> some View {
         Text((countdown && value != nil ? "-" : "") + Self.formatted(value))
-            .font(.system(size: 10, weight: .semibold, design: .rounded))
+            .font(.system(size: 11, weight: .semibold, design: .rounded))
             .foregroundStyle(.white.opacity(0.72))
             .monospacedDigit()
             .frame(minWidth: 30)
@@ -203,9 +242,7 @@ struct LockedNowPlayingCard: View {
     }
 
     private var accessibilityValue: String {
-        [snapshot.title, snapshot.artist]
-            .compactMap { $0 }
-            .joined(separator: ", ")
+        LockedNowPlayingPresentationPolicy.accessibilityValue(snapshot, audioRoute: audioRoute)
     }
 
     private static func formatted(_ value: TimeInterval?) -> String {
@@ -217,5 +254,86 @@ struct LockedNowPlayingCard: View {
         return hours > 0
             ? String(format: "%d:%02d:%02d", hours, minutes, seconds)
             : String(format: "%d:%02d", minutes, seconds)
+    }
+}
+
+/// Fallback text and route identity are independent of the live coordinator.
+enum LockedNowPlayingPresentationPolicy {
+    static func title(_ snapshot: MediaSnapshot) -> String {
+        nonempty(snapshot.title) ?? "Not Playing"
+    }
+
+    static func subtitle(_ snapshot: MediaSnapshot) -> String {
+        nonempty(snapshot.artist) ?? nonempty(snapshot.applicationName) ?? "Unknown artist"
+    }
+
+    static func routeSymbol(_ route: AudioRouteReading?) -> String {
+        route?.selectorSymbolName ?? "speaker.wave.2"
+    }
+
+    static func accessibilityValue(_ snapshot: MediaSnapshot, audioRoute: AudioRouteReading?) -> String {
+        [title(snapshot), subtitle(snapshot), snapshot.isPlaying ? "Playing" : "Paused",
+         nonempty(audioRoute?.name).map { "Audio output: \($0)" }]
+            .compactMap { $0 }
+            .joined(separator: ", ")
+    }
+
+    private static func nonempty(_ value: String?) -> String? {
+        guard let value = value?.trimmingCharacters(in: .whitespacesAndNewlines), !value.isEmpty else { return nil }
+        return value
+    }
+}
+
+/// Listen only for output changes while this card is mounted. This keeps the
+/// route truthful even while paused, without polling or selecting a device.
+@MainActor
+@Observable
+private final class LockedNowPlayingAudioOutput {
+    private(set) var route: AudioRouteReading?
+    @ObservationIgnored private var registration: LockedNowPlayingOutputRegistration?
+
+    func start() {
+        guard registration == nil else { return }
+        route = AudioOutputDeviceService.currentOutput()
+        registration = LockedNowPlayingOutputRegistration { [weak self] _, _ in
+            Task { @MainActor in
+                guard let self, self.registration != nil else { return }
+                self.route = AudioOutputDeviceService.currentOutput()
+            }
+        }
+    }
+
+    func stop() {
+        registration = nil
+    }
+}
+
+/// Ownership of the Core Audio registration is independent of SwiftUI's
+/// disappearance callbacks. Dropping the view state also releases the token,
+/// removing the listener even if no explicit `stop` callback was delivered.
+private final class LockedNowPlayingOutputRegistration {
+    private let listener: AudioObjectPropertyListenerBlock
+
+    private static var address: AudioObjectPropertyAddress {
+        AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDefaultOutputDevice,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+    }
+
+    init?(_ listener: @escaping AudioObjectPropertyListenerBlock) {
+        self.listener = listener
+        var address = Self.address
+        guard AudioObjectAddPropertyListenerBlock(
+            AudioObjectID(kAudioObjectSystemObject), &address, .main, listener
+        ) == noErr else { return nil }
+    }
+
+    deinit {
+        var address = Self.address
+        AudioObjectRemovePropertyListenerBlock(
+            AudioObjectID(kAudioObjectSystemObject), &address, .main, listener
+        )
     }
 }

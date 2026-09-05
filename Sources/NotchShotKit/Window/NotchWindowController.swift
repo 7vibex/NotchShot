@@ -249,6 +249,7 @@ public final class NotchWindowController {
         }
         entries.removeAll()
         lockScreenSpace.resetAttachedWindows()
+        LockedMediaNotificationController.shared.clear()
         LockedMediaNotificationController.shared.setCustomPresentationAvailable(false)
         onPanelAvailabilityChange?(false)
     }
@@ -270,7 +271,12 @@ public final class NotchWindowController {
             NSWorkspace.screensDidWakeNotification,
         ] {
             workspaceObservers.append(workspace.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
-                MainActor.assumeIsolated { self?.scheduleRebuild() }
+                MainActor.assumeIsolated {
+                    if name != NSWorkspace.activeSpaceDidChangeNotification, self?.isScreenLocked == true {
+                        self?.lockScreenSpace.refreshPresentation()
+                    }
+                    self?.scheduleRebuild()
+                }
             })
         }
         workspaceObservers.append(workspace.addObserver(
@@ -342,7 +348,13 @@ public final class NotchWindowController {
     /// undocumented inverse flags than trying to move that window back.
     @discardableResult
     private func rebuildPanelsAfterLockSpaceIfNeeded() -> Bool {
-        guard lockScreenSpace.hasAttachedWindows else { return false }
+        let needsRebuild = lockScreenSpace.hasAttachedWindows
+        // An exhausted setup attempt may have attached no windows. Reset its
+        // retry budget on unlock too, so the next lock gets a fresh attempt.
+        lockScreenSpace.resetAttachedWindows()
+        LockedMediaNotificationController.shared.clear()
+        LockedMediaNotificationController.shared.setCustomPresentationAvailable(false)
+        guard needsRebuild else { return false }
         for entry in entries.values {
             WindowExclusionRegistry.shared.unregister(entry.panel)
             entry.panel.orderOut(nil)
@@ -354,8 +366,6 @@ public final class NotchWindowController {
             entry.panel.close()
         }
         entries.removeAll()
-        lockScreenSpace.resetAttachedWindows()
-        LockedMediaNotificationController.shared.setCustomPresentationAvailable(false)
         rebuildPanels()
         Log.window.notice("Rebuilt notch panels after leaving the Lock Screen Space")
         return true
@@ -571,12 +581,15 @@ public final class NotchWindowController {
                 startLockedPresenceTimer()
             } else {
                 stopLockedPresenceTimer()
+                LockedMediaNotificationController.shared.clear()
                 LockedMediaNotificationController.shared
                     .setCustomPresentationAvailable(false)
             }
             return
         }
         stopLockedPresenceTimer()
+        LockedMediaNotificationController.shared.clear()
+        LockedMediaNotificationController.shared.setCustomPresentationAvailable(false)
         for entry in entries.values {
             entry.panel.level = NotchPanel.level(sessionIsActive: true)
             entry.panel.canBecomeVisibleWithoutLogin = allowsLockedPresentation

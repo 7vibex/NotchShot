@@ -47,7 +47,7 @@ enum LockedNowPlayingGlassPolicy {
     /// local dimming layer protects the bold white labels without turning the
     /// complete player into the opaque navy slab produced by regular glass.
     static let dimmingOpacity = 0.06
-    static let highlightOpacity = 0.20
+    static let highlightOpacity = 0.28
 
     static func usesLiquidGlass(
         reduceTransparency: Bool,
@@ -494,14 +494,18 @@ private struct NotchShotLockedNowPlayingSurfaceModifier: ViewModifier {
                 .glassEffect(.clear, in: shape)
                 .background {
                     shape
-                        .fill(.black.opacity(LockedNowPlayingGlassPolicy.dimmingOpacity))
+                        .fill(LinearGradient(
+                            colors: [.white.opacity(0.07), .black.opacity(LockedNowPlayingGlassPolicy.dimmingOpacity)],
+                            startPoint: .top,
+                            endPoint: .bottom
+                        ))
                 }
                 .overlay { border(shape) }
         } else {
             content
                 .background {
                     shape.fill(
-                        Color(white: increaseContrast ? 0.08 : 0.12).opacity(0.96)
+                        Color(white: increaseContrast ? 0.08 : 0.12)
                     )
                 }
                 .overlay { border(shape) }

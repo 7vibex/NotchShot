@@ -1,4 +1,5 @@
 import AppKit
+import CoreAudio
 import Foundation
 import Testing
 @testable import NotchShotKit
@@ -116,12 +117,32 @@ struct DesignSystemTests {
         )
         let lockedCard = try String(contentsOf: lockedCardURL, encoding: .utf8)
         #expect(lockedCard.contains("Image(systemName: \"waveform\")"))
-        #expect(lockedCard.contains("transportSymbol(\"heart.fill\""))
-        #expect(lockedCard.contains("transportSymbol(\"display\""))
-        #expect(!lockedCard.contains("transportSymbol(\"shuffle\""))
-        #expect(!lockedCard.contains("transportSymbol(\"headphones\""))
-        #expect(LockedNowPlayingLayout.artworkSize == 64)
-        #expect(LockedNowPlayingLayout.cornerRadius == 20)
+        #expect(lockedCard.contains("transportSymbol(\"shuffle\""))
+        #expect(!lockedCard.contains("transportSymbol(\"heart.fill\""))
+        #expect(lockedCard.contains(".allowsHitTesting(false)"))
+        #expect(LockedNowPlayingLayout.artworkSize / LockedCardGeometry.preferredCardSize.width == 0.2)
+        #expect(LockedNowPlayingLayout.cornerRadius == 24)
+    }
+
+    @Test("Locked playback uses real route identity and honest metadata fallbacks")
+    func lockedPlaybackPresentation() {
+        let empty = MediaSnapshot(title: "  ", artist: "", isPlaying: false)
+        #expect(LockedNowPlayingPresentationPolicy.title(empty) == "Not Playing")
+        #expect(LockedNowPlayingPresentationPolicy.subtitle(empty) == "Unknown artist")
+        #expect(LockedNowPlayingPresentationPolicy.accessibilityValue(empty, audioRoute: nil)
+            == "Not Playing, Unknown artist, Paused")
+        #expect(LockedNowPlayingPresentationPolicy.routeSymbol(nil) == "speaker.wave.2")
+
+        let headphones = AudioRouteReading(deviceID: 9, name: "Studio Headphones", transport: kAudioDeviceTransportTypeBluetooth)
+        #expect(LockedNowPlayingPresentationPolicy.routeSymbol(headphones) == "headphones")
+        let speakers = AudioRouteReading(deviceID: 10, name: "Mac Speakers", transport: kAudioDeviceTransportTypeBuiltIn)
+        #expect(LockedNowPlayingPresentationPolicy.routeSymbol(speakers) == "laptopcomputer")
+        let airplay = AudioRouteReading(deviceID: 11, name: "Living Room", transport: kAudioDeviceTransportTypeAirPlay)
+        #expect(LockedNowPlayingPresentationPolicy.routeSymbol(airplay) == "airplayaudio")
+        let playing = MediaSnapshot(applicationName: "Music", title: "Example Song", artist: nil, isPlaying: true)
+        #expect(LockedNowPlayingPresentationPolicy.subtitle(playing) == "Music")
+        #expect(LockedNowPlayingPresentationPolicy.accessibilityValue(playing, audioRoute: headphones)
+            == "Example Song, Music, Playing, Audio output: Studio Headphones")
     }
 
     @Test("Accessibility appearances replace Liquid Glass with stable chrome")

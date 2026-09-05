@@ -8,6 +8,40 @@ struct LockedMediaNotificationPayload: Equatable, Sendable {
     var body: String
 }
 
+struct LockedMediaNotificationSettings: Sendable {
+    var authorization: UNAuthorizationStatus
+    var lockScreen: UNNotificationSetting
+}
+
+/// An isolated boundary for deterministic delivery tests. Creating a test
+/// client never accesses the system notification center or asks for permission.
+@MainActor
+struct LockedMediaNotificationClient {
+    var settings: @MainActor () async -> LockedMediaNotificationSettings
+    var requestAuthorization: @MainActor () async throws -> Void
+    var add: @MainActor (UNNotificationRequest) async throws -> Void
+    var remove: @MainActor ([String]) -> Void
+
+    static var live: Self {
+        let center = UNUserNotificationCenter.current()
+        return Self(
+            settings: {
+                let settings = await center.notificationSettings()
+                return LockedMediaNotificationSettings(
+                    authorization: settings.authorizationStatus,
+                    lockScreen: settings.lockScreenSetting
+                )
+            },
+            requestAuthorization: { _ = try await center.requestAuthorization(options: [.alert]) },
+            add: { try await center.add($0) },
+            remove: {
+                center.removePendingNotificationRequests(withIdentifiers: $0)
+                center.removeDeliveredNotifications(withIdentifiers: $0)
+            }
+        )
+    }
+}
+
 /// Why the current song is, or is not, reaching the Lock Screen.
 ///
 /// This exists because every failure here is invisible by design: macOS
@@ -119,10 +153,17 @@ final class LockedMediaNotificationController {
     /// else depends on it: delivery re-reads the live settings every time.
     private(set) var readiness: LockedMediaNotificationReadiness = .unknown
 
-    @ObservationIgnored private let center = UNUserNotificationCenter.current()
+    @ObservationIgnored private let client: LockedMediaNotificationClient
     @ObservationIgnored private var generation: UInt = 0
+    // Cache only bounded, opted-in metadata, never the artwork or full snapshot.
+    @ObservationIgnored private var eligiblePayload: LockedMediaNotificationPayload?
     @ObservationIgnored private var lastPayload: LockedMediaNotificationPayload?
     @ObservationIgnored private var customPresentationIsAvailable = false
+    @ObservationIgnored private(set) var deliveryTask: Task<Void, Never>?
+
+    init(client: LockedMediaNotificationClient = .live) {
+        self.client = client
+    }
 
     func prepareIfNeeded(enabled: Bool) {
         guard enabled else {
@@ -132,13 +173,13 @@ final class LockedMediaNotificationController {
         }
         Task { [weak self] in
             guard let self else { return }
-            let settings = await center.notificationSettings()
-            guard settings.authorizationStatus == .notDetermined else {
+            let settings = await client.settings()
+            guard settings.authorization == .notDetermined else {
                 refresh(with: settings)
                 return
             }
             do {
-                _ = try await center.requestAuthorization(options: [.alert])
+                try await client.requestAuthorization()
             } catch {
                 Log.media.error("Lock Screen notification authorization failed: \(error.localizedDescription)")
             }
@@ -149,19 +190,19 @@ final class LockedMediaNotificationController {
     /// Re-reads what macOS currently allows. Cheap, and called whenever the
     /// user is in a position to look at the answer.
     func refreshReadiness() async {
-        refresh(with: await center.notificationSettings())
+        refresh(with: await client.settings())
     }
 
-    private func refresh(with settings: UNNotificationSettings) {
+    private func refresh(with settings: LockedMediaNotificationSettings) {
         let updated = LockedMediaNotificationPolicy.readiness(
-            authorization: settings.authorizationStatus,
-            lockScreen: settings.lockScreenSetting
+            authorization: settings.authorization,
+            lockScreen: settings.lockScreen
         )
         // The raw pair matters when diagnosing: `notSupported` and `enabled`
         // both allow delivery, but only one of them means System Settings has
         // a switch the user can actually see.
         Log.media.debug(
-            "Notification settings: authorization=\(settings.authorizationStatus.rawValue, privacy: .public), lockScreen=\(settings.lockScreenSetting.rawValue, privacy: .public)"
+            "Notification settings: authorization=\(settings.authorization.rawValue, privacy: .public), lockScreen=\(settings.lockScreen.rawValue, privacy: .public)"
         )
         guard updated != readiness else { return }
         readiness = updated
@@ -171,14 +212,12 @@ final class LockedMediaNotificationController {
     }
 
     func update(snapshot: MediaSnapshot, screenIsLocked: Bool, enabled: Bool) {
-        generation &+= 1
-        let currentGeneration = generation
-        guard let payload = LockedMediaNotificationPolicy.payload(
+        eligiblePayload = LockedMediaNotificationPolicy.payload(
             snapshot: snapshot,
             screenIsLocked: screenIsLocked,
-            enabled: enabled,
-            customPresentationIsAvailable: customPresentationIsAvailable
-        ) else {
+            enabled: enabled
+        )
+        if eligiblePayload == nil {
             // Withdrawal is as important to trace as delivery: a track that
             // stops reporting itself as playing pulls its own notification,
             // which from the Lock Screen is indistinguishable from never
@@ -188,14 +227,41 @@ final class LockedMediaNotificationController {
                     "Withdrew the Lock Screen song: playing=\(snapshot.isPlaying, privacy: .public), hasContent=\(snapshot.hasContent, privacy: .public)"
                 )
             }
+        }
+        reconcileDelivery()
+    }
+
+    private func reconcileDelivery() {
+        let payload = customPresentationIsAvailable ? nil : eligiblePayload
+        guard let payload else {
+            if lastPayload != nil { generation &+= 1 }
+            // Also remove requests left by a previous process, even when this
+            // controller has not submitted anything in its own lifetime.
             removeNotification()
             return
         }
+        // An identical observation must preserve an in-flight settings lookup
+        // or submission, as well as deduplicating an already-delivered song.
         guard payload != lastPayload else { return }
+        generation &+= 1
         lastPayload = payload
+        startDeliveryIfNeeded()
+    }
 
-        Task { [weak self] in
-            await self?.deliver(payload, generation: currentGeneration)
+    private func startDeliveryIfNeeded() {
+        guard deliveryTask == nil else { return }
+        deliveryTask = Task { [weak self] in
+            guard let self else { return }
+            // Serialize submissions of the shared request identifier. If a
+            // stale add completes after withdrawal, remove it before starting
+            // the replacement, rather than accidentally removing a newer song.
+            while !Task.isCancelled, let payload = lastPayload {
+                let currentGeneration = generation
+                await deliver(payload, generation: currentGeneration)
+                if generation == currentGeneration { break }
+            }
+            deliveryTask = nil
+            if Task.isCancelled, lastPayload != nil { startDeliveryIfNeeded() }
         }
     }
 
@@ -205,29 +271,28 @@ final class LockedMediaNotificationController {
     func setCustomPresentationAvailable(_ available: Bool) {
         guard available != customPresentationIsAvailable else { return }
         customPresentationIsAvailable = available
-        if available {
-            generation &+= 1
-            removeNotification()
-        }
+        reconcileDelivery()
     }
 
     func clear() {
+        eligiblePayload = nil
         generation &+= 1
+        deliveryTask?.cancel()
         removeNotification()
     }
 
     private func removeNotification() {
         lastPayload = nil
-        center.removePendingNotificationRequests(withIdentifiers: [Self.requestIdentifier])
-        center.removeDeliveredNotifications(withIdentifiers: [Self.requestIdentifier])
+        client.remove([Self.requestIdentifier])
     }
 
     private func deliver(_ payload: LockedMediaNotificationPayload, generation: UInt) async {
-        let settings = await center.notificationSettings()
-        guard self.generation == generation else { return }
+        let settings = await client.settings()
+        guard self.generation == generation, !Task.isCancelled else { return }
         refresh(with: settings)
         guard readiness == .ready else {
             Log.media.notice("Lock Screen song not submitted: \(self.readiness.title)")
+            lastPayload = nil
             return
         }
 
@@ -238,17 +303,21 @@ final class LockedMediaNotificationController {
         content.threadIdentifier = Self.requestIdentifier
         content.userInfo = [Self.metadataKey: true]
 
-        center.removePendingNotificationRequests(withIdentifiers: [Self.requestIdentifier])
-        center.removeDeliveredNotifications(withIdentifiers: [Self.requestIdentifier])
+        client.remove([Self.requestIdentifier])
         guard self.generation == generation else { return }
         do {
-            try await center.add(UNNotificationRequest(
+            try await client.add(UNNotificationRequest(
                 identifier: Self.requestIdentifier,
                 content: content,
                 trigger: nil
             ))
+            guard self.generation == generation, !Task.isCancelled else {
+                client.remove([Self.requestIdentifier])
+                return
+            }
             Log.media.notice("Submitted current song to the system Lock Screen notification center")
         } catch {
+            if self.generation == generation { lastPayload = nil }
             Log.media.error("Lock Screen song notification failed: \(error.localizedDescription)")
         }
     }
