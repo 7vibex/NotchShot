@@ -43,10 +43,11 @@ enum NotchActivityGlassPolicy {
 /// Optical rules for the compact display-only player shown over the wallpaper
 /// while loginwindow owns the secure Lock Screen.
 enum LockedNowPlayingGlassPolicy {
-    /// Apple's clear variant keeps media-rich wallpaper visible. A restrained
-    /// local dimming layer protects the bold white labels without turning the
-    /// complete player into the opaque navy slab produced by regular glass.
-    static let dimmingOpacity = 0.06
+    /// Even clear glass blurs a full-sized card at native strength. Composite
+    /// only the background at this opacity so wallpaper detail stays visible;
+    /// artwork, labels, and transport glyphs must remain fully opaque.
+    static let materialOpacity = 0.22
+    static let dimmingOpacity = 0.025
     static let highlightOpacity = 0.28
 
     static func usesLiquidGlass(
@@ -491,14 +492,16 @@ private struct NotchShotLockedNowPlayingSurfaceModifier: ViewModifier {
         let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
         if usesLiquidGlass {
             content
-                .glassEffect(.clear, in: shape)
+                // Contrast belongs to the foreground, rather than an opaque
+                // wash over the wallpaper. Keep this outside the glass layer.
+                .shadow(color: .black.opacity(0.32), radius: 1, y: 1)
                 .background {
                     shape
-                        .fill(LinearGradient(
-                            colors: [.white.opacity(0.07), .black.opacity(LockedNowPlayingGlassPolicy.dimmingOpacity)],
-                            startPoint: .top,
-                            endPoint: .bottom
-                        ))
+                        .fill(.black.opacity(LockedNowPlayingGlassPolicy.dimmingOpacity))
+                    shape
+                        .fill(.clear)
+                        .glassEffect(.clear, in: shape)
+                        .opacity(LockedNowPlayingGlassPolicy.materialOpacity)
                 }
                 .overlay { border(shape) }
         } else {
