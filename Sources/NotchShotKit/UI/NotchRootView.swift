@@ -176,7 +176,7 @@ public struct NotchRootView: View {
                 store: notificationStore,
                 isLocked: true,
                 showsPlaceholders: false,
-                showsMedia: context.isPrimary
+                showsMedia: false
             )
             .padding(.horizontal, 16)
             Spacer(minLength: 0)

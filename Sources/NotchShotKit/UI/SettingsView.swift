@@ -1648,7 +1648,6 @@ private struct NotchSettings: View {
 private struct MediaSettings: View {
     @Bindable var coordinator: AppCoordinator
     @Bindable var preferences: Preferences
-    @Bindable private var lockedMedia = LockedMediaNotificationController.shared
 
     var body: some View {
         Form {
@@ -1660,38 +1659,6 @@ private struct MediaSettings: View {
                         coordinator.media.restart()
                     }
                 ))
-                Toggle("Show current song on the Lock Screen", isOn: Binding(
-                    get: { preferences.showsMediaWhileLocked },
-                    set: { newValue in
-                        coordinator.setLockedMediaNotificationsEnabled(newValue)
-                    }
-                ))
-                .disabled(!preferences.mediaIntegrationEnabled)
-                Text("Experimental direct-download feature: draws a display-only card above the password area using an unsupported macOS window-space API. It also posts a supported system notification as a fallback. For that fallback, enable Notifications › when screen is locked and set previews to Always. A macOS update may disable the custom card.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                // macOS drops a notification an unauthorised app posts without
-                // telling anyone, so the state it reports back is the only way
-                // to tell "off in System Settings" from "broken".
-                if preferences.showsMediaWhileLocked {
-                    LabeledContent("Lock Screen status", value: lockedMedia.readiness.title)
-                    if let remedy = lockedMedia.readiness.remedy {
-                        Text(remedy)
-                            .font(.caption)
-                            .foregroundStyle(.orange)
-                        HStack(spacing: 8) {
-                            Button("Open Notification Settings") {
-                                coordinator.openNotificationSettings()
-                            }
-                            if lockedMedia.readiness == .notRequested {
-                                Button("Ask macOS Now") {
-                                    LockedMediaNotificationController.shared
-                                        .prepareIfNeeded(enabled: true)
-                                }
-                            }
-                        }
-                    }
-                }
                 Toggle("Show activity stack while Mac is locked", isOn: Binding(
                     get: { preferences.showsActivityStackWhileLocked },
                     set: { newValue in
@@ -1699,7 +1666,7 @@ private struct MediaSettings: View {
                         coordinator.windowController?.refreshLockedPresentation()
                     }
                 ))
-                Text("Separate privacy opt-in. Shows current track details, Focus state, and the latest NotchShot-owned alert in a display-only card stack. Replies and controls remain disabled until unlock.")
+                Text("Separate privacy opt-in. Shows Focus state and the latest NotchShot-owned alert in a display-only card stack. Replies and controls remain disabled until unlock.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 LabeledContent("Active source", value: coordinator.media.activeSource.displayName)
@@ -1778,13 +1745,6 @@ private struct MediaSettings: View {
             }
         }
         .settingsWorkbenchFormStyle()
-        // The user can change any of this in System Settings while this pane
-        // is open, so the reported state is re-read rather than cached from
-        // whenever the toggle was last touched.
-        .task(id: preferences.showsMediaWhileLocked) {
-            guard preferences.showsMediaWhileLocked else { return }
-            await LockedMediaNotificationController.shared.refreshReadiness()
-        }
     }
 
     private func chooseAdapter() {

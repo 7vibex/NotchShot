@@ -211,7 +211,8 @@ locally against the alert. A separate Accessibility opt-in mirrors only banners 
 presenting; recognized Messages and WhatsApp cards can open the source app for a real reply there.
 NotchShot still does not read hidden history, dismiss cross-app notifications, or send a reply on
 another app's behalf.
-An independently opted-in, display-only locked-session activity stack presents media, the latest
+The lock-screen music player and song notifications are disabled, including legacy opt-ins.
+An independently opted-in, display-only locked-session activity stack presents the latest
 due NotchShot alert, and Focus in translucent cards; it is an AppKit panel, not a WidgetKit Lock
 Screen widget. The public API boundary and runtime proof requirements are documented in
 [`Documentation/NOTIFICATIONS_AND_LOCK_SCREEN.md`](Documentation/NOTIFICATIONS_AND_LOCK_SCREEN.md).

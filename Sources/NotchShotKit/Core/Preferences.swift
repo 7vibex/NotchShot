@@ -208,11 +208,11 @@ public final class Preferences {
         didSet { write(usesSystemScreenshotShortcuts, .usesSystemShortcuts) }
     }
     public var mediaIntegrationEnabled = true { didSet { write(mediaIntegrationEnabled, .mediaEnabled) } }
-    /// Privacy-sensitive opt-in. The lock-window presentation is media-only,
-    /// compact, and non-interactive; capture results and metadata never use it.
-    public var showsMediaWhileLocked = false { didSet { write(showsMediaWhileLocked, .mediaWhileLocked) } }
+    /// Retired feature. Ignore old opt-ins so upgrades cannot restore the
+    /// experimental lock-screen player or its song-notification fallback.
+    public let showsMediaWhileLocked = false
     /// More revealing lock-session presentation. Off by default and separate
-    /// from compact media because it may show track metadata, Focus state, and
+    /// from ordinary media because it may show Focus state and
     /// the content of NotchShot-owned alerts.
     public var showsActivityStackWhileLocked = false {
         didSet { write(showsActivityStackWhileLocked, .activityStackWhileLocked) }
@@ -443,7 +443,7 @@ public final class Preferences {
         case clipboardEnabled, clipboardRetentionDays, clipboardClearsOnQuit, clipboardExcluded
         case notchEnabled, notchDisplayPlacement, islandOnExternal, mirrorPassiveContext, hoverPeek, hoverPeekDelay, systemLevelHUD
         case mirrorsBrightness, suppressesSystemOSD, usesSystemShortcuts
-        case mediaEnabled, mediaWhileLocked, activityStackWhileLocked, mirrorSystemNotifications
+        case mediaEnabled, activityStackWhileLocked, mirrorSystemNotifications
         case appleEventsFallback, adapterPath, adapterIdentity
         case calendarGlance, selectedCalendars, hiddenTitleCalendars, calendarTitles, calendarOverMedia
         case customCalendarSelection
@@ -583,7 +583,7 @@ public final class Preferences {
         }
         usesSystemScreenshotShortcuts = bool(.usesSystemShortcuts, false)
         mediaIntegrationEnabled = bool(.mediaEnabled, true)
-        showsMediaWhileLocked = bool(.mediaWhileLocked, false)
+        defaults.removeObject(forKey: "notchshot.mediaWhileLocked")
         showsActivityStackWhileLocked = bool(.activityStackWhileLocked, false)
         mirrorsSystemNotificationBanners = bool(.mirrorSystemNotifications, false)
         appleEventsFallbackEnabled = bool(.appleEventsFallback, false)

@@ -208,7 +208,7 @@ struct PreferencesTests {
         #expect(!preferences.recordingPresenterCamera)
     }
 
-    @Test("Locked-session media is privacy opt-in and persists explicitly")
+    @Test("Retired lock-screen music ignores legacy opt-ins and preserves other preferences")
     func lockedMediaPreference() {
         let suiteName = "notchshot.tests.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!
@@ -218,11 +218,22 @@ struct PreferencesTests {
         #expect(!first.showsMediaWhileLocked)
         #expect(!first.showsActivityStackWhileLocked)
         #expect(!first.mirrorsSystemNotificationBanners)
-        first.showsMediaWhileLocked = true
+        defaults.set(true, forKey: "notchshot.mediaWhileLocked")
         first.showsActivityStackWhileLocked = true
         first.mirrorsSystemNotificationBanners = true
 
-        #expect(Preferences(defaults: defaults).showsMediaWhileLocked)
+        let upgraded = Preferences(defaults: defaults)
+        #expect(!upgraded.showsMediaWhileLocked)
+        #expect(defaults.object(forKey: "notchshot.mediaWhileLocked") == nil)
+        #expect(!LockedMediaPresentationPolicy.shouldShowPanel(
+            sessionIsActive: false,
+            screenIsLocked: true,
+            activity: .media,
+            mediaOptedIn: upgraded.showsMediaWhileLocked,
+            hasMediaContent: true,
+            activityStackOptedIn: upgraded.showsActivityStackWhileLocked,
+            hasActivityContent: false
+        ))
         #expect(Preferences(defaults: defaults).showsActivityStackWhileLocked)
         #expect(Preferences(defaults: defaults).mirrorsSystemNotificationBanners)
     }

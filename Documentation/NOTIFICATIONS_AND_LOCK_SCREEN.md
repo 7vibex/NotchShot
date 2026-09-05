@@ -17,7 +17,7 @@ a WidgetKit Lock Screen widget.
 | Reply to a WhatsApp, Messages, Slack, or other third-party notification | The posting app owns its notification category, text-input action, and response callback | NotchShot can open a recognized source app so the user can reply there. It does not show an inline send control or claim that a message was sent. |
 | Add an iPhone-style accessory widget to the Mac Lock Screen | WidgetKit does not offer the accessory Lock Screen families on macOS | Not implemented. |
 | Start a native ActivityKit Live Activity from a macOS app | The macOS 26 SDK marks `ActivityAttributes`, `ActivityContent`, and `Activity` unavailable on macOS | Not implemented. A Mac may display activities originating on a paired iPhone; that is not a native NotchShot macOS activity. |
-| Show the current song on the Mac Lock Screen | No supported API adds arbitrary app UI to the Mac Lock Screen. `canBecomeVisibleWithoutLogin` does not attach a normal app window to loginwindow's separate WindowServer Space. | Two surfaces, both opt-in. A soundless UserNotifications request, which macOS places and privacy-gates itself; and an experimental direct-distribution card. The card dynamically resolves private SkyLight Space functions, creates a screen-lock-level Space, and moves its mouse-transparent window there. Missing symbols or any WindowServer error fail open to the system notification. This private path is not App Store compatible and may break on any macOS update. |
+| Show the current song on the Mac Lock Screen | No supported API adds arbitrary app UI to the Mac Lock Screen. | Disabled. The player and song notification are no longer exposed in Settings; legacy opt-ins are cleared on load. Music is also excluded from the separate locked activity stack. |
 
 Primary references:
 
@@ -83,18 +83,16 @@ text; those operations stay in the messaging app that owns them.
 request Critical Alert privileges or claim Apple's time-sensitive notification
 semantics.
 
-Settings exposes two independent options under Integrations:
+The lock-screen music feature is retired. The app ignores and clears its old
+opt-in, removes any previously delivered song notification at startup, and no
+longer offers a setting to enable either music surface.
 
-1. **Show current song in Lock Screen notifications** submits the playing title
-   and artist to macOS without drawing above the password screen.
-2. **Show activity stack while Mac is locked** may show the current media
-   title, Focus state, and latest due NotchShot alert.
-
-Both are off by default. The song notification is removed after unlock, pause,
-or opt-out and contains no controls. The experimental custom card is attached
-to a screen-lock-level Space only after the dedicated loginwindow lock signal;
-its panel is discarded and rebuilt in ordinary user Spaces after unlock. The
-card and activity stack ignore pointer input while the session is inactive;
+**Show activity stack while Mac is locked** remains a separate, off-by-default
+option for Focus state and the latest due NotchShot alert. It excludes music,
+and music alone never creates a locked stack. The experimental activity panel
+is attached to a screen-lock-level Space only after the dedicated loginwindow
+lock signal and rebuilt in ordinary user Spaces after unlock. It ignores
+pointer input while the session is inactive;
 replies, playback controls, scheduling, captures, history, and settings remain
 unavailable until unlock. No private notification database, screen scraping,
 or cross-app action injection is involved.

@@ -216,9 +216,8 @@ public final class AppCoordinator {
         // Media presence feeds the arbiter but can never outrank a capture.
         // `observeMedia` re-arms its own tracker, so it must be started exactly
         // once — arming it here as well doubled the trackers on every change.
-        LockedMediaNotificationController.shared.prepareIfNeeded(
-            enabled: Preferences.shared.showsMediaWhileLocked
-        )
+        // Remove a song notification left by a build that offered this feature.
+        LockedMediaNotificationController.shared.clear()
         observeMedia()
         observeDictation()
         refreshActivity()
@@ -239,11 +238,6 @@ public final class AppCoordinator {
 
     private func observeMedia() {
         arbiter.hasMedia = media.snapshot.hasContent
-        LockedMediaNotificationController.shared.update(
-            snapshot: media.snapshot,
-            screenIsLocked: media.isScreenLocked,
-            enabled: Preferences.shared.showsMediaWhileLocked
-        )
         systemNotifications.setSessionActive(media.isSessionActive)
         if !media.isSessionActive {
             clearSystemNotifications()
@@ -257,8 +251,7 @@ public final class AppCoordinator {
             _ = media.snapshot.isPlaying
             _ = media.isSessionActive
             // The workspace session can resign before loginwindow posts its
-            // secure-lock signal. Track the narrower state independently so
-            // the notification is re-evaluated when that second event arrives.
+            // secure-lock signal. Keep presentation synchronized with it.
             _ = media.isScreenLocked
         } onChange: { [weak self] in
             Task { @MainActor in self?.observeMedia() }
@@ -272,17 +265,6 @@ public final class AppCoordinator {
             string: "x-apple.systempreferences:com.apple.Notifications-Settings.extension"
         ) else { return }
         NSWorkspace.shared.open(url)
-    }
-
-    public func setLockedMediaNotificationsEnabled(_ enabled: Bool) {
-        Preferences.shared.showsMediaWhileLocked = enabled
-        windowController?.refreshLockedPresentation()
-        LockedMediaNotificationController.shared.prepareIfNeeded(enabled: enabled)
-        LockedMediaNotificationController.shared.update(
-            snapshot: media.snapshot,
-            screenIsLocked: media.isScreenLocked,
-            enabled: enabled
-        )
     }
 
     /// Last dictation state announced to VoiceOver, so republished snapshots

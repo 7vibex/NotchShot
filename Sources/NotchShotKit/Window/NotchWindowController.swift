@@ -23,11 +23,9 @@ enum LockedMediaPresentationPolicy {
         if mediaOptedIn, hasMediaContent, isPrimaryDisplay {
             return .compactMedia
         }
-        // Activity cards may still be useful on another display, but the song
-        // itself belongs only on the configured Main Display. Media alone must
-        // never create an external stack containing a second player.
-        if activityStackOptedIn,
-           hasActivityContent || (hasMediaContent && isPrimaryDisplay) {
+        // The separate activity opt-in must not resurrect the retired player
+        // or show an empty panel solely because music is playing.
+        if activityStackOptedIn, hasActivityContent {
             return .activityStack
         }
         return .none
