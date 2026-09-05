@@ -347,6 +347,10 @@ func runBenchmarks() {
     }
 
     EditorBenchmarks.run(enabled: enabled)
+    if enabled("export-handler") {
+        do { try ExportHandlerBenchmarks.run() }
+        catch { fatalError("Export handler benchmark failed: \(error)") }
+    }
 
     print(String(repeating: "─", count: 92))
 }

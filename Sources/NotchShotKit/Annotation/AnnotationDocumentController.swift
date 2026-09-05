@@ -279,6 +279,17 @@ public final class AnnotationDocumentController {
     /// shared, copied, or uploaded.
     @discardableResult
     public func exportImage(to url: URL, format: ImageFormat) throws -> URL {
+        try exportImageResult(to: url, format: format).url
+    }
+
+    public struct ImageExportResult: Sendable {
+        public let url: URL
+        public let pixelSize: CGSize
+    }
+
+    /// Metadata comes from the exact flattened image written to disk, avoiding
+    /// a second render and preserving crop, rotation and background dimensions.
+    public func exportImageResult(to url: URL, format: ImageFormat) throws -> ImageExportResult {
         let flattened = try renderFlattened()
         _ = try ImageExport.write(
             flattened,
@@ -287,7 +298,7 @@ public final class AnnotationDocumentController {
             quality: Preferences.shared.jpegQuality,
             dpiScale: document.sourceScale
         )
-        return url
+        return ImageExportResult(url: url, pixelSize: CGSize(width: flattened.width, height: flattened.height))
     }
 
     @discardableResult

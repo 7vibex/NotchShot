@@ -588,12 +588,11 @@ public struct AnnotationEditorView: View {
         guard panel.runModal() == .OK, let url = panel.url else { return }
 
         do {
-            _ = try controller.exportImage(to: url, format: format)
-            let flattened = try controller.renderFlattened()
+            let result = try controller.exportImageResult(to: url, format: format)
             onExported(CaptureAsset(
-                url: url,
+                url: result.url,
                 kind: .screenshot,
-                pixelSize: CGSize(width: flattened.width, height: flattened.height),
+                pixelSize: result.pixelSize,
                 scale: controller.document.sourceScale
             ))
         } catch {
