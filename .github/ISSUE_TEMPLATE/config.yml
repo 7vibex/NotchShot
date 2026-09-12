@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Documentation
+    url: https://github.com/7vibex/NotchShot/tree/main/Documentation
+    about: AI activity integration and notifications/lock-screen boundaries.
+  - name: Report a security vulnerability
+    url: https://github.com/7vibex/NotchShot/security/advisories/new
+    about: Report vulnerabilities privately instead of opening a public issue.

@@ -1,0 +1,76 @@
+name: Bug report
+description: Report a reproducible problem with NotchShot
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting. Please fill in as much as you can — reproductions with exact
+        steps are fixed fastest. Do not attach capture, recording, OCR, or clipboard content
+        you would not want public.
+  - type: input
+    id: macos
+    attributes:
+      label: macOS version
+      placeholder: "26.0"
+    validations:
+      required: true
+  - type: input
+    id: hardware
+    attributes:
+      label: Mac model and chip
+      placeholder: "MacBook Pro 14-inch, M4 Pro"
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: NotchShot version or commit
+      placeholder: "v1.0.0, or the output of `git rev-parse --short HEAD`"
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Capture (area, window, display, scrolling)
+        - Recording (audio, video, captions, trim)
+        - Annotation and export
+        - OCR and text recognition
+        - Notch UI and HUD
+        - History, shelf, or clipboard
+        - Permissions
+        - Settings or onboarding
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: description
+    attributes:
+      label: What happened
+      description: Describe the problem, including what you expected instead.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Hover the notch and click
+        2. Choose Area capture
+        3. …
+    validations:
+      required: true
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Diagnostics
+      description: |
+        If the app starts but capture does not work, run the bundled self-test and paste the result:
+        `dist/NotchShot.app/Contents/MacOS/NotchShot --self-test`.
+        Bug report packages from the app's Report a Bug flow are welcome here.
+      render: text
+    validations:
+      required: false

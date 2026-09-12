@@ -357,3 +357,15 @@ tested in those layouts.
 
 CleanShot X is proprietary; this is a clean-room implementation of the same product ideas
 on Apple's own frameworks. GPL-licensed notch projects were not used as source material.
+
+## Contributing
+
+Contributions are welcome. Read [CONTRIBUTING.md](CONTRIBUTING.md) first: it covers
+requirements, build and test commands, and the privacy invariants every pull request must
+preserve. Participation is covered by [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md). Report
+security issues privately as described in [SECURITY.md](SECURITY.md).
+
+## License
+
+NotchShot is released under the [MIT License](LICENSE).
+

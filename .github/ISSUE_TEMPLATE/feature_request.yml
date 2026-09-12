@@ -1,0 +1,41 @@
+name: Feature request
+description: Propose a new feature or an improvement
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        NotchShot deliberately stays local-first: no account, no backend, no telemetry. It
+        also refuses private APIs and sandbox-breaking integrations where Apple provides no
+        supported path. Proposals that respect those boundaries are much easier to accept.
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem does this solve?
+      description: Describe the workflow that is currently slow, awkward, or impossible.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: What should NotchShot do? Include where it lives in the notch UI or Settings.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Existing workarounds, other tools, or simpler approaches.
+    validations:
+      required: false
+  - type: checkboxes
+    id: boundaries
+    attributes:
+      label: Boundaries
+      options:
+        - label: This can work with public Apple frameworks only.
+          required: true
+        - label: This does not require sending capture data off the Mac.
+          required: true
