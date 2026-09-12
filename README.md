@@ -1,5 +1,7 @@
 # NotchShot
 
+[![CI](https://github.com/7vibex/NotchShot/actions/workflows/ci.yml/badge.svg)](https://github.com/7vibex/NotchShot/actions/workflows/ci.yml)
+
 A local-first macOS 26 capture utility that lives in the MacBook notch. Screenshots,
 recording, annotation, OCR, history and floating captures, with the notch acting as the
 capture launcher, the recording HUD, and the post-capture shelf.
