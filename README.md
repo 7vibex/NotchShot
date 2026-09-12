@@ -102,8 +102,9 @@ sanitised.
 - Hover reveals a compact peek after a delay. The full interface only opens on a click, a
   shortcut, or a drag — crossing the top of the screen never flares it open.
 - One panel per display. Notchless displays get a matching top-centre island (optional).
-- Panels are `sharingType = .none` *and* excluded by window id from every capture, so
-  NotchShot never appears in its own output.
+- Panels are `sharingType = .none` *and* excluded by window id from every capture by
+  default, so NotchShot never appears in its own output. Settings → Capture can include the
+  notch in screenshots and recordings when you want it on camera.
 - Survives Space switches, fullscreen apps, display hot-plug, resolution change, and wake.
 
 ## System volume and brightness HUD

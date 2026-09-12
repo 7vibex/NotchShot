@@ -1087,6 +1087,13 @@ private struct CaptureSettings: View {
                 Toggle("Include the pointer in screenshots", isOn: $preferences.includesCursorInScreenshots)
             }
 
+            Section("Notch") {
+                Toggle("Show the notch in screenshots and recordings", isOn: $preferences.includesNotchInCaptures)
+                Text("Off by default. When on, the notch and its controls appear in every screen capture and recording, including NotchShot's own — useful for demos and product screenshots.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
             Section("After capture") {
                 Toggle("Show the shelf in the notch", isOn: $preferences.showsShelfAfterCapture)
                 Picker("Hide the shelf after", selection: $preferences.shelfDuration) {

@@ -1,5 +1,6 @@
 import AppKit
 import Combine
+import Observation
 import SwiftUI
 
 enum LockedMediaPresentationPolicy {
@@ -217,6 +218,7 @@ public final class NotchWindowController {
         rebuildPanels()
         installObservers()
         installMouseMonitors()
+        observeCaptureInclusion()
     }
 
     public func stop() {
@@ -250,6 +252,28 @@ public final class NotchWindowController {
         LockedMediaNotificationController.shared.clear()
         LockedMediaNotificationController.shared.setCustomPresentationAvailable(false)
         onPanelAvailabilityChange?(false)
+    }
+
+    /// Keeps every panel in step with the capture-inclusion preference.
+    ///
+    /// Panels created later ask for the current value themselves, so this only
+    /// has to cover the windows that already exist plus future changes. The
+    /// recursion re-arms itself after each write, the same pattern the activity
+    /// snapshots use.
+    private func observeCaptureInclusion() {
+        applyCaptureInclusionPolicy()
+        withObservationTracking {
+            _ = Preferences.shared.includesNotchInCaptures
+        } onChange: { [weak self] in
+            Task { @MainActor in self?.observeCaptureInclusion() }
+        }
+    }
+
+    private func applyCaptureInclusionPolicy() {
+        let included = Preferences.shared.includesNotchInCaptures
+        for entry in entries.values {
+            entry.panel.applyCaptureInclusion(included)
+        }
     }
 
     private func installObservers() {
@@ -438,6 +462,7 @@ public final class NotchWindowController {
                 panel.contentView = hosting
                 applyVisibilityPolicy(to: panel, context: context)
                 WindowExclusionRegistry.shared.register(panel)
+                panel.applyCaptureInclusion(Preferences.shared.includesNotchInCaptures)
                 entries[displayID] = PanelEntry(panel: panel, hosting: hosting, context: context)
                 Log.window.info("Created notch panel for display \(displayID), notch: \(metrics.hasPhysicalNotch)")
             }

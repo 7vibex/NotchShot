@@ -108,6 +108,17 @@ public final class NotchPanel: NSPanel {
             height: screenRect.height
         )
     }
+
+    /// Applies the user's opt-in for including the notch itself in captures.
+    ///
+    /// `sharingType` is the switch every external capture tool respects, and
+    /// the registry entry does the same for our own ScreenCaptureKit filters.
+    /// The default stays `.none`; the notch showing up in a screenshot is a
+    /// deliberate choice for demos and product shots, never a side effect.
+    public func applyCaptureInclusion(_ included: Bool) {
+        sharingType = included ? .readOnly : .none
+        WindowExclusionRegistry.shared.setIncludedInCaptures(included, for: self)
+    }
 }
 
 /// Tracks the window numbers of every window NotchShot puts on screen, so the

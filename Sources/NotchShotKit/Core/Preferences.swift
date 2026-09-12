@@ -121,6 +121,10 @@ public final class Preferences {
     public var playsCaptureSound = true { didSet { write(playsCaptureSound, .capturesSound) } }
     public var updateChannel: UpdateChannel = .stable { didSet { write(updateChannel.rawValue, .updateChannel) } }
     public var includesCursorInScreenshots = false { didSet { write(includesCursorInScreenshots, .includesCursor) } }
+    /// Off by default: the notch is excluded from every capture. Turning this
+    /// on is what makes the island show up in screenshots and recordings —
+    /// including NotchShot's own — for demos and product shots.
+    public var includesNotchInCaptures = false { didSet { write(includesNotchInCaptures, .includesNotchInCaptures) } }
 
     /// Security-scoped bookmark for the user-chosen output folder.
     public var outputFolderBookmark: Data? { didSet { write(outputFolderBookmark, .outputFolderBookmark) } }
@@ -427,7 +431,7 @@ public final class Preferences {
     private enum Key: String {
         case imageFormat, jpegQuality, filenameTemplate, copyToClipboard, saveToDisk
         case showsShelf, shelfDuration, shelfPresentationStyle, shelfQuickActions
-        case freezeScreen, showsMagnifier, capturesSound, includesCursor
+        case freezeScreen, showsMagnifier, capturesSound, includesCursor, includesNotchInCaptures
         case outputFolderBookmark
         case recordingTargetMode, recordingResolution, recordingFrameRate
         case recordsSystemAudio, recordsMicrophone, preferredMicrophone
@@ -491,6 +495,7 @@ public final class Preferences {
         showsMagnifier = bool(.showsMagnifier, true)
         playsCaptureSound = bool(.capturesSound, true)
         includesCursorInScreenshots = bool(.includesCursor, false)
+        includesNotchInCaptures = bool(.includesNotchInCaptures, false)
         updateChannel = string(.updateChannel).flatMap(UpdateChannel.init) ?? .stable
         outputFolderBookmark = defaults.data(forKey: "notchshot.\(Key.outputFolderBookmark.rawValue)")
 

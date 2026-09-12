@@ -96,4 +96,28 @@ struct WindowExclusionTests {
         registry.setIncludedInCaptures(true, for: window)
         #expect(!registry.excludedWindowNumbers.contains(CGWindowID(window.windowNumber)))
     }
+
+    /// The notch panel is out of captures unless the user explicitly turns on
+    /// the demo setting, and the opt-in has to move both switches: `sharingType`
+    /// for other apps' tools and the registry for our own capture filters.
+    @Test("The notch panel joins captures only after the opt-in")
+    func notchPanelCaptureOptIn() throws {
+        let registry = WindowExclusionRegistry.shared
+        let panel = NotchPanel(contentRect: CGRect(x: 0, y: 0, width: 300, height: 160))
+        panel.orderFront(nil)
+        defer {
+            registry.unregister(panel)
+            panel.orderOut(nil)
+        }
+        try #require(panel.windowNumber > 0)
+
+        registry.register(panel)
+        panel.applyCaptureInclusion(false)
+        #expect(panel.sharingType == .none)
+        #expect(registry.excludedWindowNumbers.contains(CGWindowID(panel.windowNumber)))
+
+        panel.applyCaptureInclusion(true)
+        #expect(panel.sharingType == .readOnly)
+        #expect(!registry.excludedWindowNumbers.contains(CGWindowID(panel.windowNumber)))
+    }
 }
