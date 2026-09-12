@@ -126,6 +126,14 @@ public final class ProductivityNoteStore {
     }
 
     private func load() {
+        // Bound the read: a runaway or corrupted notes file must not be
+        // decoded into memory.
+        guard let values = try? storeURL.resourceValues(forKeys: [.fileSizeKey]),
+              let size = values.fileSize,
+              size <= 8 * 1_024 * 1_024 else {
+            lastError = "Notes file is missing or too large to load safely."
+            return
+        }
         guard let data = try? Data(contentsOf: storeURL) else { return }
         do {
             notes = try JSONDecoder().decode([ProductivityNote].self, from: data)
@@ -164,6 +172,10 @@ public final class LyricsStore {
 
     public init(storeURL: URL = AppPaths.support.appendingPathComponent("lyrics.json")) {
         self.storeURL = storeURL
+        // Bound the read: an oversized lyrics file must not be decoded.
+        guard let values = try? storeURL.resourceValues(forKeys: [.fileSizeKey]),
+              let size = values.fileSize,
+              size <= 8 * 1_024 * 1_024 else { return }
         if let data = try? Data(contentsOf: storeURL),
            let decoded = try? JSONDecoder().decode([String: String].self, from: data) {
             lyricsByTrack = decoded
@@ -612,12 +624,28 @@ public enum WindowSnapService {
            CFGetTypeID(rawSize) == AXValueGetTypeID() {
             AXValueGetValue(rawSize as! AXValue, .cgSize, &currentSize)
         }
-        let center = CGPoint(x: currentPosition.x + currentSize.width / 2, y: currentPosition.y + currentSize.height / 2)
-        let screen = NSScreen.screens.first(where: { NSMouseInRect(center, $0.frame, false) }) ?? NSScreen.main
+        // AX positions are global CoreGraphics (top-left) points, while
+        // `NSScreen.frame` and `WindowSnapLayout` are Cocoa (bottom-left).
+        // Converting both here is what keeps Top Half on the top half and
+        // keeps a window on the display that actually contains it.
+        let primaryFrame = ScreenLookup.primaryFrame
+        let centerInCG = CGPoint(
+            x: currentPosition.x + currentSize.width / 2,
+            y: currentPosition.y + currentSize.height / 2
+        )
+        let centerInCocoa = ScreenGeometry.cocoaPoint(
+            fromCG: centerInCG,
+            primaryFrame: primaryFrame
+        )
+        let screen = NSScreen.screens.first(where: { NSMouseInRect(centerInCocoa, $0.frame, false) })
+            ?? NSScreen.main
         guard let visibleFrame = screen?.visibleFrame else {
             throw NotchShotError.exportFailed("No display is available for Window Snap")
         }
-        let target = WindowSnapLayout.frame(for: position, in: visibleFrame)
+        let target = ScreenGeometry.cgRect(
+            fromCocoa: WindowSnapLayout.frame(for: position, in: visibleFrame),
+            primaryFrame: primaryFrame
+        )
         var targetPosition = target.origin
         var targetSize = target.size
         guard let positionValue = AXValueCreate(.cgPoint, &targetPosition),
@@ -635,7 +663,12 @@ public final class PointerLocatorService {
     private var panel: NSPanel?
 
     public func show() {
-        panel?.close()
+        // Replacing the panel cancels the old one's delayed cleanup, which
+        // would otherwise skip its registry unregister and leak the window.
+        if let panel {
+            WindowExclusionRegistry.shared.unregister(panel)
+            panel.close()
+        }
         let size = CGSize(width: 92, height: 92)
         let pointer = NSEvent.mouseLocation
         let panel = NSPanel(

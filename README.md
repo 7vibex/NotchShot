@@ -78,10 +78,10 @@ Sources/NotchShotKit/
 ### The three things worth knowing
 
 **State priority.** `ActivityArbiter` resolves one activity from every live source, in the
-order `error → selecting → countdown → recording → processing → result → file drop →
-expanded → system/context transition → media → passive calendar → idle`. A track change or
-a stray pointer can never disturb a capture in flight. `ActivityPriorityTests` pins the
-whole ordering. A compact volume/brightness strip
+order `error → selecting → countdown → dictation → recording → processing → file drop →
+result → expanded → system notification → system level → interrupting context → media →
+passive context → idle`. A track change or a stray pointer can never disturb a capture in
+flight. `ActivityPriorityTests` pins the whole ordering. A compact volume/brightness strip
 is composited independently when the experimental native-overlay replacement is active,
 so an in-flight result cannot swallow the only visible level feedback.
 
@@ -143,7 +143,8 @@ link/email/phone/address detection, and QR/barcode reading. Floating pinned capt
 history with retention, favorites, tags, collections, opt-in text search and opt-in local
 Spotlight discovery. Screenshots can be OCR'd and translated on-device; recording captions
 can use the same Translation framework flow. Now Playing with artwork, progress and
-transport controls, unlock refresh, and an off-by-default, media-only lock-window cover/wave.
+transport controls, and unlock refresh. The retired lock-screen media cover/wave
+is no longer built.
 Capture Stack collection with reorder, per-shot annotation, numbered
 storyboard, long-image, filmstrip and PDF exports. Named GitHub Issue, App Store,
 Documentation, Social Post and Bug Report recipes. On-device privacy suggestions for
@@ -156,7 +157,7 @@ release over **Shelf**, **AirDrop**, **Share**, or **ZIP**. AirDrop, Share, and 
 validated multi-file batch together; Shelf retains its visible five-item cap and reports any
 overflow. The Basket-style shelf shows aggregate file count/size, offers
 persistent detail and grid presentations, and separates non-destructive **Remove from Shelf**
-from an explicitly destructive **Move File to Trash**. Four immediate shelf actions are
+from an explicitly destructive **Move File to Trash**. Six immediate shelf actions are
 user-configurable; the rest stay in a grouped **More** menu. Finder's Services menu can
 park selected regular files in the shelf without copying or moving them. An opt-in local
 clipboard history keeps text, links, colours, images and file copies, with search, type filters,
@@ -202,7 +203,7 @@ fallback state and keeps the saved audio available in Finder.
 The app-owned Focus Timer and natural-language Planner are also live: Planner writes only the
 Calendar event or Reminder the user confirms. The Focus Timer deliberately does not claim to
 sync with Apple's Clock app, whose timers are not part of EventKit's public calendar/reminder API.
-The Productivity Center adds searchable local notes, user-supplied per-track lyrics, manually
+The Productivity Center adds local notes, user-supplied per-track lyrics, manually
 refreshed weather, public system statistics, a bounded local terminal, an installed-app launcher,
 Accessibility-authorized window snapping, a temporary pointer locator, and a camera preview.
 The app-owned Notification Center schedules local alerts, reconciles only NotchShot's delivered
@@ -343,10 +344,11 @@ invisible copy of the full source text.
 
 AI activity is written only after an explicitly connected hook or reporter command. Records
 live in the owner-only `AI Activity` support folder, never enter capture History or bug
-reports, and are ignored after their bounded display lifetime. The hook bridge reads lifecycle
-labels and short task metadata, not tool contents. A Claude conversation is read only after
-the user opens that session's button, stays in memory, and omits hidden reasoning and tool
-payloads.
+reports, and are ignored after their bounded display lifetime; up to 20 finished or failed
+records persist in the owner-only `AI Activity History.json` for the Recent list until
+cleared. The hook bridge reads lifecycle labels and short task metadata, not tool contents.
+A Claude conversation is read only after the user opens that session's button, stays in
+memory, and omits hidden reasoning and tool payloads.
 
 ## Distribution boundary
 

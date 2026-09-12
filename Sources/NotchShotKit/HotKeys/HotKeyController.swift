@@ -220,30 +220,39 @@ public final class HotKeyController {
     ///
     /// The system owns those combinations at a level above app hotkeys, so the
     /// system ones have to be released before ours can register. Order matters:
-    /// release first, then register.
+    /// release first, then register. Re-running this after any binding change
+    /// is what keeps the macOS ownership in step with the bindings: a custom
+    /// rebind or "Restore Defaults" must either keep the system key claimed or
+    /// hand it back, never leave it suppressed with nothing listening.
     public func applySystemShortcutTakeover() {
         let wanted = Preferences.shared.usesSystemScreenshotShortcuts
-        if wanted {
-            SystemScreenshotHotKeys.shared.takeOver(
-                Set(HotKeyAction.systemShortcutReplacements.map(\.1))
-            )
-        } else {
+        guard wanted else {
             SystemScreenshotHotKeys.shared.restoreAll()
+            for (action, _) in HotKeyAction.systemShortcutReplacements {
+                guard bindings[action] == action.systemStyleBinding else { continue }
+                bindings[action] = action.defaultBinding
+            }
+            registerAll()
+            return
         }
         for (action, _) in HotKeyAction.systemShortcutReplacements {
             let current = bindings[action]
-            if wanted {
-                // A combination the user picked themselves is theirs; only the
-                // untouched default gets moved onto the system shortcut.
-                guard current == action.defaultBinding || current == action.systemStyleBinding
-                else { continue }
-                bindings[action] = action.systemStyleBinding
-            } else {
-                guard current == action.systemStyleBinding else { continue }
-                bindings[action] = action.defaultBinding
-            }
+            // A combination the user picked themselves is theirs; only the
+            // untouched default gets moved onto the system shortcut.
+            guard current == action.defaultBinding || current == action.systemStyleBinding
+            else { continue }
+            bindings[action] = action.systemStyleBinding
         }
+        SystemScreenshotHotKeys.shared.takeOver(Set(claimedSystemShortcuts()))
         registerAll()
+    }
+
+    /// The system keys an action still points at after binding changes, so the
+    /// take-over set shrinks when the user rebinds one of them.
+    private func claimedSystemShortcuts() -> [SystemScreenshotHotKeys.SymbolicHotKey] {
+        HotKeyAction.systemShortcutReplacements.compactMap { action, key in
+            bindings[action] == action.systemStyleBinding ? key : nil
+        }
     }
 
     // MARK: Bindings
@@ -262,7 +271,9 @@ public final class HotKeyController {
         }
         bindings[action] = binding
         saveBindings()
-        registerAll()
+        // Rebinding a screenshot shortcut changes which system keys NotchShot
+        // still needs; reconcile instead of leaving macOS's keys suppressed.
+        applySystemShortcutTakeover()
     }
 
     public func restoreDefaults() {
@@ -271,7 +282,10 @@ public final class HotKeyController {
             bindings[action] = action.defaultBinding
         }
         saveBindings()
-        registerAll()
+        // With take-over on, the defaults for the system replacements are the
+        // system shortcuts themselves, so re-apply instead of leaving ⇧⌘4
+        // owned by nobody.
+        applySystemShortcutTakeover()
     }
 
     private func loadBindings() {

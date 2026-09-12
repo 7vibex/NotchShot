@@ -83,7 +83,7 @@ public enum AnnotationRenderer {
             switch element.kind {
             case .blackout:
                 context.saveGState()
-                context.setFillColor(element.style.color.cgColor)
+                context.setFillColor(Self.opaqueFillColor(element.style).cgColor)
                 context.setAlpha(1) // opacity is ignored: a blackout must be opaque
                 context.fill(clipped)
                 context.restoreGState()
@@ -117,6 +117,14 @@ public enum AnnotationRenderer {
             throw NotchShotError.exportFailed("Could not render redactions")
         }
         return image
+    }
+
+    /// A blackout must be opaque even when the stored colour carries its own
+    /// alpha. An imported or hand-edited project can supply `#RRGGBBAA`, and a
+    /// translucent fill would leave the original pixels readable in an export
+    /// the user believes is redacted.
+    private static func opaqueFillColor(_ style: AnnotationStyle) -> NSColor {
+        (style.color.usingColorSpace(.sRGB) ?? .black).withAlphaComponent(1)
     }
 
     /// Downsamples a region to blocks and scales it back up with no
@@ -347,9 +355,56 @@ public enum AnnotationRenderer {
         case .blackout, .pixelate:
             // Only reachable in preview mode; the export path burned these in.
             guard isPreview else { break }
-            context.setFillColor(NSColor.black.withAlphaComponent(0.85).cgColor)
-            context.fill(element.boundingRect)
+            if element.kind == .blackout {
+                // Show the same opaque resolved colour the export burns, so an
+                // imported alpha or non-black style cannot look weaker here
+                // than in the file.
+                context.setFillColor(opaqueFillColor(style).cgColor)
+                context.fill(element.boundingRect)
+            } else {
+                drawPixelatePreview(element: element, in: context)
+            }
         }
+    }
+
+    /// Preview stand-in for pixelation: the export derives real block colours
+    /// from the source pixels, which this drawing pass does not have. A mask
+    /// whose checker squares are exactly one pixelation block wide still shows
+    /// the granularity being chosen, and cannot be mistaken for the blackout
+    /// colour.
+    private static func drawPixelatePreview(element: AnnotationElement, in context: CGContext) {
+        let rect = element.boundingRect.integral
+        let block = max(8, element.style.pixelBlockSize)
+        guard rect.width >= 1, rect.height >= 1, block.isFinite, block > 0 else { return }
+        context.saveGState()
+        defer { context.restoreGState() }
+        context.clip(to: rect)
+        context.setFillColor(NSColor.black.withAlphaComponent(0.85).cgColor)
+        context.fill(rect)
+        guard let checker = checkerImage() else { return }
+        context.translateBy(x: rect.origin.x, y: rect.origin.y)
+        context.scaleBy(x: block, y: block)
+        context.interpolationQuality = .none
+        context.draw(
+            checker,
+            in: CGRect(
+                x: 0,
+                y: 0,
+                width: (rect.width / block).rounded(.up) * 2,
+                height: (rect.height / block).rounded(.up) * 2
+            ),
+            byTiling: true
+        )
+    }
+
+    /// A 2×2 light-on-transparent checker. Drawn with a context scale of one
+    /// block per unit, each square is exactly one pixelation block.
+    private static func checkerImage() -> CGImage? {
+        guard let context = makeContext(width: 2, height: 2) else { return nil }
+        context.setFillColor(NSColor(white: 1, alpha: 0.07).cgColor)
+        context.fill(CGRect(x: 0, y: 0, width: 1, height: 1))
+        context.fill(CGRect(x: 1, y: 1, width: 1, height: 1))
+        return context.makeImage()
     }
 
     private static func drawArrow(

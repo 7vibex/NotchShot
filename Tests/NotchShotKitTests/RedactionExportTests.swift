@@ -64,6 +64,62 @@ struct RedactionExportTests {
         #expect(colors == ["0,0,0"])
     }
 
+    /// An imported `.notchshot` project can carry an 8-digit colour, and the
+    /// fill's own alpha would otherwise survive `setAlpha(1)` and leave the
+    /// original pixels readable.
+    @Test("Blackout ignores alpha stored in the colour")
+    func blackoutIgnoresStoredAlpha() throws {
+        let source = secretImage()
+        let region = CGRect(x: 20, y: 20, width: 60, height: 60)
+
+        let transparentElement = AnnotationElement.rect(
+            kind: .blackout,
+            from: CGPoint(x: 10, y: 10),
+            to: CGPoint(x: 90, y: 90),
+            style: AnnotationStyle(colorHex: "#00000000")
+        )
+        let transparentExport = try AnnotationRenderer.render(
+            document: document(with: transparentElement),
+            source: source
+        )
+        #expect(TestImage.distinctColors(transparentExport, in: region, step: 4) == ["0,0,0"])
+
+        let translucentElement = AnnotationElement.rect(
+            kind: .blackout,
+            from: CGPoint(x: 10, y: 10),
+            to: CGPoint(x: 90, y: 90),
+            style: AnnotationStyle(colorHex: "#FF000080")
+        )
+        let translucentExport = try AnnotationRenderer.render(
+            document: document(with: translucentElement),
+            source: source
+        )
+        #expect(TestImage.distinctColors(translucentExport, in: region, step: 4) == ["255,0,0"])
+    }
+
+    /// The editor preview must show the same opaque colour the export burns;
+    /// otherwise the user approves an export based on a weaker placeholder.
+    @Test("Preview shows the export's opaque blackout colour")
+    func previewMatchesBlackoutExport() throws {
+        let source = secretImage()
+        let region = CGRect(x: 20, y: 20, width: 60, height: 60)
+        let element = AnnotationElement.rect(
+            kind: .blackout,
+            from: CGPoint(x: 10, y: 10),
+            to: CGPoint(x: 90, y: 90),
+            style: AnnotationStyle(colorHex: "#FF000080")
+        )
+        let document = document(with: element)
+        let preview = try AnnotationRenderer.render(
+            document: document,
+            source: source,
+            options: AnnotationRenderer.Options(isPreview: true)
+        )
+        let exported = try AnnotationRenderer.render(document: document, source: source)
+        #expect(TestImage.distinctColors(preview, in: region, step: 4) == ["255,0,0"])
+        #expect(TestImage.distinctColors(exported, in: region, step: 4) == ["255,0,0"])
+    }
+
     @Test("Pixelation destroys detail rather than blurring over it")
     func pixelationIsDestructive() throws {
         let source = secretImage()

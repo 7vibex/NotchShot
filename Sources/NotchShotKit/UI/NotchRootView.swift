@@ -38,7 +38,7 @@ public struct NotchRootView: View {
             mediaOptedIn: Preferences.shared.showsMediaWhileLocked,
             hasMediaContent: coordinator.media.snapshot.hasContent,
             activityStackOptedIn: Preferences.shared.showsActivityStackWhileLocked,
-            hasActivityContent: !notificationStore.activeItems.isEmpty
+            hasActivityContent: notificationStore.lockScreenItem() != nil
                 || coordinator.context.timer.current != nil,
             isPrimaryDisplay: context.isPrimary
         )
@@ -2610,7 +2610,7 @@ private struct ProcessingContent: View {
     @Bindable var coordinator: AppCoordinator
 
     private var isScrolling: Bool {
-        message.contains("frame") || message.contains("Scroll")
+        coordinator.isScrollingCaptureActive
     }
 
     var body: some View {

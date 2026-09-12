@@ -167,10 +167,13 @@ public enum ImageComparisonRenderer {
         let rect = CGRect(x: 0, y: 0, width: lhs.width, height: lhs.height)
         context.draw(lhs, in: rect)
         context.saveGState()
+        // Before on the leading (left) edge, after on the trailing edge, which
+        // is what the toolbar labels promise.
+        let fraction = CGFloat(min(max(position, 0), 1))
         context.clip(to: CGRect(
-            x: 0,
+            x: CGFloat(lhs.width) * (1 - fraction),
             y: 0,
-            width: CGFloat(min(max(position, 0), 1)) * CGFloat(lhs.width),
+            width: CGFloat(lhs.width) * fraction,
             height: CGFloat(lhs.height)
         ))
         context.draw(rhs, in: rect)
@@ -404,7 +407,7 @@ public struct VisualComparisonView: View {
 
             comparisonImage(session.after)
                 .frame(width: fitted.width, height: fitted.height)
-                .mask(alignment: .leading) {
+                .mask(alignment: .trailing) {
                     Rectangle()
                         .frame(width: fitted.width * session.sliderPosition)
                 }

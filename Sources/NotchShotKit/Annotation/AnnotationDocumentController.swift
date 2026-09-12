@@ -41,7 +41,11 @@ public final class AnnotationDocumentController {
     public var strokeColorHex: String
     public var lineWidth: Double
     public var projectURL: URL?
-    public private(set) var hasUnsavedChanges = false
+    /// Dirty state is derived from the last saved document rather than set by
+    /// callers, so undoing back to the saved state (or a no-op gesture) can
+    /// never leave a false "unsaved changes" prompt behind.
+    public var hasUnsavedChanges: Bool { document != savedDocument }
+    private var savedDocument: AnnotationDocument
     private var hasAcknowledgedProjectPrivacyWarning = false
 
     private var undoStack: [AnnotationDocument] = []
@@ -59,6 +63,7 @@ public final class AnnotationDocumentController {
     public init(source: CGImage, document: AnnotationDocument, asset: CaptureAsset? = nil) {
         self.source = source
         self.document = document
+        self.savedDocument = document
         self.asset = asset
         self.strokeColorHex = Preferences.shared.annotationColorHex
         self.lineWidth = Preferences.shared.annotationLineWidth
@@ -88,7 +93,6 @@ public final class AnnotationDocumentController {
         undoStack.append(document)
         if undoStack.count > undoLimit { undoStack.removeFirst() }
         redoStack.removeAll()
-        hasUnsavedChanges = true
     }
 
     /// Groups every mutation inside `body` into a single undo step.
@@ -120,7 +124,6 @@ public final class AnnotationDocumentController {
         redoStack.append(document)
         document = previous
         selectedElementID = nil
-        hasUnsavedChanges = true
     }
 
     public func redo() {
@@ -128,7 +131,6 @@ public final class AnnotationDocumentController {
         undoStack.append(document)
         document = next
         selectedElementID = nil
-        hasUnsavedChanges = true
     }
 
     // MARK: Editing
@@ -141,7 +143,6 @@ public final class AnnotationDocumentController {
 
     public func update(_ element: AnnotationElement) {
         document.update(element)
-        hasUnsavedChanges = true
     }
 
     public func deleteSelection() {
@@ -291,14 +292,33 @@ public final class AnnotationDocumentController {
     /// a second render and preserving crop, rotation and background dimensions.
     public func exportImageResult(to url: URL, format: ImageFormat) throws -> ImageExportResult {
         let flattened = try renderFlattened()
-        _ = try ImageExport.write(
+        let written = try ImageExport.write(
             flattened,
             to: url,
             format: format,
             quality: Preferences.shared.jpegQuality,
             dpiScale: document.sourceScale
         )
-        return ImageExportResult(url: url, pixelSize: CGSize(width: flattened.width, height: flattened.height))
+        // If HEIC or JPEG fell back to PNG, the extension has to follow the
+        // bytes or the exported file is mislabeled.
+        var finalURL = url
+        if written != format {
+            let preferred = url.deletingPathExtension().appendingPathExtension(written.fileExtension)
+            if FileManager.default.fileExists(atPath: preferred.path) {
+                finalURL = AppPaths.uniqueURL(
+                    in: preferred.deletingLastPathComponent(),
+                    name: preferred.deletingPathExtension().lastPathComponent,
+                    extension: written.fileExtension
+                )
+            } else {
+                finalURL = preferred
+            }
+            try FileManager.default.moveItem(at: url, to: finalURL)
+        }
+        return ImageExportResult(
+            url: finalURL,
+            pixelSize: CGSize(width: flattened.width, height: flattened.height)
+        )
     }
 
     @discardableResult
@@ -309,7 +329,7 @@ public final class AnnotationDocumentController {
         )
         try NotchShotPackage.write(document: document, source: source, to: target)
         projectURL = target
-        hasUnsavedChanges = false
+        savedDocument = document
         return target
     }
 

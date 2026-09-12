@@ -126,7 +126,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValid
                 || (action == .toggleDictation
                     && Preferences.shared.dictationTriggerMode == .holdToTalk)
             guard usesHoldBehavior else { return }
-            self?.coordinator.dictation.handlePushToTalk(pressed: phase == .pressed)
+            self?.coordinator.handleDictationPushToTalk(pressed: phase == .pressed)
         }
         HotKeyController.shared.start()
 
@@ -570,7 +570,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValid
     }
 
     @objc private func toggleStack() { coordinator.toggleStackCollecting() }
-    @objc private func addToStack() { coordinator.addSelectedToStack() }
+    @objc private func addToStack() { coordinator.addLatestToStack() }
     @objc private func clearStack() { coordinator.stack.clear() }
     @objc private func startRecording() { coordinator.startRecording() }
     @objc private func stopRecording() { coordinator.stopRecording() }
@@ -582,18 +582,28 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValid
         coordinator.showShelf()
     }
 
-    /// Greys out the two items that have nothing to act on.
+    /// Greys out the items that have nothing to act on.
     ///
-    /// Both used to stay enabled and quietly do nothing when there was no
+    /// They used to stay enabled and quietly do nothing when there was no
     /// capture parked — which is indistinguishable from a broken menu item.
     public func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
         switch menuItem.action {
         case #selector(showShelfFromMenu):
-            coordinator.canShowShelf
+            return coordinator.canShowShelf
         case #selector(restoreLastCapture):
-            coordinator.canRestoreDismissed
+            return coordinator.canRestoreDismissed
+        case #selector(addToStack):
+            return coordinator.canShowShelf
+        case #selector(clearStack):
+            return !coordinator.stack.isEmpty
+        case #selector(stopRecording):
+            return coordinator.activity == .recording
+        case #selector(captureFromMenu(_:)):
+            guard let raw = menuItem.representedObject as? String,
+                  let intent = CaptureIntent(rawValue: raw) else { return true }
+            return intent != .previousArea || coordinator.hasPreviousArea
         default:
-            true
+            return true
         }
     }
 

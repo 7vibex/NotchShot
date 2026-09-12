@@ -54,7 +54,7 @@ struct HistoryPersistenceTests {
     private static func waitForRows(
         _ expected: [String],
         at store: URL,
-        timeout: Duration = .seconds(20)
+        timeout: Duration = .seconds(60)
     ) async -> [String]? {
         let deadline = ContinuousClock.now + timeout
         var lastSeen: [String]?

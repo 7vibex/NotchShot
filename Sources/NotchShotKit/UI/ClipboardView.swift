@@ -30,16 +30,31 @@ public struct ClipboardView: View {
     private var sourceApps: [String] { coordinator.clipboardSourceApps }
 
     public var body: some View {
-        Group {
-            if !Preferences.shared.clipboardEnabled {
-                disabledState
-            } else if coordinator.clipboard.entries.isEmpty {
-                emptyState
-            } else {
-                list
+        VStack(spacing: 0) {
+            if let recovery = coordinator.clipboard.loadRecoveryMessage {
+                HStack(spacing: 8) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.orange)
+                    Text(recovery)
+                        .font(.caption)
+                    Spacer(minLength: 0)
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+                .background(.orange.opacity(0.12))
+                .accessibilityElement(children: .combine)
             }
+            Group {
+                if !Preferences.shared.clipboardEnabled {
+                    disabledState
+                } else if coordinator.clipboard.entries.isEmpty {
+                    emptyState
+                } else {
+                    list
+                }
+            }
+            .notchShotContentSwap(id: presentationID)
         }
-        .notchShotContentSwap(id: presentationID)
         .frame(minWidth: 460, minHeight: 420)
         .alert("Label clipping", isPresented: Binding(
             get: { renameEntry != nil },

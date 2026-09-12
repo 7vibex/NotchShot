@@ -187,6 +187,7 @@ public final class SmartExportSession {
     public var customWidth = 1_920
     public var errorMessage: String?
     public var exportedAsset: CaptureAsset?
+    public private(set) var isExporting = false
     public var onExported: ((CaptureAsset) -> Void)?
 
     public init(asset: CaptureAsset) throws {
@@ -207,6 +208,7 @@ public final class SmartExportSession {
     }
 
     public func export() {
+        guard !isExporting else { return }
         let plan = plan
         let panel = NSSavePanel()
         panel.allowedContentTypes = [ImageExport.utType(for: plan.format)]
@@ -216,19 +218,69 @@ public final class SmartExportSession {
         panel.message = "Exports a flattened image and removes the original file metadata. Only redactions already applied to this image are included."
         guard panel.runModal() == .OK, let url = panel.url else { return }
 
+        let quality = Preferences.shared.jpegQuality
+        let source = UncheckedImage(image: self.source)
+        let preset = self.preset
+        // When nothing was resampled the original scale (and therefore its DPI)
+        // must survive; a 1× capture was being relabelled as a 2× Retina file.
+        let matchesSource = plan.pixelSize == CGSize(
+            width: CGFloat(self.source.width),
+            height: CGFloat(self.source.height)
+        )
+        let outputScale: CGFloat = matchesSource ? max(1, asset.scale) : 2
+        let dpiScale: CGFloat = preset == .standard1x ? 1 : outputScale
+        isExporting = true
+        errorMessage = nil
+        Task { [weak self] in
+            let outcome = await Task.detached(priority: .userInitiated) {
+                Self.renderAndWrite(
+                    source: source,
+                    plan: plan,
+                    quality: quality,
+                    dpiScale: dpiScale,
+                    to: url
+                )
+            }.value
+            guard let self else { return }
+            self.isExporting = false
+            switch outcome {
+            case .success(let finalURL, let pixelSize):
+                let result = CaptureAsset(
+                    url: finalURL,
+                    kind: .screenshot,
+                    pixelSize: pixelSize,
+                    scale: outputScale,
+                    sourceApplication: self.asset.sourceApplication,
+                    sourceApplicationName: self.asset.sourceApplicationName
+                )
+                self.exportedAsset = result
+                self.onExported?(result)
+            case .failure(let message):
+                self.errorMessage = message
+            }
+        }
+    }
+
+    /// AppKit panels stay on the main actor; the render, encode, and possible
+    /// extension fix-up run here so a large image cannot stall the UI.
+    private nonisolated static func renderAndWrite(
+        source: UncheckedImage,
+        plan: SmartExportPlan,
+        quality: Double,
+        dpiScale: CGFloat,
+        to url: URL
+    ) -> ExportOutcome {
         do {
-            let rendered = try SmartExportService.render(source, to: plan.pixelSize)
+            let rendered = try SmartExportService.render(source.image, to: plan.pixelSize)
             let usedFormat = try ImageExport.write(
                 rendered,
                 to: url,
                 format: plan.format,
-                quality: plan.quality,
-                dpiScale: preset == .standard1x ? 1 : 2
+                quality: quality,
+                dpiScale: dpiScale
             )
-            let finalURL: URL
-            if usedFormat == plan.format {
-                finalURL = url
-            } else {
+            var finalURL = url
+            if usedFormat != plan.format {
                 // The encoder fell back to another format, so the bytes on disk
                 // do not match the extension the user chose. Correcting that is
                 // not optional: if the corrective move failed — the commonest
@@ -253,20 +305,19 @@ public final class SmartExportSession {
                 }
                 finalURL = replacement
             }
-            let result = CaptureAsset(
-                url: finalURL,
-                kind: .screenshot,
-                pixelSize: plan.pixelSize,
-                scale: preset == .standard1x ? 1 : 2,
-                sourceApplication: asset.sourceApplication,
-                sourceApplicationName: asset.sourceApplicationName
-            )
-            exportedAsset = result
-            onExported?(result)
-            errorMessage = nil
+            return .success(url: finalURL, pixelSize: plan.pixelSize)
         } catch {
-            errorMessage = error.localizedDescription
+            return .failure(error.localizedDescription)
         }
+    }
+
+    private enum ExportOutcome: Sendable {
+        case success(url: URL, pixelSize: CGSize)
+        case failure(String)
+    }
+
+    private struct UncheckedImage: @unchecked Sendable {
+        let image: CGImage
     }
 
     public func shareExported() {
@@ -345,9 +396,11 @@ public struct SmartExportView: View {
                     Spacer()
                     if session.exportedAsset != nil {
                         Button("Share…") { session.shareExported() }
+                            .disabled(session.isExporting)
                     }
-                    Button("Export…") { session.export() }
+                    Button(session.isExporting ? "Exporting…" : "Export…") { session.export() }
                         .notchShotPrimaryActionStyle()
+                        .disabled(session.isExporting)
                 }
             }
             .padding(14)

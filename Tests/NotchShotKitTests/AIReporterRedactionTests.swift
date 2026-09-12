@@ -47,4 +47,37 @@ struct AIReporterRedactionTests {
         #expect(!result.contains(bearer))
         #expect(result.contains("<redacted>"))
     }
+
+    @Test("Attached short-option values and request bodies are redacted")
+    func attachedAndBodies() {
+        let redacted = CommandSecretRedactor.redact([
+            "curl", "-uuser:password", "-d{\"password\":\"hunter2\"}", "--data=secret-body",
+            "--form", "token=private", "-H", "Authorization: Bearer abc",
+        ]).joined(separator: " ")
+
+        #expect(!redacted.contains("user:password"))
+        #expect(!redacted.contains("hunter2"))
+        #expect(!redacted.contains("secret-body"))
+        #expect(!redacted.contains("token=private"))
+        #expect(!redacted.contains("Bearer abc"))
+    }
+
+    @Test("Compound credential flags and environment assignments are redacted")
+    func compoundAndEnvironmentSecrets() {
+        let redacted = CommandSecretRedactor.redact([
+            "run", "--secret-key", "hunter2secret", "--db-password", "p@ssword",
+            "--signing-key", "abc123", "--keyboard", "qwerty",
+        ]).joined(separator: " ")
+
+        #expect(!redacted.contains("hunter2secret"))
+        #expect(!redacted.contains("p@ssword"))
+        #expect(!redacted.contains("abc123"))
+        #expect(redacted.contains("qwerty"))
+
+        let text = CommandSecretRedactor.redactText(
+            "export AWS_SECRET_ACCESS_KEY=wJalrXUt FOO_TOKEN=abc123"
+        )
+        #expect(!text.contains("wJalrXUt"))
+        #expect(!text.contains("abc123"))
+    }
 }

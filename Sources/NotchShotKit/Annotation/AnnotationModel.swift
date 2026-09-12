@@ -269,6 +269,9 @@ public struct AnnotationDocument: Codable, Sendable, Equatable {
 
     public mutating func update(_ element: AnnotationElement) {
         guard let index = elements.firstIndex(where: { $0.id == element.id }) else { return }
+        // A no-op drag or slider touch must not create an undo entry or mark
+        // the document dirty; `modifiedAt` alone would do both.
+        guard elements[index] != element else { return }
         elements[index] = element
         modifiedAt = Date()
     }

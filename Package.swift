@@ -64,7 +64,10 @@ let package = Package(
         ),
         .target(
             name: "NotchShotKit",
-            dependencies: [.product(name: "Sparkle", package: "Sparkle")],
+            dependencies: [
+                .product(name: "Sparkle", package: "Sparkle"),
+                "NotchShotAIReporterSupport",
+            ],
             path: "Sources/NotchShotKit",
             swiftSettings: [.swiftLanguageMode(.v6)]
         ),

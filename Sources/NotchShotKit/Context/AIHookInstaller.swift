@@ -130,12 +130,34 @@ public final class AIHookInstaller {
             root = decoded
         }
 
-        var hooks = root["hooks"] as? [String: Any] ?? [:]
+        var hooks: [String: Any]
+        if let existingHooks = root["hooks"] {
+            guard let decodedHooks = existingHooks as? [String: Any] else {
+                throw AIHookInstallerError.malformedConfiguration
+            }
+            hooks = decodedHooks
+        } else {
+            hooks = [:]
+        }
         var added = 0
         for event in integration.events {
             let command = "\(Self.shellQuoted(reporterURL.path)) hook --source \(integration.rawValue) --event \(event)"
-            var entries = hooks[event] as? [[String: Any]] ?? []
-            guard !Self.containsNotchShotCommand(entries) else { continue }
+            var entries: [[String: Any]]
+            if let existingEntries = hooks[event] {
+                guard let decodedEntries = existingEntries as? [[String: Any]] else {
+                    throw AIHookInstallerError.malformedConfiguration
+                }
+                entries = decodedEntries
+            } else {
+                entries = []
+            }
+            // A hook that already points at this build is left alone; one that
+            // points at a previous (moved) install path is replaced so Connect
+            // repairs the configuration instead of reporting success.
+            if let existing = entries.compactMap(Self.notchShotCommand).first {
+                if existing.contains(Self.shellQuoted(reporterURL.path)) { continue }
+                entries.removeAll { Self.notchShotCommand($0) != nil }
+            }
             if integration == .cursor {
                 entries.append(["type": "command", "command": command])
             } else {
@@ -149,6 +171,11 @@ public final class AIHookInstaller {
         }
         root["hooks"] = hooks
         if integration == .cursor, root["version"] == nil { root["version"] = 1 }
+
+        // Enable the Codex runtime before the JSON hooks are replaced: if this
+        // write fails, the previous hook configuration is untouched. The
+        // remaining failure (hooks written, flag not) leaves no live hooks.
+        if let codexConfiguration { try writeCodexHookConfiguration(codexConfiguration) }
 
         if added > 0 || !manager.fileExists(atPath: destination.path) {
             if manager.fileExists(atPath: destination.path) {
@@ -171,7 +198,6 @@ public final class AIHookInstaller {
             }
             try manager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: destination.path)
         }
-        if let codexConfiguration { try writeCodexHookConfiguration(codexConfiguration) }
         let enabledRuntime = codexConfiguration != nil
         return AIHookInstallationResult(
             integration: integration,
@@ -224,11 +250,21 @@ public final class AIHookInstaller {
     }
 
     private static func containsNotchShotCommand(_ entries: [[String: Any]]) -> Bool {
-        entries.contains { entry in
-            if let command = entry["command"] as? String, command.contains("notchshot-ai") { return true }
-            let nested = entry["hooks"] as? [[String: Any]] ?? []
-            return nested.contains { ($0["command"] as? String)?.contains("notchshot-ai") == true }
+        entries.contains { notchShotCommand($0) != nil }
+    }
+
+    /// The NotchShot reporter command inside one hook entry, if present at any
+    /// nesting depth.
+    private static func notchShotCommand(_ entry: [String: Any]) -> String? {
+        if let command = entry["command"] as? String, command.contains("notchshot-ai") {
+            return command
         }
+        for nested in entry["hooks"] as? [[String: Any]] ?? [] {
+            if let command = nested["command"] as? String, command.contains("notchshot-ai") {
+                return command
+            }
+        }
+        return nil
     }
 
     private static func shellQuoted(_ value: String) -> String {

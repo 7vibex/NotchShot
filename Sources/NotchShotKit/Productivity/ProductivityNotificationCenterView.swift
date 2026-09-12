@@ -12,6 +12,7 @@ struct ProductivityNotificationCenterView: View {
     @State private var delayMinutes = 0
     @State private var message: String?
     @State private var isPosting = false
+    @State private var notificationsDenied = false
 
     var body: some View {
         GeometryReader { geometry in
@@ -116,6 +117,13 @@ struct ProductivityNotificationCenterView: View {
                 Text(message)
                     .font(.caption)
                     .foregroundStyle(message.hasPrefix("Could not") ? .orange : .secondary)
+            }
+            if notificationsDenied {
+                Button("Open Notification Settings…") {
+                    coordinator.openNotificationSettings()
+                }
+                .buttonStyle(.link)
+                .font(.caption)
             }
 
             Divider()
@@ -231,6 +239,7 @@ struct ProductivityNotificationCenterView: View {
             defer { isPosting = false }
             do {
                 guard try await ProductivityNotificationCenter.shared.requestAuthorization() else {
+                    notificationsDenied = true
                     message = "Could not post because notifications are disabled."
                     return
                 }
@@ -240,6 +249,7 @@ struct ProductivityNotificationCenterView: View {
                     priority: requestedPriority,
                     at: date
                 )
+                notificationsDenied = false
                 message = delayMinutes == 0 ? "Alert posted." : "Alert scheduled."
             } catch {
                 message = "Could not post: \(error.localizedDescription)"

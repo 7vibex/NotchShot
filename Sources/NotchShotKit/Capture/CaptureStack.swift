@@ -117,12 +117,14 @@ public final class CaptureStack {
     public var isEmpty: Bool { items.isEmpty }
     public var count: Int { items.count }
 
-    public func add(_ asset: CaptureAsset) {
+    @discardableResult
+    public func add(_ asset: CaptureAsset) -> Bool {
         guard items.count < Self.maximumItems else {
             Log.capture.notice("Capture stack is full (\(Self.maximumItems))")
-            return
+            return false
         }
         items.append(StackItem(asset: asset))
+        return true
     }
 
     public func remove(id: UUID) {

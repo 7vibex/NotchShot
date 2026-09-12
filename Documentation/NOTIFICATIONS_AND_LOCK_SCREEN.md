@@ -103,11 +103,10 @@ Source checks and automated tests can prove the app-owned state machine,
 persistence bounds, private file mode, selection policy, and locked-window input
 policy. A normal desktop launch can validate the unlocked visual composition.
 
-Lock Screen notification delivery still depends on the user's macOS
-Notifications settings. Source and tests can prove the opt-in, playing-state,
-text-bounding, and cleanup policy, but physical delivery must be validated by
-locking a test Mac after enabling **when screen is locked** and setting previews
-to **Always**. Source and tests can also prove the custom bridge's symbol,
-ordering, failure, and non-interaction policies. They cannot prove that
-loginwindow displays the card on a particular OS build; that requires an
-explicit physical lock/unlock test on the freshly built app.
+The retired song notification has no user-facing setting, cannot be enabled,
+and its legacy opt-in is cleared on load, so it is outside the runtime proof
+list. The remaining lock-screen surface is the activity stack above. Source and
+tests can prove the custom bridge's symbol, ordering, failure, and
+non-interaction policies. They cannot prove that loginwindow displays the card
+on a particular OS build; that requires an explicit physical lock/unlock test
+on the freshly built app.

@@ -53,6 +53,10 @@ public final class AppCoordinator {
     public private(set) var recordingStatus = RecordingStatus()
     public private(set) var isRecordingPaused = false
     public private(set) var scrollingFrameCount = 0
+    /// True from the moment a scrolling session starts until its terminal
+    /// event, including the stitching phase. The notch HUD uses this state
+    /// instead of sniffing its own message text for the finish/cancel controls.
+    public var isScrollingCaptureActive: Bool { scrollingSession != nil }
 
     /// True while the pointer is over the island. Peeking never expands the
     /// full interface on its own — that needs a click or a shortcut.
@@ -139,6 +143,11 @@ public final class AppCoordinator {
             return
         }
         Preferences.shared.refreshOutputFolderBookmarkIfStale()
+        cleanScrollingCaptureStaging()
+        Task { [weak self] in
+            let hasPrevious = await CaptureService.shared.previousAreaRect != nil
+            self?.hasPreviousArea = hasPrevious
+        }
         media.start()
         notifications.onChange = { [weak self] in
             self?.refreshActivity()
@@ -337,7 +346,36 @@ public final class AppCoordinator {
     }
 
     public func stopDictation() {
+        // During permission/model setup there is no audio to finalize; Stop is
+        // a cancel, not a failure that reads "No speech detected".
+        guard dictation.state.isStoppable else {
+            dictation.cancel()
+            return
+        }
         Task { await dictation.stop() }
+    }
+
+    /// Push-to-talk entry point. The coordinator owns cross-feature
+    /// exclusivity, so the hotkey must come through here rather than calling
+    /// `dictation.handlePushToTalk` directly: otherwise a hold could open the
+    /// microphone while a recording is already using it.
+    public func handleDictationPushToTalk(pressed: Bool) {
+        if pressed {
+            if arbiter.selection != nil || arbiter.countdown != nil || arbiter.isRecording
+                || RecordingService.shared.hasActiveSession || isRecordingPaused {
+                present(error: NotchShotError.recordingFailed(
+                    "Finish the current capture or recording before starting dictation"
+                ))
+                return
+            }
+            if let voiceState = context.voiceNotes.snapshot?.state, voiceState == .recording {
+                present(error: NotchShotError.recordingFailed(
+                    "Finish the current voice note before starting dictation"
+                ))
+                return
+            }
+        }
+        dictation.handlePushToTalk(pressed: pressed)
     }
 
     public func cancelDictation() {
@@ -465,7 +503,7 @@ public final class AppCoordinator {
             resultCount: shelfItems.count,
             hasStack: stack.isCollecting || !stack.isEmpty,
             hasMediaContent: media.snapshot.hasContent,
-            hasLockedActivityContent: !notifications.activeItems.isEmpty
+            hasLockedActivityContent: notifications.lockScreenItem() != nil
                 || context.timer.current != nil,
             mediaPanelRowCount: mediaPanelRowCount
         )
@@ -721,6 +759,12 @@ public final class AppCoordinator {
                 ?? NSScreen.main.flatMap { ScreenLookup.displayID(for: $0) }
         }
 
+        // The timer applies to every intent, including scrolling. It runs
+        // after the region is chosen and before the scrolling mode chooser.
+        if timer != .none {
+            guard await runCountdown(seconds: timer.rawValue, intent: intent) else { return }
+        }
+
         // Scrolling takes over after the region is chosen.
         if intent == .scrolling {
             guard let rect = request.rect else { return }
@@ -738,10 +782,6 @@ public final class AppCoordinator {
             }
             await beginScrollingCapture(region: rect, mode: mode)
             return
-        }
-
-        if timer != .none {
-            guard await runCountdown(seconds: timer.rawValue, intent: intent) else { return }
         }
 
         guard isCurrentCapture(operationID) else { return }
@@ -779,6 +819,10 @@ public final class AppCoordinator {
         do {
             let image = try await CaptureService.shared.capture(request, excludedWindows: excluded)
             guard isCurrentCapture(operationID) else { return }
+            if request.intent == .area || request.intent == .ocr || request.intent == .scrolling {
+                // The service recorded the rect; the menu can now offer Repeat.
+                hasPreviousArea = true
+            }
 
             if intent == .ocr {
                 await handleTextCapture(image, operationID: operationID)
@@ -1352,6 +1396,16 @@ public final class AppCoordinator {
         target: RecordingTarget? = nil,
         mode: RecordingTargetMode? = nil
     ) {
+        if let dictation = arbiter.dictation, dictation.state != .idle {
+            present(error: NotchShotError.recordingFailed("Finish dictation before starting a recording"))
+            return
+        }
+        if let voiceState = context.voiceNotes.snapshot?.state, voiceState == .recording {
+            present(error: NotchShotError.recordingFailed(
+                "Finish the current voice note before starting a recording"
+            ))
+            return
+        }
         guard recordingStartTask == nil,
               recordingCompletionTask == nil,
               !isRecordingPaused,
@@ -1695,7 +1749,19 @@ public final class AppCoordinator {
             )
         } else {
             try await RecordingSegmentJoiner.join(urls, to: destination)
-            try RecordingService.retireCommittedPausedSegments(urls)
+            do {
+                try RecordingService.retireCommittedPausedSegments(urls)
+            } catch {
+                // The joined file is the user's recording; it must not be lost
+                // because scratch cleanup failed. Keep the sources out of crash
+                // recovery so they are not offered back as a duplicate.
+                for url in urls {
+                    _ = RecordingService.ensureExcludedFromCrashRecovery(url)
+                }
+                Log.recording.error(
+                    "Could not retire joined recording segments: \(error.localizedDescription)"
+                )
+            }
         }
         let metadata = await VideoThumbnail.metadata(for: destination)
         pendingRecordingInteractionTimeline = RecordingInteractionTimeline.joined(
@@ -1728,7 +1794,24 @@ public final class AppCoordinator {
     }
 
     public func finishRecordingForTermination() async throws -> CaptureAsset? {
-        guard RecordingService.shared.hasActiveSession || isRecordingPaused else { return nil }
+        // A user-initiated stop or pause is already finalizing. Join that task
+        // first, then fall through: a stop has recorded its asset, while a
+        // pause has only parked the final segment into `recordingSegments`
+        // and still needs the join below.
+        if let completion = recordingCompletionTask {
+            await completion.value
+        }
+        if RecordingService.shared.isRecording {
+            return try await finishRecordingSegments()
+        }
+        // A stop or failure can still own the writer even though the
+        // coordinator has no completion task; wait for it to finish first so
+        // the join below never competes with it.
+        if RecordingService.shared.hasActiveSession,
+           let asset = try await RecordingService.shared.finishForTermination() {
+            return asset
+        }
+        guard isRecordingPaused else { return nil }
         return try await finishRecordingSegments()
     }
 
@@ -1935,8 +2018,8 @@ public final class AppCoordinator {
     private func push(_ item: ShelfItem) {
         // While the stack is collecting, every capture also joins it, so a
         // multi-step flow can be grabbed without touching the UI between shots.
-        if stack.isCollecting, item.asset.kind.isImage {
-            stack.add(item.asset)
+        if stack.isCollecting, item.asset.kind.isImage, !stack.add(item.asset) {
+            presentStackFullError()
         }
         // Keep a full-resolution bitmap only for the newest item. Older shelf
         // entries can be reloaded from their file when edited or OCR'd.
@@ -1995,6 +2078,9 @@ public final class AppCoordinator {
     }
 
     public var canShowShelf: Bool { !shelfItems.isEmpty }
+    /// Whether "Capture Previous Area" has something to repeat this launch.
+    /// Kept in sync when a selection-based capture lands and at startup.
+    public private(set) var hasPreviousArea = false
 
     /// Hides the shelf without discarding the capture.
     public func hideShelf() {
@@ -2424,6 +2510,10 @@ public final class AppCoordinator {
         let stagingURL = url.deletingLastPathComponent()
             .appendingPathComponent(".notchshot-copy-\(UUID().uuidString)")
         defer { try? fileManager.removeItem(at: stagingURL) }
+        guard SafeAssetFile.isCurrentAndSafe(item.asset) else {
+            present(error: NotchShotError.exportFailed("The capture file changed or is no longer safely readable"))
+            return
+        }
         do {
             // A file the user deliberately saved should carry the permissions
             // every other app's Save As produces. The staging copy's default is
@@ -2822,16 +2912,30 @@ public final class AppCoordinator {
         // Starting a stack from an existing result should include that result,
         // otherwise the first shot of the flow is silently missing.
         if stack.isCollecting, stack.isEmpty, let selected = selectedShelfItem,
-           selected.asset.kind.isImage {
-            stack.add(selected.asset)
+           selected.asset.kind.isImage, !stack.add(selected.asset) {
+            presentStackFullError()
         }
         refreshActivity()
     }
 
     public func addSelectedToStack() {
         guard let selected = selectedShelfItem, selected.asset.kind.isImage else { return }
-        stack.add(selected.asset)
+        if !stack.add(selected.asset) { presentStackFullError() }
         refreshActivity()
+    }
+
+    /// The menu command is worded "Add Latest Capture to Stack"; use the newest
+    /// shelf item rather than whatever happens to be paged into view.
+    public func addLatestToStack() {
+        guard let latest = shelfItems.first, latest.asset.kind.isImage else { return }
+        if !stack.add(latest.asset) { presentStackFullError() }
+        refreshActivity()
+    }
+
+    public func presentStackFullError() {
+        present(error: NotchShotError.captureFailed(
+            "The capture stack is full (\(CaptureStack.maximumItems)). Remove a shot before adding another."
+        ))
     }
 
     public func exportStack(style: StackExportStyle, numbersSteps: Bool) {
@@ -2953,7 +3057,11 @@ public final class AppCoordinator {
             annotationMode: baseRecipe.annotationMode,
             filenameTemplate: baseRecipe.filenameTemplate,
             destination: destination,
-            imageFormat: baseRecipe.imageFormat
+            imageFormat: baseRecipe.imageFormat,
+            targetMaximumBytes: baseRecipe.targetMaximumBytes,
+            libraryTags: baseRecipe.libraryTags,
+            collectionName: baseRecipe.collectionName,
+            runsOCR: baseRecipe.runsOCR
         )
 
         var selectedDisplayID: CGDirectDisplayID?
@@ -3541,6 +3649,20 @@ public final class AppCoordinator {
     public func cancelFocusTimer() { context.timer.cancel() }
 
     public func startVoiceNote() {
+        // One microphone consumer at a time: a recording or dictation must
+        // finish first, mirroring the refusal in the other direction.
+        if RecordingService.shared.hasActiveSession || arbiter.isRecording || isRecordingPaused {
+            present(error: NotchShotError.captureFailed(
+                "Finish the current recording before starting a voice note"
+            ))
+            return
+        }
+        if let dictation = arbiter.dictation, dictation.state != .idle {
+            present(error: NotchShotError.captureFailed(
+                "Finish dictation before starting a voice note"
+            ))
+            return
+        }
         Task { await context.voiceNotes.start() }
         context.setExpanded(true)
         setPeeking(false)
@@ -3719,6 +3841,23 @@ public final class AppCoordinator {
         guard arbiter.isProcessing == label else { return }
         arbiter.isProcessing = nil
         refreshActivity()
+    }
+
+    /// Sweeps scrolling-capture staging folders a crash or force-quit left in
+    /// the managed captures directory. Preserved *finished* frame folders are
+    /// user-visible recovery output and are deliberately left alone.
+    private func cleanScrollingCaptureStaging() {
+        let fileManager = FileManager.default
+        guard let contents = try? fileManager.contentsOfDirectory(
+            at: AppPaths.captures,
+            includingPropertiesForKeys: nil,
+            options: []
+        ) else { return }
+        for url in contents {
+            let name = url.lastPathComponent
+            guard name.hasPrefix(".scrolling-frames-"), name.hasSuffix(".partial") else { continue }
+            try? fileManager.removeItem(at: url)
+        }
     }
 
     public func present(error: Error) {

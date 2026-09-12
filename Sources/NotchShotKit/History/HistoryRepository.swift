@@ -262,6 +262,11 @@ public final class HistoryRepository {
     /// is the file treated as runaway data and set aside unread.
     nonisolated static let maximumRecoverableStoreBytes = 64 * 1_024 * 1_024
 
+    /// Conservative ceiling for one pretty-printed row. Used by the size
+    /// estimate and by byte-pressure eviction, and deliberately larger than the
+    /// measured ~400-byte typical row.
+    nonisolated static let estimatedStoreRowBytes = 1_100
+
     public private(set) var entries: [HistoryEntry] = []
     public private(set) var lastPersistenceError: String?
     public private(set) var loadOutcome: HistoryLoadOutcome = .missing
@@ -297,6 +302,7 @@ public final class HistoryRepository {
     private struct WriteResult: Sendable {
         var entries: [HistoryEntry]
         var revision: UInt64
+        var droppedEntries: [HistoryEntry] = []
     }
 
     public convenience init(storeURL: URL = AppPaths.historyStore) {
@@ -502,36 +508,10 @@ public final class HistoryRepository {
         var changed = false
 
         if entries.count > Self.maximumEntryCount {
-            let dropped = Array(entries[Self.maximumEntryCount...])
-            entries.removeLast(entries.count - Self.maximumEntryCount)
-            // Same treatment expiry gives a row it drops: the hidden managed
-            // working files go with it, the user's own documents do not.
-            // Skipping this would strand unredacted projects with no owner and
-            // no future cleanup pass, since the untracked-file sweep only
-            // covers Captures and Recordings.
-            let protectedPaths = Self.referencedPaths(in: entries)
-            var retainedForRetry: [HistoryEntry] = []
-            for entry in dropped {
-                do {
-                    try Self.removeManagedArtifacts(for: entry, excluding: protectedPaths)
-                    if let thumbnailURL = entry.thumbnailURL {
-                        try? FileManager.default.removeItem(at: thumbnailURL)
-                    }
-                } catch {
-                    // Keep the ownership row if its private artifacts could not
-                    // be verified or removed; dropping it would strand data
-                    // with no visible owner and no future retry path.
-                    retainedForRetry.append(entry)
-                    Log.history.error(
-                        "History row-cap cleanup was deferred: \(error.localizedDescription)"
-                    )
-                }
-            }
-            entries.append(contentsOf: retainedForRetry)
-            Log.history.notice(
-                "History reached its row limit; removed \(dropped.count - retainedForRetry.count) oldest entries"
-            )
-            changed = retainedForRetry.count != dropped.count
+            changed = dropOldestEntries(
+                entries.count - Self.maximumEntryCount,
+                reason: "row limit"
+            ) || changed
         }
 
         var estimate = Self.estimatedStoreBytes(entries)
@@ -551,7 +531,58 @@ public final class HistoryRepository {
             )
             changed = true
         }
+        // Text alone cannot always bring a store back under the budget. Keep
+        // dropping the oldest rows until it can be written, so a store the app
+        // can load is always a store it can save — otherwise every later save
+        // fails and the captures in this session are lost at quit.
+        while estimate > Self.storeByteBudget, entries.count > 1 {
+            let excess = estimate - Self.storeByteBudget
+            let wholeRows = (excess + Self.estimatedStoreRowBytes - 1) / Self.estimatedStoreRowBytes
+            let rowsToDrop = min(entries.count - 1, max(1, wholeRows))
+            guard dropOldestEntries(rowsToDrop, reason: "size budget") else { break }
+            changed = true
+            estimate = Self.estimatedStoreBytes(entries)
+        }
         return changed
+    }
+
+    /// Removes the oldest `count` rows and retires their managed artifacts,
+    /// keeping any row whose private artifacts could not be verified or removed
+    /// so its files never lose their visible owner. Returns true when at least
+    /// one row was actually removed.
+    @discardableResult
+    private func dropOldestEntries(_ count: Int, reason: String) -> Bool {
+        guard count > 0, !entries.isEmpty else { return false }
+        let dropped = Array(entries.suffix(count))
+        entries.removeLast(min(count, entries.count))
+        // Same treatment expiry gives a row it drops: the hidden managed
+        // working files go with it, the user's own documents do not. Skipping
+        // this would strand unredacted projects with no owner and no future
+        // cleanup pass, since the untracked-file sweep only covers Captures and
+        // Recordings.
+        let protectedPaths = Self.referencedPaths(in: entries)
+        var retainedForRetry: [HistoryEntry] = []
+        for entry in dropped {
+            do {
+                try Self.removeManagedArtifacts(for: entry, excluding: protectedPaths)
+                if let thumbnailURL = entry.thumbnailURL {
+                    try? FileManager.default.removeItem(at: thumbnailURL)
+                }
+            } catch {
+                // Keep the ownership row if its private artifacts could not be
+                // verified or removed; dropping it would strand data with no
+                // visible owner and no future retry path.
+                retainedForRetry.append(entry)
+                Log.history.error(
+                    "History \(reason) cleanup was deferred: \(error.localizedDescription)"
+                )
+            }
+        }
+        entries.append(contentsOf: retainedForRetry)
+        Log.history.notice(
+            "History reached its \(reason); removed \(dropped.count - retainedForRetry.count) oldest entries"
+        )
+        return retainedForRetry.count != dropped.count
     }
 
     /// Cheap upper bound on what `performWrite` would produce, so the budget can
@@ -575,7 +606,7 @@ public final class HistoryRepository {
             // typical path. A row with a long filename, sidecar paths, or JSON
             // escaping can exceed that, so budget slightly high: shedding early is
             // cheaper than writing a store the next launch has to repair.
-            total += 1_100
+            total += estimatedStoreRowBytes
             total += entry.indexedText?.utf8.count ?? 0
             // JSON escaping (e.g. control chars → \u0000) can expand text beyond
             // utf8.count. A small headroom factor keeps the estimate conservative.
@@ -637,6 +668,9 @@ public final class HistoryRepository {
             Log.history.info("History row followed its file to a new location")
         }
         scheduleSave()
+        // Spotlight stores a title and a content URL; without this, a rename
+        // leaves search hits pointing at the old name until the next mutation.
+        syncSpotlightIfEnabled()
     }
 
     public func updateProject(for id: UUID, projectURL: URL?) {
@@ -650,6 +684,7 @@ public final class HistoryRepository {
             )
         }
         scheduleSave()
+        syncSpotlightIfEnabled()
     }
 
     /// Removes the entry, its thumbnail, and optionally the capture itself.
@@ -844,6 +879,9 @@ public final class HistoryRepository {
             entries[index].indexedText = nil
         }
         scheduleSave()
+        // The text also lives in the Spotlight index; clearing only the JSON
+        // would leave it searchable until the next mutation or launch.
+        syncSpotlightIfEnabled()
     }
 
     /// Removes private capture/recording files that have no history owner.
@@ -1331,6 +1369,27 @@ public final class HistoryRepository {
             entries = result.entries
             searchCache = nil
         }
+        if !result.droppedEntries.isEmpty {
+            // `performWrite` had to drop the oldest rows to keep the store
+            // under its read cap. Retire their managed artifacts now, on the
+            // main actor, the same way a row-cap drop does.
+            let protectedPaths = Self.referencedPaths(in: entries)
+            for entry in result.droppedEntries {
+                do {
+                    try Self.removeManagedArtifacts(for: entry, excluding: protectedPaths)
+                    if let thumbnailURL = entry.thumbnailURL {
+                        try? FileManager.default.removeItem(at: thumbnailURL)
+                    }
+                } catch {
+                    Log.history.error(
+                        "History size-limit cleanup was deferred: \(error.localizedDescription)"
+                    )
+                }
+            }
+            Log.history.notice(
+                "History exceeded its write limit; removed \(result.droppedEntries.count) oldest entries"
+            )
+        }
         persistedRevision = max(persistedRevision, result.revision)
         lastPersistenceError = nil
     }
@@ -1346,21 +1405,40 @@ public final class HistoryRepository {
         encoder.dateEncodingStrategy = .iso8601
         encoder.outputFormatting = [.prettyPrinted]
         var entriesToWrite = request.entries
+        var droppedEntries: [HistoryEntry] = []
         var data = try encoder.encode(entriesToWrite)
         // If the heuristic budget under-counted (long paths, JSON escaping), the
         // encoded data can still exceed the loader's 16 MB cap. Shed oldest
         // indexedText and re-encode rather than writing a store the next launch
         // must immediately trim and rewrite.
         if data.count > Self.maximumStoreBytes {
+            // Drop the stored OCR text in one pass and encode once. Shedding a
+            // single row per encode re-encoded the whole store every iteration,
+            // which made the launch/quit repair path quadratic on big stores.
             var shed = 0
-            for index in entriesToWrite.indices.reversed() where data.count > Self.storeByteBudget {
-                guard entriesToWrite[index].indexedText != nil else { continue }
+            for index in entriesToWrite.indices.reversed() where entriesToWrite[index].indexedText != nil {
                 entriesToWrite[index].indexedText = nil
                 shed += 1
-                data = try encoder.encode(entriesToWrite)
             }
             if shed > 0 {
+                data = try encoder.encode(entriesToWrite)
                 Log.history.notice("History write exceeded size cap; dropped indexed text from \(shed) entries before writing")
+            }
+            // The main-actor estimate can under-count unusual rows (a very long
+            // path or library tag). Drop the oldest rows here too, then hand
+            // them back so their artifacts are retired — a store the app could
+            // load must always be one it can write, or every later save fails
+            // and the session's captures are lost at quit.
+            while data.count > Self.maximumStoreBytes, entriesToWrite.count > 1 {
+                let averageRowBytes = max(1, data.count / max(1, entriesToWrite.count))
+                let excess = data.count - Self.maximumStoreBytes
+                let dropCount = min(
+                    entriesToWrite.count - 1,
+                    max(1, (excess + averageRowBytes - 1) / averageRowBytes)
+                )
+                droppedEntries.append(contentsOf: entriesToWrite.suffix(dropCount))
+                entriesToWrite.removeLast(dropCount)
+                data = try encoder.encode(entriesToWrite)
             }
             guard data.count <= Self.maximumStoreBytes else {
                 throw NotchShotError.exportFailed("History data exceeded its safe size limit even after trimming")
@@ -1380,7 +1458,11 @@ public final class HistoryRepository {
             [.posixPermissions: 0o600],
             ofItemAtPath: storeURL.path
         )
-        return WriteResult(entries: entriesToWrite, revision: request.revision)
+        return WriteResult(
+            entries: entriesToWrite,
+            revision: request.revision,
+            droppedEntries: droppedEntries
+        )
     }
 
     private func load() {

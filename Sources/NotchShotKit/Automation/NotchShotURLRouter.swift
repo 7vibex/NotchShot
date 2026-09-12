@@ -56,7 +56,11 @@ public enum NotchShotURLCommand: Sendable, Equatable {
         case .pinFile(let url):
             let displayPath = Self.abbreviatedPath(for: url)
             let kind = Self.fileKindDescription(for: url)
-            return "Another app or webpage requested permission to pin “\(url.lastPathComponent)” (\(kind)) from:\n\(displayPath)\n\nOnly a regular file under 500 MB can be pinned, and it will appear in the shelf as a reference without copying its contents."
+            let resolved = url.resolvingSymlinksInPath()
+            let resolutionNote = resolved.standardizedFileURL.path != url.standardizedFileURL.path
+                ? "\nIt resolves to:\n\(Self.abbreviatedPath(for: resolved))"
+                : ""
+            return "Another app or webpage requested permission to pin “\(url.lastPathComponent)” (\(kind)) from:\n\(displayPath)\(resolutionNote)\n\nOnly a regular file under 500 MB can be pinned, and it will appear in the shelf as a reference without copying its contents."
         case .openLatest:
             return "Another app or webpage requested permission to open the latest capture."
         }

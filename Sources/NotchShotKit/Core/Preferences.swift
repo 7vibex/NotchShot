@@ -785,12 +785,14 @@ public enum AppPaths {
                     )
                 }
                 try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
-                if url == aiActivity {
-                    try FileManager.default.setAttributes(
-                        [.posixPermissions: 0o700],
-                        ofItemAtPath: url.path
-                    )
-                }
+                // Everything under Application Support/NotchShot holds capture
+                // pixels, clipboard content, or transcripts. Keep the whole
+                // tree owner-only instead of trusting the home directory's
+                // ACLs or the current umask.
+                try FileManager.default.setAttributes(
+                    [.posixPermissions: 0o700],
+                    ofItemAtPath: url.path
+                )
                 guard owns(url) else {
                     throw CocoaError(
                         .fileWriteNoPermission,

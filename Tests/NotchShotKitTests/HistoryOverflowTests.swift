@@ -158,4 +158,47 @@ struct HistoryOverflowTests {
         #expect(reloaded.entries.map(\.indexedText) == repository.entries.map(\.indexedText))
         #expect(Self.corruptSiblings(of: store).isEmpty)
     }
+
+    /// The fast estimate does not see every field. A very long capture path is
+    /// ordinary row data that survives sanitising, so a text-free store can
+    /// exceed the write cap while the estimate still reads inside the budget;
+    /// before the fix the save threw forever and every later capture lived only
+    /// in memory.
+    @Test("A text-free store past the write cap sheds oldest rows instead of failing")
+    func oversizedTextFreeStoreShrinks() throws {
+        let store = Self.makeStore()
+        let longDirectory = String(repeating: "p", count: 2_000)
+        let seeded = (0 ..< 8_500).map { index -> HistoryEntry in
+            var asset = CaptureAsset(
+                url: URL(fileURLWithPath: "/Users/test/Pictures/\(longDirectory)/Capture \(index).png"),
+                kind: .screenshot,
+                pixelSize: CGSize(width: 2880, height: 1800),
+                scale: 2
+            )
+            asset.createdAt = Date(timeIntervalSince1970: 1_700_000_000 + Double(index))
+            return HistoryEntry(asset: asset, thumbnailFilename: nil, indexedText: nil)
+        }
+        let byteCount = try Self.write(seeded, to: store)
+        #expect(byteCount > HistoryRepository.maximumStoreBytes)
+        #expect(byteCount <= HistoryRepository.maximumRecoverableStoreBytes)
+
+        let repository = HistoryRepository(
+            storeURL: store,
+            managedArtifactDirectories: [],
+            historyEnabled: true,
+            indexesCaptureText: false
+        )
+        try repository.save()
+
+        let attributes = try FileManager.default.attributesOfItem(atPath: store.path)
+        let size = (attributes[.size] as? Int) ?? 0
+        #expect(size <= HistoryRepository.maximumStoreBytes)
+        #expect(repository.entries.count < seeded.count)
+        #expect(repository.entries.first?.fileURL.lastPathComponent == "Capture 8499.png")
+        #expect(repository.entries.last?.fileURL.lastPathComponent != "Capture 0.png")
+
+        let reloaded = HistoryRepository(storeURL: store)
+        #expect(reloaded.entries.count == repository.entries.count)
+        #expect(Self.corruptSiblings(of: store).isEmpty)
+    }
 }

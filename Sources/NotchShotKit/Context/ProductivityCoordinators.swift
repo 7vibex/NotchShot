@@ -284,6 +284,9 @@ public final class PlannerEntryService {
                 [.year, .month, .day, .hour, .minute, .timeZone],
                 from: draft.date
             )
+            // A due date alone never notifies; the user asked NotchShot to
+            // remind them, so attach an alarm at the parsed time.
+            reminder.addAlarm(EKAlarm(absoluteDate: draft.date))
             try store.save(reminder, commit: true)
         }
         statusMessage = draft.kind == .event ? "Added to Calendar" : "Added to Reminders"

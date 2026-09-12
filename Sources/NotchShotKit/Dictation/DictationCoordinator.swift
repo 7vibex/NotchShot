@@ -334,6 +334,10 @@ public final class DictationCoordinator {
         volatilePart = ""
         startedAt = nil
         insertionTarget = nil
+        // A press queued behind a finishing session must not survive the
+        // cancel, or the next terminal transition starts an unprompted take.
+        pendingPushToTalkStart = false
+        pushToTalkPressedAt = nil
 
         // Faster collapse: set cancelled and schedule immediate collapse
         state = .cancelled

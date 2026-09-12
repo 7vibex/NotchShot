@@ -413,6 +413,7 @@ struct ContextFeatureTests {
             keyPoints: ["First", "Second"],
             extractedText: "Raw source",
             usedLanguageModel: false,
+            truncatedForLanguageModel: false,
             createdAt: Date(timeIntervalSinceReferenceDate: 0)
         )
         #expect(visible.visibleText == "Visible overview\n\n• First\n• Second")

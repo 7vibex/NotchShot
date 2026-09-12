@@ -49,7 +49,9 @@ REPORTER="/Applications/NotchShot.app/Contents/MacOS/notchshot-ai"
 Progress is optional. When a source does not report a real percentage, the
 island shows an indeterminate state instead of estimating one. Active records
 become stale after 30 minutes without an update; finished and failed records
-remain visible for 45 seconds.
+remain visible for 45 seconds. Up to 20 finished or failed records are kept in
+the owner-only `AI Activity History.json` in the same support folder and shown
+as the Recent list until cleared; nothing else persists.
 
 ## Connect an AI coding tool
 
@@ -103,7 +105,10 @@ to `SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PermissionRequest`,
 settings scopes and merge rules.
 
 When Claude hooks are connected and the Claude source is enabled, NotchShot
-listens on `/tmp/notchshot-claude.sock` with owner-only permissions. The expanded
+listens on a per-user owner-only socket at `$TMPDIR/notchshot-claude-<uid>.sock`
+(falling back to `/tmp/notchshot-claude-<uid>.sock` only when the temporary path
+is too long), verifies the peer's user id on both ends, and stays silent if it
+cannot bind. The expanded
 Claude activity card lists live sessions, keeps a PermissionRequest visible, and
 returns Claude's documented `hookSpecificOutput` decision after Allow or Deny.
 The conversation button reads at most 4 MB of the matching local JSONL file on

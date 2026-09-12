@@ -80,4 +80,48 @@ struct ClaudeCodeSessionTests {
         #expect(!messages.contains { $0.text.contains("private") })
         #expect(messages[2].toolName == "Bash")
     }
+
+    @Test("A transcript is found by session id even when the project slug does not match")
+    func transcriptLookupIgnoresUndocumentedSlug() throws {
+        let home = FileManager.default.temporaryDirectory
+            .appendingPathComponent("notchshot-claude-home-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: home) }
+        // Claude's real folder name for /Users/example/my_app replaces the
+        // underscore; the old lookup built "-Users-example-my_app" and missed it.
+        let project = home
+            .appendingPathComponent(".claude/projects/-Users-example-my-app", isDirectory: true)
+        try FileManager.default.createDirectory(at: project, withIntermediateDirectories: true)
+        let transcript = project.appendingPathComponent("session-42.jsonl")
+        try Data("""
+            {"type":"user","cwd":"/Users/example/my_app","uuid":"u1","message":{"role":"user","content":"Hello"}}
+            """.utf8).write(to: transcript)
+
+        let session = ClaudeCodeSession(id: "session-42", cwd: "/Users/example/my_app")
+        let found = ClaudeConversationReader.sessionFileURL(for: session, homeDirectory: home)
+        #expect(found?.standardizedFileURL == transcript.standardizedFileURL)
+    }
+
+    @Test("The recorded cwd disambiguates a duplicate session id across projects")
+    func transcriptLookupPrefersMatchingCwd() throws {
+        let home = FileManager.default.temporaryDirectory
+            .appendingPathComponent("notchshot-claude-home-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: home) }
+        let otherProject = home
+            .appendingPathComponent(".claude/projects/-Users-example-other", isDirectory: true)
+        let matchingProject = home
+            .appendingPathComponent(".claude/projects/-Users-example-target", isDirectory: true)
+        try FileManager.default.createDirectory(at: otherProject, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: matchingProject, withIntermediateDirectories: true)
+        try Data("""
+            {"type":"user","cwd":"/Users/example/other","uuid":"u1","message":{"role":"user","content":"Other"}}
+            """.utf8).write(to: otherProject.appendingPathComponent("session-7.jsonl"))
+        let matching = matchingProject.appendingPathComponent("session-7.jsonl")
+        try Data("""
+            {"type":"user","cwd":"/Users/example/target","uuid":"u2","message":{"role":"user","content":"Target"}}
+            """.utf8).write(to: matching)
+
+        let session = ClaudeCodeSession(id: "session-7", cwd: "/Users/example/target")
+        let found = ClaudeConversationReader.sessionFileURL(for: session, homeDirectory: home)
+        #expect(found?.standardizedFileURL == matching.standardizedFileURL)
+    }
 }

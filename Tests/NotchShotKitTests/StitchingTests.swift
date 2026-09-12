@@ -483,4 +483,12 @@ struct GrayBufferTests {
         )
         #expect(score == .greatestFiniteMagnitude)
     }
+
+    @Test("Manual scrolling only advances over the captured region")
+    func scrollRegionGate() {
+        let region = CGRect(x: 100, y: 100, width: 400, height: 300)
+        #expect(ScrollingCaptureSession.acceptsScroll(at: CGPoint(x: 300, y: 250), in: region))
+        #expect(!ScrollingCaptureSession.acceptsScroll(at: CGPoint(x: 500, y: 250), in: region))
+        #expect(!ScrollingCaptureSession.acceptsScroll(at: CGPoint(x: 300, y: 550), in: region))
+    }
 }

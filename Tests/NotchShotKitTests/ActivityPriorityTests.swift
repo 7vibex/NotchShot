@@ -220,4 +220,15 @@ struct ActivityPriorityTests {
         )).isInteractive)
         #expect(!NotchActivity.idle.isInteractive)
     }
+
+    @Test("Active dictation outranks a recording so the microphone state stays visible")
+    func dictationOutranksRecording() {
+        let dictation = DictationSnapshot(state: .listening)
+        var arbiter = ActivityArbiter()
+        arbiter.dictation = dictation
+        arbiter.isRecording = true
+        #expect(arbiter.resolve() == .dictation(dictation))
+        arbiter.dictation = nil
+        #expect(arbiter.resolve() == .recording)
+    }
 }

@@ -69,8 +69,25 @@ public actor PrivacyReviewService {
         async let textResult = OCRService.shared.recognizeText(in: image)
         async let faceResult = Self.detectFaces(in: image)
 
-        let (ocr, faces) = try await (textResult, faceResult)
-        var findings = faces
+        let ocrOutcome: Result<OCRResult, Error>
+        do {
+            ocrOutcome = .success(try await textResult)
+        } catch {
+            ocrOutcome = .failure(error)
+        }
+        let faceOutcome: Result<[PrivacyFinding], Error>
+        do {
+            faceOutcome = .success(try await faceResult)
+        } catch {
+            faceOutcome = .failure(error)
+        }
+        // One failing pass (for example face detection) must not discard the
+        // findings the other one produced; only a total failure is an error.
+        if case .failure(let error) = ocrOutcome, case .failure = faceOutcome {
+            throw error
+        }
+        let ocr = (try? ocrOutcome.get()) ?? .empty
+        var findings = (try? faceOutcome.get()) ?? []
 
         for region in ocr.regions {
             for item in region.detectedItems {

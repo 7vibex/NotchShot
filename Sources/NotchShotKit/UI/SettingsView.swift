@@ -4,6 +4,7 @@ import AppKit
 import ServiceManagement
 import Speech
 import SwiftUI
+import UniformTypeIdentifiers
 
 public struct SettingsView: View {
     @Bindable var coordinator: AppCoordinator
@@ -1675,6 +1676,11 @@ private struct MediaSettings: View {
                         .font(.caption)
                         .foregroundStyle(.orange)
                 }
+                if coordinator.permissions.pendingRemediation == .automation {
+                    Button("Open Automation Settings") {
+                        coordinator.permissions.openSettings(for: .automation)
+                    }
+                }
             }
 
             Section("Notification banners") {
@@ -1857,6 +1863,11 @@ private struct PrivacySettings: View {
                     Text("Forever").tag(0)
                 }
                 .disabled(!preferences.historyEnabled)
+                .onChange(of: preferences.historyRetentionDays) { _, _ in
+                    // Applying only at launch left rows past a just-shortened
+                    // window alive for the rest of the session.
+                    _ = coordinator.history.applyRetention()
+                }
 
                 Toggle("Search capture text", isOn: Binding(
                     get: { preferences.indexesCaptureText },
@@ -1917,6 +1928,9 @@ private struct PrivacySettings: View {
                     Text("Until cleared").tag(0)
                 }
                 .disabled(!preferences.clipboardEnabled)
+                .onChange(of: preferences.clipboardRetentionDays) { _, _ in
+                    _ = coordinator.clipboard.applyRetention()
+                }
 
                 Toggle("Clear history when NotchShot quits", isOn: $preferences.clipboardClearsOnQuit)
                     .disabled(!preferences.clipboardEnabled)
@@ -1924,9 +1938,29 @@ private struct PrivacySettings: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
-                LabeledContent("Never recorded") {
-                    Text("\(preferences.clipboardExcludedBundleIDs.count) apps")
-                        .foregroundStyle(.secondary)
+                DisclosureGroup("Excluded apps (\(preferences.clipboardExcludedBundleIDs.count))") {
+                    if preferences.clipboardExcludedBundleIDs.isEmpty {
+                        Text("No app exclusions. Concealed and transient clippings are still never recorded.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    } else {
+                        ForEach(preferences.clipboardExcludedBundleIDs.sorted(), id: \.self) { bundleID in
+                            HStack {
+                                Text(bundleID)
+                                    .font(.caption.monospaced())
+                                    .textSelection(.enabled)
+                                Spacer(minLength: 8)
+                                Button("Remove") {
+                                    preferences.clipboardExcludedBundleIDs.remove(bundleID)
+                                }
+                                .buttonStyle(.link)
+                            }
+                            .accessibilityElement(children: .combine)
+                            .accessibilityLabel("Excluded app \(bundleID)")
+                        }
+                    }
+                    Button("Add App…") { addClipboardExclusion() }
+                        .disabled(!preferences.clipboardEnabled)
                 }
                 Text("Clippings marked concealed or transient — what password managers set on a copied password — are never recorded, whatever app they came from. The excluded list adds whole apps on top of that.")
                     .font(.caption)
@@ -1959,6 +1993,23 @@ private struct PrivacySettings: View {
         case .inputMonitoring:
             coordinator.permissions.inputMonitoringGranted ? "Granted" : "Not granted"
         default: "As needed"
+        }
+    }
+
+    private func addClipboardExclusion() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = true
+        panel.allowedContentTypes = [.applicationBundle]
+        panel.prompt = "Exclude"
+        panel.message = "Choose apps whose copies should never enter clipboard history."
+        guard panel.runModal() == .OK else { return }
+        for url in panel.urls {
+            guard let identifier = Bundle(url: url)?.bundleIdentifier, !identifier.isEmpty else {
+                continue
+            }
+            preferences.clipboardExcludedBundleIDs.insert(identifier)
         }
     }
 

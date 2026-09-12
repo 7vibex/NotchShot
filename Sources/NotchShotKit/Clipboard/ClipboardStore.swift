@@ -30,6 +30,9 @@ public final class ClipboardStore {
 
     public private(set) var entries: [ClipboardEntry] = []
     public private(set) var lastPersistenceError: String?
+    /// Set when a corrupt/oversized store was set aside so the UI can say so
+    /// instead of silently presenting an empty history.
+    public private(set) var loadRecoveryMessage: String?
 
     private let storeURL: URL
     private let imageDirectory: URL
@@ -257,6 +260,14 @@ public final class ClipboardStore {
             removeManagedImage(for: entry)
         }
         scheduleSave()
+        // The user asked for this content to be gone. Persist it now rather
+        // than leaving a crash window in which the debounced save never lands
+        // and `load()` brings the rows back.
+        do {
+            try save()
+        } catch {
+            Log.history.error("Clipboard clear could not be persisted: \(error.localizedDescription)")
+        }
     }
 
     /// Drops rows past the retention window. Pinned rows never expire — that is
@@ -552,6 +563,7 @@ public final class ClipboardStore {
             let backup = storeURL.appendingPathExtension("corrupt-\(UUID().uuidString)")
             try? FileManager.default.moveItem(at: storeURL, to: backup)
             entries = []
+            loadRecoveryMessage = "Clipboard history could not be read and was set aside. A new history starts empty."
         }
     }
 

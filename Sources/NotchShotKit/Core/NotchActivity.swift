@@ -117,9 +117,9 @@ public struct ActivityArbiter: Sendable {
     /// The single source of truth for what the notch shows. Earlier returns
     /// win, and the order is the product rule:
     ///
-    ///     error → selecting → countdown → recording → processing → file drop →
-    ///     result → expanded → notification → system level → interrupting context →
-    ///     media → passive context → idle
+    ///     error → selecting → countdown → dictation → recording → processing →
+    ///     file drop → result → expanded → notification → system level →
+    ///     interrupting context → media → passive context → idle
     ///
     /// Selection and countdown sit above `recording` because they are modal to
     /// the user's current action, and `processing`/`error` sit alongside so a

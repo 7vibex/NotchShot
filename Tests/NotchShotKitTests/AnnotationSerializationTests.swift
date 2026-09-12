@@ -38,6 +38,39 @@ struct AnnotationUndoTransactionTests {
         #expect(controller.document.elements.first?.text == "Draft 99")
     }
 
+    @Test("Undoing back to the saved document clears the unsaved-changes flag")
+    func dirtyStateTracksSavedDocument() throws {
+        let controller = AnnotationDocumentController(
+            source: TestImage.solid(width: 100, height: 100),
+            document: AnnotationDocument(sourcePixelSize: CGSize(width: 100, height: 100))
+        )
+        #expect(!controller.hasUnsavedChanges)
+
+        controller.add(AnnotationElement(
+            kind: .arrow,
+            points: [CGPoint(x: 5, y: 5), CGPoint(x: 40, y: 30)],
+            style: AnnotationStyle()
+        ))
+        #expect(controller.hasUnsavedChanges)
+
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("notchshot-dirty-\(UUID().uuidString).notchshot")
+        defer { try? FileManager.default.removeItem(at: url) }
+        _ = try controller.saveProject(to: url)
+        #expect(!controller.hasUnsavedChanges)
+
+        controller.add(AnnotationElement(
+            kind: .rectangle,
+            points: [CGPoint(x: 10, y: 10), CGPoint(x: 50, y: 50)],
+            style: AnnotationStyle()
+        ))
+        #expect(controller.hasUnsavedChanges)
+        controller.undo()
+        #expect(!controller.hasUnsavedChanges)
+        controller.redo()
+        #expect(controller.hasUnsavedChanges)
+    }
+
     @Test("A continuous background slider gesture creates one undo step")
     func backgroundSliderCoalesces() {
         let controller = AnnotationDocumentController(

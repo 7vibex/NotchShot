@@ -195,11 +195,14 @@ private enum Reporter {
 
     private static func hook(_ options: Options) throws -> String? {
         let source = try parsedSource(options.required("source"))
-        let input = FileHandle.standardInput.readDataToEndOfFile()
+        let input = boundedInput()
         let json = (try? JSONSerialization.jsonObject(with: input)) as? [String: Any] ?? [:]
-        let event = options.value("event")
-            ?? firstString(in: json, keys: ["hook_event_name", "event_name", "event", "type"])
-            ?? "activity"
+        let event = bounded(
+            options.value("event")
+                ?? firstString(in: json, keys: ["hook_event_name", "event_name", "event", "type"])
+                ?? "activity",
+            maximum: 80
+        )
         let identifier = safeIdentifier(
             firstString(in: json, keys: ["session_id", "conversation_id", "thread_id", "sessionId"])
                 ?? "current"
@@ -405,7 +408,7 @@ private enum Reporter {
         return nil
     }
 
-    private static let claudeSocketPath = "/tmp/notchshot-claude.sock"
+    private static let claudeSocketPath = ClaudeHookSocket.path
 
     /// Sends only the bounded labels already used by the generic activity
     /// record. In particular, `tool_input`, tool output, and transcript fields
@@ -493,6 +496,10 @@ private enum Reporter {
             close(fileDescriptor)
             return nil
         }
+        guard ClaudeHookSocket.isTrustedPeer(fileDescriptor) else {
+            close(fileDescriptor)
+            return nil
+        }
         return fileDescriptor
     }
 
@@ -552,6 +559,17 @@ private enum Reporter {
         guard let value else { return nil }
         let result = bounded(value, maximum: maximum)
         return result.isEmpty ? nil : result
+    }
+
+    private static let maximumHookInputBytes = 512 * 1_024
+
+    /// Hook stdin is bounded so a malformed or hostile runner cannot make the
+    /// short-lived reporter allocate without limit.
+    private static func boundedInput() -> Data {
+        guard let data = try? FileHandle.standardInput.read(upToCount: maximumHookInputBytes) else {
+            return Data()
+        }
+        return data
     }
 
     private static func bounded(_ value: String, maximum: Int) -> String {

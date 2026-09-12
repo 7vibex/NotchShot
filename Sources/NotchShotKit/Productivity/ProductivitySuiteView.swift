@@ -146,6 +146,7 @@ private struct ScheduleToolView: View {
     @State private var notificationBody = "Scheduled from NotchShot Productivity Center"
     @State private var notificationPriority: ProductivityNotificationPriority = .standard
     @State private var notificationMinutes = 10
+    @State private var notificationsDenied = false
 
     var body: some View {
         Form {
@@ -157,6 +158,13 @@ private struct ScheduleToolView: View {
                 Button("Review and Add") { addPlannerItem() }
                     .disabled(plannerText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 if let message { Text(message).font(.caption).foregroundStyle(.secondary) }
+                if notificationsDenied {
+                    Button("Open Notification Settings…") {
+                        coordinator.openNotificationSettings()
+                    }
+                    .buttonStyle(.link)
+                    .font(.caption)
+                }
             }
 
             Section("Pomodoro") {
@@ -213,6 +221,7 @@ private struct ScheduleToolView: View {
         Task {
             do {
                 guard try await ProductivityNotificationCenter.shared.requestAuthorization() else {
+                    notificationsDenied = true
                     message = "Notifications were not allowed."
                     return
                 }
@@ -222,6 +231,7 @@ private struct ScheduleToolView: View {
                     priority: notificationPriority,
                     at: Date().addingTimeInterval(TimeInterval(notificationMinutes * 60))
                 )
+                notificationsDenied = false
                 message = "Notification scheduled."
             } catch {
                 message = error.localizedDescription
@@ -258,8 +268,8 @@ private struct LyricsToolView: View {
                     Button("Save Local Lyrics") { save() }
                     Button("Import Text File…") { importLyrics() }
                     Spacer()
-                    if let message { Text(message).font(.caption).foregroundStyle(.secondary) }
                 }
+                if let message { Text(message).font(.caption).foregroundStyle(.secondary) }
                 Text("Lyrics are user-supplied and stored locally. Apple Music and Spotify do not provide a public cross-app lyrics API that NotchShot can faithfully use.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -560,6 +570,17 @@ private struct LocalSendToolView: View {
             selectedFiles = router.pendingLocalSendFiles
             router.pendingLocalSendFiles = []
         }
+        .onChange(of: router.pendingLocalSendFiles) { _, files in
+            // Routing files to LocalSend while the tool is already visible must
+            // replace the selection too; `onAppear` alone only fires once.
+            guard !files.isEmpty else { return }
+            selectedFiles = Array(files.prefix(100))
+            router.pendingLocalSendFiles = []
+            pendingFingerprint = nil
+            message = files.count > 100
+                ? "LocalSend sends the first 100 files per transfer."
+                : nil
+        }
     }
 
     private func chooseFiles() {
@@ -569,9 +590,12 @@ private struct LocalSendToolView: View {
         panel.allowsMultipleSelection = true
         panel.resolvesAliases = false
         guard panel.runModal() == .OK else { return }
-        selectedFiles = Array(panel.urls.prefix(100))
+        let urls = panel.urls
+        selectedFiles = Array(urls.prefix(100))
         pendingFingerprint = nil
-        message = nil
+        message = urls.count > 100
+            ? "LocalSend sends the first 100 files per transfer."
+            : nil
     }
 
     private func send(trustedFingerprint: String?) {
@@ -685,8 +709,19 @@ private struct CameraPreviewView: NSViewRepresentable {
     final class Coordinator: @unchecked Sendable {
         private let queue = DispatchQueue(label: "com.notchshot.camera-preview")
         private let session = AVCaptureSession()
+        nonisolated private let stateLock = NSLock()
+        nonisolated(unsafe) private var stopped = true
+
+        nonisolated private var isStopped: Bool {
+            stateLock.lock()
+            defer { stateLock.unlock() }
+            return stopped
+        }
 
         func start(view: CameraPreviewHostView) {
+            stateLock.lock()
+            stopped = false
+            stateLock.unlock()
             view.previewLayer.session = session
             switch AVCaptureDevice.authorizationStatus(for: .video) {
             case .authorized:
@@ -704,7 +739,10 @@ private struct CameraPreviewView: NSViewRepresentable {
         }
 
         private func configureAndStart() {
-            queue.async { [session] in
+            queue.async { [weak self, session] in
+                // A TCC grant can arrive after the view was dismantled; the
+                // session must not start with no preview and no owner.
+                guard let self, !self.isStopped else { return }
                 guard !session.isRunning else { return }
                 session.beginConfiguration()
                 session.sessionPreset = .high
@@ -721,6 +759,9 @@ private struct CameraPreviewView: NSViewRepresentable {
         }
 
         func stop() {
+            stateLock.lock()
+            stopped = true
+            stateLock.unlock()
             queue.async { [session] in
                 if session.isRunning { session.stopRunning() }
             }

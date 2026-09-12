@@ -96,24 +96,62 @@ public enum ClaudeConversationReader {
     ) -> URL? {
         let safeID = AIActivityPolicy.safeIdentifier(session.id)
         guard !safeID.isEmpty, safeID == session.id else { return nil }
-        guard !session.cwd.isEmpty else { return nil }
-
-        let projectDirectory = session.cwd
-            .replacingOccurrences(of: "/", with: "-")
-            .replacingOccurrences(of: ".", with: "-")
-        guard !projectDirectory.isEmpty,
-              !projectDirectory.contains("/"),
-              !projectDirectory.contains("\0") else { return nil }
 
         let claudeDirectory = homeDirectory
             .appendingPathComponent(".claude", isDirectory: true)
         let projects = claudeDirectory
             .appendingPathComponent("projects", isDirectory: true)
-        let project = projects.appendingPathComponent(projectDirectory, isDirectory: true)
-        guard safeDirectory(claudeDirectory), safeDirectory(projects), safeDirectory(project) else {
+        guard safeDirectory(claudeDirectory), safeDirectory(projects) else {
             return nil
         }
-        return project.appendingPathComponent("\(safeID).jsonl", isDirectory: false)
+
+        // Claude Code's project-folder slug is undocumented and has changed
+        // between releases, so it is not reimplemented here. The transcript
+        // file is named after the session id inside one project folder; find
+        // it, and prefer a candidate whose recorded cwd matches when several
+        // folders hold a file with this id.
+        let directories = (try? FileManager.default.contentsOfDirectory(
+            at: projects,
+            includingPropertiesForKeys: [.isDirectoryKey, .isSymbolicLinkKey],
+            options: [.skipsHiddenFiles]
+        )) ?? []
+        var candidates: [URL] = []
+        for directory in directories.prefix(500) {
+            guard let values = try? directory.resourceValues(forKeys: [
+                .isDirectoryKey,
+                .isSymbolicLinkKey,
+            ]),
+                values.isDirectory == true,
+                values.isSymbolicLink != true,
+                safeDirectory(directory) else { continue }
+            let candidate = directory.appendingPathComponent("\(safeID).jsonl", isDirectory: false)
+            guard FileManager.default.fileExists(atPath: candidate.path) else { continue }
+            candidates.append(candidate)
+        }
+        guard !candidates.isEmpty else { return nil }
+        if candidates.count == 1 { return candidates[0] }
+        if !session.cwd.isEmpty,
+           let matching = candidates.first(where: { transcriptMatches($0, cwd: session.cwd) }) {
+            return matching
+        }
+        return candidates[0]
+    }
+
+    /// Reads only the head of a candidate transcript to see whether it records
+    /// this session's working directory. Bounded so a huge file cannot stall
+    /// the on-demand conversation read.
+    private static func transcriptMatches(_ url: URL, cwd: String) -> Bool {
+        guard let handle = try? FileHandle(forReadingFrom: url) else { return false }
+        defer { try? handle.close() }
+        guard let data = try? handle.read(upToCount: 65_536),
+              let text = String(data: data, encoding: .utf8) else { return false }
+        for line in text.split(separator: "\n", omittingEmptySubsequences: true).prefix(20) {
+            guard let lineData = line.data(using: .utf8),
+                  let object = try? JSONSerialization.jsonObject(with: lineData) as? [String: Any],
+                  let recorded = object["cwd"] as? String else { continue }
+            if recorded == cwd { return true }
+        }
+        return false
     }
 
     private static func extract(

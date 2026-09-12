@@ -33,6 +33,9 @@ public struct DocumentSummaryResult: Sendable, Equatable {
     public var keyPoints: [String]
     public var extractedText: String
     public var usedLanguageModel: Bool
+    /// True when the on-device model only saw the leading portion of a long
+    /// document; the UI says so instead of implying full coverage.
+    public var truncatedForLanguageModel: Bool
     public var createdAt: Date
 
     public var visibleText: String {
@@ -200,6 +203,8 @@ public actor DocumentSummaryService {
             keyPoints: generated.keyPoints,
             extractedText: bounded,
             usedLanguageModel: generated.usedLanguageModel,
+            truncatedForLanguageModel: generated.usedLanguageModel
+                && bounded.count > Self.maximumModelCharacters,
             createdAt: Date()
         )
     }

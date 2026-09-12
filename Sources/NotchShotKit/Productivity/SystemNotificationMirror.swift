@@ -269,9 +269,9 @@ public final class SystemNotificationMirror {
             withBundleIdentifier: Self.notificationCenterBundleID
         ).first
         guard let app else {
-            applicationElement = nil
-            observer = nil
-            observedPID = nil
+            // Notification Center quit: remove the observer's run-loop source
+            // before dropping it, or the source stays attached to a dead PID.
+            detachObserver()
             status = .waitingForNotificationCenter
             return
         }

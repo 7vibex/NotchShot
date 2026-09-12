@@ -122,4 +122,24 @@ struct CodexHookConfigurationTests {
         #expect(try CodexHookConfigurationEditor.enablingHooks(in: "[features]\r\nother = true\r\n")
             == "[features]\r\ncodex_hooks = true\r\nother = true\r\n")
     }
+
+    @Test("A non-conforming hooks value is rejected without mutating the file", arguments: [
+        #"{"hooks":"nonsense"}"#,
+        #"{"hooks":{"Stop":"nonsense"}}"#,
+    ])
+    func malformedHooksShapeIsRejected(original: String) throws {
+        try withFixture(config: "[features]\n") { installer, home, reporter in
+            let settings = home.appendingPathComponent(".claude/settings.json")
+            try FileManager.default.createDirectory(
+                at: settings.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+            let before = Data(original.utf8)
+            try before.write(to: settings)
+            #expect(throws: AIHookInstallerError.self) {
+                try installer.install(.claude, reporterURL: reporter)
+            }
+            #expect(try Data(contentsOf: settings) == before)
+        }
+    }
 }

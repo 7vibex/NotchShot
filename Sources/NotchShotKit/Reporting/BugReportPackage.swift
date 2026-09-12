@@ -60,7 +60,13 @@ public enum BugReportPackager {
 
             var includedProject = false
             if options.includesEditableProject, let project = asset.projectURL,
-               fileManager.fileExists(atPath: project.path) {
+               fileManager.fileExists(atPath: project.path),
+               let recordedIdentity = asset.projectFileIdentity,
+               SafeAssetFile.fileSystemIdentity(
+                   at: project,
+                   maximumBytes: SafeAssetFile.maximumOwnedBytes,
+                   allowsDirectory: true
+               ) == recordedIdentity {
                 let contents = try NotchShotPackage.read(from: project)
                 _ = try NotchShotPackage.write(
                     document: contents.document,

@@ -81,6 +81,15 @@ public struct DocumentSummaryView: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
 
+                        if result.truncatedForLanguageModel {
+                            Label(
+                                "Long document: Apple Intelligence summarized the first \(DocumentSummaryService.maximumModelCharacters.formatted()) characters. Copy Extracted Text includes everything that was read.",
+                                systemImage: "text.append"
+                            )
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        }
+
                         DisclosureGroup("Extracted text") {
                             Button("Copy Extracted Text") { session.copyExtractedText() }
                             Text(String(result.extractedText.prefix(8_000)))

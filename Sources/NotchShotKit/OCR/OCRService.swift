@@ -119,6 +119,7 @@ public struct OCRResult: Sendable, Equatable {
             && tables.isEmpty
             && fullText.isEmpty
             && structuredText.isEmpty
+            && markdownText.isEmpty
     }
 }
 

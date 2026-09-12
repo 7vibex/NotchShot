@@ -77,6 +77,12 @@ public final class ScrollingCaptureSession {
     typealias FrameWriter = @Sendable (CGImage, URL) throws -> Void
     typealias ScrollDriver = @MainActor @Sendable (ScrollingAxis, CGRect) -> Bool
 
+    /// Manual scrolling only advances when the scroll happened over the
+    /// captured region. Pure so the rule can be tested without events.
+    nonisolated static func acceptsScroll(at point: CGPoint, in region: CGRect) -> Bool {
+        region.contains(point)
+    }
+
     private let recoveryRoot: URL
     private let frameWriter: FrameWriter
     private let scrollDriver: ScrollDriver
@@ -419,6 +425,14 @@ public final class ScrollingCaptureSession {
     private func scrollDidChange() {
         guard isRunning,
               frames.count < min(Self.maximumFrames, limits.maximumFrames) else { return }
+        // The monitors are global, so a scroll over another window must not
+        // count as an advance. The region is in global CG space; NSEvent
+        // reports the pointer in Cocoa space, so convert before comparing.
+        let pointer = ScreenGeometry.cgPoint(
+            fromCocoa: NSEvent.mouseLocation,
+            primaryFrame: ScreenLookup.primaryFrame
+        )
+        guard Self.acceptsScroll(at: pointer, in: region) else { return }
         hasPendingScroll = true
         scrollRevision &+= 1
         let activeGeneration = generation

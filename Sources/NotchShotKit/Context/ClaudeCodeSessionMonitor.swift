@@ -1,5 +1,6 @@
 import Darwin
 import Foundation
+import NotchShotAIReporterSupport
 import Observation
 
 public enum ClaudeCodeSessionPhase: String, Codable, Equatable, Sendable {
@@ -192,7 +193,7 @@ enum ClaudeCodeHookPolicy {
 /// confined to `queue`; the unchecked marker documents that invariant for
 /// Swift's strict concurrency checking.
 private final class ClaudeCodeHookServer: @unchecked Sendable {
-    static let socketPath = "/tmp/notchshot-claude.sock"
+    static let socketPath = ClaudeHookSocket.path
     private static let maximumMessageBytes = 64 * 1_024
 
     private final class Client: @unchecked Sendable {
@@ -236,7 +237,10 @@ private final class ClaudeCodeHookServer: @unchecked Sendable {
 
     private func startOnQueue(onData: @escaping @Sendable (Data) -> Void) {
         guard serverFileDescriptor < 0 else { return }
-        guard removeStaleSocketIfSafe() else { return }
+        guard removeStaleSocketIfSafe() else {
+            Log.app.error("Claude hook socket path could not be reclaimed safely")
+            return
+        }
         eventHandler = onData
 
         let descriptor = socket(AF_UNIX, SOCK_STREAM, 0)
@@ -260,15 +264,19 @@ private final class ClaudeCodeHookServer: @unchecked Sendable {
             }
         }
         guard bindResult == 0 else {
+            let code = errno
             close(descriptor)
             serverFileDescriptor = -1
+            Log.app.error("Claude hook socket bind failed with errno \(code)")
             return
         }
         chmod(Self.socketPath, 0o600)
         guard listen(descriptor, 16) == 0 else {
+            let code = errno
             close(descriptor)
             serverFileDescriptor = -1
             unlink(Self.socketPath)
+            Log.app.error("Claude hook socket listen failed with errno \(code)")
             return
         }
 
@@ -312,6 +320,11 @@ private final class ClaudeCodeHookServer: @unchecked Sendable {
             }
             setNonBlocking(clientFileDescriptor)
             setNoSIGPIPE(clientFileDescriptor)
+            guard ClaudeHookSocket.isTrustedPeer(clientFileDescriptor) else {
+                Log.app.error("Rejected a Claude hook socket connection from another user")
+                close(clientFileDescriptor)
+                continue
+            }
             let client = Client(fileDescriptor: clientFileDescriptor)
             clients[clientFileDescriptor] = client
             let source = DispatchSource.makeReadSource(
@@ -506,6 +519,14 @@ public final class ClaudeCodeSessionMonitor {
     /// subsequent hook event for it. This is presentation state only: it does
     /// not delete Claude's local transcript or alter Claude Code itself.
     public func dismiss(sessionID: String) {
+        // A pending PermissionRequest is a live decision the hook process is
+        // waiting on. Removing the row without answering it would strand the
+        // request until the reporter's timeout and hide Allow/Deny, so dismiss
+        // resolves it as a denial first.
+        if let index = sessions.firstIndex(where: { $0.id == sessionID }),
+           sessions[index].permission != nil {
+            server.respond(sessionID: sessionID, decision: "deny", reason: "Dismissed")
+        }
         let previousCount = sessions.count
         sessions.removeAll { $0.id == sessionID }
         guard sessions.count != previousCount else { return }

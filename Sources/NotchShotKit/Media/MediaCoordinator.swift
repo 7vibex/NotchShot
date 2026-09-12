@@ -253,6 +253,9 @@ public final class MediaCoordinator {
                 await attach(appleEvents, generation: generation)
                 return
             }
+            if PermissionCenter.shared.pendingRemediation == .automation {
+                lastFailureReason = "Music and Spotify access is denied. Allow Automation in System Settings."
+            }
         }
 
         await attach(DisabledMediaSource(), generation: generation)
