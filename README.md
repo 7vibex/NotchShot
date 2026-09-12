@@ -8,6 +8,16 @@
   <img src="Screenshots/notch-capture-menu.png" width="560" alt="The expanded capture menu in the MacBook notch">
 </p>
 
+<p align="center">
+  <img src="Screenshots/notch-now-playing.png" width="410" alt="Now Playing with artwork, seek bar and transport controls">
+  <img src="Screenshots/notch-audio-outputs.png" width="410" alt="Switching the audio output from the Now Playing card">
+  <br>
+  <img src="Screenshots/notch-volume.png" width="410" alt="Volume changes mirrored in the notch">
+  <img src="Screenshots/notch-ai-activity.png" width="410" alt="Codex activity reported by the local AI reporter">
+  <br>
+  <img src="Screenshots/notch-capture-result.png" width="410" alt="A finished capture on the shelf with its actions">
+</p>
+
 A local-first macOS 26 capture utility that lives in the MacBook notch. Screenshots,
 recording, annotation, OCR, history and floating captures, with the notch acting as the
 capture launcher, the recording HUD, and the post-capture shelf.
