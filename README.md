@@ -3,20 +3,34 @@
 [![CI](https://github.com/7vibex/NotchShot/actions/workflows/ci.yml/badge.svg)](https://github.com/7vibex/NotchShot/actions/workflows/ci.yml)
 
 <p align="center">
-  <img src="Screenshots/notch-peek.png" width="560" alt="Hovering the notch reveals the Capture, area and record shortcuts">
-  <br>
-  <img src="Screenshots/notch-capture-menu.png" width="560" alt="The expanded capture menu in the MacBook notch">
+  <img src="Screenshots/notch-desktop-overview.png" width="900" alt="NotchShot capture controls running above a light Safari workspace on the macOS desktop">
 </p>
 
-<p align="center">
-  <img src="Screenshots/notch-now-playing.png" width="410" alt="Now Playing with artwork, seek bar and transport controls">
-  <img src="Screenshots/notch-audio-outputs.png" width="410" alt="Switching the audio output from the Now Playing card">
-  <br>
-  <img src="Screenshots/notch-volume.png" width="410" alt="Volume changes mirrored in the notch">
-  <img src="Screenshots/notch-ai-activity.png" width="410" alt="Codex activity reported by the local AI reporter">
-  <br>
-  <img src="Screenshots/notch-capture-result.png" width="410" alt="A finished capture on the shelf with its actions">
-</p>
+<details>
+<summary>See the desktop screenshot gallery</summary>
+
+### Capture shortcuts
+<img src="Screenshots/notch-desktop-capture.png" width="900" alt="Area, window and screen capture controls above a light workspace">
+
+### Now Playing
+<img src="Screenshots/notch-desktop-now-playing.png" width="900" alt="Complete Now Playing card with album artwork, track title, seek bar and playback controls">
+
+### Audio outputs
+<img src="Screenshots/notch-desktop-audio-outputs.png" width="900" alt="Expanded audio output picker with EarPods selected and available display and MacBook outputs">
+
+### Capture shelf
+<img src="Screenshots/notch-desktop-shelf.png" width="900" alt="Two captures on the shelf with copy, save, annotate, share, OCR and AirDrop actions">
+
+### Recording options
+<img src="Screenshots/notch-desktop-recording-options.png" width="900" alt="Recording menu offering area, window and display recording">
+
+### More tools
+<img src="Screenshots/notch-desktop-tools.png" width="900" alt="More menu showing scrolling capture, text capture, previous-area capture, focus timers and Voice Note">
+
+These are live macOS screenshots, taken with a light local project-notes page in Safari
+as the workspace backdrop. [Screenshot notes](Screenshots/README.md).
+
+</details>
 
 A local-first macOS 26 capture utility that lives in the MacBook notch. Screenshots,
 recording, annotation, OCR, history and floating captures, with the notch acting as the
