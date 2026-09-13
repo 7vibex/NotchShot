@@ -6,3 +6,20 @@ DerivedData/
 *.xcuserstate
 xcuserdata/
 .DS_Store
+
+# Local audits, planning notes, and screenshot staging
+/AUDIT*.md
+/*_AUDIT*.md
+/FEATURE_PROPOSALS.md
+/Screenshots/workspace.html
+
+# Personal tooling and local secrets
+/.codex/
+/.claude/
+/.agents/
+/AGENTS.md
+/CLAUDE.md
+.env
+.env.*
+!.env.example
+!.env.sample

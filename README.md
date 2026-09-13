@@ -275,9 +275,7 @@ implied them rather than new modules bolted onto it. And a clipboard history is 
 copying its recognised text are both already core paths. Both are described above; the
 clipboard is off until you switch it on.
 
-The product rationale, privacy boundaries, acceptance criteria, and implementation status
-for calendar, local document summaries, charging/audio-route feedback, and music behavior
-across lock/unlock are documented in [`FEATURE_PROPOSALS.md`](FEATURE_PROPOSALS.md).
+
 
 ## Automation URLs
 

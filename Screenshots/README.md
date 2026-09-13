@@ -7,9 +7,7 @@ menus retain enough vertical space to show their visible controls. NotchShot's
 UI was not composited, generated or repainted.
 
 The light Safari page is a staged local project-notes backdrop, not an additional
-NotchShot screen or a shipped website. Its source is [workspace.html](workspace.html).
-Serve this folder on localhost to reproduce the backdrop. No desktop appearance
-settings were changed.
+NotchShot screen or a shipped website. No desktop appearance settings were changed.
 
 | Image | Shows |
 | --- | --- |
