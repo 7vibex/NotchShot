@@ -1,0 +1,11 @@
+import fs from 'node:fs';
+const ratio=58/42, num=x=>String(Number((Number(x)*ratio).toFixed(6)));
+let s=fs.readFileSync('../notchshot-fast/index.html','utf8');
+s=s.replace(/data-start="([0-9.]+)"/g,(_,v)=>`data-start="${num(v)}"`);
+s=s.replace(/data-duration="([0-9.]+)"/g,(m,v)=>Number(v)>.32?`data-duration="${num(v)}"`:m);
+const marker='const tl=gsap.timeline';let i=s.indexOf(marker),js=s.slice(i);
+js=js.replace(/\b(duration|stagger):([0-9]*\.?[0-9]+)/g,(_,k,v)=>`${k}:${num(v)}`);
+js=js.replace(/\bduration=([0-9]*\.?[0-9]+)/g,(_,v)=>`duration=${num(v)}`);
+js=js.replace(/\},([0-9]*\.?[0-9]+)\)/g,(_,v)=>`},${num(v)})`);
+js=js.replace(/\b(reveal|hide|click)\(([^)]*)\)/g,(m,name,args)=>{let a=args.split(',');for(let j of(name==='click'?[0]:[1,2]))if(a[j]&&/^\s*[0-9]*\.?[0-9]+\s*$/.test(a[j]))a[j]=num(a[j]);return`${name}(${a.join(',')})`;});
+fs.writeFileSync('index.html',s.slice(0,i)+js);

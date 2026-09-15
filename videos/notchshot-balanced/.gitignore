@@ -1,0 +1,9 @@
+node_modules/
+.hyperframes/
+.media/
+renders/
+snapshots/
+capture/
+reports/
+CLAUDE.md
+AGENTS.md

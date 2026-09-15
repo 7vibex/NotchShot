@@ -1,0 +1,286 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=1920, height=1080" />
+<title>NotchShot — Capture. Control. Continue.</title>
+<script src="assets/gsap.min.js"></script>
+<style>
+*{box-sizing:border-box}
+html,body{margin:0;width:1920px;height:1080px;overflow:hidden;background:#eeefe5}
+body{font-family:Arial,Helvetica,sans-serif;color:#211915}
+#root{position:relative;width:1920px;height:1080px;overflow:hidden;background:#eeefe5}
+.clip,.scene{position:absolute;inset:0;overflow:hidden}
+.ivory{background:#eeefe5}
+.dark{background:#211915;color:#eeefe5}
+.center{opacity:0;text-align:center;position:absolute;left:100px;width:1720px}
+.hero{font-size:132px;line-height:1.04;letter-spacing:-7px;font-weight:600}
+.headline{font-size:96px;line-height:1.08;letter-spacing:-5px;font-weight:600}
+.caption{font-size:36px;line-height:1.2;letter-spacing:-1px;font-weight:500}
+.eyebrow{font-size:24px;line-height:1.1;letter-spacing:3px;text-transform:uppercase;font-weight:700;color:#087cff}
+.edge{position:absolute;left:0;top:104px;width:1920px;height:2px;background:#c7c8be}
+.brand{display:flex;align-items:center;justify-content:center;gap:30px;font-size:150px;font-weight:600;letter-spacing:-8px}
+.brand-mark{display:block;flex:none;width:126px;height:66px;border-radius:0 0 32px 32px;background:currentColor}
+.stage{position:absolute;transform-origin:center top}
+.shell{position:absolute;inset:0;background:#000;overflow:hidden;--shell-side:348px;--shell-bottom:402px;--shell-radius:18px;clip-path:inset(0 var(--shell-side) var(--shell-bottom) var(--shell-side) round 0 0 var(--shell-radius) var(--shell-radius))}
+.shell-stage{left:462px;top:104px;width:996px;height:446px}
+.shell-content{position:absolute;opacity:0}
+.peek{left:141px;top:0;width:714px;height:190px}
+.peek img{width:714px;height:190px;display:block}
+.menu{left:66px;top:0;width:864px;height:394px;overflow:hidden}
+.menu img,.menu-image{position:absolute;left:-28px;top:0;width:920px;height:426px}
+.menu-image{background:url('assets/notch-capture-menu.png') no-repeat 0 0}
+.shelf{left:0;top:0;width:996px;height:446px}
+.shelf img,.shelf-image{width:996px;height:446px;display:block}
+.shelf-image{background:url('assets/notch-capture-result.png') no-repeat 0 0}
+.stage-label{top:730px}
+.stage-note{top:855px}
+.action-pill{position:absolute;top:905px;padding:13px 28px;border:1px solid #b5b7aa;border-radius:40px;background:#f7f8f1;font-size:30px;font-weight:600;opacity:0}
+.pill-a{left:500px}.pill-b{left:820px}.pill-c{left:1140px}
+.pointer{position:absolute;left:0;top:0;width:38px;height:46px;z-index:80;opacity:0;pointer-events:none}
+.pointer svg{position:absolute;left:-3px;top:-3px;width:38px;height:46px;overflow:visible}
+.pointer path{fill:#fff;stroke:#211915;stroke-width:2}
+.pulse{position:absolute;left:-22px;top:-22px;width:48px;height:48px;border:3px solid #087cff;border-radius:50%;opacity:0}
+.selection{position:absolute;left:560px;top:330px;width:800px;height:360px;border:3px solid #087cff;transform-origin:top left;opacity:0;z-index:50}
+.selection:after{content:"";position:absolute;right:-7px;bottom:-7px;width:12px;height:12px;background:#087cff;border:2px solid #fff}
+.note{position:absolute;left:560px;top:330px;width:800px;height:360px;border:2px solid #d2d3c9;background:#fafbf5;border-radius:20px;padding:48px 55px;transform-origin:center center;opacity:0}
+.note-title{font-size:40px;letter-spacing:-1px;font-weight:600;margin-bottom:36px}
+.note-line{height:13px;background:#d8d9d0;border-radius:8px;margin-top:22px;width:100%}
+.note-line.short{width:67%}
+.toast{position:absolute;left:740px;top:735px;width:440px;text-align:center;font-size:44px;letter-spacing:-1px;font-weight:600;opacity:0;color:#17603e}
+
+.crop-stage{opacity:0;position:absolute;overflow:hidden;background:#000;transform-origin:center center}
+.crop-stage img{position:absolute;display:block;max-width:none}
+.record-crop{left:857px;top:335px;width:206px;height:165px;border-radius:22px}
+.record-crop img{left:-236px;top:-360px;width:1008px;height:580px}
+.tools-crop{left:550px;top:270px;width:382px;height:587px;border-radius:30px}
+.tools-crop img{left:-96px;top:-358px;width:1008px;height:1000px}
+.menu-title{top:70px}
+.menu-side-label{position:absolute;left:1110px;top:540px;font-size:34px;line-height:1.65;font-weight:600;color:#211915;opacity:0}
+.menu-side-label span{display:block}
+
+.feature-title{top:86px}
+.feature-caption{top:870px}
+.feature-crop{opacity:0;position:absolute;overflow:hidden;background:#000;transform-origin:center center}
+.feature-crop img{position:absolute;display:block;max-width:none}
+.snap-crop{left:255px;top:230px;width:1410px;height:620px;border-radius:32px}
+.snap-crop img{left:-560px;top:-195px;width:2104px;height:1672px}
+.stats-crop{left:460px;top:170px;width:1000px;height:800px;border-radius:32px}
+.stats-crop img{left:-560px;top:-195px;width:2104px;height:1672px}
+
+.player-stage{opacity:0;left:560px;top:310px;width:800px;height:346px;transform-origin:center top}
+.player{position:absolute;inset:0;overflow:hidden;border-radius:0 0 40px 40px;background:#000}
+.player img{position:absolute;left:-66px;top:0;width:932px;height:402px}
+.cursor-mask{position:absolute;left:700px;top:82px;width:100px;height:108px;background:#000}
+.paused{position:absolute;left:326px;top:245px;width:66px;height:72px;background:#000;display:flex;align-items:center;justify-content:center;opacity:0}
+.paused svg{width:32px;height:38px}
+.outputs{position:absolute;left:536px;top:270px;width:848px;height:504px;overflow:hidden;border-radius:30px;transform-origin:center top;opacity:0;background:#000}
+.outputs img{display:block;width:848px;height:504px}
+.music-title{top:100px}
+.music-note{top:850px}
+
+.claude-title{top:76px}
+.claude-stage{position:absolute;left:500px;top:180px;width:920px;height:620px;background:#000;border-radius:0 0 42px 42px;overflow:hidden;--claude-side:284px;--claude-bottom:570px;--claude-radius:20px;clip-path:inset(0 var(--claude-side) var(--claude-bottom) var(--claude-side) round 0 0 var(--claude-radius) var(--claude-radius))}
+.claude-shot{position:absolute;display:block;max-width:none;opacity:0}
+#claude-bar{left:284px;top:16px;width:352px;height:34px}
+#claude-hover{left:116px;top:16px;width:688px;height:112px}
+#claude-details{left:35px;top:16px;width:850px;height:526px}
+.claude-state{position:absolute;top:758px;left:100px;width:1720px;text-align:center;font-size:34px;letter-spacing:-.7px;font-weight:600;opacity:0}
+.claude-state span{display:inline-block;margin:0 16px;padding:8px 18px;border:1px solid #c7c8be;border-radius:30px}
+
+.payoff-title{top:105px}
+.volume{position:absolute;left:523px;top:350px;width:874px;height:97px;border-radius:24px;overflow:hidden;transform-origin:center center;opacity:0}
+.volume img{width:874px;height:97px;display:block}
+.payoff-note{top:780px}
+.return-title{top:700px}
+.return-away{top:250px}
+.end-url{top:900px;font-size:34px;letter-spacing:-1px}
+.brand-tag{top:690px;font-size:46px;letter-spacing:-2px}
+</style>
+</head>
+<body>
+<main id="root" data-composition-id="main" data-start="0" data-duration="58" data-width="1920" data-height="1080">
+  <section class="clip" id="intro" data-start="0" data-duration="2.209524" data-track-index="1">
+    <div class="scene dark">
+      <div class="center hero" id="intro-title" style="top:388px"><div>Your notch.</div><div>Upgraded.</div></div>
+    </div>
+  </section>
+
+  <section class="clip" id="capture" data-start="2.209524" data-duration="11.6" data-track-index="2">
+    <div class="scene ivory">
+      <div class="edge"></div>
+      <div class="shell-stage stage" id="capture-stage">
+        <div class="shell" id="capture-shell">
+          <div class="shell-content peek" id="capture-peek"><img src="assets/notch-peek.png" alt="NotchShot hover peek" /></div>
+          <div class="shell-content menu" id="capture-menu"><img data-layout-allow-overflow src="assets/notch-capture-menu.png" alt="NotchShot capture launcher" /></div>
+          <div class="shell-content shelf" id="capture-shelf"><img src="assets/notch-capture-result.png" alt="NotchShot captured file shelf" /></div>
+        </div>
+      </div>
+      <div class="center headline stage-label" id="capture-title">Capture in a click.</div>
+      <div class="center caption stage-note" id="capture-step">Peek. Click. Capture.</div>
+    </div>
+  </section>
+
+  <section class="clip" id="area" data-start="8.285714" data-duration="5.52381" data-track-index="3">
+    <div class="scene ivory">
+      <div class="edge"></div>
+      <div class="shell-stage stage" id="area-stage">
+        <div class="shell" id="area-shell">
+          <div class="shell-content menu" id="area-menu"><div data-layout-allow-overflow class="menu-image" role="img" aria-label="NotchShot capture controls"></div></div>
+          <div class="shell-content shelf" id="area-shelf"><div class="shelf-image" role="img" aria-label="NotchShot captured file shelf"></div></div>
+        </div>
+      </div>
+      <div class="center headline stage-label" id="area-title">Fast Area capture.</div>
+      <div class="center caption stage-note" id="area-note">Drag. Drop. Copy.</div>
+      <div class="note" id="area-note-card"><div class="note-title">A focused capture.</div><div class="note-line"></div><div class="note-line"></div><div class="note-line short"></div></div>
+      <div class="selection" id="area-selection"></div>
+      <div class="toast" id="area-copied">✓ Copied.</div>
+    </div>
+  </section>
+
+  <section class="clip" id="menus" data-start="13.809524" data-duration="6.904762" data-track-index="4">
+    <div class="scene ivory">
+      <div class="center headline menu-title" id="record-title">Record your way.</div>
+      <div class="crop-stage record-crop" id="record-crop"><img data-layout-allow-overflow src="assets/notch-desktop-recording-options.png" alt="NotchShot recording choices: Area, Window, Display" /></div>
+      <div class="crop-stage tools-crop" id="tools-crop"><img data-layout-allow-overflow src="assets/notch-desktop-tools.png" alt="NotchShot More menu with scrolling capture, OCR, and focus timer" /></div>
+      <div class="center headline menu-title" id="tools-title">Text. Scroll. Focus.</div>
+      <div class="menu-side-label" id="tools-label"><span>Scrolling</span><span>OCR</span><span>Focus</span></div>
+    </div>
+  </section>
+
+  <section class="clip" id="snap" data-start="20.714286" data-duration="4.142857" data-track-index="5">
+    <div class="scene ivory">
+      <div class="center headline feature-title">Make room.</div>
+      <div class="feature-crop snap-crop" id="snap-crop"><img data-layout-allow-overflow src="assets/window-snap.png" alt="NotchShot Window Snap layouts" /></div>
+      <div class="center caption feature-caption">Left. Right. Top. Center.</div>
+    </div>
+  </section>
+
+  <section class="clip" id="stats" data-start="24.857143" data-duration="2.761905" data-track-index="6">
+    <div class="scene ivory">
+      <div class="center headline feature-title">Know your Mac.</div>
+      <div class="feature-crop stats-crop" id="stats-crop"><img data-layout-allow-overflow src="assets/system-stats.png" alt="NotchShot System Stats with CPU, memory, uptime, thermal state, and load" /></div>
+    </div>
+  </section>
+
+  <section class="clip" id="music" data-start="27.619048" data-duration="5.52381" data-track-index="7">
+    <div class="scene ivory">
+      <div class="center headline music-title" id="music-title">Music, one click away.</div>
+      <div class="player-stage stage" id="player-stage"><div class="player"><img data-layout-allow-overflow src="assets/notch-desktop-now-playing.png" alt="NotchShot music player" /><div class="cursor-mask" aria-hidden="true"></div><div class="paused" id="paused"><svg viewBox="0 0 32 38" aria-hidden="true"><path d="M3 2 L30 19 L3 36 Z" fill="white" /></svg></div></div></div>
+      <div class="outputs" id="outputs"><img src="assets/notch-audio-outputs.png" alt="NotchShot audio output selector" /></div>
+      <div class="center caption music-note" id="music-note">Pause. Resume. Choose an output.</div>
+    </div>
+  </section>
+
+  <section class="clip" id="claude" data-start="33.142857" data-duration="12.428571" data-track-index="8">
+    <div class="scene ivory">
+      <div class="center headline claude-title" id="claude-title">Claude in the notch.</div>
+      <div class="claude-stage" id="claude-stage">
+        <img class="claude-shot" id="claude-bar" src="assets/claude-bar.png" alt="Claude compact bar" />
+        <img class="claude-shot" id="claude-hover" src="assets/claude-hover.png" alt="Claude hover preview for Polish the launch experience" />
+        <img class="claude-shot" id="claude-details" src="assets/claude-details.png" alt="Claude expanded task detail for Polish the launch experience" />
+      </div>
+      <div class="claude-state" id="claude-state"><span>compact</span><span>hover</span><span>click</span></div>
+    </div>
+  </section>
+
+  <section class="clip" id="payoff" data-start="45.571429" data-duration="4.142857" data-track-index="9">
+    <div class="scene ivory">
+      <div class="center headline payoff-title" id="payoff-title"><div>Less switching.</div><div>More doing.</div></div>
+      <div class="volume" id="volume"><img src="assets/notch-volume.png" alt="NotchShot volume HUD" /></div>
+      <div class="center caption payoff-note" id="payoff-note">Useful controls, right there.</div>
+    </div>
+  </section>
+
+  <section class="clip" id="return" data-start="49.714286" data-duration="4.142857" data-track-index="10">
+    <div class="scene ivory">
+      <div class="edge"></div>
+      <div class="shell-stage stage" id="return-stage">
+        <div class="shell" id="return-shell"><div class="shell-content menu" id="return-menu"><div data-layout-allow-overflow class="menu-image" role="img" aria-label="NotchShot capture launcher close control"></div></div></div>
+      </div>
+      <div class="center headline return-title" id="within-title">Everything within reach.</div>
+      <div class="center hero return-away" id="away-title">And out of<br />your way.</div>
+    </div>
+  </section>
+
+  <section class="clip" id="outro" data-start="53.857143" data-duration="4.142857" data-track-index="11">
+    <div class="scene ivory">
+      <div class="center brand" id="end-brand" style="top:300px"><span class="brand-mark"></span><span>NotchShot</span></div>
+      <div class="center brand-tag" id="end-tag">Capture. Control. Continue.</div>
+      <div class="center end-url" id="end-url">github.com/7vibex/NotchShot</div>
+    </div>
+  </section>
+
+  <div class="pointer" id="pointer"><div class="pulse" id="pointer-pulse"></div><svg viewBox="0 0 38 46" aria-hidden="true"><path d="M3 3 L30 24 L18 25 L12 40 Z" /></svg></div>
+
+  <audio id="music-bed" data-start="0" data-duration="58" data-volume="0.68" src="assets/music.wav"></audio>
+  <audio id="ui-click-1" data-start="3.839048" data-duration="0.16" data-volume="0.34" src="assets/click.wav"></audio>
+  <audio id="ui-click-2" data-start="9.28" data-duration="0.16" data-volume="0.34" src="assets/click.wav"></audio>
+  <audio id="ui-click-3" data-start="13.008571" data-duration="0.16" data-volume="0.34" src="assets/click.wav"></audio>
+  <audio id="ui-click-4" data-start="29.138095" data-duration="0.16" data-volume="0.34" src="assets/click.wav"></audio>
+  <audio id="ui-click-5" data-start="30.311905" data-duration="0.16" data-volume="0.34" src="assets/click.wav"></audio>
+  <audio id="ui-click-6" data-start="31.416667" data-duration="0.16" data-volume="0.34" src="assets/click.wav"></audio>
+  <audio id="ui-click-7" data-start="39.522857" data-duration="0.16" data-volume="0.34" src="assets/click.wav"></audio>
+  <audio id="ui-click-8" data-start="51.164286" data-duration="0.16" data-volume="0.34" src="assets/click.wav"></audio>
+  <audio id="capture-shutter" data-start="11.213333" data-duration="0.32" data-volume="0.3" src="assets/shutter.wav"></audio>
+</main>
+<script>
+const tl=gsap.timeline({paused:true,defaults:{ease:'power3.out'}});
+const idle={'--shell-side':'348px','--shell-bottom':'402px','--shell-radius':'18px'};
+const peek={'--shell-side':'141px','--shell-bottom':'256px','--shell-radius':'24px'};
+const menu={'--shell-side':'66px','--shell-bottom':'52px','--shell-radius':'26px'};
+const shelf={'--shell-side':'0px','--shell-bottom':'0px','--shell-radius':'30px'};
+const claudeCompact={'--claude-side':'284px','--claude-bottom':'570px','--claude-radius':'20px'};
+const claudeHover={'--claude-side':'116px','--claude-bottom':'492px','--claude-radius':'24px'};
+const claudeDetail={'--claude-side':'35px','--claude-bottom':'78px','--claude-radius':'28px'};
+function reveal(selector,time,duration=0.483333,y=20){tl.fromTo(selector,{autoAlpha:0,y},{autoAlpha:1,y:0,duration,immediateRender:false},time)}
+function hide(selector,time,duration=0.27619){tl.to(selector,{autoAlpha:0,duration},time)}
+function click(time){tl.fromTo('#pointer-pulse',{opacity:1,scale:.25},{opacity:0,scale:1.9,duration:0.58,immediateRender:false},time)}
+
+tl.set('#capture-stage',{scale:1.18},0).set('#area-stage',{scale:1.18},0).set('#return-stage',{scale:1.18},0).set('#player-stage',{scale:1.18},0);
+tl.set('#outputs',{scale:1.08},0).set('#volume',{scale:1.16},0).set('#claude-stage',claudeCompact,0);
+
+reveal('#intro-title',0.165714,0.58,24);
+
+tl.set('#capture-shell',idle,1.6).set('#capture-peek',{opacity:0},2.209524).set('#capture-menu',{opacity:0},2.209524).set('#capture-shelf',{opacity:0},2.209524);
+tl.set('#pointer',{x:1310,y:560,autoAlpha:0},2.209524);
+tl.to('#pointer',{x:1040,y:132,autoAlpha:1,duration:0.718095,ease:'power2.inOut'},2.789524);
+tl.to('#capture-shell',{...peek,duration:0.469524,ease:'power3.inOut'},3.369524);reveal('#capture-peek',3.424762,0.331429,0);reveal('#capture-step',3.452381,0.331429,8);click(3.839048);
+hide('#capture-peek',3.921905,0.193333);hide('#capture-step',3.921905,0.193333);tl.to('#capture-shell',{...menu,duration:0.58,ease:'power3.inOut'},3.977143);reveal('#capture-menu',4.142857,0.30381,0);reveal('#capture-title',4.225714,0.345238,10);
+tl.to('#pointer',{x:1230,y:570,duration:0.690476,ease:'power2.inOut'},4.722857);hide('#capture-title',7.52619,0.248571);tl.to('#pointer',{autoAlpha:0,duration:0.220952},7.733333);
+
+tl.set('#area-shell',menu,6).set('#area-menu',{opacity:1},8.285714).set('#area-shelf',{opacity:0},8.285714).set('#area-selection',{opacity:0,scaleX:.001,scaleY:.001},8.285714).set('#area-note-card',{opacity:0},8.285714).set('#area-copied',{opacity:0},8.285714);
+tl.set('#pointer',{x:1250,y:590,autoAlpha:1},8.285714);tl.to('#pointer',{x:634.32,y:380.12,duration:0.662857,ease:'power2.inOut'},8.7);click(9.28);
+hide('#area-menu',9.445714,0.220952);tl.to('#area-shell',{...idle,duration:0.497143,ease:'power3.inOut'},9.528571);reveal('#area-title',9.639048,0.331429,12);reveal('#area-note-card',9.735714,0.386667,18);
+tl.to('#pointer',{x:560,y:330,duration:0.497143,ease:'power2.inOut'},9.832381);
+tl.to('#area-selection',{opacity:1,scaleX:1,scaleY:1,duration:0.800952,ease:'none'},10.329524);tl.to('#pointer',{x:1360,y:690,duration:0.800952,ease:'none'},10.329524);
+hide('#area-selection',11.29619,0.193333);hide('#pointer',11.32381,0.193333);tl.to('#area-note-card',{scale:.06,y:-370,duration:0.469524,ease:'power3.inOut'},11.32381);hide('#area-note-card',11.793333,0.193333);
+tl.to('#area-shell',{...shelf,duration:0.469524,ease:'power3.inOut'},11.90381);reveal('#area-shelf',12.014286,0.30381,0);reveal('#area-note',12.041905,0.30381,8);tl.set('#pointer',{x:1160,y:650,autoAlpha:1},12.373333);tl.to('#pointer',{x:479.74,y:517,duration:0.524762,ease:'power2.inOut'},12.45619);hide('#area-title',12.732381,0.248571);click(13.008571);reveal('#area-copied',13.146667,0.27619,8);hide('#pointer',13.560952,0.193333);
+tl.set('#pointer',{autoAlpha:0},13.809524);
+
+reveal('#record-title',13.92,0.30381,14);reveal('#record-crop',13.975238,0.359048,20);tl.to('#record-crop',{scale:2,duration:0.524762,ease:'power3.out'},14.19619);tl.to('#pointer',{x:1000,y:355,autoAlpha:1,duration:0.414286,ease:'power2.inOut'},14.334286);hide('#record-crop',15.991429,0.248571);hide('#record-title',16.046667,0.248571);hide('#pointer',16.157143,0.165714);
+reveal('#tools-title',16.322857,0.30381,14);reveal('#tools-crop',16.405714,0.414286,18);tl.to('#tools-crop',{scale:1.22,duration:0.441905,ease:'power3.out'},16.599048);reveal('#tools-label',17.054762,0.345238,12);tl.to('#pointer',{x:735,y:310,autoAlpha:1,duration:0.414286,ease:'power2.inOut'},16.709524);tl.to('#pointer',{x:735,y:365,duration:0.414286,ease:'power2.inOut'},17.952381);tl.to('#pointer',{x:735,y:565,duration:0.483333,ease:'power2.inOut'},19.333333);hide('#pointer',20.327619,0.193333);hide('#tools-label',20.327619,0.207143);hide('#tools-crop',20.410476,0.248571);hide('#tools-title',20.410476,0.248571);tl.set('#pointer',{autoAlpha:0},20.714286);tl.set('#tools-crop',{autoAlpha:0},20.714286);tl.set('#tools-title',{autoAlpha:0},20.714286);
+
+reveal('#snap-crop',20.824762,0.469524,18);tl.to('#snap-crop',{scale:1.0,duration:0.441905,ease:'power3.out'},20.824762);reveal('#snap .feature-title',20.907619,0.345238,12);reveal('#snap .feature-caption',21.542857,0.30381,8);hide('#snap .feature-caption',24.37381,0.207143);hide('#snap .feature-title',24.442857,0.207143);hide('#snap-crop',24.553333,0.220952);
+
+reveal('#stats-crop',24.94,0.386667,18);tl.to('#stats-crop',{scale:.82,duration:0.414286,ease:'power3.out'},24.94);reveal('#stats .feature-title',24.967619,0.331429,12);hide('#stats .feature-title',27.315238,0.165714);hide('#stats-crop',27.370476,0.193333);tl.set('#stats-crop',{autoAlpha:0},27.619048);
+
+reveal('#music-title',27.729524,0.331429,16);reveal('#player-stage',27.784762,0.441905,30);tl.set('#pointer',{x:1200,y:720,autoAlpha:0},27.619048);tl.to('#pointer',{x:910.44,y:641.58,autoAlpha:1,duration:0.469524,ease:'power2.inOut'},28.613333);click(29.138095);tl.set('#paused',{opacity:1},29.248571);reveal('#music-note',29.27619,0.27619,8);click(30.311905);tl.set('#paused',{opacity:0},30.43619);tl.to('#pointer',{x:1356.48,y:641.58,duration:0.483333,ease:'power2.inOut'},30.629524);click(31.416667);hide('#player-stage',31.651429,0.220952);hide('#music-title',31.651429,0.220952);tl.to('#outputs',{opacity:1,duration:0.331429},31.789524);tl.to('#pointer',{autoAlpha:0,duration:0.193333},31.872381);hide('#music-note',32.245238,0.220952);
+
+tl.set('#claude-stage',claudeCompact,24).set('#claude-bar',{opacity:1},33.142857).set('#claude-hover',{opacity:0},33.142857).set('#claude-details',{opacity:0},33.142857);
+reveal('#claude-title',33.225714,0.331429,14);reveal('#claude-state',33.280952,0.27619,8);tl.to('#pointer',{x:1300,y:520,autoAlpha:1,duration:0.414286,ease:'power2.inOut'},33.488095);
+tl.to('#pointer',{x:1018,y:205,duration:0.745714,ease:'power2.inOut'},35.048571);tl.to('#claude-stage',{...claudeHover,duration:0.85619,ease:'power3.inOut'},35.835714);hide('#claude-bar',35.932381,0.248571);reveal('#claude-hover',36.015238,0.345238,0);tl.to('#claude-state span:nth-child(1)',{opacity:.35,duration:0.248571},36.015238);tl.to('#claude-state span:nth-child(2)',{color:'#087cff',duration:0.248571},36.015238);
+tl.to('#pointer',{x:1050,y:250,duration:0.524762,ease:'power2.inOut'},38.915238);click(39.522857);tl.to('#claude-stage',{...claudeDetail,duration:0.939048,ease:'power3.inOut'},39.605714);hide('#claude-hover',39.660952,0.248571);reveal('#claude-details',39.771429,0.331429,0);tl.to('#claude-state span:nth-child(2)',{opacity:.35,duration:0.248571},39.771429);tl.to('#claude-state span:nth-child(3)',{color:'#087cff',duration:0.248571},39.771429);
+hide('#pointer',43.569048,0.220952);hide('#claude-details',43.748571,0.27619);tl.to('#claude-stage',{...claudeCompact,duration:0.690476,ease:'power3.inOut'},43.941905);reveal('#claude-bar',44.08,0.248571,0);tl.to('#claude-state span',{color:'#211915',opacity:1,duration:0.248571,stagger:0.055238},44.218095);hide('#claude-state',45.046667,0.220952);hide('#claude-title',45.129524,0.220952);
+
+reveal('#payoff-title',45.681905,0.345238,16);reveal('#volume',45.82,0.414286,20);reveal('#payoff-note',46.427619,0.30381,8);hide('#volume',49.092857,0.220952);hide('#payoff-title',49.161905,0.220952);hide('#payoff-note',49.189524,0.193333);
+
+tl.set('#return-shell',menu,36).set('#return-menu',{opacity:1},49.714286).set('#within-title',{opacity:1},49.714286).set('#away-title',{opacity:0},49.714286).set('#pointer',{x:1140,y:660,autoAlpha:0},49.714286);
+tl.to('#pointer',{x:1384.8,y:259.76,autoAlpha:1,duration:0.469524,ease:'power2.inOut'},50.15619);click(51.164286);hide('#return-menu',51.34381,0.220952);tl.to('#return-shell',{...idle,duration:0.552381,ease:'power3.inOut'},51.399048);hide('#within-title',51.481905,0.220952);reveal('#away-title',51.979048,0.386667,18);hide('#pointer',53.111429,0.193333);
+
+reveal('#end-brand',53.94,0.414286,22);reveal('#end-tag',54.381905,0.359048,14);reveal('#end-url',54.82381,0.331429,10);tl.to('#end-url',{opacity:1,duration:2.830952},55.155238);
+
+window.__timelines=window.__timelines||{};window.__timelines.main=tl;
+</script>
+</body>
+</html>
