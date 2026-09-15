@@ -29,27 +29,23 @@ app share the socket wire format without pulling in AppKit.
 - `System/` — OSD suppression arms the recovery lease first, refuses without
   recovery, fails open if recovery dies.
 
-## AppCoordinator decomposition
+## AppCoordinator layout
 
-`AppCoordinator` is the known aging risk (~3.9k lines). Narrow interfaces for
-extraction:
+`AppCoordinator` is the one integration point for every pipeline. Stored state
+lives in `AppCoordinator.swift`; behaviour is grouped by pipeline in sibling
+files so no single file carries the whole surface:
 
-- `push(_: ShelfItem)` + `history.record` + `persistHistory()`
-- `refreshActivity()` -> `windowController.update`
-- `present(error:)` / `beginProcessing()` / `endProcessing()`
+- `AppCoordinator.swift` — state, wiring, error presentation, processing label
+- `AppCoordinator+Capture.swift` — selection, countdown, scrolling, capture flow
+- `AppCoordinator+Recording.swift` — segments, interaction timelines, finalization
+- `AppCoordinator+Shelf.swift` — shelf, capture stack, shelf file operations
+- `AppCoordinator+System.swift` — dictation, level HUD, notification mirror
+- `AppCoordinator+Automation.swift` — `notchshot://` routing, Finder drops
+- `AppCoordinator+Clipboard.swift` — clipboard history
 
-Planned controllers (in order):
-
-1. `NotchChromeController` — arbiter/activity/peeking/media-panel, system
-   levels/OSD, notification queue.
-2. `CapturePipelineController` — selection/countdown/scrolling/automation.
-3. `RecordingPipelineController` — segments/timelines/finalization/recovery.
-4. `ShelfLibraryController` — shelf/stack/file-ops/editor routing.
-5. `IntelligenceController` — OCR/document-summary/detected-items.
-6. `ProductivityContextBridge` — thin facade over context/clipboard/focus/voice.
-
-Done: `ShelfItem` -> `App/ShelfItem.swift`, `VideoThumbnail` ->
-`App/VideoThumbnail.swift` (pure moves, no behaviour change).
+The same pattern applies to the largest views: `NotchRootView+*` and
+`SettingsView+*` split by surface. `Scripts/check_hygiene.sh` keeps every Swift
+file under 2500 lines.
 
 ## State, navigation, async rules
 

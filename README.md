@@ -173,7 +173,7 @@ Sources/NotchShotKit/
   Permissions/  staged requests and remediation
   HotKeys/      Carbon global shortcuts
   UI/           notch views, shelf, settings, history browser
-  App/          AppCoordinator (the brain), AppDelegate, ShelfItem, VideoThumbnail
+  App/          AppCoordinator facade, AppDelegate, ShelfItem, VideoThumbnail
   Automation/   notchshot:// URL router, App Intents
   Dictation/    local dictation engine, text insertion, push-to-talk
   Inspection/   image inspector (HEX/RGB/HSL, measurement, contrast)
@@ -182,7 +182,7 @@ Sources/NotchShotKit/
   Updates/      fail-closed Sparkle controller (HTTPS + EdDSA required)
 ```
 
-### The three things worth knowing
+### Design notes
 
 **State priority.** `ActivityArbiter` resolves one activity from every live source, in the
 order `error → selecting → countdown → dictation → recording → processing → file drop →
@@ -251,8 +251,7 @@ link/email/phone/address detection, and QR/barcode reading. Floating pinned capt
 history with retention, favorites, tags, collections, opt-in text search and opt-in local
 Spotlight discovery. Screenshots can be OCR'd and translated on-device; recording captions
 can use the same Translation framework flow. Now Playing with artwork, progress and
-transport controls, and unlock refresh. The retired lock-screen media cover/wave
-is no longer built.
+transport controls, and unlock refresh.
 Capture Stack collection with reorder, per-shot annotation, numbered
 storyboard, long-image, filmstrip and PDF exports. Named GitHub Issue, App Store,
 Documentation, Social Post and Bug Report recipes. On-device privacy suggestions for
@@ -260,7 +259,7 @@ email, phone, token, account ID and faces; nothing is selected or redacted autom
 Interactive before/after comparison with a thresholded difference overlay and share/export.
 Shelf files can be opened normally or with a chosen compatible app, previewed with Quick
 Look, renamed, moved, compressed to a ZIP, or sent straight to AirDrop without going through
-the whole share sheet. Holding Finder files over the notch now opens an AirDrop-style tray:
+the whole share sheet. Holding Finder files over the notch opens an AirDrop-style tray:
 release over **Shelf**, **AirDrop**, **Share**, or **ZIP**. AirDrop, Share, and ZIP keep the
 validated multi-file batch together; Shelf retains its visible five-item cap and reports any
 overflow. The Basket-style shelf shows aggregate file count/size, offers
@@ -320,7 +319,6 @@ locally against the alert. A separate Accessibility opt-in mirrors only banners 
 presenting; recognized Messages and WhatsApp cards can open the source app for a real reply there.
 NotchShot still does not read hidden history, dismiss cross-app notifications, or send a reply on
 another app's behalf.
-The lock-screen music player and song notifications are disabled, including legacy opt-ins.
 An independently opted-in, display-only locked-session activity stack presents the latest
 due NotchShot alert, and Focus in translucent cards; it is an AppKit panel, not a WidgetKit Lock
 Screen widget. The public API boundary and runtime proof requirements are documented in
@@ -332,25 +330,6 @@ The hardware-connected island shell stays opaque black. Expanded capture, shelf,
 and AI activity place native macOS Liquid Glass only on interactive control chrome inside that
 shell, while Reduce Transparency and Increase Contrast use solid, outlined controls instead.
 Recording, processing, errors, and dense context content remain stable and opaque.
-
-Later (not built): live audio-source changes during an active ScreenCaptureKit recording.
-The Productivity Center now provides a standalone camera preview, window snapping, and an
-installed-app launcher; none is allowed to interfere with an in-flight capture or recording.
-
-Droppy parity stops at public, consented integrations. NotchShot does not read another app's
-Notification Center history or inject replies into WhatsApp/iMessage, control an unrelated
-VPN configuration, switch macOS Low Power Mode, expose another player's private Up Next queue,
-or extract proprietary animated artwork. It can manage its own notifications and explicit AI
-reporter events, manage a VPN it ships under the required Network Extension entitlement, read
-Low Power Mode, and control an app-owned MusicKit queue—but those are not faithful substitutes
-for the cross-app Droppy behaviors, so the UI does not pretend they are.
-
-Two things that were on that list have since moved off it. The shelf already held real
-files, so Quick Look, Rename, Move and Compress were missing from a surface that already
-implied them rather than new modules bolted onto it. And a clipboard history is the one
-"generic module" that the capture workflow genuinely reaches for — copying a capture and
-copying its recognised text are both already core paths. Both are described above; the
-clipboard is off until you switch it on.
 
 
 
@@ -498,10 +477,9 @@ Keep the EdDSA private key outside the repository and update host. Publish only 
 stapled, code-signed archives and a signed HTTPS appcast. The app menu exposes **Check for
 Updates…**; configured release builds also enable automatic checks and installation.
 
-The current product UI is intentionally English-only. The bundle declares
-English as its sole supported localization; no translated or RTL-ready release
-is claimed until the UI strings have been moved into a localization catalog and
-tested in those layouts.
+The UI is English-only for now. The bundle declares English as its sole supported
+localization; translated and RTL layouts land once the strings move into a localization
+catalog and are tested in those layouts.
 
 ## Notes
 
