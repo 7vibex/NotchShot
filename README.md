@@ -2,33 +2,112 @@
 
 [![CI](https://github.com/7vibex/NotchShot/actions/workflows/ci.yml/badge.svg)](https://github.com/7vibex/NotchShot/actions/workflows/ci.yml)
 
+![NotchShot Now Playing with album artwork, track title, seek bar and playback controls over a light workspace](Screenshots/notch-desktop-now-playing.png)
+
 <p align="center">
-  <img src="Screenshots/notch-desktop-overview.png" width="900" alt="NotchShot capture controls running above a light Safari workspace on the macOS desktop">
+  <sub><b>Now Playing</b> — artwork, seeking and transport controls</sub>
+</p>
+
+<p align="center">
+  <img src="Screenshots/notch-now-playing.png" width="600" alt="Close-up of the Now Playing card showing track title, seek bar and transport controls">
+</p>
+
+<p align="center">
+  <img src="Screenshots/notch-ai-activity.png" width="600" alt="AI activity state showing a Codex session fixing image export">
+  <br>
+  <sub><b>AI activity</b> — live Codex session state</sub>
 </p>
 
 <details>
 <summary>See the desktop screenshot gallery</summary>
 
-### Capture shortcuts
-<img src="Screenshots/notch-desktop-capture.png" width="900" alt="Area, window and screen capture controls above a light workspace">
-
 ### Now Playing
-<img src="Screenshots/notch-desktop-now-playing.png" width="900" alt="Complete Now Playing card with album artwork, track title, seek bar and playback controls">
+<p align="center">
+  <img src="Screenshots/notch-desktop-now-playing.png" width="900" alt="Complete Now Playing card with album artwork, track title, seek bar and playback controls">
+</p>
+
+### Capture controls
+<p align="center">
+  <img src="Screenshots/notch-desktop-overview.png" width="900" alt="NotchShot capture controls running above a light Safari workspace on the macOS desktop">
+</p>
+
+### Capture shortcuts
+<p align="center">
+  <img src="Screenshots/notch-desktop-capture.png" width="900" alt="Area, window and screen capture controls above a light workspace">
+</p>
 
 ### Audio outputs
-<img src="Screenshots/notch-desktop-audio-outputs.png" width="900" alt="Expanded audio output picker with EarPods selected and available display and MacBook outputs">
+<p align="center">
+  <img src="Screenshots/notch-desktop-audio-outputs.png" width="900" alt="Expanded audio output picker with EarPods selected and available display and MacBook outputs">
+</p>
 
 ### Capture shelf
-<img src="Screenshots/notch-desktop-shelf.png" width="900" alt="Two captures on the shelf with copy, save, annotate, share, OCR and AirDrop actions">
+<p align="center">
+  <img src="Screenshots/notch-desktop-shelf.png" width="900" alt="Two captures on the shelf with copy, save, annotate, share, OCR and AirDrop actions">
+</p>
 
 ### Recording options
-<img src="Screenshots/notch-desktop-recording-options.png" width="900" alt="Recording menu offering area, window and display recording">
+<p align="center">
+  <img src="Screenshots/notch-desktop-recording-options.png" width="900" alt="Recording menu offering area, window and display recording">
+</p>
 
 ### More tools
-<img src="Screenshots/notch-desktop-tools.png" width="900" alt="More menu showing scrolling capture, text capture, previous-area capture, focus timers and Voice Note">
+<p align="center">
+  <img src="Screenshots/notch-desktop-tools.png" width="900" alt="More menu showing scrolling capture, text capture, previous-area capture, focus timers and Voice Note">
+</p>
 
 These are live macOS screenshots, taken with a light local project-notes page in Safari
 as the workspace backdrop. [Screenshot notes](Screenshots/README.md).
+
+</details>
+
+<details>
+<summary>See close-up notch states</summary>
+<br>
+<div align="center">
+
+<table>
+  <tr>
+    <td align="center" width="50%">
+      <img src="Screenshots/notch-peek.png" width="400" alt="Compact notch peek state"><br>
+      <sub><b>Peek</b> — compact hover state</sub>
+    </td>
+    <td align="center" width="50%">
+      <img src="Screenshots/notch-capture-menu.png" width="400" alt="Capture menu with Area, Window and Screen options"><br>
+      <sub><b>Capture</b> — Area / Window / Screen</sub>
+    </td>
+  </tr>
+  <tr>
+    <td align="center" width="50%">
+      <img src="Screenshots/notch-capture-result.png" width="400" alt="Capture result with file actions"><br>
+      <sub><b>Result</b> — file with copy, save and share actions</sub>
+    </td>
+    <td align="center" width="50%">
+      <img src="Screenshots/notch-now-playing.png" width="400" alt="Compact Now Playing with seek bar and transport controls"><br>
+      <sub><b>Now Playing</b> — seek bar and transport</sub>
+    </td>
+  </tr>
+  <tr>
+    <td align="center" width="50%">
+      <img src="Screenshots/notch-audio-outputs.png" width="400" alt="Audio output picker with EarPods selected"><br>
+      <sub><b>Audio outputs</b> — output picker</sub>
+    </td>
+    <td align="center" width="50%">
+      <img src="Screenshots/notch-volume.png" width="400" alt="Volume HUD in the notch"><br>
+      <sub><b>Volume</b> — system volume HUD</sub>
+    </td>
+  </tr>
+  <tr>
+    <td align="center" colspan="2">
+      <img src="Screenshots/notch-ai-activity.png" width="400" alt="AI activity state showing a working session"><br>
+      <sub><b>AI activity</b> — live working state</sub>
+    </td>
+  </tr>
+</table>
+
+</div>
+
+Close-up crops of live notch states. [Screenshot notes](Screenshots/README.md).
 
 </details>
 
@@ -79,11 +158,13 @@ Use `--adhoc` only for a disposable build where re-granting permission is accept
 ```
 Sources/NotchShotKit/
   Core/         domain model — NotchActivity, CaptureIntent, CaptureAsset,
-                RecordingConfiguration, MediaSnapshot, Preferences, ScreenGeometry
+                RecordingConfiguration, MediaSnapshot, Preferences, ScreenGeometry,
+                SafeAssetFile, Logging, FileDropAction, ScreenLockSignal
   Window/       NotchPanel (nonactivating NSPanel), per-display controller,
-                notch detection, capture-exclusion registry
+                notch detection, capture-exclusion registry, metrics, lock-screen bridge
   Capture/      ScreenCaptureKit service, selection overlay, recipes, capture stack,
-                scrolling stitcher, export
+                scrolling stitcher
+  Export/       recording export, smart export, staging and effects
   Recording/    SCRecordingOutput session, audio metering, click zoom, local captions
   Annotation/   document model, renderer, background composer, local subject lifting,
                 .notchshot package, editor
@@ -102,7 +183,13 @@ Sources/NotchShotKit/
   Permissions/  staged requests and remediation
   HotKeys/      Carbon global shortcuts
   UI/           notch views, shelf, settings, history browser
-  App/          AppCoordinator (the brain), AppDelegate
+  App/          AppCoordinator (the brain), AppDelegate, ShelfItem, VideoThumbnail
+  Automation/   notchshot:// URL router, App Intents
+  Dictation/    local dictation engine, text insertion, push-to-talk
+  Inspection/   image inspector (HEX/RGB/HSL, measurement, contrast)
+  Sharing/      system share-sheet presenter
+  System/       OSD suppressor/recovery, system-level HUD, notification mirror
+  Updates/      fail-closed Sparkle controller (HTTPS + EdDSA required)
 ```
 
 ### The three things worth knowing
