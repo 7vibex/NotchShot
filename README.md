@@ -2,10 +2,10 @@
 
 [![CI](https://github.com/7vibex/NotchShot/actions/workflows/ci.yml/badge.svg)](https://github.com/7vibex/NotchShot/actions/workflows/ci.yml)
 
-![NotchShot Now Playing with album artwork, track title, seek bar and playback controls over a light workspace](Screenshots/notch-desktop-now-playing.png)
+![NotchShot demo video](videos/notchshot-balanced/renders/notchshot-balanced.mp4)
 
 <p align="center">
-  <sub><b>Now Playing</b> — artwork, seeking and transport controls</sub>
+  <sub><b>Watch</b> — NotchShot in action (replaces the static hero shot)</sub>
 </p>
 
 <details>
