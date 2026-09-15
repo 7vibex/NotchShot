@@ -207,12 +207,16 @@ struct DesignSystemTests {
         #expect(!shellSource.contains("artworkAccentColor"))
         #expect(!shellSource.contains("NotchMediaGlowPolicy.haloOpacity"))
 
-        let mediaStart = try #require(source.range(of: "private struct MediaContent"))
-        let scrubberStart = try #require(source.range(
+        let mediaURL = packageRoot.appending(
+            path: "Sources/NotchShotKit/UI/NotchRootView+Media.swift"
+        )
+        let mediaText = try String(contentsOf: mediaURL, encoding: .utf8)
+        let mediaStart = try #require(mediaText.range(of: "struct MediaContent"))
+        let scrubberStart = try #require(mediaText.range(
             of: "private struct MediaScrubber",
-            range: mediaStart.upperBound..<source.endIndex
+            range: mediaStart.upperBound..<mediaText.endIndex
         ))
-        let mediaSource = String(source[mediaStart.lowerBound..<scrubberStart.lowerBound])
+        let mediaSource = String(mediaText[mediaStart.lowerBound..<scrubberStart.lowerBound])
         #expect(!mediaSource.contains("NotchMediaGlowPolicy.keylineOpacity"))
     }
 
@@ -223,10 +227,10 @@ struct DesignSystemTests {
             .deletingLastPathComponent()
             .deletingLastPathComponent()
         let sourceURL = packageRoot.appending(
-            path: "Sources/NotchShotKit/UI/NotchRootView.swift"
+            path: "Sources/NotchShotKit/UI/NotchRootView+Media.swift"
         )
         let source = try String(contentsOf: sourceURL, encoding: .utf8)
-        let mediaStart = try #require(source.range(of: "private struct MediaContent"))
+        let mediaStart = try #require(source.range(of: "struct MediaContent"))
         let scrubberStart = try #require(source.range(
             of: "private struct MediaScrubber",
             range: mediaStart.upperBound..<source.endIndex
