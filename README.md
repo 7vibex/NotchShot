@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/7vibex/NotchShot/actions/workflows/ci.yml/badge.svg)](https://github.com/7vibex/NotchShot/actions/workflows/ci.yml)
 
-![NotchShot demo video](videos/notchshot-balanced/renders/notchshot-balanced.mp4)
+![NotchShot demo video](https://github.com/7vibex/NotchShot/releases/download/demo-assets/notchshot-balanced.mp4)
 
 <p align="center">
   <sub><b>Watch</b> — NotchShot in action (replaces the static hero shot)</sub>
