@@ -8,16 +8,6 @@
   <sub><b>Now Playing</b> — artwork, seeking and transport controls</sub>
 </p>
 
-<p align="center">
-  <img src="Screenshots/notch-now-playing.png" width="600" alt="Close-up of the Now Playing card showing track title, seek bar and transport controls">
-</p>
-
-<p align="center">
-  <img src="Screenshots/notch-ai-activity.png" width="600" alt="AI activity state showing a Codex session fixing image export">
-  <br>
-  <sub><b>AI activity</b> — live Codex session state</sub>
-</p>
-
 <details>
 <summary>See the desktop screenshot gallery</summary>
 
