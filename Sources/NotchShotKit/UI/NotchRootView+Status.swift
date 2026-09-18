@@ -154,12 +154,19 @@ struct ErrorContent: View {
 
 struct RecordingContent: View {
     @Bindable var coordinator: AppCoordinator
+    /// Inside the island the indicator is a shared element that travels from
+    /// the compact wing; this reserves its place instead of drawing a second dot.
+    var sharedIndicatorID: IslandActivityID?
 
     private var status: RecordingStatus { coordinator.recordingStatus }
 
     var body: some View {
         HStack(spacing: 14) {
-            RecordingDot()
+            if let sharedIndicatorID {
+                IslandGlyphSlot(id: sharedIndicatorID, size: 18)
+            } else {
+                RecordingDot()
+            }
 
             VStack(alignment: .leading, spacing: 5) {
                 HStack(spacing: 8) {

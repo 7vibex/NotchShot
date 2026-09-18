@@ -177,6 +177,7 @@ extension AppCoordinator {
     }
 
     func refreshActivity() {
+        refreshIsland()
         let resolved = arbiter.resolve()
         if resolved != activity {
             activity = resolved
@@ -277,6 +278,7 @@ extension AppCoordinator {
     /// way to the menu bar. Leaving is immediate — a lingering open notch after
     /// the pointer has gone is exactly the "it opened by itself" complaint.
     public func setHovering(_ hovering: Bool) {
+        handleIslandHover(hovering)
         peekTask?.cancel()
         guard Preferences.shared.hoverPeekEnabled else {
             if isPeeking { setPeeking(false) }

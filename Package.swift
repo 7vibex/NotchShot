@@ -10,6 +10,7 @@ let package = Package(
         .executable(name: "NotchShotAdapterRunner", targets: ["NotchShotAdapterRunner"]),
         .executable(name: "NotchShotAIReporter", targets: ["NotchShotAIReporter"]),
         .executable(name: "notchshot-diagnostics", targets: ["NotchShotDiagnostics"]),
+        .executable(name: "notchshot-cli", targets: ["NotchShotCLI"]),
         .library(name: "NotchShotKit", targets: ["NotchShotKit"]),
     ],
     dependencies: [
@@ -47,6 +48,15 @@ let package = Package(
             name: "NotchShotAIReporter",
             dependencies: ["NotchShotAIReporterSupport"],
             path: "Sources/NotchShotAIReporter",
+            swiftSettings: [.swiftLanguageMode(.v6)]
+        ),
+        // `notchshot-cli activity …`: publishes bounded Live Activities to the
+        // app over its owner-only local socket. Shares the wire format with the
+        // app through NotchShotAIReporterSupport, never AppKit.
+        .executableTarget(
+            name: "NotchShotCLI",
+            dependencies: ["NotchShotAIReporterSupport"],
+            path: "Sources/NotchShotCLI",
             swiftSettings: [.swiftLanguageMode(.v6)]
         ),
         .target(

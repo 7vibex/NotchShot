@@ -77,6 +77,9 @@ struct AgentVibeActivitySurface: View {
     var recent: [AIActivitySnapshot]
     var subtitle: String?
     var claudeSessions: [ClaudeCodeSession] = []
+    /// The island draws its own header (with the travelling agent glyph)
+    /// above this list.
+    var showsHeader = true
     var onApprovePermission: (String) -> Void
     var onDenyPermission: (String) -> Void
     var onDismiss: (AIActivitySnapshot) -> Void
@@ -107,7 +110,9 @@ struct AgentVibeActivitySurface: View {
             emptyState
         } else {
             VStack(alignment: .leading, spacing: NotchIsland.Spacing.element) {
-                header
+                if showsHeader {
+                    header
+                }
 
                 ScrollView(.vertical) {
                     LazyVStack(alignment: .leading, spacing: NotchIsland.Spacing.tight) {

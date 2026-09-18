@@ -276,6 +276,42 @@ public final class Preferences {
         Set(enabledAISourceRawValues.compactMap(AISource.init(rawValue:)))
     }
 
+    // MARK: Activity island
+
+    /// The multi-activity island: a primary plus up to two satellites, with
+    /// bursts overlaid instead of replacing what is underneath. Off restores
+    /// the single-activity notch exactly.
+    public var multipleActivitiesEnabled = true {
+        didSet { write(multipleActivitiesEnabled, .multipleActivities) }
+    }
+    /// 1, 2, or 3. One keeps the island but hides satellites.
+    public var maximumVisibleActivities = 3 {
+        didSet {
+            let clamped = min(3, max(1, maximumVisibleActivities))
+            if clamped != maximumVisibleActivities { maximumVisibleActivities = clamped; return }
+            write(maximumVisibleActivities, .maximumVisibleActivities)
+        }
+    }
+    public var showsMediaActivity = true { didSet { write(showsMediaActivity, .islandMedia) } }
+    public var showsAIIslandActivity = true { didSet { write(showsAIIslandActivity, .islandAI) } }
+    public var showsTimerActivity = true { didSet { write(showsTimerActivity, .islandTimers) } }
+    public var showsTransferActivity = true { didSet { write(showsTransferActivity, .islandTransfers) } }
+    /// Ambient activities such as an upcoming calendar event.
+    public var showsPassiveActivities = true { didSet { write(showsPassiveActivities, .islandPassive) } }
+    /// Local Live Activity API socket for scripts and tools.
+    public var externalActivitiesEnabled = true { didSet { write(externalActivitiesEnabled, .externalActivities) } }
+    /// Trackpad two-finger swipe between simultaneous activities.
+    public var swipesBetweenActivities = true { didSet { write(swipesBetweenActivities, .islandSwipe) } }
+    /// Haptics for direct gestures only; never for background events.
+    public var islandHapticsEnabled = true { didSet { write(islandHapticsEnabled, .islandHaptics) } }
+    /// Low battery, connectivity and accessory cards may overlay an island
+    /// that is showing media or other work.
+    public var allowsAlertsOverActivities = true { didSet { write(allowsAlertsOverActivities, .islandAlerts) } }
+    public var showsTransferCompletionAlerts = true { didSet { write(showsTransferCompletionAlerts, .islandTransferAlerts) } }
+    /// Focus on/off bursts. Requires the Focus Status capability macOS grants
+    /// only to entitled builds; unavailable builds leave this inert.
+    public var showsFocusEvents = false { didSet { write(showsFocusEvents, .islandFocus) } }
+
     public func setAISource(_ source: AISource, enabled: Bool) {
         var sources = enabledAISources
         if enabled { sources.insert(source) } else { sources.remove(source) }
@@ -453,6 +489,9 @@ public final class Preferences {
         case customCalendarSelection
         case powerStatus, audioRouteStatus, networkStatus
         case aiActivity, aiActivityOverMedia, enabledAISources
+        case multipleActivities, maximumVisibleActivities, islandMedia, islandAI, islandTimers
+        case islandTransfers, islandPassive, externalActivities, islandSwipe, islandHaptics
+        case islandAlerts, islandTransferAlerts, islandFocus
         case backgroundPreset, annotationColor, annotationLineWidth
         case launchAtLogin, showsDockIcon, firstRun, pendingFirstCaptureIntent, updateChannel
         case recoveredLegacySystemOSD, adapterCheckBuild
@@ -620,6 +659,19 @@ public final class Preferences {
         enabledAISourceRawValues = defaults.stringArray(
             forKey: "notchshot.\(Key.enabledAISources.rawValue)"
         ) ?? AISource.allCases.map(\.rawValue)
+        multipleActivitiesEnabled = bool(.multipleActivities, true)
+        maximumVisibleActivities = min(3, max(1, int(.maximumVisibleActivities, 3)))
+        showsMediaActivity = bool(.islandMedia, true)
+        showsAIIslandActivity = bool(.islandAI, true)
+        showsTimerActivity = bool(.islandTimers, true)
+        showsTransferActivity = bool(.islandTransfers, true)
+        showsPassiveActivities = bool(.islandPassive, true)
+        externalActivitiesEnabled = bool(.externalActivities, true)
+        swipesBetweenActivities = bool(.islandSwipe, true)
+        islandHapticsEnabled = bool(.islandHaptics, true)
+        allowsAlertsOverActivities = bool(.islandAlerts, true)
+        showsTransferCompletionAlerts = bool(.islandTransferAlerts, true)
+        showsFocusEvents = bool(.islandFocus, false)
 
         defaultBackgroundPresetID = string(.backgroundPreset) ?? "none"
         annotationColorHex = string(.annotationColor) ?? "#FF3B30"

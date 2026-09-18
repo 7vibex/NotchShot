@@ -20,6 +20,13 @@ replace unrelated hooks. Codex's button also enables `[features].codex_hooks`
 without changing existing `notify` or other TOML settings. A locally built app uses
 `dist/NotchShot.app/Contents/MacOS/notchshot-ai` instead.
 
+AI agents appear as one activity in the multi-activity island (see
+[ACTIVITY_ENGINE.md](ACTIVITY_ENGINE.md)); an agent waiting for approval takes
+the primary slot and keeps an expanded island open. For work that is not an AI
+agent — builds, tests, exports, backups — prefer the generic Live Activity API
+(`notchshot-cli activity …`), which has its own bounded, untrusted-input
+protocol and does not write status files.
+
 ## Try it directly
 
 ```bash

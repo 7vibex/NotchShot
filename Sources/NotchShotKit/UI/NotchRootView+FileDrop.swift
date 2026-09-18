@@ -10,6 +10,8 @@ struct NotchFileDropDelegate: DropDelegate {
     @Binding var selectedAction: FileDropAction
     @Binding var itemCount: Int
     @Binding var usesManualSelection: Bool
+    /// -1…1 toward the pointer, for the shell's subtle stretch.
+    @Binding var pointerPull: CGFloat
 
     var layoutSize: CGSize
     var supportsActionSelection: Bool
@@ -33,6 +35,7 @@ struct NotchFileDropDelegate: DropDelegate {
         guard !providers.isEmpty else { return DropProposal(operation: .forbidden) }
         itemCount = providers.count
         updateSelection(for: info)
+        pointerPull = FileDropPullPolicy.pull(x: info.location.x, width: layoutSize.width)
         return DropProposal(operation: .copy)
     }
 
@@ -59,12 +62,19 @@ struct NotchFileDropDelegate: DropDelegate {
 
     private func updateSelection(for info: DropInfo) {
         guard !usesManualSelection else { return }
-        selectedAction = supportsActionSelection
+        let action = supportsActionSelection
             ? FileDropActionSelection.action(atX: info.location.x, width: layoutSize.width)
             : .shelf
+        // The user is steering this drag: a new target locking in under the
+        // pointer is direct feedback, not a background notification.
+        if action != selectedAction, supportsActionSelection {
+            IslandHaptics.perform(.dropTargetLocked)
+        }
+        selectedAction = action
     }
 
     private func reset() {
+        pointerPull = 0
         isTargeted = false
         itemCount = 0
         selectedAction = .shelf

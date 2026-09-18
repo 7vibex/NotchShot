@@ -10,8 +10,9 @@ coordinator and are pinned by `ActivityPriorityTests`.
 ## Module boundaries
 
 All product logic ships in one `NotchShotKit` target (`Package.swift`).
-Only `NotchShotAIReporterSupport` is split out so the reporter helper and the
-app share the socket wire format without pulling in AppKit.
+Only `NotchShotAIReporterSupport` is split out so the reporter helpers
+(`notchshot-ai`, `notchshot-cli`) and the app share socket wire formats without
+pulling in AppKit.
 
 - `App/` — `AppCoordinator` facade, `AppDelegate` lifecycle, `ShelfItem`
   model, `VideoThumbnail` poster frames.
@@ -27,7 +28,17 @@ app share the socket wire format without pulling in AppKit.
 - `Automation/` — `notchshot://` router rejects unknown params, rate-limits,
   canonicalizes + inode-validates paths, requires foreground confirmation.
 - `System/` — OSD suppression arms the recovery lease first, refuses without
-  recovery, fails open if recovery dies.
+  recovery, fails open if recovery dies. `FocusStatusMonitor` reads Focus
+  on/off only through `INFocusStatusCenter` and stays inert without the
+  entitlement.
+- `Core/Island/` + `UI/Island/` + `Input/` — the multi-activity island: pure
+  activity model, adapters, presentation engine and burst queue; the
+  container, shared-element layer and compact/expanded views; swipe tracking.
+  See [ACTIVITY_ENGINE.md](ACTIVITY_ENGINE.md).
+- `External/` — the local Live Activity API: owner-only Unix socket server and
+  the bounded `ExternalActivityRegistry`. The wire format lives in
+  `NotchShotAIReporterSupport/LiveActivityProtocol.swift`, shared with the
+  `notchshot-cli` executable (`Sources/NotchShotCLI`).
 
 ## AppCoordinator layout
 
@@ -41,11 +52,24 @@ files so no single file carries the whole surface:
 - `AppCoordinator+Shelf.swift` — shelf, capture stack, shelf file operations
 - `AppCoordinator+System.swift` — dictation, level HUD, notification mirror
 - `AppCoordinator+Automation.swift` — `notchshot://` routing, Finder drops
+- `AppCoordinator+Island.swift` — island activity collection, selection,
+  expansion, bursts, external activities, Focus
 - `AppCoordinator+Clipboard.swift` — clipboard history
 
 The same pattern applies to the largest views: `NotchRootView+*` and
 `SettingsView+*` split by surface. `Scripts/check_hygiene.sh` keeps every Swift
 file under 2500 lines.
+
+## Activity resolution
+
+`ActivityArbiter.resolve()` still returns one `NotchActivity`. Modal takeovers
+(selection, countdown, dictation, processing, file drop, shelf, menu, banners)
+keep their own cases. Long-lived work resolves to
+`NotchActivity.island(IslandLayoutDescriptor)`, whose descriptor names the
+primary, the satellites, the level and the burst kind — structure only, so live
+values never re-trigger shell animation. `IslandPresentationEngine` decides that
+structure; `ActivityPriorityTests` pins the legacy order and
+`IslandArbiterTests` / `IslandPresentationEngineTests` pin the island rules.
 
 ## State, navigation, async rules
 

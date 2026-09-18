@@ -129,6 +129,10 @@ struct MediaContent: View {
     /// True on a display with no hardware cutout, where the island is a drawn
     /// pill and its curved ends have to be cleared by hand.
     var isFloating = false
+    /// Inside the multi-activity island the artwork is a shared element: the
+    /// header reserves its frame and the island draws the one artwork view
+    /// that travels between compact, expanded, and satellite positions.
+    var sharedArtworkID: IslandActivityID?
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var now = Date()
@@ -250,7 +254,11 @@ struct MediaContent: View {
 
     private var header: some View {
         HStack(spacing: NotchIsland.Spacing.group) {
-            artwork(size: 56)
+            if let sharedArtworkID {
+                IslandGlyphSlot(id: sharedArtworkID, size: 56)
+            } else {
+                artwork(size: 56)
+            }
 
             VStack(alignment: .leading, spacing: NotchIsland.Spacing.hairline) {
                 HStack(spacing: NotchIsland.Spacing.snug) {

@@ -11,6 +11,10 @@ public final class MacSharePresenter: NSObject,
 
     private var activePicker: NSSharingServicePicker?
     private var retainedItems: [Any] = []
+    /// The island transfer for an AirDrop share. AirDrop's public API reports
+    /// only that sharing started, succeeded, or failed — never bytes — so the
+    /// activity stays indeterminate and says "Shared", not "Delivered".
+    private var airDropTransferID: UUID?
     public var onFailure: ((Error) -> Void)?
 
     private override init() {}
@@ -37,13 +41,30 @@ public final class MacSharePresenter: NSObject,
         service?.delegate = self
         if service == nil {
             finish()
+        } else if let service, Self.isAirDrop(service) {
+            airDropTransferID = TransferActivityStore.shared.begin(
+                service: .airDrop,
+                peerName: "AirDrop",
+                fileCount: retainedItems.count
+            )
         }
+    }
+
+    public func sharingService(_ sharingService: NSSharingService, willShareItems items: [Any]) {
+        guard let airDropTransferID else { return }
+        TransferActivityStore.shared.markTransferring(airDropTransferID)
+    }
+
+    private static func isAirDrop(_ service: NSSharingService) -> Bool {
+        guard let airDrop = NSSharingService(named: .sendViaAirDrop) else { return false }
+        return service.title == airDrop.title
     }
 
     public func sharingService(
         _ sharingService: NSSharingService,
         didShareItems items: [Any]
     ) {
+        if let airDropTransferID { TransferActivityStore.shared.finish(airDropTransferID) }
         finish()
     }
 
@@ -52,6 +73,9 @@ public final class MacSharePresenter: NSObject,
         didFailToShareItems items: [Any],
         error: any Error
     ) {
+        if let airDropTransferID {
+            TransferActivityStore.shared.finish(airDropTransferID, error: error.localizedDescription)
+        }
         onFailure?(error)
         finish()
     }
@@ -65,6 +89,7 @@ public final class MacSharePresenter: NSObject,
     }
 
     private func finish() {
+        airDropTransferID = nil
         activePicker = nil
         retainedItems.removeAll()
     }

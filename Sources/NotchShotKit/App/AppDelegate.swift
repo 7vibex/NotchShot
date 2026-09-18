@@ -60,7 +60,13 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValid
         }
         controller.onTriggerClick = { [weak self, weak controller] _ in
             guard let self else { return }
-            if coordinator.activity == .media {
+            if case .island(let descriptor) = coordinator.activity {
+                if descriptor.isExpanded {
+                    coordinator.collapseIsland()
+                } else {
+                    coordinator.expandIslandPrimary()
+                }
+            } else if coordinator.activity == .media {
                 coordinator.setPeeking(true)
                 controller?.focusActivePanel()
             } else if case .context = coordinator.activity {
@@ -429,7 +435,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValid
         case .captureText: coordinator.capture(.ocr)
         case .startRecording: coordinator.startRecording()
         case .stopRecording:
-            if coordinator.activity == .recording {
+            if coordinator.isRecordingActive {
                 coordinator.stopRecording()
             } else {
                 coordinator.cancelCurrentOperation()
@@ -597,7 +603,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValid
         case #selector(clearStack):
             return !coordinator.stack.isEmpty
         case #selector(stopRecording):
-            return coordinator.activity == .recording
+            return coordinator.isRecordingActive
         case #selector(captureFromMenu(_:)):
             guard let raw = menuItem.representedObject as? String,
                   let intent = CaptureIntent(rawValue: raw) else { return true }

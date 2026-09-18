@@ -56,6 +56,26 @@ public final class AppCoordinator {
     public let stack = CaptureStack.shared
     public let dictation = DictationCoordinator.shared
 
+    // MARK: Activity island
+
+    /// The resolved multi-activity island. Views read activity detail from
+    /// the sources; this carries placement, level and the overlay.
+    public internal(set) var islandPresentation = IslandPresentation.empty
+    public let islandGesture = IslandGestureState()
+    public let transfers = TransferActivityStore.shared
+    public let externalActivities = ExternalActivityStore.shared
+    public let focusStatus = FocusStatusMonitor.shared
+    @ObservationIgnored var islandEngine = IslandPresentationEngine()
+    @ObservationIgnored var islandEvents = IslandTransientQueue()
+    @ObservationIgnored var islandExpiryTask: Task<Void, Never>?
+    @ObservationIgnored var islandExpiryDeadline: Date?
+    @ObservationIgnored var islandEventTask: Task<Void, Never>?
+    @ObservationIgnored var islandCollapseTask: Task<Void, Never>?
+    @ObservationIgnored var islandRefreshScheduled = false
+    @ObservationIgnored var mediaActivityStartedAt: Date?
+    @ObservationIgnored var recordingActivityStartedAt: Date?
+    @ObservationIgnored var islandGestureCoordinator: IslandGestureCoordinator?
+
     /// Most recent capture the user dismissed, for "restore last".
     var lastDismissed: ShelfItem?
     var shelfTimer: Timer?
@@ -204,6 +224,7 @@ public final class AppCoordinator {
         LockedMediaNotificationController.shared.clear()
         observeMedia()
         observeDictation()
+        startIsland()
         refreshActivity()
     }
 

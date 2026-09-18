@@ -92,6 +92,8 @@ public struct SettingsView: View {
             DictationSettings(coordinator: coordinator, preferences: preferences)
         case .appearance:
             NotchSettings(coordinator: coordinator, preferences: preferences)
+        case .activities:
+            ActivityIslandSettings(coordinator: coordinator, preferences: preferences)
         case .integrations:
             MediaSettings(coordinator: coordinator, preferences: preferences)
         case .context:
@@ -130,6 +132,7 @@ enum SettingsSection: String, CaseIterable, Identifiable {
     case recording
     case dictation
     case appearance
+    case activities
     case integrations
     case context
     case privacy
@@ -145,6 +148,7 @@ enum SettingsSection: String, CaseIterable, Identifiable {
         case .recording: "Recording"
         case .dictation: "Dictation"
         case .appearance: "Appearance & Displays"
+        case .activities: "Live Activities"
         case .integrations: "Integrations"
         case .context: "Context Modules"
         case .privacy: "Privacy"
@@ -160,6 +164,7 @@ enum SettingsSection: String, CaseIterable, Identifiable {
         case .recording: "Record"
         case .dictation: "Dictation"
         case .appearance: "Display"
+        case .activities: "Activities"
         case .integrations: "Media"
         case .context: "Context"
         case .privacy: "Privacy"
@@ -175,6 +180,7 @@ enum SettingsSection: String, CaseIterable, Identifiable {
         case .recording: "record.circle"
         case .dictation: "mic"
         case .appearance: "macbook"
+        case .activities: "capsule.on.rectangle"
         case .integrations: "puzzlepiece.extension"
         case .context: "rectangle.topthird.inset.filled"
         case .privacy: "hand.raised"
@@ -190,6 +196,7 @@ enum SettingsSection: String, CaseIterable, Identifiable {
         case .recording: .red
         case .dictation: .blue
         case .appearance: .indigo
+        case .activities: .pink
         case .integrations: .orange
         case .context: .teal
         case .privacy: .green
@@ -211,6 +218,8 @@ enum SettingsSection: String, CaseIterable, Identifiable {
             ["voice", "speech", "transcription", "push to talk", "language", "insert", "filler words"]
         case .appearance:
             ["notch", "display", "hover", "brightness", "volume", "hud", "basket", "jiggle", "liquid glass"]
+        case .activities:
+            ["dynamic island", "multiple activities", "satellite", "swipe", "trackpad", "haptic", "focus", "transfer", "localsend", "airdrop", "live activity", "cli", "external", "alerts"]
         case .integrations:
             ["music", "spotify", "now playing", "airplay", "audio route", "adapter", "automation", "notification center", "lock screen", "activity stack", "reply"]
         case .context:

@@ -21,6 +21,7 @@ public struct NotchRootView: View {
     @State private var selectedFileDropAction: FileDropAction = .shelf
     @State private var fileDropItemCount = 0
     @State private var usesManualFileDropSelection = false
+    @State private var fileDropPull: CGFloat = 0
 
     public init(coordinator: AppCoordinator, context: NotchDisplayContext) {
         self.coordinator = coordinator
@@ -65,6 +66,14 @@ public struct NotchRootView: View {
         if case .dictation(let snap) = coordinator.activity, let did = snap.displayID {
             return did == context.displayID ? coordinator.activity : .idle
         }
+        if case .island(let descriptor) = coordinator.activity {
+            return IslandDisplayPolicy.activity(
+                for: descriptor,
+                displayID: context.displayID,
+                isActiveDisplay: isActiveDisplay,
+                mirrorsPassiveContext: Preferences.shared.mirrorsPassiveContextOnAllDisplays
+            )
+        }
         guard !isActiveDisplay else { return coordinator.activity }
         if coordinator.activity == .media { return .media }
         if Preferences.shared.mirrorsPassiveContextOnAllDisplays,
@@ -98,6 +107,8 @@ public struct NotchRootView: View {
     private var overlaidSystemLevel: SystemLevel? {
         guard !isLockedSession else { return nil }
         if case .systemLevel = effectiveActivity { return nil }
+        // The island presents a level change as its own overlay.
+        if case .island = effectiveActivity { return nil }
         guard let level = coordinator.arbiter.systemLevel else { return nil }
         if let displayID = level.displayID {
             return displayID == context.displayID ? level : nil
@@ -224,7 +235,10 @@ public struct NotchRootView: View {
                 .frame(
                     width: baseLayout.size.width,
                     height: contentFrameHeight,
-                    alignment: isShowingDictation ? .top : .center
+                    // The island lays its own content out from the top. Centring
+                    // made outgoing expanded content slide down as the shell
+                    // shrank underneath it during a collapse.
+                    alignment: isShowingDictation || isShowingIsland ? .top : .center
                 )
                 .offset(y: contentTopOffset)
                 .frame(
@@ -258,7 +272,45 @@ public struct NotchRootView: View {
         }
         .clipShape(shape)
         .frame(width: layout.size.width, height: layout.size.height)
+        .overlay {
+            if case .island(let descriptor) = effectiveActivity {
+                IslandSatelliteLayer(
+                    descriptor: descriptor,
+                    layout: layout,
+                    coordinator: coordinator,
+                    gesture: coordinator.islandGesture
+                )
+            }
+        }
+        // Shared elements draw above the clipped shell and its satellites, at
+        // whichever anchor currently claims them.
+        .overlayPreferenceValue(IslandGlyphAnchorKey.self) { anchors in
+            if case .island = effectiveActivity {
+                IslandSharedElementLayer(
+                    anchors: anchors,
+                    // Only the primary's icon travels (compact ↔ expanded);
+                    // satellites draw their own, so nothing flies across.
+                    activities: coordinator.islandPresentation.primary.map { [$0] } ?? [],
+                    isTracking: coordinator.islandGesture.isTracking,
+                    coordinator: coordinator
+                )
+            }
+        }
+        // A lone satellite on an external display shifts the pair so the
+        // group reads as centred.
+        .offset(x: layout.clusterOffset)
+        // A dragged file tugs the shell a few points toward the pointer. Kept
+        // tiny on purpose, and absent under Reduce Motion.
+        .scaleEffect(
+            x: reduceMotion || !isTargetedForDrop ? 1 : 1 + abs(fileDropPull) * 0.018,
+            y: 1,
+            anchor: fileDropPull < 0 ? .trailing : .leading
+        )
+        .offset(x: reduceMotion || !isTargetedForDrop ? 0 : fileDropPull * 4)
+        .animation(reduceMotion ? nil : .interactiveSpring(response: 0.28, dampingFraction: 0.8), value: fileDropPull)
         .animation(shapeAnimation, value: layout.size)
+        .animation(shapeAnimation, value: layout.satelliteDiameter)
+        .animation(shapeAnimation, value: layout.clusterOffset)
         .animation(shapeAnimation, value: layout.cornerRadius)
         .animation(contentAnimation, value: effectiveActivity.presentationIdentity)
         .animation(contentAnimation, value: overlaidSystemLevel)
@@ -272,11 +324,17 @@ public struct NotchRootView: View {
                 selectedAction: $selectedFileDropAction,
                 itemCount: $fileDropItemCount,
                 usesManualSelection: $usesManualFileDropSelection,
+                pointerPull: $fileDropPull,
                 layoutSize: layout.size,
                 supportsActionSelection: effectiveActivity == .fileDrop,
                 onPerform: handleDrop
             )
         )
+    }
+
+    private var isShowingIsland: Bool {
+        if case .island = effectiveActivity { return true }
+        return false
     }
 
     private var isShowingDictation: Bool {
@@ -349,8 +407,11 @@ public struct NotchRootView: View {
     }
 
     private var isRecording: Bool {
-        if case .recording = effectiveActivity { return true }
-        return false
+        switch effectiveActivity {
+        case .recording: return true
+        case .island(let descriptor): return descriptor.primaryKind == .recording && descriptor.overlay == nil
+        default: return false
+        }
     }
 
     /// A red edge while the screen is being recorded.
@@ -376,8 +437,11 @@ public struct NotchRootView: View {
     }
 
     private var isShowingMedia: Bool {
-        if case .media = effectiveActivity { return true }
-        return false
+        switch effectiveActivity {
+        case .media: return true
+        case .island(let descriptor): return descriptor.primaryKind == .media
+        default: return false
+        }
     }
 
     /// The shell stays opaque while compact control surfaces are coordinated so
@@ -393,6 +457,11 @@ public struct NotchRootView: View {
     private var shapeAnimation: Animation? {
         guard NotchShotMotion.allowsSpatialAnimation(reduceMotion: reduceMotion) else {
             return nil
+        }
+        // The multi-activity island settles without overshoot: with several
+        // shapes and a travelling icon on screen, any bounce reads as jitter.
+        if isShowingIsland {
+            return .spring(response: NotchIsland.Motion.shellResponse, dampingFraction: 1.0)
         }
         return .spring(
             response: NotchIsland.Motion.shellResponse,
@@ -482,6 +551,14 @@ public struct NotchRootView: View {
             ErrorContent(message: message, coordinator: coordinator)
         case .dictation(let snapshot):
             DictationIslandContent(snapshot: snapshot, metrics: context.metrics, coordinator: coordinator)
+        case .island(let descriptor):
+            IslandActivityContainer(
+                descriptor: descriptor,
+                metrics: context.metrics,
+                isActiveDisplay: isActiveDisplay,
+                coordinator: coordinator,
+                gesture: coordinator.islandGesture
+            )
         }
     }
 
@@ -512,7 +589,31 @@ public struct NotchRootView: View {
             "Notification from \(snapshot.sourceName): \(snapshot.title) \(snapshot.body)"
         case .error(let message): "Error: \(message)"
         case .dictation(let snap): dictationAccessibilityDescription(snap)
+        case .island(let descriptor): islandAccessibilityDescription(descriptor)
         }
+    }
+
+    private func islandAccessibilityDescription(_ descriptor: IslandLayoutDescriptor) -> String {
+        let presentation = coordinator.islandPresentation
+        var parts: [String] = []
+        if let overlay = presentation.transientOverlay, descriptor.overlay != nil {
+            switch overlay {
+            case .systemLevel(let level):
+                parts.append(level.kind == .volume && level.isMuted
+                    ? "Muted"
+                    : "\(level.kind.title) \(Int(level.value * 100)) percent")
+            case .context(let snapshot): parts.append(snapshot.title)
+            case .event(let event): parts.append(event.title)
+            }
+        }
+        if let primary = presentation.primary, primary.id == descriptor.primaryID {
+            parts.append(IslandAccessibility.value(for: primary, coordinator: coordinator))
+        }
+        let others = presentation.secondary.filter { [descriptor.leadingID, descriptor.trailingID].contains($0.id) }
+        if !others.isEmpty {
+            parts.append("Also: " + others.map(\.kind.title).joined(separator: ", "))
+        }
+        return parts.isEmpty ? "Idle" : parts.joined(separator: ". ")
     }
 
     // MARK: Interaction

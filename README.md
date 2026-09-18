@@ -173,6 +173,10 @@ Sources/NotchShotKit/
   Permissions/  staged requests and remediation
   HotKeys/      Carbon global shortcuts
   UI/           notch views, shelf, settings, history browser
+  UI/Island/    multi-activity container, shared-element layer, compact/expanded cards
+  Core/Island/  activity model, adapters, presentation engine, burst queue
+  Input/        trackpad swipe tracking and gesture arbitration
+  External/     Live Activity socket server and bounded registry
   App/          AppCoordinator facade, AppDelegate, ShelfItem, VideoThumbnail
   Automation/   notchshot:// URL router, App Intents
   Dictation/    local dictation engine, text insertion, push-to-talk
@@ -188,7 +192,9 @@ Sources/NotchShotKit/
 order `error → selecting → countdown → dictation → recording → processing → file drop →
 result → expanded → system notification → system level → interrupting context → media →
 passive context → idle`. A track change or a stray pointer can never disturb a capture in
-flight. `ActivityPriorityTests` pins the whole ordering. A compact volume/brightness strip
+flight. `ActivityPriorityTests` pins the whole ordering. With multiple activities on,
+long-lived work resolves to a single `.island` presentation whose primary, satellites and
+burst are decided by `IslandPresentationEngine`; a recording keeps its rung inside it. A compact volume/brightness strip
 is composited independently when the experimental native-overlay replacement is active,
 so an in-flight result cannot swallow the only visible level feedback.
 
@@ -213,6 +219,48 @@ sanitised.
   default, so NotchShot never appears in its own output. Settings → Capture can include the
   notch in screenshots and recordings when you want it on camera.
 - Survives Space switches, fullscreen apps, display hot-plug, resolution change, and wake.
+
+## Live Activities
+
+The notch can show up to three ongoing activities at once — music, a screen recording, a
+focus timer, AI agents, LocalSend and AirDrop transfers, voice notes, upcoming events, and
+activities published by your own tools.
+
+- **One leads, the rest wait beside it.** The primary activity stays attached to the notch;
+  up to two others sit next to it as small satellites. Click a satellite to bring it forward
+  and open it, or swipe left and right on the trackpad over the island. The content follows
+  your fingers and springs to the next activity.
+- **Minimal, compact, expanded.** A satellite shows just its artwork, ring or indicator. The
+  compact island adds one live value beside the camera. Hover or click opens the expanded
+  card with controls. Shared elements such as album art, the agent icon, a timer ring or the
+  recording dot move and resize between these states instead of fading.
+- **Short events don't wipe what's underneath.** Volume, brightness, low battery,
+  connectivity and Focus changes briefly stretch the island, then hand back the same
+  activities in the same places. Screen recording and capture selection still take priority
+  over everything passive.
+- **Live values stay still.** A timer tick, a new percentage or another transcript word
+  updates in place and never re-animates the island.
+- Reduce Motion, VoiceOver (adjust to switch activities) and the keyboard (← → and Esc in the
+  expanded island) are supported. Settings → Live Activities controls what appears, how many,
+  swiping, haptics and interruptions. Turning multiple activities off restores the
+  single-activity notch.
+
+Scripts and build tools can publish their own activities through a local, owner-only socket:
+
+```bash
+CLI="/Applications/NotchShot.app/Contents/MacOS/notchshot-cli"
+"$CLI" activity start  --id build --title "Xcode build" --source Xcode --icon build
+"$CLI" activity update --id build --progress 42 --state Compiling
+"$CLI" activity finish --id build
+"$CLI" activity run --id tests --title "swift test" --icon test -- swift test
+```
+
+Messages carry bounded plain text, an optional measured progress value, and an icon and accent
+from fixed lists. They cannot carry commands, file paths, URLs, markup or images, and only
+your user account can connect. Progress is never estimated: without a real value the island
+shows an indeterminate state. AirDrop shows only the states macOS reports, never byte counts.
+Focus changes require a build signed with Apple's Focus Status capability, and show only on or
+off. See [Documentation/ACTIVITY_ENGINE.md](Documentation/ACTIVITY_ENGINE.md).
 
 ## System volume and brightness HUD
 
@@ -426,6 +474,10 @@ Calendar event titles and unsaved document summaries stay in memory and never en
 or diagnostics. Document reading starts only after confirmation; nothing is uploaded, and a
 saved summary contains the visible summary plus source filename and timestamp rather than an
 invisible copy of the full source text.
+
+External Live Activities arrive over an owner-only Unix socket (peer user id verified), are
+validated as untrusted input, stay in memory, and are never written to disk, History or bug
+reports; the Recent list is capped and clearable. No activity data leaves the Mac.
 
 AI activity is written only after an explicitly connected hook or reporter command. Records
 live in the owner-only `AI Activity` support folder, never enter capture History or bug

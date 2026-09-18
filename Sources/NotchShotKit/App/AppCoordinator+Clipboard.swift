@@ -267,6 +267,12 @@ extension AppCoordinator {
     }
 
     public func setContextExpanded(_ expanded: Bool) {
+        // Inside the multi-activity island, context cards are island
+        // activities: their expand and dismiss controls drive the island.
+        if isIslandPresenting {
+            if expanded { expandIslandPrimary() } else { collapseIsland() }
+            return
+        }
         context.setExpanded(expanded)
         if expanded {
             setPeeking(false)

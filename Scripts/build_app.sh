@@ -58,6 +58,10 @@ APP_NAME="NotchShot"
 RECOVERY_NAME="NotchShotOSDRecovery"
 ADAPTER_RUNNER_NAME="NotchShotAdapterRunner"
 AI_REPORTER_NAME="NotchShotAIReporter"
+# Product name, not target name. Shipped as Contents/MacOS/notchshot-cli: a
+# plain `notchshot` would collide with the `NotchShot` executable on a
+# case-insensitive volume.
+ACTIVITY_CLI_NAME="notchshot-cli"
 # Assembled and signed under a staging name, then swapped into place only
 # after `codesign --verify` passes. The previous version of this script removed
 # the destination bundle before it built anything, so any later failure — a
@@ -146,11 +150,13 @@ swift build -c "$CONFIGURATION" --product "$APP_NAME"
 swift build -c "$CONFIGURATION" --product "$RECOVERY_NAME"
 swift build -c "$CONFIGURATION" --product "$ADAPTER_RUNNER_NAME"
 swift build -c "$CONFIGURATION" --product "$AI_REPORTER_NAME"
+swift build -c "$CONFIGURATION" --product "$ACTIVITY_CLI_NAME"
 BIN_DIR="$(swift build -c "$CONFIGURATION" --show-bin-path)"
 BINARY="$BIN_DIR/$APP_NAME"
 RECOVERY_BINARY="$BIN_DIR/$RECOVERY_NAME"
 ADAPTER_RUNNER_BINARY="$BIN_DIR/$ADAPTER_RUNNER_NAME"
 AI_REPORTER_BINARY="$BIN_DIR/$AI_REPORTER_NAME"
+ACTIVITY_CLI_BINARY="$BIN_DIR/$ACTIVITY_CLI_NAME"
 
 if [[ ! -x "$BINARY" ]]; then
     echo "Build produced no executable at $BINARY" >&2
@@ -166,6 +172,10 @@ if [[ ! -x "$ADAPTER_RUNNER_BINARY" ]]; then
 fi
 if [[ ! -x "$AI_REPORTER_BINARY" ]]; then
     echo "Build produced no AI reporter at $AI_REPORTER_BINARY" >&2
+    exit 1
+fi
+if [[ ! -x "$ACTIVITY_CLI_BINARY" ]]; then
+    echo "Build produced no activity CLI at $ACTIVITY_CLI_BINARY" >&2
     exit 1
 fi
 
@@ -187,6 +197,7 @@ cp "$BINARY" "$MACOS_DIR/$APP_NAME"
 cp "$RECOVERY_BINARY" "$MACOS_DIR/$RECOVERY_NAME"
 cp "$ADAPTER_RUNNER_BINARY" "$MACOS_DIR/$ADAPTER_RUNNER_NAME"
 cp "$AI_REPORTER_BINARY" "$MACOS_DIR/notchshot-ai"
+cp "$ACTIVITY_CLI_BINARY" "$MACOS_DIR/notchshot-cli"
 cp "$ROOT/Resources/Info.plist" "$CONTENTS/Info.plist"
 
 # Stamp the bundle version. Sparkle's "is this newer?" decision reads
@@ -359,6 +370,12 @@ codesign \
     --options runtime \
     "${TIMESTAMP_OPTION[@]}" \
     "$MACOS_DIR/notchshot-ai"
+codesign \
+    --force \
+    --sign "$IDENTITY" \
+    --options runtime \
+    "${TIMESTAMP_OPTION[@]}" \
+    "$MACOS_DIR/notchshot-cli"
 codesign \
     --force \
     --sign "$IDENTITY" \

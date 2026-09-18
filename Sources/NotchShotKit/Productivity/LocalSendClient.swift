@@ -79,6 +79,24 @@ public struct LocalSendProgress: Equatable, Sendable {
     public var completedFiles: Int
     public var totalFiles: Int
     public var currentFilename: String?
+    /// Bytes URLSession reports as sent across every accepted file, when known.
+    public var bytesSent: Int64?
+    /// Sum of the accepted files' sizes.
+    public var totalBytes: Int64?
+
+    public init(
+        completedFiles: Int,
+        totalFiles: Int,
+        currentFilename: String?,
+        bytesSent: Int64? = nil,
+        totalBytes: Int64? = nil
+    ) {
+        self.completedFiles = completedFiles
+        self.totalFiles = totalFiles
+        self.currentFilename = currentFilename
+        self.bytesSent = bytesSent
+        self.totalBytes = totalBytes
+    }
 
     public var fraction: Double {
         guard totalFiles > 0 else { return 0 }
@@ -176,12 +194,16 @@ public actor LocalSendClient {
             let acceptedFiles = prepared.filter { accepted.files[$0.id] != nil }
             guard !acceptedFiles.isEmpty else { throw LocalSendError.noFilesAccepted }
 
+            let totalBytes = acceptedFiles.reduce(Int64(0)) { $0 + $1.size }
+            var completedBytes: Int64 = 0
             for (index, file) in acceptedFiles.enumerated() {
                 try Task.checkCancellation()
                 await progress(LocalSendProgress(
                     completedFiles: index,
                     totalFiles: acceptedFiles.count,
-                    currentFilename: file.url.lastPathComponent
+                    currentFilename: file.url.lastPathComponent,
+                    bytesSent: completedBytes,
+                    totalBytes: totalBytes
                 ))
                 guard let token = accepted.files[file.id] else { continue }
                 var components = URLComponents(
@@ -197,16 +219,39 @@ public actor LocalSendClient {
                 var uploadRequest = URLRequest(url: uploadURL)
                 uploadRequest.httpMethod = "POST"
                 uploadRequest.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
-                let (_, uploadResponse) = try await session.upload(for: uploadRequest, fromFile: file.url)
+                // Measured, not estimated: URLSession reports the body bytes it
+                // has actually written for this file.
+                let baseBytes = completedBytes
+                let fileCount = acceptedFiles.count
+                let filename = file.url.lastPathComponent
+                let uploadProgress = LocalSendUploadProgress { sent in
+                    Task {
+                        await progress(LocalSendProgress(
+                            completedFiles: index,
+                            totalFiles: fileCount,
+                            currentFilename: filename,
+                            bytesSent: baseBytes + sent,
+                            totalBytes: totalBytes
+                        ))
+                    }
+                }
+                let (_, uploadResponse) = try await session.upload(
+                    for: uploadRequest,
+                    fromFile: file.url,
+                    delegate: uploadProgress
+                )
                 guard let uploadHTTP = uploadResponse as? HTTPURLResponse,
                       (200 ..< 300).contains(uploadHTTP.statusCode) else {
                     throw LocalSendError.rejected((uploadResponse as? HTTPURLResponse)?.statusCode ?? 0)
                 }
+                completedBytes += file.size
             }
             await progress(LocalSendProgress(
                 completedFiles: acceptedFiles.count,
                 totalFiles: acceptedFiles.count,
-                currentFilename: nil
+                currentFilename: nil,
+                bytesSent: totalBytes,
+                totalBytes: totalBytes
             ))
         } catch {
             if peer.usesHTTPS, let actual = sessionDelegate.observedFingerprint {
@@ -255,6 +300,35 @@ public actor LocalSendClient {
                 mimeType: type?.preferredMIMEType ?? "application/octet-stream"
             )
         }
+    }
+}
+
+/// Per-upload task delegate that forwards URLSession's sent-byte count, at
+/// most ~10 times a second plus the final value.
+final class LocalSendUploadProgress: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
+    private let lock = NSLock()
+    private var lastReport: TimeInterval = 0
+    private let report: @Sendable (Int64) -> Void
+
+    init(report: @escaping @Sendable (Int64) -> Void) {
+        self.report = report
+    }
+
+    func urlSession(
+        _ session: URLSession,
+        task: URLSessionTask,
+        didSendBodyData bytesSent: Int64,
+        totalBytesSent: Int64,
+        totalBytesExpectedToSend: Int64
+    ) {
+        let now = ProcessInfo.processInfo.systemUptime
+        let isFinal = totalBytesExpectedToSend > 0 && totalBytesSent >= totalBytesExpectedToSend
+        lock.lock()
+        let due = isFinal || now - lastReport >= 0.1
+        if due { lastReport = now }
+        lock.unlock()
+        guard due else { return }
+        report(totalBytesSent)
     }
 }
 

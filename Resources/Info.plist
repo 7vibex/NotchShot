@@ -64,6 +64,8 @@
 	<string>NotchShot captures system audio only while you record the screen with system audio switched on.</string>
 	<key>NSDesktopFolderUsageDescription</key>
 	<string>NotchShot saves captures to the Desktop only when it is your selected output folder.</string>
+	<key>NSFocusStatusUsageDescription</key>
+	<string>NotchShot can briefly show when a Focus turns on or off. macOS shares only whether a Focus is on, never which one.</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>NotchShot records your microphone only when you start a screen recording with microphone audio, explicitly start a Voice Note, or use Notch Dictation to transcribe speech locally.</string>
 	<key>NSCameraUsageDescription</key>

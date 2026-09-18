@@ -655,7 +655,9 @@ public final class NotchWindowController {
         let layout = restingLayout(for: context)
         return Self.triggerZone(
             notchRect: context.metrics.notchRect,
-            restingIsland: layout.island.islandRect(in: context.metrics),
+            // The primary shell only: a satellite is clickable but must not
+            // start a hover that expands the primary away from the pointer.
+            restingIsland: layout.island.primaryRect(in: context.metrics),
             isExpanded: layout.activity.isExpanded
         )
     }
@@ -706,6 +708,14 @@ public final class NotchWindowController {
         if case .dictation(let snap) = currentActivity, let did = snap.displayID {
             return context.displayID == did ? currentActivity : .idle
         }
+        if case .island(let descriptor) = currentActivity {
+            return IslandDisplayPolicy.activity(
+                for: descriptor,
+                displayID: context.displayID,
+                isActiveDisplay: context.displayID == activeDisplayID,
+                mirrorsPassiveContext: Preferences.shared.mirrorsPassiveContextOnAllDisplays
+            )
+        }
         let isActive = context.displayID == activeDisplayID
         if isActive { return currentActivity }
         if currentActivity == .media { return .media }
@@ -751,6 +761,7 @@ public final class NotchWindowController {
         guard event.type == .leftMouseDown else { return }
         let acceptsTriggerClick: Bool = switch currentActivity {
         case .idle, .media, .context: true
+        case .island(let descriptor): !descriptor.isExpanded
         default: false
         }
         guard !isPeeking, acceptsTriggerClick else { return }
@@ -912,7 +923,10 @@ public final class NotchWindowController {
         isPointerOverIsland: Bool,
         hasHoveredDisplay: Bool
     ) -> Bool {
-        let hasCompactContext: Bool = if case .context = activity { true } else { false }
+        let hasCompactContext: Bool = switch activity {
+        case .context, .island: true
+        default: false
+        }
         return hasHoveredDisplay
             || activity.isExpanded
             || activity == .media

@@ -508,6 +508,7 @@ private struct LocalSendToolView: View {
     @State private var message: String?
     @State private var pendingFingerprint: String?
     @State private var isSending = false
+    @State private var sendTask: Task<Void, Never>?
 
     var body: some View {
         Form {
@@ -560,6 +561,9 @@ private struct LocalSendToolView: View {
                         send(trustedFingerprint: nil)
                     }
                     .disabled(isSending || selectedFiles.isEmpty)
+                    if isSending {
+                        Button("Cancel Transfer", role: .cancel) { sendTask?.cancel() }
+                    }
                 }
                 if let message { Text(message).font(.caption).foregroundStyle(.secondary) }
             }
@@ -613,21 +617,56 @@ private struct LocalSendToolView: View {
         isSending = true
         message = nil
         progress = nil
-        Task {
+        let files = selectedFiles
+        let totalBytes = files.reduce(Int64(0)) { total, url in
+            total + Int64((try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0)
+        }
+        // The island's transfer activity reports the same measured progress
+        // and cancels this exact task.
+        let store = TransferActivityStore.shared
+        var transferID: UUID?
+        let task = Task {
             defer { isSending = false }
             do {
-                try await LocalSendClient.shared.send(files: selectedFiles, to: peer) { update in
-                    await MainActor.run { progress = update }
+                try await LocalSendClient.shared.send(files: files, to: peer) { update in
+                    await MainActor.run {
+                        progress = update
+                        guard let transferID else { return }
+                        store.update(
+                            transferID,
+                            completedFiles: update.completedFiles,
+                            currentFilename: update.currentFilename,
+                            bytesTransferred: update.bytesSent,
+                            totalBytes: update.totalBytes
+                        )
+                    }
                 }
                 pendingFingerprint = nil
                 message = "Transfer completed."
+                if let transferID { store.finish(transferID) }
             } catch LocalSendError.certificateNeedsApproval(let fingerprint) {
                 pendingFingerprint = fingerprint
                 message = "Compare the fingerprint with the receiving device before trusting it."
+                if let transferID { store.dismiss(transferID) }
+            } catch is CancellationError {
+                message = "Transfer cancelled."
+                if let transferID { store.markCancelled(transferID) }
+            } catch let error as URLError where error.code == .cancelled {
+                message = "Transfer cancelled."
+                if let transferID { store.markCancelled(transferID) }
             } catch {
                 message = error.localizedDescription
+                if let transferID { store.finish(transferID, error: error.localizedDescription) }
             }
         }
+        sendTask = task
+        transferID = store.begin(
+            service: .localSend,
+            peerName: host,
+            fileCount: files.count,
+            totalBytes: totalBytes > 0 ? totalBytes : nil,
+            cancel: { task.cancel() }
+        )
     }
 }
 

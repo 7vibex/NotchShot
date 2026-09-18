@@ -147,6 +147,31 @@ public final class ContextCoordinator {
         restorePersistentSnapshot()
     }
 
+    /// The published timer card, carrying its completion linger.
+    public var timerContextSnapshot: ContextSnapshot? { timerSnapshot }
+
+    /// The published voice-note card, carrying its completion linger.
+    public var voiceNoteContextSnapshot: ContextSnapshot? { voiceNoteSnapshot }
+
+    /// The upcoming-event glance, independent of which card currently leads.
+    public var calendarGlanceSnapshot: ContextSnapshot? { calendarSnapshot }
+
+    /// Every agent record the island should know about: generic reporter
+    /// records plus the live Claude sessions, without duplicates.
+    public var islandAIActivities: [AIActivitySnapshot] {
+        guard claude.isRunning else { return aiSnapshot?.aiActivities ?? [] }
+        let generic = aiSnapshot?.aiActivities.filter { $0.source != .claude } ?? []
+        let direct = claude.sessions.map(\.aiActivity)
+        return generic + direct
+    }
+
+    /// Finished agent records for the expanded card's Recent list.
+    public var islandAIRecentActivities: [AIActivitySnapshot] {
+        let recent = aiSnapshot?.aiRecentActivities ?? []
+        guard claude.isRunning else { return recent }
+        return recent.filter { $0.source != .claude }
+    }
+
     public func setExpanded(_ expanded: Bool) {
         guard var current = snapshot else { return }
         current.presentation = expanded ? .expanded : .compact

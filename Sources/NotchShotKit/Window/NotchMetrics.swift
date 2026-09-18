@@ -120,17 +120,40 @@ public struct NotchLayout: Sendable, Equatable {
     /// Distance below the screen edge for a synthetic, fully rounded island.
     /// A physical notch always remains attached to the bezel.
     public var topInset: CGFloat
+    /// Diameter of the minimal satellite shells beside the primary island, or
+    /// zero when none are shown. Satellites are separate shapes: `size` stays
+    /// the primary shell so its morph is unaffected by them.
+    public var satelliteDiameter: CGFloat
+    /// Gap between the primary shell and a satellite.
+    public var satelliteSpacing: CGFloat
+    /// Horizontal shift of the primary shell. A synthetic island with a single
+    /// satellite moves the pair so the group, not just the pill, is centred.
+    /// Always zero on a physical notch, which must stay under the camera.
+    public var clusterOffset: CGFloat = 0
 
     public init(
         size: CGSize,
         cornerRadius: CGFloat,
         contentTopInset: CGFloat = 0,
-        topInset: CGFloat = 0
+        topInset: CGFloat = 0,
+        satelliteDiameter: CGFloat = 0,
+        satelliteSpacing: CGFloat = 0
     ) {
         self.size = size
         self.cornerRadius = cornerRadius
         self.contentTopInset = contentTopInset
         self.topInset = topInset
+        self.satelliteDiameter = satelliteDiameter
+        self.satelliteSpacing = satelliteSpacing
+    }
+
+    /// Horizontal reach of the satellite band on each side of the primary,
+    /// including the part of each satellite's hit target that is wider than
+    /// the circle drawn. Symmetric, so the hit region stays centred.
+    public var satelliteExtent: CGFloat {
+        guard satelliteDiameter > 0 else { return 0 }
+        let hitWidth = max(satelliteDiameter, NotchShotDesignSystem.minimumControlTarget)
+        return satelliteSpacing + satelliteDiameter / 2 + hitWidth / 2
     }
 
     /// Largest island the panel must be able to contain. The panel is sized to
@@ -411,7 +434,158 @@ public struct NotchLayout: Sendable, Equatable {
                 floatingTopInset: floatingTopInset,
                 revealed: revealed
             )
+        case .island(let descriptor):
+            return islandLayout(
+                for: descriptor,
+                metrics: metrics,
+                closed: closed,
+                floatingTopInset: floatingTopInset,
+                mediaPanelRows: mediaPanelRows,
+                revealed: revealed
+            )
         }
+    }
+
+    // MARK: Island
+
+    /// Visible width either side of a physical cutout for a compact primary of
+    /// each kind. Sized to what the compact presentation draws: a glyph on the
+    /// leading wing and a short metric or indicator on the trailing wing.
+    public static func compactIslandWing(for kind: IslandActivityKind) -> CGFloat {
+        switch kind {
+        case .media: 38
+        case .recording: 72
+        case .timer: 60
+        case .ai, .calendar: compactContextWing
+        case .transfer: 58
+        case .external, .voiceNote: 64
+        }
+    }
+
+    /// Band appended below an expanded island for a level HUD or a burst: the
+    /// strip's 46pt plus its 5pt lift, rounded for the curve.
+    public static let islandOverlayBandHeight: CGFloat = 54
+
+    static func islandLayout(
+        for descriptor: IslandLayoutDescriptor,
+        metrics: NotchMetrics,
+        closed: CGSize,
+        floatingTopInset: CGFloat,
+        mediaPanelRows: Int,
+        revealed: (CGFloat, CGFloat, CGFloat) -> NotchLayout
+    ) -> NotchLayout {
+        let physical = metrics.hasPhysicalNotch
+
+        func compactLayout(for kind: IslandActivityKind) -> NotchLayout {
+            NotchLayout(
+                size: CGSize(
+                    width: physical
+                        ? closed.width + compactIslandWing(for: kind) * 2
+                        : NotchIsland.Geometry.compactActivityWidth,
+                    height: physical ? max(closed.height, 32) : NotchIsland.Geometry.compactHeight
+                ),
+                cornerRadius: physical ? 16 : NotchIsland.Geometry.compactHeight / 2,
+                topInset: floatingTopInset
+            )
+        }
+
+        func expandedLayout(for kind: IslandActivityKind) -> NotchLayout {
+            switch kind {
+            case .media:
+                return revealed(
+                    max(closed.width + 170, mediaPeekMinimumWidth),
+                    mediaPeekContentHeight(panelRows: mediaPanelRows),
+                    22
+                )
+            case .recording: return revealed(420, 96, 22)
+            case .timer: return revealed(380, 118, 24)
+            case .ai: return revealed(520, 320, 24)
+            case .transfer: return revealed(400, 134, 24)
+            case .external: return revealed(400, 124, 24)
+            case .voiceNote: return revealed(440, 204, 24)
+            case .calendar: return revealed(520, 390, 24)
+            }
+        }
+
+        /// The stretched shell for a burst over a compact island.
+        func burstLayout(_ overlay: IslandOverlayLayoutClass) -> NotchLayout {
+            switch overlay {
+            case .systemLevel:
+                if physical {
+                    return NotchLayout(
+                        size: CGSize(width: max(closed.width + 230, 390), height: max(closed.height, 32)),
+                        cornerRadius: 18
+                    )
+                }
+                return revealed(360, 46, 23)
+            case .event:
+                if physical {
+                    return NotchLayout(
+                        size: CGSize(width: max(closed.width + 240, 400), height: max(closed.height, 32)),
+                        cornerRadius: 18
+                    )
+                }
+                return revealed(340, 46, 23)
+            case .lowBattery: return revealed(410, 78, 22)
+            case .networkOffline: return revealed(400, 152, 26)
+            case .networkOnline: return revealed(410, 74, 22)
+            case .audioRoute: return revealed(420, 78, 22)
+            case .contextNotice:
+                return NotchLayout(
+                    size: CGSize(
+                        width: closed.width + compactContextWing * 2,
+                        height: physical ? closed.height : NotchIsland.Geometry.compactHeight
+                    ),
+                    cornerRadius: physical ? 14 : NotchIsland.Geometry.compactHeight / 2,
+                    topInset: floatingTopInset
+                )
+            }
+        }
+
+        guard let kind = descriptor.primaryKind else {
+            // A burst with nothing underneath.
+            if let overlay = descriptor.overlay { return burstLayout(overlay) }
+            return NotchLayout(
+                size: closed,
+                cornerRadius: physical ? 12 : NotchIsland.Geometry.compactHeight / 2,
+                topInset: floatingTopInset
+            )
+        }
+
+        if descriptor.isExpanded {
+            var layout = expandedLayout(for: kind)
+            if let overlay = descriptor.overlay, overlay == .systemLevel || overlay == .event {
+                layout.size.height = min(maximumSize.height, layout.size.height + islandOverlayBandHeight)
+            }
+            return layout
+        }
+
+        if let overlay = descriptor.overlay {
+            let base = compactLayout(for: kind)
+            let burst = burstLayout(overlay)
+            // Never shrink under the burst: a wide compact recording keeps its
+            // wings while a narrow HUD passes through.
+            var layout = burst
+            layout.size.width = max(burst.size.width, base.size.width)
+            layout.size.height = max(burst.size.height, base.size.height)
+            layout.topInset = burst.topInset
+            return layout
+        }
+
+        var layout = compactLayout(for: kind)
+        if descriptor.showsSatellites {
+            layout.satelliteDiameter = physical
+                ? max(24, layout.size.height - 2)
+                : NotchIsland.Geometry.compactHeight
+            // On a physical notch the shell's top fillets flare 10 pt beyond
+            // its body, so the gap is measured from the flare, not the body.
+            layout.satelliteSpacing = physical ? 16 : 10
+            if !physical, descriptor.satelliteCount == 1 {
+                let half = (layout.satelliteDiameter + layout.satelliteSpacing) / 2
+                layout.clusterOffset = descriptor.leadingID != nil ? half : -half
+            }
+        }
+        return layout
     }
 
     /// Height of the pill's control row: waveform, timer, and the stop and
@@ -512,9 +686,18 @@ public struct NotchLayout: Sendable, Equatable {
 
     /// Cocoa-space rect of the island, anchored to the display's reported
     /// physical notch centre (or to the screen centre for a synthetic island).
+    ///
+    /// Includes the satellite band on both sides, because satellites are
+    /// clickable parts of the island.
     public func islandRect(in metrics: NotchMetrics) -> CGRect {
+        primaryRect(in: metrics).insetBy(dx: -satelliteExtent, dy: 0)
+    }
+
+    /// The primary shell alone. Hover-to-peek starts only here: reaching for a
+    /// satellite must not expand the primary and push the satellite away.
+    public func primaryRect(in metrics: NotchMetrics) -> CGRect {
         CGRect(
-            x: metrics.notchCenterX - size.width / 2,
+            x: metrics.notchCenterX - size.width / 2 + clusterOffset,
             y: metrics.screenFrame.maxY - topInset - size.height,
             width: size.width,
             height: size.height

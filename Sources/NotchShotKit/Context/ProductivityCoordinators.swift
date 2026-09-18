@@ -548,6 +548,11 @@ public final class VoiceNoteCoordinator {
 
     private func publish(_ note: VoiceNoteSnapshot) {
         snapshot = note
+        onSnapshotChange?(Self.context(from: note))
+    }
+
+    /// The context card for a note, shared with the island's expanded view.
+    public static func context(from note: VoiceNoteSnapshot, now: Date = Date()) -> ContextSnapshot {
         let title: String = switch note.state {
         case .recording: "Voice Note"
         case .transcribing: "Transcribing Locally"
@@ -555,15 +560,15 @@ public final class VoiceNoteCoordinator {
         case .failed: "Voice Note Failed"
         }
         let subtitle = note.transcript ?? note.errorMessage ?? (note.state == .recording ? "Recording microphone" : "On-device speech recognition")
-        onSnapshotChange?(ContextSnapshot(
+        return ContextSnapshot(
             kind: .voiceNote,
             title: title,
             subtitle: subtitle,
             metric: FocusTimerPolicy.formatted(note.elapsed),
             accentHex: note.state == .failed ? "#FF453A" : "#FF375F",
             voiceNote: note,
-            expiresAt: note.state == .completed || note.state == .failed ? Date().addingTimeInterval(30) : nil,
+            expiresAt: note.state == .completed || note.state == .failed ? now.addingTimeInterval(30) : nil,
             mayInterruptMedia: note.state == .completed || note.state == .failed
-        ))
+        )
     }
 }

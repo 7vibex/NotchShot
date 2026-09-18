@@ -218,6 +218,8 @@ struct ShelfContent: View {
                     .strokeBorder(.white.opacity(0.16))
             }
             .contentShape(RoundedRectangle(cornerRadius: 7))
+            // A fresh capture rises into the notch instead of simply appearing.
+            .islandArrivalFromScreen(id: coordinator.shelfItems.first?.id)
         }
         .buttonStyle(NotchPressButtonStyle())
         // Dragging the thumbnail is the fastest route into Finder, Mail,
