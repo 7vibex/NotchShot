@@ -93,14 +93,63 @@ enum SafeAssetFile {
         to destination: URL,
         mode: mode_t = mode_t(S_IRUSR | S_IWUSR)
     ) throws {
+        let maximum = asset.ownership == .externalReference
+            ? maximumExternalBytes : maximumOwnedBytes
+        let expectedIdentity: ExternalFileIdentity?
+        if asset.ownership == .externalReference {
+            guard let identity = asset.externalFileIdentity else {
+                throw NotchShotError.exportFailed(
+                    "That Finder file changed after it was added. Remove it and add the current file again."
+                )
+            }
+            expectedIdentity = identity
+        } else {
+            expectedIdentity = nil
+        }
+        try copyValidatedSource(
+            at: asset.url,
+            maximumBytes: maximum,
+            expectedIdentity: expectedIdentity,
+            changedMessage: "That Finder file changed after it was added. Remove it and add the current file again.",
+            to: destination,
+            mode: mode
+        )
+    }
+
+    /// Copies the exact inode the caller validated, refusing a pathname
+    /// replacement that happened in between. Used where a file is authorized
+    /// first and read after an asynchronous wait (a transfer snapshot).
+    static func copyVerified(
+        from url: URL,
+        expectedIdentity: ExternalFileIdentity,
+        maximumBytes: Int64,
+        to destination: URL,
+        mode: mode_t = mode_t(S_IRUSR | S_IWUSR)
+    ) throws {
+        try copyValidatedSource(
+            at: url,
+            maximumBytes: maximumBytes,
+            expectedIdentity: expectedIdentity,
+            changedMessage: "The source file changed after it was selected. Nothing was copied.",
+            to: destination,
+            mode: mode
+        )
+    }
+
+    private static func copyValidatedSource(
+        at url: URL,
+        maximumBytes: Int64,
+        expectedIdentity: ExternalFileIdentity?,
+        changedMessage: String,
+        to destination: URL,
+        mode: mode_t
+    ) throws {
         guard destination.isFileURL,
               !FileManager.default.fileExists(atPath: destination.path) else {
             throw NotchShotError.destinationUnwritable(destination.path)
         }
-        let maximum = asset.ownership == .externalReference
-            ? maximumExternalBytes : maximumOwnedBytes
         let sourceDescriptor = Darwin.open(
-            asset.url.standardizedFileURL.path,
+            url.standardizedFileURL.path,
             O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK
         )
         guard sourceDescriptor >= 0 else {
@@ -112,15 +161,11 @@ enum SafeAssetFile {
         guard fstat(sourceDescriptor, &information) == 0,
               information.st_mode & S_IFMT == S_IFREG,
               information.st_size >= 0,
-              information.st_size <= maximum else {
+              information.st_size <= maximumBytes else {
             throw NotchShotError.exportFailed("The source file is unsafe or too large")
         }
-        let openedIdentity = identity(from: information)
-        if asset.ownership == .externalReference,
-           asset.externalFileIdentity != openedIdentity {
-            throw NotchShotError.exportFailed(
-                "That Finder file changed after it was added. Remove it and add the current file again."
-            )
+        if let expectedIdentity, identity(from: information) != expectedIdentity {
+            throw NotchShotError.exportFailed(changedMessage)
         }
 
         let destinationDescriptor = Darwin.open(
@@ -136,7 +181,7 @@ enum SafeAssetFile {
             var total = Int64(0)
             while let chunk = try source.read(upToCount: 1_048_576), !chunk.isEmpty {
                 total += Int64(chunk.count)
-                guard total <= maximum else {
+                guard total <= maximumBytes else {
                     throw NotchShotError.exportFailed("The source file grew beyond the safe copy limit")
                 }
                 try output.write(contentsOf: chunk)

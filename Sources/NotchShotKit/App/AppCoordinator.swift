@@ -75,6 +75,11 @@ public final class AppCoordinator {
     @ObservationIgnored var mediaActivityStartedAt: Date?
     @ObservationIgnored var recordingActivityStartedAt: Date?
     @ObservationIgnored var islandGestureCoordinator: IslandGestureCoordinator?
+    /// The presenter overlay owner. Tests substitute a spy to pin terminal
+    /// cleanup without starting a camera or event monitors.
+    @ObservationIgnored
+    var recordingPresentation: any RecordingPresentationControlling =
+        RecordingPresentationOverlayController.shared
 
     /// Most recent capture the user dismissed, for "restore last".
     var lastDismissed: ShelfItem?

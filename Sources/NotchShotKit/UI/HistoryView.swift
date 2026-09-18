@@ -15,13 +15,18 @@ public struct HistoryView: View {
     }
 
     private var entries: [HistoryEntry] {
-        coordinator.history.search(query).filter { entry in
-            (!favoritesOnly || entry.favorite)
-                && (collectionFilter == nil || entry.collectionName == collectionFilter)
-        }
+        coordinator.history.search(
+            query,
+            favoritesOnly: favoritesOnly,
+            collectionName: collectionFilter
+        )
     }
 
     public var body: some View {
+        // Compute once per body evaluation instead of once per reading. With no
+        // optional filter active this is the repository's cached search result
+        // with no second traversal or allocation.
+        let entries = entries
         NavigationSplitView {
             Group {
                 if entries.isEmpty {

@@ -14,6 +14,23 @@ public struct RecordingPresentationOptions: Sendable, Equatable {
     public var isEmpty: Bool { !showsCamera && !showsKeystrokes }
 }
 
+/// The narrow surface recording paths depend on for the presenter overlay.
+///
+/// Injected on `AppCoordinator` so terminal cleanup can be pinned without
+/// starting a camera or installing event monitors in a test process.
+@MainActor
+public protocol RecordingPresentationControlling: AnyObject {
+    @discardableResult
+    func start(
+        options: RecordingPresentationOptions,
+        displayID: CGDirectDisplayID?,
+        captureFrame: CGRect?
+    ) async -> Bool
+    func stop()
+}
+
+extension RecordingPresentationOverlayController: RecordingPresentationControlling {}
+
 /// A visible, capture-included presenter overlay. It never owns the screen
 /// recording writer, so camera or event-monitor failure cannot damage the MP4.
 @MainActor

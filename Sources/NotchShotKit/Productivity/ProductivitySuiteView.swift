@@ -546,7 +546,12 @@ private struct LocalSendToolView: View {
                         Text("\(progress.completedFiles) of \(progress.totalFiles)")
                     }
                 }
-                if let pendingFingerprint {
+                let controls = LocalSendControlState(
+                    pendingFingerprint: pendingFingerprint,
+                    isSending: isSending,
+                    hasSelection: !selectedFiles.isEmpty
+                )
+                if controls.showsTrustButton, let pendingFingerprint {
                     Text("Receiver certificate SHA-256")
                         .font(.caption.weight(.semibold))
                     Text(pendingFingerprint)
@@ -555,15 +560,18 @@ private struct LocalSendToolView: View {
                     Button("I Verified It — Trust and Send") {
                         send(trustedFingerprint: pendingFingerprint)
                     }
-                    .disabled(isSending)
+                    .disabled(!controls.trustEnabled)
                 } else {
                     Button(isSending ? "Sending…" : "Send with LocalSend") {
                         send(trustedFingerprint: nil)
                     }
-                    .disabled(isSending || selectedFiles.isEmpty)
-                    if isSending {
-                        Button("Cancel Transfer", role: .cancel) { sendTask?.cancel() }
-                    }
+                    .disabled(!controls.sendEnabled)
+                }
+                // Cancel is a property of the in-flight task, not of which
+                // branch above is showing. The trusted retry is still a real
+                // send, so it needs the same escape hatch as the first one.
+                if controls.showsCancelButton {
+                    Button("Cancel Transfer", role: .cancel) { sendTask?.cancel() }
                 }
                 if let message { Text(message).font(.caption).foregroundStyle(.secondary) }
             }
@@ -630,8 +638,15 @@ private struct LocalSendToolView: View {
             do {
                 try await LocalSendClient.shared.send(files: files, to: peer) { update in
                     await MainActor.run {
-                        progress = update
                         guard let transferID else { return }
+                        // The client's total is the receiver's accepted count,
+                        // which may be smaller than the selection. Record it
+                        // before progress so completion cannot promote the
+                        // requested files to delivered files.
+                        store.updateAcceptedFiles(
+                            transferID,
+                            acceptedFiles: update.totalFiles
+                        )
                         store.update(
                             transferID,
                             completedFiles: update.completedFiles,
@@ -639,6 +654,18 @@ private struct LocalSendToolView: View {
                             bytesTransferred: update.bytesSent,
                             totalBytes: update.totalBytes
                         )
+                        // Mirror the store's ordered publication rather than the
+                        // raw callback: a delayed callback for an earlier file
+                        // can then neither regress nor overwrite newer UI state.
+                        if let snapshot = store.transfers.first(where: { $0.id == transferID }) {
+                            progress = LocalSendProgress(
+                                completedFiles: snapshot.completedFiles,
+                                totalFiles: snapshot.effectiveFileCount,
+                                currentFilename: snapshot.currentFilename,
+                                bytesSent: snapshot.bytesTransferred,
+                                totalBytes: snapshot.totalBytes
+                            )
+                        }
                     }
                 }
                 pendingFingerprint = nil

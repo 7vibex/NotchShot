@@ -10,6 +10,18 @@ import NotchShotAIReporterSupport
 /// streaming, no request the server initiates, and nothing a message can make
 /// the server read, open, or execute.
 ///
+/// Descriptor lifetime is owned by the `DispatchSourceRead`s: each source's
+/// cancel handler is the only code that closes its descriptor, so a descriptor
+/// is closed exactly once, after the source has finished with it. A numeric
+/// descriptor therefore cannot be handed to a new client while an old source
+/// might still be reading it.
+///
+/// Async handler completion carries the originating `Client` object and the
+/// server generation. Both are re-checked on the queue before an
+/// acknowledgement is written, so a handler that finishes after a stop/restart
+/// (or after its descriptor number was reused) can neither answer nor close a
+/// different client.
+///
 /// All mutable state is confined to `queue`; the unchecked marker documents
 /// that invariant for strict concurrency checking.
 final class LiveActivitySocketServer: @unchecked Sendable {
@@ -37,6 +49,12 @@ final class LiveActivitySocketServer: @unchecked Sendable {
     private var acceptSource: DispatchSourceRead?
     private var clients: [Int32: Client] = [:]
     private var handler: Handler?
+    /// Bumped on every start and stop. A pending handler from an earlier
+    /// generation is never allowed to act on the current one.
+    private var generation: UInt64 = 0
+    /// Test seam: called exactly once for every descriptor when its dispatch
+    /// source retires it. Queue-confined.
+    var onDescriptorRetired: (@Sendable (Int32) -> Void)?
 
     init(socketPath: String = LiveActivitySocket.path) {
         self.socketPath = socketPath
@@ -48,6 +66,11 @@ final class LiveActivitySocketServer: @unchecked Sendable {
 
     func stop() {
         queue.async { [weak self] in self?.stopOnQueue() }
+    }
+
+    /// Test seam: a queue-synchronous view of the server's bookkeeping.
+    func snapshotForTesting() -> (clients: Set<Int32>, serverFileDescriptor: Int32, generation: UInt64) {
+        queue.sync { (Set(clients.keys), serverFileDescriptor, generation) }
     }
 
     // MARK: Queue-confined
@@ -63,6 +86,7 @@ final class LiveActivitySocketServer: @unchecked Sendable {
             return
         }
         self.handler = handler
+        generation &+= 1
 
         let descriptor = socket(AF_UNIX, SOCK_STREAM, 0)
         guard descriptor >= 0 else { return }
@@ -102,18 +126,24 @@ final class LiveActivitySocketServer: @unchecked Sendable {
 
         let source = DispatchSource.makeReadSource(fileDescriptor: descriptor, queue: queue)
         source.setEventHandler { [weak self] in self?.acceptConnections() }
+        // The source owns the descriptor: this is the only close, and it runs
+        // after any in-flight event handler has finished and the source has
+        // released its references.
+        source.setCancelHandler { [weak self] in
+            close(descriptor)
+            self?.onDescriptorRetired?(descriptor)
+        }
         acceptSource = source
         source.resume()
     }
 
     private func stopOnQueue() {
+        generation &+= 1
         acceptSource?.cancel()
         acceptSource = nil
-        if serverFileDescriptor >= 0 {
-            close(serverFileDescriptor)
-            serverFileDescriptor = -1
-        }
-        for fileDescriptor in Array(clients.keys) { closeClient(fileDescriptor) }
+        serverFileDescriptor = -1
+        for client in Array(clients.values) { retire(client) }
+        clients.removeAll()
         handler = nil
         _ = removeStaleSocketIfSafe()
     }
@@ -141,12 +171,16 @@ final class LiveActivitySocketServer: @unchecked Sendable {
                 guard let self, let client else { return }
                 self.read(client)
             }
+            source.setCancelHandler { [weak self] in
+                close(clientFileDescriptor)
+                self?.onDescriptorRetired?(clientFileDescriptor)
+            }
             client.source = source
             source.resume()
             queue.asyncAfter(deadline: .now() + Self.readTimeout) { [weak self, weak client] in
                 guard let self, let client, !client.handled,
                       self.clients[client.fileDescriptor] === client else { return }
-                self.closeClient(client.fileDescriptor)
+                self.closeClient(client)
             }
         }
     }
@@ -170,10 +204,10 @@ final class LiveActivitySocketServer: @unchecked Sendable {
                 client.handled = true
                 handle(client.buffer, from: client)
             } else if !client.handled {
-                closeClient(client.fileDescriptor)
+                closeClient(client)
             }
         } else if errno != EAGAIN && errno != EWOULDBLOCK {
-            closeClient(client.fileDescriptor)
+            closeClient(client)
         }
     }
 
@@ -187,11 +221,14 @@ final class LiveActivitySocketServer: @unchecked Sendable {
                 return
             }
             let fileDescriptor = client.fileDescriptor
+            let generation = self.generation
             let queue = self.queue
-            Task { [weak self] in
+            Task { [weak self, client] in
                 let error = await handler(update)
                 queue.async { [weak self] in
-                    guard let self, let client = self.clients[fileDescriptor] else { return }
+                    guard let self,
+                          self.generation == generation,
+                          self.clients[fileDescriptor] === client else { return }
                     self.respond(error, to: client)
                 }
             }
@@ -204,13 +241,18 @@ final class LiveActivitySocketServer: @unchecked Sendable {
             guard let base = raw.baseAddress else { return }
             _ = Darwin.write(client.fileDescriptor, base, raw.count)
         }
-        closeClient(client.fileDescriptor)
+        closeClient(client)
     }
 
-    private func closeClient(_ fileDescriptor: Int32) {
-        guard let client = clients.removeValue(forKey: fileDescriptor) else { return }
+    private func closeClient(_ client: Client) {
+        guard clients.removeValue(forKey: client.fileDescriptor) != nil else { return }
+        retire(client)
+    }
+
+    /// Cancels the client's source. The source's cancel handler closes the
+    /// descriptor exactly once, after the source is done with it.
+    private func retire(_ client: Client) {
         client.source?.cancel()
-        close(fileDescriptor)
     }
 
     private func setNonBlocking(_ fileDescriptor: Int32) {

@@ -1,4 +1,5 @@
 import CryptoKit
+import Darwin
 import Foundation
 import Security
 import UniformTypeIdentifiers
@@ -31,18 +32,54 @@ public enum LocalNetworkHostPolicy {
         guard !host.isEmpty, !host.contains("/"), !host.contains("@") else { return false }
         if host == "localhost" || host.hasSuffix(".local") { return true }
         if host.contains(":") {
-            return host == "::1"
-                || host.hasPrefix("fe8") || host.hasPrefix("fe9")
-                || host.hasPrefix("fea") || host.hasPrefix("feb")
-                || host.hasPrefix("fc") || host.hasPrefix("fd")
+            return isAllowedIPv6(host)
         }
-        let parts = host.split(separator: ".").compactMap { UInt8($0) }
-        guard parts.count == 4 else { return false }
-        return parts[0] == 10
-            || (parts[0] == 172 && (16 ... 31).contains(parts[1]))
-            || (parts[0] == 192 && parts[1] == 168)
-            || (parts[0] == 169 && parts[1] == 254)
-            || parts[0] == 127
+        guard let octets = ipv4Octets(host) else { return false }
+        return octets[0] == 10
+            || (octets[0] == 172 && (16 ... 31).contains(octets[1]))
+            || (octets[0] == 192 && octets[1] == 168)
+            || (octets[0] == 169 && octets[1] == 254)
+            || octets[0] == 127
+    }
+
+    /// Exactly four numeric components, each `0...255`, with no empty, extra,
+    /// or non-numeric components. Leading zeros are refused because a resolver
+    /// may read `010` as octal, which would send the transfer somewhere other
+    /// than the address that was validated.
+    private static func ipv4Octets(_ host: String) -> [UInt8]? {
+        let components = host.split(separator: ".", omittingEmptySubsequences: false)
+        guard components.count == 4 else { return nil }
+        var octets: [UInt8] = []
+        octets.reserveCapacity(4)
+        for component in components {
+            guard !component.isEmpty,
+                  component.count <= 3,
+                  component.allSatisfy({ $0.isASCII && $0.isNumber }),
+                  component.count == 1 || component.first != "0",
+                  let value = UInt8(component) else { return nil }
+            octets.append(value)
+        }
+        return octets
+    }
+
+    /// A real parser decides whether the text is an address at all; only the
+    /// parsed bytes decide the range. Prefix matching on the text accepted
+    /// malformed non-addresses that merely started like a local prefix.
+    private static func isAllowedIPv6(_ host: String) -> Bool {
+        var address = in6_addr()
+        // A zone identifier is not part of an address a URL can carry; letting
+        // `inet_pton` strip it would validate one string and fetch another.
+        guard !host.contains("%"),
+              host.utf8.count < Int(INET6_ADDRSTRLEN),
+              host.withCString({ inet_pton(AF_INET6, $0, &address) }) == 1 else {
+            return false
+        }
+        let bytes = withUnsafeBytes(of: address) { Array($0) }
+        guard bytes.count == 16 else { return false }
+        let isLoopback = bytes[0 ..< 15].allSatisfy { $0 == 0 } && bytes[15] == 1
+        let isLinkLocal = bytes[0] == 0xFE && (bytes[1] & 0xC0) == 0x80
+        let isUniqueLocal = (bytes[0] & 0xFE) == 0xFC
+        return isLoopback || isLinkLocal || isUniqueLocal
     }
 }
 
@@ -108,6 +145,13 @@ public actor LocalSendClient {
     public static let shared = LocalSendClient()
     public static let maximumFileBytes: Int64 = 5 * 1_024 * 1_024 * 1_024
 
+    /// Whether a prepare-upload status accepted the transfer at all. LocalSend
+    /// answers 204 No Content when the receiver declined it, which is the exact
+    /// "accepted none" case and must never be reported as a completed send.
+    nonisolated static func prepareAccepted(statusCode: Int) -> Bool {
+        statusCode != 204
+    }
+
     private struct DeviceInfo: Codable {
         var alias: String
         var version = "2.0"
@@ -143,20 +187,28 @@ public actor LocalSendClient {
         var files: [String: String]
     }
 
-    private struct PreparedFile: Sendable {
+    struct PreparedFile: Sendable {
         var id: String
-        var url: URL
+        /// Original filename for the wire metadata. The bytes come from the
+        /// private snapshot, never from this name's path again.
+        var fileName: String
+        /// Immutable private copy of the exact file authorized here.
+        var snapshotURL: URL
         var size: Int64
         var mimeType: String
     }
 
+    @discardableResult
     public func send(
         files urls: [URL],
         to peer: LocalSendPeer,
         progress: @escaping @Sendable (LocalSendProgress) async -> Void
-    ) async throws {
+    ) async throws -> Int {
         let prepared = try prepareFiles(urls)
         guard !prepared.isEmpty else { throw LocalSendError.noFilesAccepted }
+        // The snapshots are private copies; they leave with this call on every
+        // path — success, thrown error, or cancellation.
+        defer { Self.discardSnapshots(prepared) }
         let sessionDelegate = LocalSendTrustDelegate(expectedFingerprint: peer.trustedCertificateSHA256)
         let session = URLSession(configuration: .ephemeral, delegate: sessionDelegate, delegateQueue: nil)
         defer { session.invalidateAndCancel() }
@@ -174,7 +226,7 @@ public actor LocalSendClient {
                 files: Dictionary(uniqueKeysWithValues: prepared.map { file in
                     (file.id, FileInfo(
                         id: file.id,
-                        fileName: file.url.lastPathComponent,
+                        fileName: file.fileName,
                         size: file.size,
                         fileType: file.mimeType,
                         sha256: nil,
@@ -188,7 +240,9 @@ public actor LocalSendClient {
             prepareRequest.httpBody = try JSONEncoder().encode(requestBody)
             let (data, response) = try await session.data(for: prepareRequest)
             guard let http = response as? HTTPURLResponse else { throw LocalSendError.invalidResponse }
-            if http.statusCode == 204 { return }
+            guard Self.prepareAccepted(statusCode: http.statusCode) else {
+                throw LocalSendError.noFilesAccepted
+            }
             guard (200 ..< 300).contains(http.statusCode) else { throw LocalSendError.rejected(http.statusCode) }
             let accepted = try JSONDecoder().decode(PrepareResponse.self, from: data)
             let acceptedFiles = prepared.filter { accepted.files[$0.id] != nil }
@@ -201,7 +255,7 @@ public actor LocalSendClient {
                 await progress(LocalSendProgress(
                     completedFiles: index,
                     totalFiles: acceptedFiles.count,
-                    currentFilename: file.url.lastPathComponent,
+                    currentFilename: file.fileName,
                     bytesSent: completedBytes,
                     totalBytes: totalBytes
                 ))
@@ -223,7 +277,7 @@ public actor LocalSendClient {
                 // has actually written for this file.
                 let baseBytes = completedBytes
                 let fileCount = acceptedFiles.count
-                let filename = file.url.lastPathComponent
+                let filename = file.fileName
                 let uploadProgress = LocalSendUploadProgress { sent in
                     Task {
                         await progress(LocalSendProgress(
@@ -237,7 +291,7 @@ public actor LocalSendClient {
                 }
                 let (_, uploadResponse) = try await session.upload(
                     for: uploadRequest,
-                    fromFile: file.url,
+                    fromFile: file.snapshotURL,
                     delegate: uploadProgress
                 )
                 guard let uploadHTTP = uploadResponse as? HTTPURLResponse,
@@ -253,6 +307,7 @@ public actor LocalSendClient {
                 bytesSent: totalBytes,
                 totalBytes: totalBytes
             ))
+            return acceptedFiles.count
         } catch {
             if peer.usesHTTPS, let actual = sessionDelegate.observedFingerprint {
                 if let expected = peer.trustedCertificateSHA256,
@@ -279,26 +334,76 @@ public actor LocalSendClient {
         return url
     }
 
-    private func prepareFiles(_ urls: [URL]) throws -> [PreparedFile] {
-        try urls.prefix(100).map { url in
-            let standardized = url.standardizedFileURL
-            let values = try standardized.resourceValues(forKeys: [
-                .isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey,
-            ])
-            let size = Int64(values.fileSize ?? -1)
-            guard values.isRegularFile == true,
-                  values.isSymbolicLink != true,
-                  size >= 0,
-                  size <= Self.maximumFileBytes else {
-                throw LocalSendError.unsafeFile(standardized.lastPathComponent)
+    /// Validates each source and copies it into a private transfer snapshot
+    /// before any network work begins.
+    ///
+    /// The identity captured here is re-checked through an `O_NOFOLLOW`
+    /// descriptor during the copy, so replacing the pathname afterwards cannot
+    /// change the bytes that will be uploaded. The 5 GB per-file limit is
+    /// enforced on both the validation and the copy.
+    func prepareFiles(_ urls: [URL]) throws -> [PreparedFile] {
+        var prepared: [PreparedFile] = []
+        do {
+            for url in urls.prefix(100) {
+                prepared.append(try prepareFile(url))
             }
-            let type = UTType(filenameExtension: standardized.pathExtension)
+        } catch {
+            Self.discardSnapshots(prepared)
+            throw error
+        }
+        return prepared
+    }
+
+    private func prepareFile(_ url: URL) throws -> PreparedFile {
+        let source = url.standardizedFileURL
+        // `lstat`-based: regular file only, symlinks refused, size bounded.
+        guard let identity = SafeAssetFile.identity(
+            at: source,
+            maximumBytes: Self.maximumFileBytes
+        ) else {
+            throw LocalSendError.unsafeFile(source.lastPathComponent)
+        }
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("notchshot-localsend-\(UUID().uuidString)", isDirectory: true)
+        do {
+            try FileManager.default.createDirectory(
+                at: directory,
+                withIntermediateDirectories: true
+            )
+            let snapshot = directory.appendingPathComponent(source.lastPathComponent)
+            try SafeAssetFile.copyVerified(
+                from: source,
+                expectedIdentity: identity,
+                maximumBytes: Self.maximumFileBytes,
+                to: snapshot
+            )
+            let measured = (try? snapshot.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? nil
+            guard let measured, measured >= 0, Int64(measured) <= Self.maximumFileBytes else {
+                throw LocalSendError.unsafeFile(source.lastPathComponent)
+            }
+            let type = UTType(filenameExtension: source.pathExtension)
             return PreparedFile(
                 id: UUID().uuidString,
-                url: standardized,
-                size: size,
+                fileName: source.lastPathComponent,
+                snapshotURL: snapshot,
+                size: Int64(measured),
                 mimeType: type?.preferredMIMEType ?? "application/octet-stream"
             )
+        } catch {
+            try? FileManager.default.removeItem(at: directory)
+            if error is LocalSendError { throw error }
+            throw LocalSendError.unsafeFile(source.lastPathComponent)
+        }
+    }
+
+    /// Removes the private snapshot directory for each prepared file. Called on
+    /// success, error, and cancellation; safe to call more than once.
+    nonisolated static func discardSnapshots(_ prepared: [PreparedFile]) {
+        var removed = Set<String>()
+        for file in prepared {
+            let directory = file.snapshotURL.deletingLastPathComponent().standardizedFileURL
+            guard removed.insert(directory.path).inserted else { continue }
+            try? FileManager.default.removeItem(at: directory)
         }
     }
 }

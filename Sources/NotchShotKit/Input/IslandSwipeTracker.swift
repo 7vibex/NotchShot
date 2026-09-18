@@ -116,10 +116,25 @@ public struct IslandSwipeTracker: Sendable, Equatable {
         return sign * eased
     }
 
-    /// Recent velocity in points per second, following content sign.
+    /// Recent velocity in points per second, following content sign, as of the
+    /// last recorded sample.
     public var velocity: CGFloat {
-        guard let last = samples.last,
-              let first = samples.first(where: { last.time - $0.time <= configuration.velocityWindow }),
+        guard let last = samples.last else { return 0 }
+        return velocity(at: last.time)
+    }
+
+    /// Velocity near `time`, following content sign.
+    ///
+    /// Samples older than `velocityWindow` before the release are not movement
+    /// near the release. A finger that made a quick flick and then held still
+    /// has zero velocity at lift-off even though the samples from the flick
+    /// are still above the threshold.
+    public func velocity(at time: TimeInterval) -> CGFloat {
+        guard let last = samples.last else { return 0 }
+        let release = max(time, last.time)
+        guard release - last.time <= configuration.velocityWindow else { return 0 }
+        let windowStart = release - configuration.velocityWindow
+        guard let first = samples.first(where: { $0.time >= windowStart }),
               last.time > first.time else { return 0 }
         return (last.translation - first.translation) / CGFloat(last.time - first.time)
     }
@@ -129,7 +144,7 @@ public struct IslandSwipeTracker: Sendable, Equatable {
         defer { reset() }
         guard phase == .tracking else { return nil }
         let travel = translation
-        let speed = velocity
+        let speed = velocity(at: time)
         let distance = abs(travel)
 
         let travelDirection: IslandNavigationDirection? = travel < 0 ? .trailing : (travel > 0 ? .leading : nil)

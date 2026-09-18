@@ -309,15 +309,31 @@ extension AppCoordinator {
     ///
     /// A rename is one file-system call and four places that were holding the
     /// old path. Missing any of them leaves a row that opens nothing, so the
-    /// update is expressed once, here, rather than at each call site.
-    func relocate(_ item: ShelfItem, to url: URL) {
-        item.asset.url = url
-        item.asset.ownership = AppPaths.owns(url) ? .managedTemporary : .userDocument
+    /// update is expressed once, here, rather than at each call site. The
+    /// relocation carries the exact verified caption that moved with the
+    /// recording, or none — never a same-stem subtitle discovered afterwards.
+    func relocate(_ item: ShelfItem, to relocation: ShelfFileOperations.RelocatedFile) throws {
+        do {
+            try history.updateLocation(
+                for: item.asset.id,
+                to: relocation.url,
+                relocatedCaptionURL: relocation.captionURL,
+                relocatedCaptionIdentity: relocation.captionIdentity
+            )
+        } catch {
+            // History refused the new state, so put the files back rather than
+            // leave the shelf pointing at a path metadata rejects.
+            ShelfFileOperations.rollback(relocation, to: item.asset)
+            throw error
+        }
+        item.asset.url = relocation.url
+        item.asset.captionURL = relocation.captionURL
+        item.asset.ownership = AppPaths.owns(relocation.url) ? .managedTemporary : .userDocument
         item.asset.refreshOwnedFileIdentities()
-        history.updateLocation(for: item.asset.id, to: url)
         persistHistory()
         if lastDismissed?.asset.id == item.asset.id {
-            lastDismissed?.asset.url = url
+            lastDismissed?.asset.url = relocation.url
+            lastDismissed?.asset.captionURL = relocation.captionURL
             lastDismissed?.asset.ownership = item.asset.ownership
             lastDismissed?.asset.refreshOwnedFileIdentities()
         }
@@ -339,7 +355,7 @@ extension AppCoordinator {
         guard alert.runModal() == .alertFirstButtonReturn else { return }
         do {
             let renamed = try ShelfFileOperations.rename(item.asset, to: field.stringValue)
-            relocate(item, to: renamed)
+            try relocate(item, to: renamed)
         } catch {
             present(error: error)
         }
@@ -357,7 +373,7 @@ extension AppCoordinator {
         guard panel.runModal() == .OK, let folder = panel.url else { return }
         do {
             let moved = try ShelfFileOperations.move(item.asset, toFolder: folder)
-            relocate(item, to: moved)
+            try relocate(item, to: moved)
         } catch {
             present(error: error)
         }

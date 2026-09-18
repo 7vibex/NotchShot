@@ -160,3 +160,101 @@ struct HistorySearchTests {
         }
     }
 }
+
+/// The History browser filters the cached search results by favorites and
+/// collection. The no-filter case must not add a second traversal or
+/// allocation, and the filtered cases must keep the exact old semantics.
+@Suite("History visible entries")
+@MainActor
+struct HistoryVisibleEntriesTests {
+    private func entry(
+        filename: String,
+        application: String? = nil,
+        favorite: Bool = false,
+        collection: String? = nil
+    ) -> HistoryEntry {
+        var entry = HistoryEntry(
+            asset: CaptureAsset(
+                url: URL(fileURLWithPath: "/Users/test/Pictures/\(filename)"),
+                kind: .screenshot,
+                pixelSize: CGSize(width: 100, height: 100),
+                sourceApplicationName: application
+            ),
+            thumbnailFilename: nil,
+            indexedText: nil
+        )
+        entry.isFavorite = favorite ? true : nil
+        entry.collectionName = collection
+        return entry
+    }
+
+    private func repository() throws -> (HistoryRepository, URL) {
+        let store = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("notchshot-visible-\(UUID().uuidString).json")
+        let corpus = [
+            entry(filename: "alpha.png", application: "Safari", favorite: true, collection: "Work"),
+            entry(filename: "beta.png", application: "Xcode", favorite: false, collection: "Work"),
+            entry(filename: "gamma.png", application: "Notes", favorite: true, collection: "Personal"),
+            entry(filename: "delta.png", application: "Safari", favorite: false, collection: nil),
+        ]
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        try encoder.encode(corpus).write(to: store)
+        return (HistoryRepository(storeURL: store), store)
+    }
+
+    @Test(
+        "Every filter combination matches the old derivation",
+        arguments: [
+            (query: "", favoritesOnly: false, collection: nil as String?),
+            (query: "", favoritesOnly: true, collection: nil as String?),
+            (query: "", favoritesOnly: false, collection: "Work" as String?),
+            (query: "", favoritesOnly: true, collection: "Work" as String?),
+            (query: "Safari", favoritesOnly: false, collection: nil as String?),
+            (query: "Safari", favoritesOnly: true, collection: nil as String?),
+            (query: "png", favoritesOnly: false, collection: "Personal" as String?),
+            (query: "nothing-matches", favoritesOnly: false, collection: nil as String?),
+        ]
+    )
+    func filterCombinationsMatch(
+        query: String,
+        favoritesOnly: Bool,
+        collection: String?
+    ) throws {
+        let (repository, store) = try repository()
+        defer { try? FileManager.default.removeItem(atPath: store.path) }
+
+        let expected = repository.search(query).filter { entry in
+            (!favoritesOnly || entry.favorite)
+                && (collection == nil || entry.collectionName == collection)
+        }
+        let actual = repository.search(
+            query,
+            favoritesOnly: favoritesOnly,
+            collectionName: collection
+        )
+        #expect(actual.map(\.id) == expected.map(\.id))
+    }
+
+    @Test("No active filter returns the cached search rows untouched")
+    func noFilterReturnsSearchDirectly() throws {
+        let (repository, store) = try repository()
+        defer { try? FileManager.default.removeItem(atPath: store.path) }
+
+        let search = repository.search("")
+        let visible = repository.search("", favoritesOnly: false, collectionName: nil)
+        #expect(visible.map(\.id) == search.map(\.id))
+        #expect(visible.contains { !$0.favorite }, "the no-filter path must not filter favorites")
+        #expect(visible.contains { $0.collectionName == nil }, "the no-filter path must not filter collections")
+    }
+
+    @Test("Filtering preserves search result order")
+    func filteringPreservesOrder() throws {
+        let (repository, store) = try repository()
+        defer { try? FileManager.default.removeItem(atPath: store.path) }
+
+        let all = repository.search("", favoritesOnly: false, collectionName: nil)
+        let work = repository.search("", favoritesOnly: false, collectionName: "Work")
+        #expect(work.map(\.id) == all.filter { $0.collectionName == "Work" }.map(\.id))
+    }
+}

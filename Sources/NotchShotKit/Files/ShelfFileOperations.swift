@@ -23,6 +23,8 @@ public enum ShelfFileOperations {
         case sourceUnavailable
         case destinationExists(String)
         case destinationUnwritable(String)
+        case sidecarUnavailable(String)
+        case sidecarUnwritable(String)
         case nothingToCompress
 
         public var errorDescription: String? {
@@ -33,9 +35,41 @@ public enum ShelfFileOperations {
             case .sourceUnavailable: "That file changed or is no longer safely readable"
             case .destinationExists(let name): "\(name) already exists in that folder"
             case .destinationUnwritable(let path): "NotchShot could not write to \(path)"
+            case .sidecarUnavailable(let name):
+                "\(name) could not be verified as this recording's subtitle, so nothing was moved"
+            case .sidecarUnwritable(let name):
+                "The recording was moved back because its subtitle \(name) could not be moved"
             case .nothingToCompress: "There is nothing to compress"
             }
         }
+    }
+
+    /// The result of a rename or move.
+    ///
+    /// `url` is the primary file's new location. `captionURL` is present only
+    /// when a caption that NotchShot generated for this exact recording was
+    /// verified and moved with it; a same-stem `.srt` that merely existed at
+    /// the destination is never adopted, and never touched.
+    public struct RelocatedFile: Sendable, Equatable {
+        public var url: URL
+        public var captionURL: URL?
+        public var captionIdentity: ExternalFileIdentity?
+
+        public init(
+            url: URL,
+            captionURL: URL? = nil,
+            captionIdentity: ExternalFileIdentity? = nil
+        ) {
+            self.url = url
+            self.captionURL = captionURL
+            self.captionIdentity = captionIdentity
+        }
+
+        /// Forwarders for call sites that only ever read the primary location.
+        public var path: String { url.path }
+        public var lastPathComponent: String { url.lastPathComponent }
+        public var standardizedFileURL: URL { url.standardizedFileURL }
+        public func deletingLastPathComponent() -> URL { url.deletingLastPathComponent() }
     }
 
     /// Longest single path component APFS and HFS+ both accept, in bytes.
@@ -90,32 +124,15 @@ public enum ShelfFileOperations {
 
     // MARK: Rename
 
-    /// Renames in place and returns the new URL.
+    /// Renames in place and returns the new location, moving the exact verified
+    /// caption with the recording when it owns one.
     @discardableResult
-    public static func rename(_ asset: CaptureAsset, to raw: String) throws -> URL {
+    public static func rename(_ asset: CaptureAsset, to raw: String) throws -> RelocatedFile {
         guard SafeAssetFile.isCurrentAndSafe(asset) else { throw OperationError.sourceUnavailable }
         let filename = try resolvedFilename(for: raw, replacing: asset.url)
         let directory = asset.url.deletingLastPathComponent()
         let destination = directory.appendingPathComponent(filename)
-
-        // Renaming a file to the name it already has is a no-op, not a clash.
-        guard destination.standardizedFileURL != asset.url.standardizedFileURL else {
-            return asset.url
-        }
-        // On a case-insensitive volume — the macOS default — `shot.png` and
-        // `Shot.png` are the same path, so a plain existence check reports a
-        // clash with the very file being renamed and refuses a rename Finder
-        // performs happily. Only a *different* file is a real collision.
-        if FileManager.default.fileExists(atPath: destination.path),
-           !isSameFile(destination, asset.url) {
-            throw OperationError.destinationExists(filename)
-        }
-        do {
-            try FileManager.default.moveItem(at: asset.url, to: destination)
-        } catch {
-            throw OperationError.destinationUnwritable(destination.path)
-        }
-        return destination
+        return try relocate(asset, to: destination)
     }
 
     /// Identity by volume and inode, which is what "the same file" means on a
@@ -130,35 +147,156 @@ public enum ShelfFileOperations {
     // MARK: Move
 
     /// Moves into `folder`, falling back to a copy across volumes, and returns
-    /// the new URL.
+    /// the new location, moving the exact verified caption with the recording
+    /// when it owns one.
     @discardableResult
-    public static func move(_ asset: CaptureAsset, toFolder folder: URL) throws -> URL {
+    public static func move(_ asset: CaptureAsset, toFolder folder: URL) throws -> RelocatedFile {
         guard SafeAssetFile.isCurrentAndSafe(asset) else { throw OperationError.sourceUnavailable }
-        let fileManager = FileManager.default
         var isDirectory: ObjCBool = false
-        guard fileManager.fileExists(atPath: folder.path, isDirectory: &isDirectory),
+        guard FileManager.default.fileExists(atPath: folder.path, isDirectory: &isDirectory),
               isDirectory.boolValue else {
             throw OperationError.destinationUnwritable(folder.path)
         }
+        return try relocate(asset, to: folder.appendingPathComponent(asset.url.lastPathComponent))
+    }
 
-        let filename = asset.url.lastPathComponent
-        let destination = folder.appendingPathComponent(filename)
-        guard destination.standardizedFileURL != asset.url.standardizedFileURL else {
-            return asset.url
+    // MARK: Relocation
+
+    /// Moves the primary file and, when it owns one, the exact caption that was
+    /// generated for it.
+    ///
+    /// The caption plan is validated completely before the first file moves:
+    /// an unverifiable caption (a legacy row with no identity, or a sidecar
+    /// whose file no longer matches its recorded identity) refuses the whole
+    /// operation. If the primary moved but the caption could not, the primary
+    /// is moved back, so a reported success always means both are in place.
+    private static func relocate(_ asset: CaptureAsset, to destination: URL) throws -> RelocatedFile {
+        let fileManager = FileManager.default
+        // Renaming a file to the name it already has, or moving it to the
+        // folder it already lives in, is a no-op rather than a clash. The
+        // existing caption ownership must survive it.
+        if destination.standardizedFileURL == asset.url.standardizedFileURL {
+            return existingRelocation(for: asset)
         }
-        guard !fileManager.fileExists(atPath: destination.path) else {
-            throw OperationError.destinationExists(filename)
+        // On a case-insensitive volume — the macOS default — `shot.png` and
+        // `Shot.png` are the same path, so a plain existence check reports a
+        // clash with the very file being renamed and refuses a rename Finder
+        // performs happily. Only a *different* file is a real collision.
+        if fileManager.fileExists(atPath: destination.path),
+           !isSameFile(destination, asset.url) {
+            throw OperationError.destinationExists(destination.lastPathComponent)
+        }
+
+        let captionPlan = try captionRelocationPlan(for: asset, to: destination)
+
+        do {
+            try moveFile(from: asset.url, to: destination)
+        } catch {
+            throw OperationError.destinationUnwritable(destination.path)
+        }
+        guard let captionPlan else {
+            return RelocatedFile(url: destination)
         }
         do {
-            try fileManager.moveItem(at: asset.url, to: destination)
+            try moveFile(from: captionPlan.source, to: captionPlan.destination)
         } catch {
-            // A move across volumes is a copy plus an unlink, and Foundation
-            // reports the whole thing as one failure. Retry explicitly so the
-            // common "drag it to an external disk" case works.
+            // The recording already moved. Put it back rather than leave the
+            // file system and the reported location disagreeing.
+            try? moveFile(from: destination, to: asset.url)
+            throw OperationError.sidecarUnwritable(captionPlan.destination.lastPathComponent)
+        }
+        let identity = SafeAssetFile.identity(
+            at: captionPlan.destination,
+            maximumBytes: SafeAssetFile.maximumOwnedBytes
+        )
+        return RelocatedFile(
+            url: destination,
+            captionURL: captionPlan.destination,
+            captionIdentity: identity
+        )
+    }
+
+    /// A relocation that ends where it started, so the verified caption keeps
+    /// its exact ownership instead of being cleared as if it were absent.
+    private static func existingRelocation(for asset: CaptureAsset) -> RelocatedFile {
+        guard let captionURL = asset.captionURL,
+              let validated = HistoryRepository.validatedCaptionURL(
+                  path: captionURL.path,
+                  for: asset.url
+              ),
+              let identity = asset.captionFileIdentity,
+              SafeAssetFile.identity(
+                  at: validated,
+                  maximumBytes: SafeAssetFile.maximumOwnedBytes
+              ) == identity else {
+            return RelocatedFile(url: asset.url)
+        }
+        return RelocatedFile(
+            url: asset.url,
+            captionURL: validated,
+            captionIdentity: identity
+        )
+    }
+
+    private struct CaptionPlan {
+        var source: URL
+        var destination: URL
+    }
+
+    /// The caption move, or nil when the recorded caption is already gone.
+    /// Every rejection happens before the primary file is touched.
+    private static func captionRelocationPlan(
+        for asset: CaptureAsset,
+        to destination: URL
+    ) throws -> CaptionPlan? {
+        guard let captionURL = asset.captionURL else { return nil }
+        guard let source = HistoryRepository.validatedCaptionURL(
+            path: captionURL.path,
+            for: asset.url
+        ) else {
+            throw OperationError.sidecarUnavailable(captionURL.lastPathComponent)
+        }
+        guard FileManager.default.fileExists(atPath: source.path) else {
+            // A caption recorded earlier is already gone. There is nothing to
+            // move, and nothing at the destination is ours to claim.
+            return nil
+        }
+        guard let identity = asset.captionFileIdentity,
+              SafeAssetFile.identity(
+                  at: source,
+                  maximumBytes: SafeAssetFile.maximumOwnedBytes
+              ) == identity else {
+            // Legacy rows and replaced sidecars cannot be verified. Refusing
+            // keeps an unrelated same-stem file from being renamed under the
+            // recording's name.
+            throw OperationError.sidecarUnavailable(source.lastPathComponent)
+        }
+        let captionDestination = destination
+            .deletingLastPathComponent()
+            .appendingPathComponent(destination.deletingPathExtension().lastPathComponent)
+            .appendingPathExtension("srt")
+        guard captionDestination.standardizedFileURL != source.standardizedFileURL else {
+            return CaptionPlan(source: source, destination: captionDestination)
+        }
+        if FileManager.default.fileExists(atPath: captionDestination.path),
+           !isSameFile(captionDestination, source) {
+            throw OperationError.destinationExists(captionDestination.lastPathComponent)
+        }
+        return CaptionPlan(source: source, destination: captionDestination)
+    }
+
+    /// Moves when possible and copies across volumes. Foundation reports a
+    /// cross-volume move as one failure, so the fallback is explicit here for
+    /// the same reason it is in `move`.
+    private static func moveFile(from source: URL, to destination: URL) throws {
+        let fileManager = FileManager.default
+        do {
+            try fileManager.moveItem(at: source, to: destination)
+        } catch {
             do {
-                try fileManager.copyItem(at: asset.url, to: destination)
+                try fileManager.copyItem(at: source, to: destination)
                 do {
-                    try fileManager.removeItem(at: asset.url)
+                    try fileManager.removeItem(at: source)
                 } catch {
                     // A reported move must not quietly leave two copies. Roll
                     // the destination back when the source cannot be unlinked.
@@ -169,7 +307,26 @@ public enum ShelfFileOperations {
                 throw OperationError.destinationUnwritable(destination.path)
             }
         }
-        return destination
+    }
+
+    /// Best-effort undo of a completed relocation after a later metadata step
+    /// failed. The caption goes back first so a recording is never left
+    /// separated from the subtitle it owns.
+    static func rollback(_ relocation: RelocatedFile, to asset: CaptureAsset) {
+        let fileManager = FileManager.default
+        if let captionURL = relocation.captionURL,
+           let expectedIdentity = relocation.captionIdentity,
+           let originalCaption = asset.captionURL,
+           fileManager.fileExists(atPath: captionURL.path),
+           SafeAssetFile.identity(
+               at: captionURL,
+               maximumBytes: SafeAssetFile.maximumOwnedBytes
+           ) == expectedIdentity {
+            try? moveFile(from: captionURL, to: originalCaption)
+        }
+        if fileManager.fileExists(atPath: relocation.url.path) {
+            try? moveFile(from: relocation.url, to: asset.url)
+        }
     }
 
     // MARK: Compress

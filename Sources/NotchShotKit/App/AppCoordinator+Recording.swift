@@ -109,7 +109,7 @@ extension AppCoordinator {
             try await RecordingService.shared.start(configuration)
             guard isCurrentRecordingStart(operationID) else {
                 await RecordingService.shared.cancel()
-                RecordingPresentationOverlayController.shared.stop()
+                recordingPresentation.stop()
                 return
             }
             arbiter.isRecording = true
@@ -118,10 +118,27 @@ extension AppCoordinator {
             RecordingInteractionRecorder.shared.start(configuration: configuration)
             refreshActivity()
         } catch {
-            RecordingPresentationOverlayController.shared.stop()
+            recordingPresentation.stop()
             guard isCurrentRecordingStart(operationID), !(error is CancellationError) else { return }
             present(error: error)
         }
+    }
+
+    /// Stops the presenter overlay once the recording session has ended.
+    ///
+    /// The overlay belongs to the recording session, not to the success of
+    /// file finalization, so a failed finalization still tears it down. A pause
+    /// that failed while the writer is still recording is deliberately not
+    /// terminal: the presenter is still part of that live recording and stays
+    /// until the session really ends.
+    ///
+    /// - Parameter sessionStillRecording: the writer state when the transition
+    ///   resolved. Defaults to the live service state; tests pass an explicit
+    ///   value to pin both branches.
+    func stopRecordingPresentationIfSessionEnded(sessionStillRecording: Bool? = nil) {
+        let stillRecording = sessionStillRecording ?? RecordingService.shared.isRecording
+        guard !stillRecording else { return }
+        recordingPresentation.stop()
     }
 
     func startRecordingPresentation(
@@ -149,7 +166,7 @@ extension AppCoordinator {
         case .display, .window:
             nil
         }
-        let didStart = await RecordingPresentationOverlayController.shared.start(
+        let didStart = await recordingPresentation.start(
             options: RecordingPresentationOptions(
                 showsCamera: configuration.showsPresenterCamera,
                 showsKeystrokes: configuration.showsKeystrokes
@@ -276,6 +293,11 @@ extension AppCoordinator {
         recordingCompletionTask = Task { [weak self] in
             guard let self else { return }
             do {
+                // A successful pause parks the session; a failure without a
+                // live writer ends it. Both are terminal for the overlay. A
+                // failure that leaves the writer recording is not, so the
+                // presenter stays on camera.
+                defer { self.stopRecordingPresentationIfSessionEnded() }
                 let interaction = RecordingInteractionRecorder.shared.stop()
                 let url = AppPaths.uniqueURL(
                     in: AppPaths.inProgress,
@@ -283,7 +305,6 @@ extension AppCoordinator {
                     extension: "mp4"
                 )
                 let segment = try await RecordingService.shared.stop(destination: url)
-                RecordingPresentationOverlayController.shared.stop()
                 appendInteractionSegment(interaction, duration: segment.duration)
                 self.recordingSegments.append(segment)
                 self.completedRecordingDuration += segment.duration ?? 0
@@ -317,7 +338,8 @@ extension AppCoordinator {
                 self.recordingStartTask = nil
                 self.refreshActivity()
             } catch {
-                RecordingPresentationOverlayController.shared.stop()
+                // The session never started, so the overlay must not outlive it.
+                self.recordingPresentation.stop()
                 self.recordingStartTask = nil
                 self.present(error: error)
             }
@@ -326,10 +348,13 @@ extension AppCoordinator {
 
     func finishRecordingSegments() async throws -> CaptureAsset {
         if RecordingService.shared.isRecording {
+            // The writer is ending either way. Tying the presenter overlay to
+            // this block means a failed finalization tears it down instead of
+            // leaving the camera and keystroke monitors running.
+            defer { recordingPresentation.stop() }
             let interaction = RecordingInteractionRecorder.shared.stop()
             if recordingSegments.isEmpty {
                 let asset = try await RecordingService.shared.stop()
-                RecordingPresentationOverlayController.shared.stop()
                 appendInteractionSegment(interaction, duration: asset.duration)
                 pendingRecordingInteractionTimeline = RecordingInteractionTimeline.joined(
                     recordingInteractionSegments
@@ -343,7 +368,6 @@ extension AppCoordinator {
                 extension: "mp4"
             )
             let segment = try await RecordingService.shared.stop(destination: url)
-            RecordingPresentationOverlayController.shared.stop()
             appendInteractionSegment(interaction, duration: segment.duration)
             recordingSegments.append(segment)
         }
@@ -461,7 +485,7 @@ extension AppCoordinator {
                 }
             }
             _ = RecordingInteractionRecorder.shared.stop()
-            RecordingPresentationOverlayController.shared.stop()
+            self.recordingPresentation.stop()
             for segment in self.recordingSegments where AppPaths.owns(segment.url) {
                 do {
                     try FileManager.default.trashItem(at: segment.url, resultingItemURL: nil)
@@ -533,7 +557,7 @@ extension AppCoordinator {
     ) async {
         arbiter.isRecording = false
         _ = RecordingInteractionRecorder.shared.stop()
-        RecordingPresentationOverlayController.shared.stop()
+        recordingPresentation.stop()
         // Recover this exact session. Picking the newest global orphan could
         // move an unrelated file left by an older crash.
         guard let recoveryURL,

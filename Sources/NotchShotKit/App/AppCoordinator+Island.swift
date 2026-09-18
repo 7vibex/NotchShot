@@ -81,13 +81,17 @@ extension AppCoordinator {
 
     /// Sources that change without passing through `refreshActivity` on their
     /// own. Event-driven; nothing here polls.
+    ///
+    /// Transfers are deliberately absent: the store publishes through
+    /// `onChange`, so tracking its observable `transfers` array directly would
+    /// let raw progress mutations schedule refreshes the store intentionally
+    /// throttled.
     func observeIslandSources() {
         withObservationTracking {
             _ = context.ai.snapshot
             _ = context.claude.sessions
             _ = context.timer.current
             _ = context.voiceNotes.snapshot
-            _ = transfers.transfers
             _ = isRecordingPaused
         } onChange: { [weak self] in
             Task { @MainActor in

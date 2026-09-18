@@ -22,13 +22,29 @@ public final class ExternalActivityStore {
     public var live: [ExternalLiveActivity] { registry.live }
     public var history: [ExternalLiveActivity] { registry.history }
 
-    @ObservationIgnored private let server = LiveActivitySocketServer()
+    @ObservationIgnored private let server: LiveActivitySocketServer
     @ObservationIgnored private var expiryTask: Task<Void, Never>?
+    /// The deadline the currently armed expiry task was created for. While it
+    /// matches `registry.nextDeadline` there is nothing to reschedule.
+    @ObservationIgnored private var scheduledDeadline: Date?
+    /// Test seam: incremented every time an expiry task is actually created.
+    @ObservationIgnored private(set) var expiryTaskGeneration: UInt64 = 0
     @ObservationIgnored private var publishTask: Task<Void, Never>?
     @ObservationIgnored private var lastPublish = Date.distantPast
     static let minimumPublishInterval: TimeInterval = 0.1
 
-    public init() {}
+    public init() {
+        server = LiveActivitySocketServer()
+    }
+
+    /// Test seam: uses a disposable socket path so scheduling can be exercised
+    /// without touching the app's real socket.
+    init(socketPath: String) {
+        server = LiveActivitySocketServer(socketPath: socketPath)
+    }
+
+    /// Test seam: the deadline of the currently armed expiry task, if any.
+    var scheduledDeadlineForTesting: Date? { scheduledDeadline }
 
     public func start() {
         guard !isListening else { return }
@@ -36,6 +52,7 @@ public final class ExternalActivityStore {
         server.start { [weak self] update in
             await self?.receive(update)
         }
+        scheduleExpiry()
     }
 
     public func stop() {
@@ -43,6 +60,8 @@ public final class ExternalActivityStore {
         isListening = false
         server.stop()
         expiryTask?.cancel()
+        expiryTask = nil
+        scheduledDeadline = nil
         publishTask?.cancel()
         registry.removeAll()
         onChange?()
@@ -71,6 +90,7 @@ public final class ExternalActivityStore {
     public func dismiss(id: String) {
         registry.dismiss(id: id)
         schedulePublish(immediately: true)
+        scheduleExpiry()
     }
 
     public func clearHistory() {
@@ -98,11 +118,20 @@ public final class ExternalActivityStore {
     }
 
     private func scheduleExpiry() {
+        let deadline = registry.nextDeadline
+        if deadline == scheduledDeadline, expiryTask != nil { return }
         expiryTask?.cancel()
-        guard let deadline = registry.nextDeadline else { return }
+        expiryTask = nil
+        scheduledDeadline = deadline
+        guard let deadline else { return }
+        expiryTaskGeneration &+= 1
         expiryTask = Task { [weak self] in
             try? await Task.sleep(for: .seconds(max(0.05, deadline.timeIntervalSinceNow)))
             guard !Task.isCancelled, let self else { return }
+            // The task that fired is no longer the scheduled one; clear before
+            // rescheduling so the deadline comparison sees fresh state.
+            self.expiryTask = nil
+            self.scheduledDeadline = nil
             if self.registry.expire(now: Date()) {
                 self.schedulePublish(immediately: true)
             }

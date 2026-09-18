@@ -333,7 +333,7 @@ private struct IslandTransferExpanded: View {
                     + " of " + ByteCountFormatter.string(fromByteCount: total, countStyle: .file)
             )
         } else if transfer.service == .localSend {
-            parts.append("\(transfer.completedFiles) of \(transfer.fileCount) files")
+            parts.append("\(transfer.completedFiles) of \(transfer.effectiveFileCount) files")
         } else {
             parts.append(transfer.fileCountDescription)
         }

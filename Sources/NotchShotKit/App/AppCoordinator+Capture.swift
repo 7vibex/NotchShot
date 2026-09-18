@@ -577,7 +577,7 @@ extension AppCoordinator {
         Task {
             await RecordingService.shared.cancel()
             _ = RecordingInteractionRecorder.shared.stop()
-            RecordingPresentationOverlayController.shared.stop()
+            self.recordingPresentation.stop()
         }
     }
 

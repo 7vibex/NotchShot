@@ -2,30 +2,59 @@
 import Foundation
 import UniformTypeIdentifiers
 
+/// The narrow slice of `CSSearchableIndex` the indexer uses, so a test can hold
+/// completion handlers and observe exactly which snapshots are consumed.
+protocol SpotlightIndexing: AnyObject, Sendable {
+    func deleteSearchableItems(
+        withDomainIdentifiers domainIdentifiers: [String],
+        completionHandler: (@Sendable (Error?) -> Void)?
+    )
+    func indexSearchableItems(
+        _ items: [CSSearchableItem],
+        completionHandler: (@Sendable (Error?) -> Void)?
+    )
+}
+
+extension CSSearchableIndex: SpotlightIndexing {}
+
 /// Opt-in local Spotlight metadata for Capture Library. Files are not copied
 /// and OCR enters Spotlight only when the separate text-indexing preference
 /// already allowed it into History.
+///
+/// `replaceIndex(with:)` only records the newest requested snapshot. The
+/// expensive `CSSearchableItem` construction happens later, when a refresh is
+/// actually about to hand items to the index, so a replacement that arrives
+/// while an earlier refresh is in flight never materializes the superseded set.
 @MainActor
 public final class CaptureSpotlightIndexer {
-    private final class ItemBox: @unchecked Sendable {
-        let items: [CSSearchableItem]
-        init(_ items: [CSSearchableItem]) { self.items = items }
-    }
-
     public static let shared = CaptureSpotlightIndexer()
     private nonisolated static let domain = "com.notchshot.capture-library"
-    private let index = CSSearchableIndex.default()
-    private var desiredItems: [CSSearchableItem] = []
+    private static let maximumItems = 5_000
+
+    private let index: any SpotlightIndexing
+    private var desiredEntries: [HistoryEntry] = []
     private var refreshRequested = false
     private var isRefreshing = false
 
+    /// Test seam: number of items materialized by the most recent refresh.
+    @ObservationIgnored private(set) var lastMaterializedItemCount = 0
+
+    public convenience init() {
+        self.init(index: CSSearchableIndex.default())
+    }
+
+    /// Test seam: an injectable index lets a test control completion timing.
+    init(index: any SpotlightIndexing) {
+        self.index = index
+    }
+
     public func replaceIndex(with entries: [HistoryEntry]) {
-        desiredItems = entries.prefix(5_000).map(Self.item)
+        desiredEntries = entries
         requestRefresh()
     }
 
     public func clear() {
-        desiredItems = []
+        desiredEntries = []
         requestRefresh()
     }
 
@@ -39,27 +68,39 @@ public final class CaptureSpotlightIndexer {
         guard refreshRequested else { return }
         refreshRequested = false
         isRefreshing = true
-        let itemBox = ItemBox(desiredItems)
         let searchableIndex = index
-        index.deleteSearchableItems(withDomainIdentifiers: [Self.domain]) { error in
+        searchableIndex.deleteSearchableItems(withDomainIdentifiers: [Self.domain]) { [weak self] error in
             if let error {
                 Log.history.error(
                     "Could not refresh Spotlight capture index: \(error.localizedDescription)"
                 )
-                Task { @MainActor [weak self] in self?.finishRefresh() }
-                return
             }
-            guard !itemBox.items.isEmpty else {
-                Task { @MainActor [weak self] in self?.finishRefresh() }
-                return
-            }
-            searchableIndex.indexSearchableItems(itemBox.items) { error in
-                if let error {
-                    Log.history.error(
-                        "Could not write Spotlight capture index: \(error.localizedDescription)"
-                    )
+            let deleteFailed = error != nil
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                if deleteFailed {
+                    self.finishRefresh()
+                    return
                 }
-                Task { @MainActor [weak self] in self?.finishRefresh() }
+                // A replacement that arrived while the delete was in flight is
+                // already the only snapshot that matters; the domain is empty,
+                // so index the newest set directly and never build the one it
+                // superseded.
+                self.refreshRequested = false
+                let items = self.desiredEntries.prefix(Self.maximumItems).map(Self.item)
+                self.lastMaterializedItemCount = items.count
+                guard !items.isEmpty else {
+                    self.finishRefresh()
+                    return
+                }
+                searchableIndex.indexSearchableItems(items) { [weak self] error in
+                    if let error {
+                        Log.history.error(
+                            "Could not write Spotlight capture index: \(error.localizedDescription)"
+                        )
+                    }
+                    Task { @MainActor [weak self] in self?.finishRefresh() }
+                }
             }
         }
     }
@@ -69,7 +110,7 @@ public final class CaptureSpotlightIndexer {
         if refreshRequested { beginRefresh() }
     }
 
-    private nonisolated static func item(for entry: HistoryEntry) -> CSSearchableItem {
+    nonisolated static func item(for entry: HistoryEntry) -> CSSearchableItem {
         let attributes = CSSearchableItemAttributeSet(contentType: entry.kind == .recording
             ? .mpeg4Movie : .image)
         attributes.title = entry.fileURL.lastPathComponent

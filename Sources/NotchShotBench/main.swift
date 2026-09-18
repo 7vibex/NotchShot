@@ -1,6 +1,7 @@
 import AppKit
 import CoreGraphics
 import Foundation
+import ImageIO
 import NotchShotKit
 
 /// Performance benchmarks for the paths that sit on a user-visible latency
@@ -12,15 +13,29 @@ import NotchShotKit
 ///
 ///   swift run -c release NotchShotBench            # everything
 ///   swift run -c release NotchShotBench history    # only names containing "history"
+///
+/// Every timed iteration is journaled in execution order to a run-owned JSON
+/// Lines file (path printed at the end, or set `NOTCHSHOT_BENCH_RESULTS`), and
+/// a benchmark whose iteration threw is reported as a failure rather than
+/// silently measured as a fast `try?` nil.
 @MainActor
 func runBenchmarks() {
+    defer {
+        if let results = Benchmark.finish() {
+            print("raw samples: \(results.path)")
+        }
+        Fixtures.cleanupRunFixtures()
+    }
+
     let filter = CommandLine.arguments.dropFirst().first
     func enabled(_ name: String) -> Bool {
         guard let filter else { return true }
         return name.localizedCaseInsensitiveContains(filter)
     }
 
-    print("NotchShot benchmarks — \(ProcessInfo.processInfo.operatingSystemVersionString)")
+    let environment = Benchmark.environment
+    print("NotchShot benchmarks — \(environment.operatingSystem)")
+    print("source \(environment.sourceSHA ?? "unknown") · \(environment.toolchain)")
     print(String(repeating: "─", count: 92))
 
     // MARK: History search
@@ -66,6 +81,59 @@ func runBenchmarks() {
             }
             Benchmark.measure("search 5000 · \(label) [cache hit     ]") {
                 Benchmark.blackHole(large.search(query))
+            }
+        }
+    }
+
+    // MARK: History browser visible rows
+    //
+    // `HistoryView` derives its list from this on every body evaluation. With
+    // no optional filter active the production path must return the cached
+    // search results untouched.
+
+    if enabled("history.visibleEntries") {
+        let large = Fixtures.history(count: 5000)
+        let filterCases: [(String, Bool, String?)] = [
+            ("none", false, nil),
+            ("favorites", true, nil),
+            ("collection", false, "Example App 3"),
+            ("favorites+collection", true, "Example App 3"),
+        ]
+        let queries = ["", "Example App 3", "Threshold"]
+        for (label, favoritesOnly, collection) in filterCases {
+            for query in queries {
+                let expected = Baselines.visibleEntriesBefore(
+                    large,
+                    query: query,
+                    favoritesOnly: favoritesOnly,
+                    collectionName: collection
+                )
+                let actual = large.search(
+                    query,
+                    favoritesOnly: favoritesOnly,
+                    collectionName: collection
+                )
+                precondition(
+                    actual.map(\.id) == expected.map(\.id),
+                    "visible-entry derivation disagrees for \(label)/\(query)"
+                )
+            }
+        }
+        for (label, favoritesOnly, collection) in filterCases {
+            Benchmark.measure("history.visibleEntries 5000 · \(label) [before]") {
+                Benchmark.blackHole(Baselines.visibleEntriesBefore(
+                    large,
+                    query: "Example App 3",
+                    favoritesOnly: favoritesOnly,
+                    collectionName: collection
+                ))
+            }
+            Benchmark.measure("history.visibleEntries 5000 · \(label) [after ]") {
+                Benchmark.blackHole(large.search(
+                    "Example App 3",
+                    favoritesOnly: favoritesOnly,
+                    collectionName: collection
+                ))
             }
         }
     }
@@ -318,15 +386,21 @@ func runBenchmarks() {
             Benchmark.blackHole(thumbnail?.dataProvider?.data)
         }
         Benchmark.blackHole(fullScreen)
+        // Validate once outside the timed interval: a benchmark that encodes
+        // successfully but produces the wrong image must not pass.
+        do {
+            let encoded = try ImageExport.encode(fullScreen, format: .png, quality: 1, dpiScale: 2)
+            guard let dimensions = decodedDimensions(encoded.data), dimensions == (3456, 2234) else {
+                fatalError("PNG encode produced the wrong dimensions")
+            }
+        } catch {
+            fatalError("PNG encode fixture failed: \(error)")
+        }
         Benchmark.measure("capture.encode png 3456×2234", iterations: 9) {
-            Benchmark.blackHole(try? ImageExport.encode(
-                fullScreen, format: .png, quality: 1, dpiScale: 2
-            ))
+            Benchmark.blackHole(try ImageExport.encode(fullScreen, format: .png, quality: 1, dpiScale: 2))
         }
         Benchmark.measure("capture.encode heic 3456×2234", iterations: 9) {
-            Benchmark.blackHole(try? ImageExport.encode(
-                fullScreen, format: .heic, quality: 0.8, dpiScale: 2
-            ))
+            Benchmark.blackHole(try ImageExport.encode(fullScreen, format: .heic, quality: 0.8, dpiScale: 2))
         }
     }
 
@@ -339,13 +413,29 @@ func runBenchmarks() {
         let before = Fixtures.screenshot(width: 3840, height: 2160)
         let after = Fixtures.variant(of: before, changedFraction: 0.2)
 
+        // Validate once outside the timed interval: difference output is a
+        // real image of the same size, not an error swallowed by `try?`.
+        do {
+            let reference = try ImageComparisonRenderer.difference(
+                before: before, after: after, threshold: 12
+            )
+            precondition(
+                reference.width == 3840 && reference.height == 2160,
+                "difference rendered the wrong dimensions"
+            )
+        } catch {
+            fatalError("difference fixture failed: \(error)")
+        }
+
         Benchmark.measure("comparison.difference 4K", iterations: 15) {
-            Benchmark.blackHole(try? ImageComparisonRenderer.difference(
+            Benchmark.blackHole(try ImageComparisonRenderer.difference(
                 before: before, after: after, threshold: 12
             ))
         }
     }
 
+    IslandBenchmarks.run(enabled: enabled)
+    AIActivityBenchmarks.run(enabled: enabled)
     EditorBenchmarks.run(enabled: enabled)
     if enabled("export-handler") {
         do { try ExportHandlerBenchmarks.run() }
@@ -353,6 +443,15 @@ func runBenchmarks() {
     }
 
     print(String(repeating: "─", count: 92))
+}
+
+/// Dimensions of the first frame in an encoded image container, or nil.
+private func decodedDimensions(_ data: Data) -> (width: Int, height: Int)? {
+    guard let source = CGImageSourceCreateWithData(data as CFData, nil),
+          let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+          let width = properties[kCGImagePropertyPixelWidth] as? Int,
+          let height = properties[kCGImagePropertyPixelHeight] as? Int else { return nil }
+    return (width, height)
 }
 
 runBenchmarks()

@@ -333,6 +333,139 @@ struct LiveActivitySocketTests {
         try? await Task.sleep(for: .milliseconds(50))
         #expect((try? String(contentsOfFile: path, encoding: .utf8)) == "keep")
     }
+
+    @Test("Every descriptor is retired exactly once across repeated connect/disconnect cycles")
+    func descriptorsRetiredExactlyOnce() async throws {
+        let path = Self.temporarySocketPath()
+        let retired = LockedBox<[Int32]>([])
+        let server = LiveActivitySocketServer(socketPath: path)
+        server.onDescriptorRetired = { descriptor in
+            retired.mutate { $0.append(descriptor) }
+        }
+        server.start { _ in nil }
+        await Self.waitForSocket(path)
+
+        let message = try JSONEncoder().encode(
+            LiveActivityMessage(command: .start, id: "cycle", title: "Cycle", icon: .build)
+        ) + Data([10])
+        for _ in 0 ..< 24 {
+            let before = retired.value.count
+            let reply = await Task.detached { Self.send(message, to: path) }.value
+            #expect(reply?.contains("\"ok\":true") == true)
+            // One retirement per connection: a double close would move the
+            // count by two here.
+            try await Self.waitUntil { retired.value.count == before + 1 }
+        }
+
+        let beforeStop = retired.value.count
+        server.stop()
+        // The listening socket's source retires once as well.
+        try await Self.waitUntil { retired.value.count == beforeStop + 1 }
+        try? await Task.sleep(for: .milliseconds(100))
+        #expect(retired.value.count == beforeStop + 1, "nothing retires twice")
+        #expect(server.snapshotForTesting().clients.isEmpty)
+        #expect(server.snapshotForTesting().serverFileDescriptor == -1)
+    }
+
+    @Test("A handler from a previous generation cannot answer or close a newer client")
+    func staleHandlerCannotCrossGenerations() async throws {
+        let path = Self.temporarySocketPath()
+        let retired = LockedBox<[Int32]>([])
+        let server = LiveActivitySocketServer(socketPath: path)
+        server.onDescriptorRetired = { descriptor in
+            retired.mutate { $0.append(descriptor) }
+        }
+
+        let gateA = HandlerGate()
+        server.start { _ in
+            await gateA.wait()
+            return nil
+        }
+        await Self.waitForSocket(path)
+
+        let message = try JSONEncoder().encode(
+            LiveActivityMessage(command: .start, id: "a", title: "A", icon: .build)
+        ) + Data([10])
+        let replyA = Task.detached { Self.send(message, to: path) }
+        try await Self.waitUntil { await gateA.enteredCount >= 1 }
+
+        let snapshotA = server.snapshotForTesting()
+        #expect(snapshotA.clients.count == 1)
+        let clientA = try #require(snapshotA.clients.first)
+
+        // Retire the whole first server generation while A's handler is stuck.
+        server.stop()
+        try await Self.waitUntil { retired.value.count == 2 }
+        #expect(retired.value.contains(clientA))
+        #expect(await replyA.value == nil, "A's connection was retired with its generation")
+
+        // Restart with a different handler. A's descriptor number is now free,
+        // and connecting B should reuse it.
+        let gateB = HandlerGate()
+        server.start { _ in
+            await gateB.wait()
+            return .init("b")
+        }
+        await Self.waitForSocket(path)
+
+        let replyB = Task.detached { Self.send(message, to: path) }
+        try await Self.waitUntil { await gateB.enteredCount >= 1 }
+        let snapshotB = server.snapshotForTesting()
+        #expect(snapshotB.clients.count == 1)
+        let clientB = try #require(snapshotB.clients.first)
+        // The OS usually reuses the retired descriptor number — the risky case
+        // where a stale handler could touch the wrong client — but reuse is not
+        // guaranteed. The generation and client-identity checks must hold
+        // either way, and the assertions below pin exactly that.
+
+        // Release the old handler while B is still waiting. It must not answer
+        // or close B.
+        await gateA.release()
+        try? await Task.sleep(for: .milliseconds(200))
+        #expect(server.snapshotForTesting().clients.contains(clientB), "B survives A's completion")
+
+        await gateB.release()
+        let reply = await replyB.value
+        #expect(reply?.contains("\"ok\":false") == true, "B gets its own generation's answer")
+        #expect(reply?.contains("\"b\"") == true)
+        #expect(reply?.contains("\"ok\":true") != true, "A's stale success never crosses generations")
+
+        server.stop()
+        try await Self.waitUntil { retired.value.count == 4 }
+        try? await Task.sleep(for: .milliseconds(100))
+        #expect(retired.value.count == 4, "two generations retire exactly two descriptors each")
+    }
+
+    private static func waitUntil(_ condition: @escaping @Sendable () async -> Bool, timeout: TimeInterval = 3) async throws {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if await condition() { return }
+            try? await Task.sleep(for: .milliseconds(5))
+        }
+        throw StaleHandlerTimeout()
+    }
+
+    private struct StaleHandlerTimeout: Error {}
+}
+
+/// A one-shot rendezvous for the stale-handler test: the handler blocks until
+/// the test releases it, after optionally reporting that it entered.
+actor HandlerGate {
+    private var entered = 0
+    private var continuations: [CheckedContinuation<Void, Never>] = []
+
+    var enteredCount: Int { entered }
+
+    func wait() async {
+        entered += 1
+        await withCheckedContinuation { continuations.append($0) }
+    }
+
+    func release() {
+        let pending = continuations
+        continuations = []
+        for continuation in pending { continuation.resume() }
+    }
 }
 
 /// Minimal thread-safe box for values written from the server's queue.

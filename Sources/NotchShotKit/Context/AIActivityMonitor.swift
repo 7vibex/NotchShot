@@ -235,6 +235,17 @@ public enum AIActivityPolicy {
     }
 }
 
+/// What one `loadActivities()` pass actually touched. Diagnostics and tests use
+/// this to prove an unchanged directory is not re-decoded every second.
+public struct AIActivityLoadStatistics: Sendable, Equatable {
+    public var filesConsidered = 0
+    public var filesDecoded = 0
+    public var filesReused = 0
+    public var cacheEvictions = 0
+
+    public init() {}
+}
+
 @MainActor
 @Observable
 public final class AIActivityMonitor {
@@ -246,16 +257,52 @@ public final class AIActivityMonitor {
 
     private let directory: URL
     private let historyURL: URL
+    private let ownsURL: (URL) -> Bool
     private var mayInterruptMedia = true
     private var pollTask: Task<Void, Never>?
     private var enabledSources = Set(AISource.allCases)
 
+    /// Validated metadata for a file's last decoded (or last rejected) content.
+    /// A fresh poll reuses the decoded value only when the path identity, file
+    /// kind, size, and modification identity all still match.
+    private struct FileSignature: Equatable {
+        var size: Int
+        var modified: Date?
+        var identity: NSObject?
+
+        static func == (lhs: FileSignature, rhs: FileSignature) -> Bool {
+            guard lhs.size == rhs.size, lhs.modified == rhs.modified else { return false }
+            switch (lhs.identity, rhs.identity) {
+            case (nil, nil):
+                return true
+            case let (left?, right?):
+                return left === right || left.isEqual(right)
+            default:
+                return false
+            }
+        }
+    }
+
+    private struct CachedActivity {
+        var signature: FileSignature
+        /// `nil` records a file that was read and rejected; it is reused too,
+        /// so a malformed file is not re-read on every poll.
+        var activity: AIActivitySnapshot?
+    }
+
+    @ObservationIgnored private var fileCache: [String: CachedActivity] = [:]
+
+    /// Test/benchmark seam: what the most recent `loadActivities()` pass did.
+    @ObservationIgnored public private(set) var lastLoadStatistics = AIActivityLoadStatistics()
+
     public init(
         directory: URL = AppPaths.aiActivity,
-        historyURL: URL = AppPaths.support.appendingPathComponent("AI Activity History.json")
+        historyURL: URL = AppPaths.support.appendingPathComponent("AI Activity History.json"),
+        ownsURL: @escaping (URL) -> Bool = { AppPaths.owns($0) }
     ) {
         self.directory = directory
         self.historyURL = historyURL
+        self.ownsURL = ownsURL
         self.recentActivities = Self.loadHistory(from: historyURL)
     }
 
@@ -332,7 +379,78 @@ public final class AIActivityMonitor {
     }
 
     public func loadActivities() -> [AIActivitySnapshot] {
-        return activityURLs().compactMap(decode)
+        var statistics = AIActivityLoadStatistics()
+        let keys: Set<URLResourceKey> = [
+            .isRegularFileKey,
+            .isSymbolicLinkKey,
+            .fileSizeKey,
+            .contentModificationDateKey,
+            .fileResourceIdentifierKey,
+        ]
+        guard let urls = try? FileManager.default.contentsOfDirectory(
+            at: directory,
+            includingPropertiesForKeys: Array(keys),
+            options: [.skipsHiddenFiles]
+        ) else {
+            fileCache.removeAll()
+            lastLoadStatistics = statistics
+            return []
+        }
+
+        let candidates = urls.map { url -> (url: URL, values: URLResourceValues?) in
+            (url, try? url.resourceValues(forKeys: keys))
+        }
+        .sorted { lhs, rhs in
+            (lhs.values?.contentModificationDate ?? .distantPast)
+                > (rhs.values?.contentModificationDate ?? .distantPast)
+        }
+        .prefix(32)
+
+        var result: [AIActivitySnapshot] = []
+        var livePaths = Set<String>()
+        livePaths.reserveCapacity(candidates.count)
+        for (url, values) in candidates {
+            statistics.filesConsidered += 1
+            let path = url.standardizedFileURL.path
+            livePaths.insert(path)
+            // File-kind, size, and ownership are re-validated from this poll's
+            // fresh metadata even on a cache hit, so a path swap to a symlink
+            // or a different kind of file can never serve a cached value.
+            guard url.pathExtension.lowercased() == "json",
+                  ownsURL(url),
+                  let values,
+                  values.isRegularFile == true,
+                  values.isSymbolicLink != true,
+                  let size = values.fileSize,
+                  size >= 0,
+                  size <= AIActivityPolicy.maximumFileBytes else {
+                fileCache[path] = nil
+                continue
+            }
+            let signature = FileSignature(
+                size: size,
+                modified: values.contentModificationDate,
+                identity: values.fileResourceIdentifier as? NSObject
+            )
+            if let cached = fileCache[path], cached.signature == signature {
+                statistics.filesReused += 1
+                if let activity = cached.activity { result.append(activity) }
+                continue
+            }
+            statistics.filesDecoded += 1
+            let activity = decodeContents(url)
+            fileCache[path] = CachedActivity(signature: signature, activity: activity)
+            if let activity { result.append(activity) }
+        }
+
+        // Deleted or renamed paths must not keep serving their last value.
+        if !fileCache.isEmpty {
+            let before = fileCache.count
+            fileCache = fileCache.filter { livePaths.contains($0.key) }
+            statistics.cacheEvictions = before - fileCache.count
+        }
+        lastLoadStatistics = statistics
+        return result
     }
 
     func activityURLs() -> [URL] {
@@ -362,21 +480,27 @@ public final class AIActivityMonitor {
             .map(\.0)
     }
 
-    private func decode(_ url: URL) -> AIActivitySnapshot? {
-        let keys: Set<URLResourceKey> = [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey]
+    private func decodeContents(_ url: URL) -> AIActivitySnapshot? {
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
+        guard let data = try? Data(contentsOf: url, options: [.mappedIfSafe]),
+              let decoded = try? decoder.decode(AIActivitySnapshot.self, from: data) else {
+            return nil
+        }
+        return decoded
+    }
+
+    private func decode(_ url: URL) -> AIActivitySnapshot? {
+        let keys: Set<URLResourceKey> = [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey]
         guard url.pathExtension.lowercased() == "json",
-                  AppPaths.owns(url),
+                  ownsURL(url),
                   let values = try? url.resourceValues(forKeys: keys),
                   values.isRegularFile == true,
                   values.isSymbolicLink != true,
                   (values.fileSize ?? AIActivityPolicy.maximumFileBytes + 1)
-                    <= AIActivityPolicy.maximumFileBytes,
-                  let data = try? Data(contentsOf: url, options: [.mappedIfSafe]),
-                  let decoded = try? decoder.decode(AIActivitySnapshot.self, from: data)
+                    <= AIActivityPolicy.maximumFileBytes
         else { return nil }
-        return decoded
+        return decodeContents(url)
     }
 
     private func publish(_ newSnapshot: ContextSnapshot?) {

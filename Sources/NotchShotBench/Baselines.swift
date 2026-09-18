@@ -81,6 +81,23 @@ enum Baselines {
         entries.filter { matchesBefore($0, query) }
     }
 
+    // MARK: The History browser's visible rows, before the no-filter fast path
+
+    /// Always runs the second filter — and its fresh array allocation — even
+    /// when neither optional filter is active.
+    @MainActor
+    static func visibleEntriesBefore(
+        _ repository: HistoryRepository,
+        query: String,
+        favoritesOnly: Bool,
+        collectionName: String?
+    ) -> [HistoryEntry] {
+        repository.search(query).filter { entry in
+            (!favoritesOnly || entry.favorite)
+                && (collectionName == nil || entry.collectionName == collectionName)
+        }
+    }
+
     // MARK: Candidate rewrites, measured against each other before one is adopted
 
     /// Hoists the needle's `lowercased()` out of the per-row loop, and nothing else.
@@ -254,6 +271,49 @@ enum Baselines {
         Set(entries.flatMap { entry in
             [entry.fileURL.path, entry.captionPath, entry.projectPath].compactMap { $0 }
         }.map { canonicalPath(URL(fileURLWithPath: $0)) })
+    }
+
+    // MARK: The AI activity directory before metadata caching
+
+    /// The original load: enumerate, sort, then read and decode every selected
+    /// file on every poll even when nothing changed.
+    static func aiActivityLoadBefore(directory: URL) -> [AIActivitySnapshot] {
+        let keys: Set<URLResourceKey> = [
+            .isRegularFileKey,
+            .isSymbolicLinkKey,
+            .fileSizeKey,
+            .contentModificationDateKey,
+        ]
+        guard let urls = try? FileManager.default.contentsOfDirectory(
+            at: directory,
+            includingPropertiesForKeys: Array(keys),
+            options: [.skipsHiddenFiles]
+        ) else { return [] }
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        return urls
+            .map { url -> (URL, Date) in
+                let modified = (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?
+                    .contentModificationDate
+                return (url, modified ?? .distantPast)
+            }
+            .sorted { $0.1 > $1.1 }
+            .prefix(32)
+            .map(\.0)
+            .compactMap { url -> AIActivitySnapshot? in
+                let keys: Set<URLResourceKey> = [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey]
+                guard url.pathExtension.lowercased() == "json",
+                      let values = try? url.resourceValues(forKeys: keys),
+                      values.isRegularFile == true,
+                      values.isSymbolicLink != true,
+                      (values.fileSize ?? AIActivityPolicy.maximumFileBytes + 1)
+                        <= AIActivityPolicy.maximumFileBytes,
+                      let data = try? Data(contentsOf: url, options: [.mappedIfSafe]),
+                      let decoded = try? decoder.decode(AIActivitySnapshot.self, from: data) else {
+                    return nil
+                }
+                return decoded
+            }
     }
 
     // MARK: Load-time coalescing of rows sharing a path or an id

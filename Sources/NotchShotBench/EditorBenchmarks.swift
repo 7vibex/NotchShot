@@ -53,14 +53,26 @@ enum EditorBenchmarks {
             let heavy = document(elementCount: 120, size: size, includeRedactions: false)
             let redacted = document(elementCount: 40, size: size, includeRedactions: true)
 
+            // Validate output once outside the timed interval so a throwing
+            // render is caught here, not mistaken for a fast iteration.
+            do {
+                let rendered = try AnnotationRenderer.render(document: heavy, source: source)
+                precondition(
+                    rendered.width == 2880 && rendered.height == 1800,
+                    "annotation render produced the wrong dimensions"
+                )
+            } catch {
+                fatalError("annotation render fixture failed: \(error)")
+            }
+
             Benchmark.measure("annotation.render 12 elements", iterations: 9) {
-                Benchmark.blackHole(try? AnnotationRenderer.render(document: light, source: source))
+                Benchmark.blackHole(try AnnotationRenderer.render(document: light, source: source))
             }
             Benchmark.measure("annotation.render 120 elements", iterations: 9) {
-                Benchmark.blackHole(try? AnnotationRenderer.render(document: heavy, source: source))
+                Benchmark.blackHole(try AnnotationRenderer.render(document: heavy, source: source))
             }
             Benchmark.measure("annotation.render 40 with redactions", iterations: 9) {
-                Benchmark.blackHole(try? AnnotationRenderer.render(document: redacted, source: source))
+                Benchmark.blackHole(try AnnotationRenderer.render(document: redacted, source: source))
             }
 
             // Hit testing runs on pointer events while editing.
@@ -79,8 +91,17 @@ enum EditorBenchmarks {
 
         if enabled("export") {
             let source = Fixtures.screenshot(width: 3456, height: 2234)
+            do {
+                let rendered = try SmartExportService.render(source, to: CGSize(width: 1600, height: 1034))
+                precondition(
+                    rendered.width == 1600 && rendered.height == 1034,
+                    "smart export produced the wrong dimensions"
+                )
+            } catch {
+                fatalError("smart export fixture failed: \(error)")
+            }
             Benchmark.measure("export.render 3456→1600 wide", iterations: 9) {
-                Benchmark.blackHole(try? SmartExportService.render(
+                Benchmark.blackHole(try SmartExportService.render(
                     source,
                     to: CGSize(width: 1600, height: 1034)
                 ))
@@ -93,8 +114,17 @@ enum EditorBenchmarks {
 
         if enabled("stitch") {
             let frames = scrollingFrames(count: 8, width: 1200, height: 900, advance: 640)
+            do {
+                let stitched = try ScrollingStitcher.stitch(frames: frames)
+                precondition(
+                    stitched.image.width == 1200 && stitched.image.height >= 900,
+                    "stitch produced the wrong dimensions"
+                )
+            } catch {
+                fatalError("stitch fixture failed: \(error)")
+            }
             Benchmark.measure("stitch 8 frames 1200×900", iterations: 9) {
-                Benchmark.blackHole(try? ScrollingStitcher.stitch(frames: frames))
+                Benchmark.blackHole(try ScrollingStitcher.stitch(frames: frames))
             }
         }
     }

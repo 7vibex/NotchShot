@@ -1,4 +1,5 @@
 import CoreGraphics
+import CryptoKit
 import Foundation
 import NotchShotKit
 
@@ -7,7 +8,28 @@ import NotchShotKit
 /// Everything here is seeded, so two runs of the suite compare like with like.
 /// That matters more than realism for the numbers to mean anything: a benchmark
 /// whose input changes between runs measures the input, not the code.
+///
+/// File fixtures live in a run-owned directory, are verified against the bytes
+/// that were written before anything is timed, and are removed only if they are
+/// still that same directory. A predictable path from an earlier run is never
+/// reused.
 enum Fixtures {
+
+    /// A fresh directory per process. `cleanupRunFixtures` touches nothing else.
+    static let runDirectory: URL = {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("notchshot-bench-\(getpid())-\(UUID().uuidString)", isDirectory: true)
+        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        return directory
+    }()
+
+    static func cleanupRunFixtures() {
+        try? FileManager.default.removeItem(at: runDirectory)
+    }
+
+    private static func digest(of data: Data) -> String {
+        SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+    }
 
     /// A cheap, reproducible PRNG. `SystemRandomNumberGenerator` would make the
     /// fixtures differ run to run, which is exactly what a benchmark must not do.
@@ -60,6 +82,10 @@ enum Fixtures {
         guard let image = context.makeImage() else {
             fatalError("Could not render the benchmark fixture")
         }
+        precondition(
+            image.width == width && image.height == height,
+            "the screenshot fixture rendered at the wrong size"
+        )
         return image
     }
 
@@ -124,18 +150,42 @@ enum Fixtures {
         HistoryRepository(storeURL: historyStore(count: count, withIndexedText: withIndexedText))
     }
 
-    /// Writes a history store to a temporary file and returns its URL.
+    /// Writes a history store into the run-owned directory and returns its URL.
+    ///
+    /// The file is verified against the deterministic fixture's bytes and row
+    /// count before any benchmark is allowed to use it, and a pre-existing file
+    /// is never trusted just because the name matches.
     static func historyStore(count: Int, withIndexedText: Bool = true) -> URL {
-        let store = URL(fileURLWithPath: NSTemporaryDirectory())
-            .appendingPathComponent("notchshot-bench-\(count)-\(withIndexedText).json")
-        if !FileManager.default.fileExists(atPath: store.path) {
-            let encoder = JSONEncoder()
-            encoder.dateEncodingStrategy = .iso8601
-            encoder.outputFormatting = [.prettyPrinted]
-            let data = try! encoder.encode(entries(count: count, withIndexedText: withIndexedText))
-            try! data.write(to: store, options: .atomic)
+        let store = runDirectory.appendingPathComponent(
+            "history-\(count)-\(withIndexedText ? "text" : "plain").json"
+        )
+        let expected = entries(count: count, withIndexedText: withIndexedText)
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        encoder.outputFormatting = [.prettyPrinted]
+        let data = try! encoder.encode(expected)
+
+        if let storedDigest = verifiedDigest(of: store), storedDigest == digest(of: data) {
+            return store
+        }
+        try! data.write(to: store, options: .atomic)
+        let written = try! Data(contentsOf: store)
+        guard digest(of: written) == digest(of: data) else {
+            fatalError("history fixture was corrupted while writing \(store.path)")
+        }
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        guard let decoded = try? decoder.decode([HistoryEntry].self, from: written),
+              decoded.count == count,
+              decoded.map(\.id) == expected.map(\.id) else {
+            fatalError("history fixture failed verification at \(store.path)")
         }
         return store
+    }
+
+    private static func verifiedDigest(of store: URL) -> String? {
+        guard let data = try? Data(contentsOf: store) else { return nil }
+        return digest(of: data)
     }
 
     static func entries(count: Int, withIndexedText: Bool = true) -> [HistoryEntry] {

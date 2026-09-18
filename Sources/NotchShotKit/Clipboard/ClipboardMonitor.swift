@@ -76,6 +76,12 @@ public final class ClipboardMonitor {
     /// Fires when something new was recorded, so the notch can acknowledge it.
     public var onCapture: ((ClipboardEntry) -> Void)?
 
+    /// Diagnostics for the image path: how many decode/persist chains are in
+    /// flight right now, and the highest number seen. Images decode off the
+    /// main actor, so rapid accepted copies can overlap if decode is slow.
+    private(set) var pendingImageProcessing = 0
+    private(set) var peakPendingImageProcessing = 0
+
     public init(
         pasteboard: NSPasteboard = .general,
         store: ClipboardStore = .shared
@@ -179,8 +185,11 @@ public final class ClipboardMonitor {
         case let .image(entry, data):
             // Pasteboard access stays on the main actor, as AppKit requires;
             // bounded image decoding and PNG persistence do not.
+            pendingImageProcessing += 1
+            peakPendingImageProcessing = max(peakPendingImageProcessing, pendingImageProcessing)
             Task { [weak self] in
                 guard let self else { return }
+                defer { self.pendingImageProcessing -= 1 }
                 let image = await Task.detached(priority: .utility) {
                     SafeImageFile.cgImage(
                         from: data,

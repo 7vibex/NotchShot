@@ -354,6 +354,27 @@ public final class HistoryRepository {
         return results
     }
 
+    /// The History browser's visible rows: the cached search results, then the
+    /// optional library filters.
+    ///
+    /// With neither optional filter active the cached array is returned
+    /// directly, so the common case allocates nothing on top of the search the
+    /// repository already memoises. The filter path preserves the exact
+    /// semantics the browser had before (`favoritesOnly` AND the collection
+    /// name) and keeps search order.
+    public func search(
+        _ query: String,
+        favoritesOnly: Bool,
+        collectionName: String?
+    ) -> [HistoryEntry] {
+        let results = search(query)
+        guard favoritesOnly || collectionName != nil else { return results }
+        return results.filter { entry in
+            (!favoritesOnly || entry.favorite)
+                && (collectionName == nil || entry.collectionName == collectionName)
+        }
+    }
+
     public func entry(id: UUID) -> HistoryEntry? {
         entries.first { $0.id == id }
     }
@@ -633,29 +654,47 @@ public final class HistoryRepository {
     /// rebuilds the row from scratch, and with no bitmap to hand it would drop
     /// the thumbnail — deleting the image on disk as a stale duplicate. A row
     /// whose file moved is still the same row.
-    public func updateLocation(for id: UUID, to url: URL) {
+    ///
+    /// A caption is recorded only when the mover supplies both its new
+    /// same-stem sibling URL and the identity it verified while moving that
+    /// exact file. This method never adopts a same-stem `.srt` that merely
+    /// happens to exist at the destination: an unrelated subtitle there must
+    /// not become authority to read or delete it later.
+    public func updateLocation(
+        for id: UUID,
+        to url: URL,
+        relocatedCaptionURL: URL? = nil,
+        relocatedCaptionIdentity: ExternalFileIdentity? = nil
+    ) throws {
         guard let index = entries.firstIndex(where: { $0.id == id }) else { return }
         let previous = entries[index].fileURL
-        entries[index].fileURL = url
-        // A generated caption is a same-stem sibling by definition, so it is
-        // only still valid if it followed the recording.
-        if let captionPath = entries[index].captionPath {
-            let moved = url
-                .deletingLastPathComponent()
-                .appendingPathComponent(
-                    url.deletingPathExtension().lastPathComponent
-                )
-                .appendingPathExtension("srt")
-            entries[index].captionPath = FileManager.default.fileExists(atPath: moved.path)
-                ? moved.path
-                : (FileManager.default.fileExists(atPath: captionPath) ? captionPath : nil)
-            entries[index].captionFileIdentity = entries[index].captionPath.flatMap {
-                SafeAssetFile.identity(
-                    at: URL(fileURLWithPath: $0),
-                    maximumBytes: SafeAssetFile.maximumOwnedBytes
+
+        // Validate before mutating any row state, so a failed verification
+        // leaves History exactly where it was.
+        var captionPath: String?
+        var captionIdentity: ExternalFileIdentity?
+        if let relocatedCaptionURL {
+            guard let relocatedCaptionIdentity,
+                  let validated = Self.validatedCaptionURL(
+                      path: relocatedCaptionURL.path,
+                      for: url
+                  ),
+                  let current = SafeAssetFile.identity(
+                      at: validated,
+                      maximumBytes: SafeAssetFile.maximumOwnedBytes
+                  ),
+                  current == relocatedCaptionIdentity else {
+                throw NotchShotError.exportFailed(
+                    "The recording's subtitle could not be verified at its new location, so History still points at the previous one."
                 )
             }
+            captionPath = validated.path
+            captionIdentity = current
         }
+
+        entries[index].fileURL = url
+        entries[index].captionPath = captionPath
+        entries[index].captionFileIdentity = captionIdentity
         // Ownership is a property of where the file lives, not of where it was
         // created: moving a managed capture into a user folder makes it the
         // user's document, and retention must stop treating it as disposable.

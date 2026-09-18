@@ -87,7 +87,7 @@ let package = Package(
         //   swift run -c release NotchShotBench
         .executableTarget(
             name: "NotchShotBench",
-            dependencies: ["NotchShotKit"],
+            dependencies: ["NotchShotKit", "NotchShotAIReporterSupport"],
             path: "Sources/NotchShotBench",
             swiftSettings: [.swiftLanguageMode(.v6)]
         ),

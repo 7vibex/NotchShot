@@ -232,7 +232,7 @@ public enum IslandActivityAdapters {
         } else if transfer.service == .localSend {
             measurement = IslandMeasurement(
                 completed: Int64(transfer.completedFiles),
-                total: Int64(transfer.fileCount),
+                total: Int64(transfer.effectiveFileCount),
                 unit: .items
             )
         }

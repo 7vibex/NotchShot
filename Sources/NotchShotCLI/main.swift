@@ -207,11 +207,23 @@ private func run(_ arguments: ArraySlice<String>) throws -> Int32 {
     process.arguments = command
     do {
         try process.run()
-        process.waitUntilExit()
     } catch {
         report(.fail, state: "Could not start")
         throw error
     }
+    // A long-running command must not age out of the island while it is still
+    // working. The heartbeat repeats the same fields as the start report — it
+    // never invents progress or an ETA — and a missing app is ignored so the
+    // user's command is unaffected. It is stopped synchronously when the child
+    // exits, before the terminal report.
+    let heartbeatOptions = options
+    let heartbeat = ActivityHeartbeat()
+    heartbeat.start {
+        guard let message = try? heartbeatOptions.message(command: .update) else { return }
+        try? Client.send(message)
+    }
+    process.waitUntilExit()
+    heartbeat.stop()
     let succeeded = process.terminationReason == .exit && process.terminationStatus == 0
     options.values["progress"] = nil
     report(succeeded ? .finish : .fail, state: succeeded ? "Done" : "Exit \(process.terminationStatus)")
