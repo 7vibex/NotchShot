@@ -1,0 +1,262 @@
+{
+  "duration_seconds": 15.857823,
+  "main_thread_samples": 1443,
+  "microhang_start_ms": 12440.895,
+  "microhang_duration_ms": 304.137,
+  "microhang_samples": 237,
+  "microhang_leaf_frames": [
+    [
+      "<deduplicated_symbol>",
+      10
+    ],
+    [
+      "objc_msgSend",
+      10
+    ],
+    [
+      "getMethodNoSuper_nolock(objc_class*, objc_selector*)",
+      9
+    ],
+    [
+      "_platform_memmove",
+      7
+    ],
+    [
+      "swift::MetadataCacheKey::operator==(swift::MetadataCacheKey const&) const",
+      5
+    ],
+    [
+      "madvise",
+      4
+    ],
+    [
+      "_xzm_free",
+      4
+    ],
+    [
+      "swift_conformsToProtocolMaybeInstantiateSuperclasses(swift::TargetMetadata<swift::InProcess> const*, swift::TargetProtocolDescriptor<swift::InProcess> const*, bool)::$_2::operator()((anonymous namespace)::ConformanceSection const&) const::'lambda'(swift::TargetProtocolConformanceDescriptor<swift::InProcess> const&)::operator()(swift::TargetProtocolConformanceDescriptor<swift::InProcess> const&) const",
+      4
+    ],
+    [
+      "swift_conformsToProtocolMaybeInstantiateSuperclasses(swift::TargetMetadata<swift::InProcess> const*, swift::TargetProtocolDescriptor<swift::InProcess> const*, bool)",
+      3
+    ],
+    [
+      "mach_msg2_trap",
+      2
+    ],
+    [
+      "method_t* getMethodFromListArray<method_list_t**>(method_list_t**, unsigned int, objc_selector*)",
+      2
+    ],
+    [
+      "_CFRuntimeSetInstanceTypeID",
+      2
+    ],
+    [
+      "_free",
+      2
+    ],
+    [
+      "__kdebug_trace64",
+      2
+    ],
+    [
+      "swift::_getWitnessTable(swift::TargetProtocolConformanceDescriptor<swift::InProcess> const*, swift::TargetMetadata<swift::InProcess> const*, void const* const*)",
+      2
+    ]
+  ],
+  "microhang_inclusive_frames": [
+    [
+      "-[NSApplication run]",
+      187
+    ],
+    [
+      "start",
+      187
+    ],
+    [
+      "NotchShot_main",
+      187
+    ],
+    [
+      "-[NSApplication(NSEventRouting) sendEvent:]",
+      180
+    ],
+    [
+      "-[NSApplication _handleEvent:]",
+      180
+    ],
+    [
+      "-[NSMenu performKeyEquivalent:]",
+      180
+    ],
+    [
+      "routeKeyEquivalent",
+      167
+    ],
+    [
+      "_NSMenuPerformActionWithHighlighting",
+      167
+    ],
+    [
+      "-[NSMenu _performKeyEquivalentForItemAtIndex:]",
+      166
+    ],
+    [
+      "NSPerformVisuallyAtomicChange",
+      149
+    ],
+    [
+      "<deduplicated_symbol>",
+      124
+    ],
+    [
+      "AG::Graph::UpdateStack::update()",
+      115
+    ],
+    [
+      "AG::Graph::update_attribute(AG::data::ptr<AG::Node>, unsigned int)",
+      105
+    ],
+    [
+      "specialized implicit closure #1 in closure #1 in closure #1 in Attribute.init<A>(_:)",
+      98
+    ],
+    [
+      "CA::Transaction::commit()",
+      97
+    ],
+    [
+      "AG::Graph::input_value_ref_slow(AG::data::ptr<AG::Node>, AG::AttributeID, unsigned int, unsigned int, AGSwiftMetadata const*, unsigned char&, long)",
+      97
+    ],
+    [
+      "AGGraphGetValue",
+      95
+    ],
+    [
+      "_NSUnhighlightMenu",
+      94
+    ],
+    [
+      "-[NSMenuBarImpl unhighlightItemIfNeeded]",
+      94
+    ],
+    [
+      "0x190d5f47c",
+      89
+    ],
+    [
+      "NSDisplayCycleObserverInvoke",
+      89
+    ],
+    [
+      "0x190d5f4a4",
+      89
+    ],
+    [
+      "CA::Transaction::run_commit_handlers(CATransactionPhase)",
+      89
+    ],
+    [
+      "partial apply for implicit closure #1 in closure #1 in closure #1 in Attribute.init<A>(_:)",
+      89
+    ],
+    [
+      "NSDisplayCycleFlush",
+      88
+    ]
+  ],
+  "workload": "Notch opening, capture/music tab switching, first Settings opening. No active call. First UI candidate before privacy-copy-only edit.",
+  "microhang_app_inclusive_frames": [
+    [
+      "NotchShot_main",
+      187
+    ],
+    [
+      "@objc AppDelegate.statusItemClicked()",
+      71
+    ],
+    [
+      "AppDelegate.bringToFront(_:)",
+      43
+    ],
+    [
+      "@nonobjc NSWindow.init(contentRect:styleMask:backing:defer:)",
+      22
+    ],
+    [
+      "specialized AppDelegate.makeWindow<A>(title:content:size:)",
+      6
+    ],
+    [
+      "SettingsView.body.getter",
+      3
+    ],
+    [
+      "one-time initialization function for detailBackground",
+      2
+    ],
+    [
+      "SettingsWorkbenchStyle.detailBackground.unsafeMutableAddressor",
+      2
+    ],
+    [
+      "specialized closure #1 in ZStack.init(alignment:content:)",
+      2
+    ],
+    [
+      "initializeWithCopy for IslandPresentation",
+      1
+    ],
+    [
+      "AppCoordinator.islandPresentation.getter",
+      1
+    ],
+    [
+      "outlined init with copy of LockedNowPlayingCard",
+      1
+    ],
+    [
+      "closure #1 in closure #1 in SettingsView.body.getter",
+      1
+    ],
+    [
+      "specialized closure #1 in VStack.init(alignment:spacing:content:)",
+      1
+    ],
+    [
+      "specialized ModifiedContent.init(content:modifier:)",
+      1
+    ],
+    [
+      "__swift_instantiateConcreteTypeFromMangledNameV2",
+      1
+    ],
+    [
+      "thunk for @escaping @callee_guaranteed @Sendable (@in_guaranteed Notification) -> ()",
+      1
+    ],
+    [
+      "closure #1 in closure #5 in NotchWindowController.installObservers()",
+      1
+    ],
+    [
+      "partial apply for closure #1 in closure #5 in NotchWindowController.installObservers()",
+      1
+    ],
+    [
+      "specialized thunk for @callee_guaranteed () -> (@out A, @error @owned Error)",
+      1
+    ],
+    [
+      "closure #5 in NotchWindowController.installObservers()",
+      1
+    ],
+    [
+      "default argument 2 of static NotchAppVisibilityPolicy.hidesNotch(frontmostBundleID:hiddenBundleIDs:ownBundleID:)",
+      1
+    ]
+  ]
+}

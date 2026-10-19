@@ -9,12 +9,14 @@ struct ShelfContent: View {
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+    @State private var hoveredAction: ShareAction?
+    @State private var gridOverflow = ShelfScrollOverflow()
 
     private var items: [ShelfItem] { coordinator.shelfItems }
     private var selected: ShelfItem? { coordinator.selectedShelfItem }
 
     var body: some View {
-        VStack(spacing: 10) {
+        VStack(spacing: 0) {
             header
 
             ScrollView(.vertical) {
@@ -22,15 +24,18 @@ struct ShelfContent: View {
                     if let selected {
                         if Preferences.shared.shelfPresentationStyle == .grid {
                             grid
+                            actions(for: selected)
                         } else {
-                            HStack(spacing: 12) {
+                            HStack(alignment: .top, spacing: 12) {
                                 thumbnail(for: selected)
-                                details(for: selected)
-                                Spacer(minLength: 0)
+                                VStack(alignment: .leading, spacing: 0) {
+                                    details(for: selected)
+                                    Spacer(minLength: 0)
+                                    actions(for: selected)
+                                }
+                                .frame(height: NotchLayout.shelfDetailRowHeight)
                             }
                         }
-
-                        actions(for: selected)
                     }
 
                     if !coordinator.stack.isEmpty || coordinator.stack.isCollecting {
@@ -51,8 +56,10 @@ struct ShelfContent: View {
             // which would also steal layout width from a fixed-size island.
             .scrollIndicators(.never)
             .accessibilityLabel("Capture shelf content")
+            .padding(.horizontal, 14)
+            .padding(.top, 6)
+            .padding(.bottom, 14)
         }
-        .padding(14)
         .focusable()
         // Keyboard navigation without AppKit's blue focus ring. The ring traced
         // this view's rounded rect inside the island, which read as the notch's
@@ -70,91 +77,77 @@ struct ShelfContent: View {
             coordinator.hideShelf()
             return .handled
         }
-        .animation(reduceMotion ? nil : .snappy, value: coordinator.selectedShelfIndex)
+        .animation(NotchMotion.selection(reduceMotion: reduceMotion), value: coordinator.selectedShelfIndex)
     }
 
     // MARK: Pieces
 
+    /// The count left of the camera, the view switch and Hide right of it.
+    /// This row used to sit below the camera band, which stayed empty above it.
     private var header: some View {
-        HStack(spacing: 8) {
-            Image(systemName: "tray.full.fill")
-                .font(.system(size: 11))
-                .foregroundStyle(.white.opacity(0.7))
-            Text("\(items.count) \(items.count == 1 ? "File" : "Files")")
-                .font(.system(size: 11, weight: .semibold))
-                .foregroundStyle(.white)
+        IslandBandHeader(leadingInset: 16, trailingInset: 8) {
+            HStack(spacing: 6) {
+                Image(systemName: "tray.full.fill")
+                    .font(.system(size: 11))
+                    .foregroundStyle(Color.islandInk(NotchIsland.Ink.secondary))
+                Text("\(items.count) \(items.count == 1 ? "File" : "Files")")
+                    .font(.system(size: 11.5, weight: .semibold))
+                    .foregroundStyle(.white)
+                    .fixedSize()
 
-            Text(totalSizeDescription)
-                .font(.system(size: 10, weight: .medium, design: .rounded))
-                .foregroundStyle(.white.opacity(0.52))
-                .monospacedDigit()
+                // A single capture's size is already on its details line.
+                if items.count > 1 {
+                    Text(totalSizeDescription)
+                        .font(.system(size: 10.5, weight: .medium, design: .rounded))
+                        .foregroundStyle(Color.islandInk(NotchIsland.Ink.tertiary))
+                        .monospacedDigit()
+                        .lineLimit(1)
+                }
 
-            if let warnings = selected?.stitchWarnings, !warnings.isEmpty {
-                Image(systemName: "exclamationmark.triangle.fill")
-                    .font(.system(size: 10))
-                    .foregroundStyle(.orange)
-                    .help(warnings.joined(separator: "\n"))
-                    .accessibilityLabel("Stitch warnings: \(warnings.joined(separator: ". "))")
-            }
-
-            Spacer()
-
-            HStack(spacing: 2) {
-                ForEach(ShelfPresentationStyle.allCases) { style in
-                    Button {
-                        Preferences.shared.shelfPresentationStyle = style
-                    } label: {
-                        let isSelected = Preferences.shared.shelfPresentationStyle == style
-                        Image(systemName: style.symbolName)
-                            .font(.system(size: 10, weight: .semibold))
-                            .foregroundStyle(.white.opacity(isSelected ? 1 : 0.72))
-                            .frame(
-                                width: NotchShotDesignSystem.minimumControlTarget,
-                                height: NotchShotDesignSystem.minimumControlTarget
-                            )
-                            // The same accent fill and border the selected grid
-                            // cell uses. A solid white block here was the
-                            // loudest thing in the shelf, so the view switch
-                            // read as more important than the captures.
-                            .background {
-                                RoundedRectangle(cornerRadius: 6, style: .continuous)
-                                    .fill(
-                                        isSelected
-                                            ? Color.accentColor.opacity(0.34)
-                                            : Color.white.opacity(0.001)
-                                    )
-                                    .overlay {
-                                        RoundedRectangle(cornerRadius: 6, style: .continuous)
-                                            .strokeBorder(
-                                                isSelected
-                                                    ? Color.accentColor.opacity(0.85)
-                                                    : Color.clear
-                                            )
-                                    }
-                            }
-                            .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    .help("Show shelf as \(style.title.lowercased())")
-                    .accessibilityLabel("\(style.title) shelf view")
-                    .accessibilityAddTraits(
-                        Preferences.shared.shelfPresentationStyle == style ? [.isSelected] : []
-                    )
+                if let warnings = selected?.stitchWarnings, !warnings.isEmpty {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.orange)
+                        .help(warnings.joined(separator: "\n"))
+                        .accessibilityLabel("Stitch warnings: \(warnings.joined(separator: ". "))")
                 }
             }
-            .padding(2)
-            .notchControlSurface(
-                in: RoundedRectangle(cornerRadius: 8, style: .continuous),
-                reduceTransparency: reduceTransparency
-            )
+        } trailing: {
+            HStack(spacing: 2) {
+                // Words, not glyphs: a list icon and a grid icon in an accent
+                // segment outweighed the captures themselves.
+                HStack(spacing: 0) {
+                    ForEach(ShelfPresentationStyle.allCases) { style in
+                        let isSelected = Preferences.shared.shelfPresentationStyle == style
+                        Button {
+                            Preferences.shared.shelfPresentationStyle = style
+                        } label: {
+                            Text(style.title)
+                                .font(.system(size: 10.5, weight: .semibold))
+                                .foregroundStyle(Color.islandInk(isSelected ? NotchIsland.Ink.primary : NotchIsland.Ink.tertiary))
+                                .padding(.horizontal, 8)
+                                .frame(height: 22)
+                                .background(
+                                    Color.islandInk(isSelected ? NotchIsland.Surface.selected : 0),
+                                    in: Capsule()
+                                )
+                                .contentShape(Capsule())
+                        }
+                        .buttonStyle(.plain)
+                        .help(style == .grid ? "Show every capture as a thumbnail" : "Show the selected capture with its details")
+                        .accessibilityLabel("\(style.title) shelf view")
+                        .accessibilityAddTraits(isSelected ? [.isSelected] : [])
+                    }
+                }
+                .padding(2)
+                .islandControlSurface(Capsule())
+                .fixedSize()
+                .animation(NotchMotion.selection(reduceMotion: reduceMotion), value: Preferences.shared.shelfPresentationStyle)
 
-            // Full size, deliberately. The old 0.72 was compensating for a
-            // bug: the scale reached the glass circle but not the glyph, so a
-            // shrunken button still drew a full-size 13pt mark. With the two
-            // in step, 0.72 made a 21pt button next to a 36pt segmented
-            // control — a peer control that read as an afterthought.
-            NotchIconButton(systemName: "eye.slash", label: "Hide shelf") {
-                coordinator.hideShelf()
+                IslandBandButton(systemName: "chevron.up", label: "Hide shelf") {
+                    coordinator.hideShelf()
+                }
+                .help("Tuck the shelf away. Captures stay on it until you remove them.")
             }
         }
     }
@@ -190,6 +183,25 @@ struct ShelfContent: View {
             }
         }
         .scrollIndicators(.never)
+        // The last tile used to be cut straight through by the island's edge,
+        // which read as a rendering bug rather than "there is more".
+        .onScrollGeometryChange(for: ShelfScrollOverflow.self) { geometry in
+            ShelfScrollOverflow(
+                leading: geometry.contentOffset.x > 1,
+                trailing: geometry.contentSize.width - geometry.contentOffset.x > geometry.containerSize.width + 1
+            )
+        } action: { _, overflow in
+            gridOverflow = overflow
+        }
+        .mask {
+            HStack(spacing: 0) {
+                LinearGradient(colors: [.clear, .black], startPoint: .leading, endPoint: .trailing)
+                    .frame(width: gridOverflow.leading ? 28 : 0)
+                Color.black
+                LinearGradient(colors: [.black, .clear], startPoint: .leading, endPoint: .trailing)
+                    .frame(width: gridOverflow.trailing ? 36 : 0)
+            }
+        }
         .frame(height: 50)
     }
 
@@ -211,13 +223,14 @@ struct ShelfContent: View {
                         }
                 }
             }
-            .frame(width: 96, height: 66)
-            .clipShape(RoundedRectangle(cornerRadius: 7))
+            .frame(width: 128, height: NotchLayout.shelfDetailRowHeight)
+            .background(Color.islandInk(NotchIsland.Ink.fill), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
             .overlay {
-                RoundedRectangle(cornerRadius: 7)
-                    .strokeBorder(.white.opacity(0.16))
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .strokeBorder(.white.opacity(0.14))
             }
-            .contentShape(RoundedRectangle(cornerRadius: 7))
+            .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
             // A fresh capture rises into the notch instead of simply appearing.
             .islandArrivalFromScreen(id: coordinator.shelfItems.first?.id)
         }
@@ -240,106 +253,90 @@ struct ShelfContent: View {
         .accessibilityHint("Opens a larger preview. The image can also be dragged to another app.")
     }
 
+    /// Name, then one metadata line, then a single line of recognised text
+    /// or the first detected link. Table copies and further detected items
+    /// live in the More menu, so the column never overflows its thumbnail.
     private func details(for item: ShelfItem) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
+        VStack(alignment: .leading, spacing: 3) {
             Text(item.asset.displayName)
-                .font(.system(size: 11, weight: .medium))
+                .font(.system(size: 12, weight: .semibold))
                 .foregroundStyle(.white)
                 .lineLimit(1)
                 .truncationMode(.middle)
 
-            HStack(spacing: 6) {
-                Text(item.asset.dimensionsDescription)
-                if let duration = item.asset.duration {
-                    Text(durationText(duration))
-                }
-                Text(item.asset.fileSizeDescription)
-            }
-            .font(.system(size: 10))
-            .foregroundStyle(.white.opacity(0.55))
-
-            if let text = item.ocrResult?.fullText, !text.isEmpty {
-                Text(text)
-                    .font(.system(size: 10))
-                    .foregroundStyle(.white.opacity(0.62))
-                    .lineLimit(2)
-            }
-
-            if let items = item.ocrResult?.detectedItems, !items.isEmpty {
-                HStack(spacing: 6) {
-                    ForEach(items.prefix(3)) { detected in
-                        Button {
-                            coordinator.openDetectedItem(detected)
-                        } label: {
-                            Label(detected.value, systemImage: detected.kind.symbolName)
-                                .font(.system(size: 10))
-                                .lineLimit(1)
-                        }
-                        .buttonStyle(.plain)
-                        .foregroundStyle(.white.opacity(0.8))
-                        .padding(.horizontal, 6)
-                        .frame(minHeight: 32)
-                        .contentShape(Rectangle())
-                    }
+            // The hovered toolbar action is named here, in place of the
+            // metadata, rather than on a line of its own.
+            Group {
+                if let hoveredAction {
+                    Text(hoveredAction.title(for: item.asset))
+                        .foregroundStyle(Color.islandInk(NotchIsland.Ink.primary))
+                } else {
+                    Text(metadataLine(for: item))
+                        .foregroundStyle(Color.islandInk(NotchIsland.Ink.tertiary))
                 }
             }
+            .font(.system(size: 10.5, weight: .medium))
+            .monospacedDigit()
+            .lineLimit(1)
+            .animation(nil, value: hoveredAction)
 
-            if let result = item.ocrResult, !result.tables.isEmpty {
-                HStack(spacing: 8) {
-                    Button("Copy Table TSV") {
-                        Task { await coordinator.copyRecognizedContent(from: item, format: .tsv) }
-                    }
-                    .frame(minHeight: 32)
-                    Button("Copy Table Markdown") {
-                        Task { await coordinator.copyRecognizedContent(from: item, format: .markdown) }
-                    }
-                    .frame(minHeight: 32)
+            if let detected = item.ocrResult?.detectedItems.first {
+                Button {
+                    coordinator.openDetectedItem(detected)
+                } label: {
+                    Label(detected.value, systemImage: detected.kind.symbolName)
+                        .font(.system(size: 10.5, weight: .medium))
+                        .lineLimit(1)
+                        .truncationMode(.middle)
                 }
                 .buttonStyle(.plain)
-                .font(.system(size: 10, weight: .medium))
-                .foregroundStyle(.white.opacity(0.82))
+                .foregroundStyle(Color.accentColor)
+                .help("Open \(detected.value)")
+            } else if let text = item.ocrResult?.fullText, !text.isEmpty {
+                Text(text)
+                    .font(.system(size: 10.5))
+                    .foregroundStyle(Color.islandInk(NotchIsland.Ink.secondary))
+                    .lineLimit(1)
             }
         }
     }
 
-    private func actions(for item: ShelfItem) -> some View {
-        let primary = primaryActions(for: item.asset)
+    private func metadataLine(for item: ShelfItem) -> String {
+        var parts = [item.asset.dimensionsDescription]
+        if let duration = item.asset.duration {
+            parts.append(durationText(duration))
+        }
+        parts.append(item.asset.fileSizeDescription)
+        return parts.filter { !$0.isEmpty }.joined(separator: " · ")
+    }
 
-        return HStack(spacing: 6) {
-            ForEach(primary) { action in
+    /// One quiet toolbar: the quick actions and More side by side, with no
+    /// box around them. Each control lights only under the pointer, and its
+    /// name replaces the metadata line while it does.
+    private func actions(for item: ShelfItem) -> some View {
+        HStack(spacing: 2) {
+            ForEach(primaryActions(for: item.asset)) { action in
                 actionButton(action, item: item)
             }
 
-            Spacer(minLength: 0)
-
-            // The surface goes around the menu, not inside its label: the
-            // borderless menu style hosts the label itself and dropped the
-            // glass chip, so this one control sat bare next to four buttons
-            // that all had one.
             Menu { shelfMenuContent(for: item) } label: {
                 Image(systemName: "ellipsis")
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(.white)
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(Color.islandInk(NotchIsland.Ink.secondary))
                     .frame(
                         width: NotchIconButton.minimumHitSize,
                         height: NotchIconButton.minimumHitSize
                     )
                     .contentShape(Rectangle())
             }
-            .menuStyle(.borderlessButton)
-            .menuIndicator(.hidden)
+            .islandMenuStyle()
             .fixedSize()
-            .frame(
-                width: NotchIconButton.minimumHitSize,
-                height: NotchIconButton.minimumHitSize
-            )
-            .notchControlSurface(
-                in: RoundedRectangle(cornerRadius: 7, style: .continuous),
-                reduceTransparency: reduceTransparency
-            )
             .help("More actions")
             .accessibilityLabel("More capture actions")
+
+            Spacer(minLength: 0)
         }
+        .padding(.leading, -8)
     }
 
     @ViewBuilder
@@ -369,6 +366,29 @@ struct ShelfContent: View {
             menuAction(.share, item: item)
             menuAction(.airDrop, item: item)
             menuAction(.localSend, item: item)
+            menuAction(.shareLink, item: item)
+            menuAction(.sendToAgent, item: item)
+        }
+
+        if let result = item.ocrResult,
+           !result.tables.isEmpty || result.detectedItems.count > 1 {
+            Section("Recognized Text") {
+                ForEach(result.detectedItems.dropFirst().prefix(5)) { detected in
+                    Button {
+                        coordinator.openDetectedItem(detected)
+                    } label: {
+                        Label(detected.value, systemImage: detected.kind.symbolName)
+                    }
+                }
+                if !result.tables.isEmpty {
+                    Button("Copy Table as TSV") {
+                        Task { await coordinator.copyRecognizedContent(from: item, format: .tsv) }
+                    }
+                    Button("Copy Table as Markdown") {
+                        Task { await coordinator.copyRecognizedContent(from: item, format: .markdown) }
+                    }
+                }
+            }
         }
 
         Section("Create & transform") {
@@ -430,22 +450,31 @@ struct ShelfContent: View {
 
     private func actionButton(_ action: ShareAction, item: ShelfItem) -> some View {
         let title = action.title(for: item.asset)
+        let isHovered = hoveredAction == action
         return Button {
             coordinator.perform(action, on: item)
         } label: {
             Image(systemName: action.symbolName)
-                .font(.system(size: 12))
+                .font(.system(size: 13, weight: .medium))
                 .frame(
                     width: NotchIconButton.minimumHitSize,
                     height: NotchIconButton.minimumHitSize
                 )
-                .foregroundStyle(.white)
-                .notchControlSurface(
-                    in: RoundedRectangle(cornerRadius: 7, style: .continuous),
-                    reduceTransparency: reduceTransparency
+                .foregroundStyle(Color.islandInk(isHovered ? NotchIsland.Ink.primary : NotchIsland.Ink.secondary))
+                .background(
+                    Color.islandInk(isHovered ? NotchIsland.Surface.hover : 0),
+                    in: RoundedRectangle(cornerRadius: 10, style: .continuous)
                 )
+                .contentShape(Rectangle())
         }
         .buttonStyle(NotchPressButtonStyle())
+        .onHover { hovering in
+            if hovering {
+                hoveredAction = action
+            } else if hoveredAction == action {
+                hoveredAction = nil
+            }
+        }
         .help(title)
         .accessibilityLabel(title)
     }
@@ -589,7 +618,7 @@ struct ShelfContent: View {
         .background {
             RoundedRectangle(cornerRadius: 8).fill(.white.opacity(0.07))
         }
-        .animation(reduceMotion ? nil : .snappy, value: coordinator.stack.count)
+        .animation(NotchMotion.selection(reduceMotion: reduceMotion), value: coordinator.stack.count)
     }
 
     private var pager: some View {
@@ -613,7 +642,7 @@ struct ShelfContent: View {
                                 RoundedRectangle(cornerRadius: 4)
                                     .strokeBorder(
                                         index == coordinator.selectedShelfIndex
-                                            ? Color.accentColor : .white.opacity(0.18),
+                                            ? Color.white : .white.opacity(0.18),
                                         lineWidth: index == coordinator.selectedShelfIndex ? 2 : 1
                                     )
                             }
@@ -646,55 +675,81 @@ struct ShelfContent: View {
     }
 }
 
+/// Whether the horizontal grid has tiles beyond either edge.
+private struct ShelfScrollOverflow: Equatable {
+    var leading = false
+    var trailing = false
+}
+
+/// A capture is recognised by its picture, not its file name, so the tile is
+/// all thumbnail and the name only appears under the pointer. The selected
+/// tile gets a white outline: the old navy fill sank into the island's black.
 private struct ShelfGridCell: View {
     let item: ShelfItem
     let isSelected: Bool
 
-    var body: some View {
-        HStack(spacing: 7) {
-            Group {
-                if let thumbnail = item.thumbnail {
-                    Image(nsImage: thumbnail)
-                        .resizable()
-                        .aspectRatio(contentMode: .fill)
-                } else {
-                    Rectangle()
-                        .fill(.white.opacity(0.08))
-                        .overlay {
-                            Image(systemName: item.asset.kind.symbolName)
-                                .foregroundStyle(.white.opacity(0.6))
-                        }
-                }
-            }
-            .frame(width: 38, height: 34)
-            .clipShape(RoundedRectangle(cornerRadius: 6))
+    @State private var isHovered = false
 
-            VStack(alignment: .leading, spacing: 2) {
+    var body: some View {
+        let shape = RoundedRectangle(cornerRadius: 9, style: .continuous)
+        Group {
+            if let thumbnail = item.thumbnail {
+                Image(nsImage: thumbnail)
+                    .resizable()
+                    .aspectRatio(contentMode: .fill)
+            } else {
+                Rectangle()
+                    .fill(Color.islandInk(0.08))
+                    .overlay {
+                        Image(systemName: item.asset.kind.symbolName)
+                            .font(.system(size: 15))
+                            .foregroundStyle(Color.islandInk(NotchIsland.Ink.tertiary))
+                    }
+            }
+        }
+        .frame(width: Self.width, height: 48)
+        .overlay(alignment: .bottomLeading) {
+            if isHovered {
                 Text(item.asset.displayName)
                     .font(.system(size: 9, weight: .semibold))
                     .foregroundStyle(.white)
                     .lineLimit(1)
                     .truncationMode(.middle)
-                Text(item.asset.fileSizeDescription)
-                    .font(.system(size: 9, design: .rounded))
-                    .foregroundStyle(.white.opacity(0.5))
+                    .padding(.horizontal, 5)
+                    .padding(.top, 10)
+                    .padding(.bottom, 3)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(
+                        LinearGradient(colors: [.clear, .black.opacity(0.75)], startPoint: .top, endPoint: .bottom)
+                    )
+                    .transition(.opacity)
             }
-            Spacer(minLength: 0)
         }
-        .padding(6)
-        .frame(width: 132)
-        .frame(minHeight: 48)
-        .background {
-            RoundedRectangle(cornerRadius: 9)
-                .fill(isSelected ? Color.accentColor.opacity(0.23) : Color.white.opacity(0.07))
+        .overlay(alignment: .topTrailing) {
+            if let duration = item.asset.duration {
+                let total = Int(duration.rounded())
+                Text(String(format: "%d:%02d", total / 60, total % 60))
+                    .font(.system(size: 8, weight: .bold))
+                    .monospacedDigit()
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 4)
+                    .padding(.vertical, 1)
+                    .background(.black.opacity(0.6), in: Capsule())
+                    .padding(3)
+            }
         }
+        .clipShape(shape)
         .overlay {
-            RoundedRectangle(cornerRadius: 9)
-                .strokeBorder(
-                    isSelected ? Color.accentColor.opacity(0.85) : Color.white.opacity(0.1),
-                    lineWidth: 1
-                )
+            shape.strokeBorder(
+                isSelected ? Color.white : Color.white.opacity(0.10),
+                lineWidth: isSelected ? 2 : 1
+            )
         }
-        .contentShape(RoundedRectangle(cornerRadius: 9))
+        .contentShape(shape)
+        .onHover { isHovered = $0 }
+        .animation(.easeOut(duration: 0.12), value: isHovered)
+        .help(item.asset.displayName)
     }
+
+    static let width: CGFloat = 72
 }

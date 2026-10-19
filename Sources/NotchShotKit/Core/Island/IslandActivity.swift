@@ -14,6 +14,7 @@ public enum IslandActivityKind: String, Sendable, Codable, CaseIterable, Hashabl
     case transfer
     case external
     case calendar
+    case call
 
     public var title: String {
         switch self {
@@ -25,6 +26,7 @@ public enum IslandActivityKind: String, Sendable, Codable, CaseIterable, Hashabl
         case .transfer: "Transfer"
         case .external: "Activity"
         case .calendar: "Calendar"
+        case .call: "Call"
         }
     }
 }

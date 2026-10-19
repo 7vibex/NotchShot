@@ -245,6 +245,12 @@ extension AppCoordinator {
             }
             openProductivity(tool: .localSend, localSendFiles: [item.asset.url])
 
+        case .shareLink:
+            uploadShareLink(for: item.asset)
+
+        case .sendToAgent:
+            sendToAgent(item.asset)
+
         case .reveal:
             NSWorkspace.shared.activateFileViewerSelecting([item.asset.url])
 
@@ -549,8 +555,15 @@ extension AppCoordinator {
     /// shelf otherwise lacked — a JPEG for email, an HEIC for size, a PNG for
     /// fidelity — using the same hardened write path as every other export.
     func convertShelfItem(_ item: ShelfItem) {
+        // Video, animated GIF and PDF have their own targets; a still image
+        // goes through the format-and-quality dialog below.
+        let mediaTargets = MediaConversion.targets(for: item.asset.url)
+        if !mediaTargets.isEmpty, !item.asset.kind.isImage || MediaConversion.source(for: item.asset.url) == .animatedGIF {
+            convertMedia(item, targets: mediaTargets)
+            return
+        }
         guard item.asset.kind.isImage else {
-            present(error: NotchShotError.exportFailed("Only images can be converted"))
+            present(error: NotchShotError.exportFailed("This kind of file can't be converted"))
             return
         }
         let source = item.image?.cgImage ?? SafeImageFile.cgImage(for: item.asset)
@@ -675,6 +688,94 @@ extension AppCoordinator {
                 self.history.record(asset: asset, image: cgImage, thumbnail: thumbnailImage)
                 self.persistHistory()
                 self.push(ShelfItem(asset: asset, thumbnail: thumbnail, image: captured))
+            } catch is CancellationError {
+            } catch {
+                self.present(error: error)
+            }
+        }
+    }
+
+    /// Uploads to the user's own bucket and copies the link. Without a
+    /// configured bucket this opens the Sharing settings instead of failing
+    /// silently.
+    public func uploadShareLink(for asset: CaptureAsset) {
+        let extras = ExtrasPreferences.shared
+        let configuration = extras.shareLink
+        guard configuration.isComplete,
+              ShareLinkKeychain.secret(for: configuration.accessKeyID) != nil else {
+            present(error: ShareLinkUploader.UploadError.notConfigured)
+            requestedSettingsSection = "sharing"
+            onOpenSettings?()
+            return
+        }
+        guard SafeAssetFile.isCurrentAndSafe(asset) else {
+            present(error: NotchShotError.exportFailed("That file changed or is no longer safely readable"))
+            return
+        }
+        let selectedAsset: CaptureAsset
+        do {
+            selectedAsset = try ShareLinkUploader.assetForSelection(asset)
+        } catch {
+            present(error: error)
+            return
+        }
+        let processingLabel = beginProcessing("Uploading…")
+        Task { [weak self] in
+            guard let self else { return }
+            defer { self.endProcessing(processingLabel) }
+            do {
+                let secret = ShareLinkKeychain.secret(for: configuration.accessKeyID)
+                let link = try await ShareLinkUploader.upload(selectedAsset, configuration: configuration, secret: secret)
+                if extras.copiesShareLinkAfterUpload {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(link.absoluteString, forType: .string)
+                }
+                self.presentIslandEvent(IslandTransientEvent(
+                    kind: .notice,
+                    severity: .success,
+                    coalescingKey: "shareLink",
+                    symbolName: "link",
+                    title: extras.copiesShareLinkAfterUpload ? "Link copied" : "Uploaded",
+                    detail: link.host
+                ))
+            } catch {
+                self.present(error: error)
+            }
+        }
+    }
+
+    /// Video, GIF and PDF conversion: pick a target, write next to the output
+    /// folder, and park the results on the shelf beside the original.
+    func convertMedia(_ item: ShelfItem, targets: [MediaConversionTarget]) {
+        guard SafeAssetFile.isCurrentAndSafe(item.asset) else {
+            present(error: NotchShotError.exportFailed("That file changed or is no longer safely readable"))
+            return
+        }
+        let popup = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 240, height: 26), pullsDown: false)
+        for target in targets { popup.addItem(withTitle: target.title) }
+        popup.setAccessibilityLabel("Output format")
+
+        let alert = NSAlert()
+        alert.messageText = "Convert \(item.asset.url.lastPathComponent)"
+        alert.informativeText = "The converted file is saved to your output folder and added to the shelf. The original is not changed."
+        alert.alertStyle = .informational
+        alert.accessoryView = popup
+        alert.addButton(withTitle: "Convert")
+        alert.addButton(withTitle: "Cancel")
+        NSApp.activate(ignoringOtherApps: true)
+        guard alert.runModal() == .alertFirstButtonReturn,
+              targets.indices.contains(popup.indexOfSelectedItem) else { return }
+        let target = targets[popup.indexOfSelectedItem]
+        let directory = Preferences.shared.outputFolder
+        let source = item.asset.url
+
+        let processingLabel = beginProcessing("Converting to \(target.title)")
+        Task { [weak self] in
+            guard let self else { return }
+            defer { self.endProcessing(processingLabel) }
+            do {
+                let outputs = try await MediaConversion.convert(source, to: target, in: directory)
+                self.stageExternalFiles(outputs, summarizesDocuments: false, forceShowShelf: true)
             } catch is CancellationError {
             } catch {
                 self.present(error: error)

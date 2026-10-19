@@ -23,7 +23,30 @@ enum NotchIsland {
         static let floatingTopInset: CGFloat = 6
         static let expandedCaptureWidth: CGFloat = 432
         static let expandedCaptureHeight: CGFloat = 164
+        /// Below the camera on a physical notch, where the menu's title row
+        /// moves up into the band beside the camera instead of stacking under it.
+        static let expandedCaptureBodyHeight: CGFloat = 118
+        /// The least room either side of a physical camera for the menu's
+        /// top-row controls, padding and camera clearance included.
+        static let expandedCaptureWing: CGFloat = 125
         static let expandedCornerRadius: CGFloat = 32
+
+        /// Single-row expansions (a timer, a call) wrap the camera the way the
+        /// phone's do: their controls sit in the band beside the cutout, so
+        /// the open island has no empty black "forehead" above them. The
+        /// heights put a 40 pt control 12 pt from the bottom edge, and the
+        /// corner radius is half the height, so the controls are concentric
+        /// with the corners (radius − margin = the control's own radius).
+        static let expandedRowHeight: CGFloat = 64
+        static let expandedCallHeight: CGFloat = 68
+        /// Visible width each side of a physical camera for those rows: the
+        /// wider of the two sides' content, plus clearance from the camera.
+        static let expandedTimerWing: CGFloat = 158
+        static let expandedCallWing: CGFloat = 206
+        /// The same rows on a display with no cutout, where nothing sits
+        /// between the two sides.
+        static let expandedTimerFloatingWidth: CGFloat = 330
+        static let expandedCallFloatingWidth: CGFloat = 430
 
         /// Inset for content inside the synthetic island's rounded ends.
         ///
@@ -76,20 +99,35 @@ enum NotchIsland {
         static let hairline: CGFloat = 1
     }
 
-    /// The shell is deliberately more elastic than its content. This makes the
-    /// black shape feel alive without letting text and controls wobble as live
-    /// values update.
-    enum Motion {
-        static let shellResponse = 0.42
-        static let shellDamping = 0.76
-        static let contentResponse = 0.30
-        static let contentDamping = 0.86
+    /// Fills for controls drawn on the island: near-black with a trace of
+    /// grey, so a pill or tile reads as a shape without turning into a grey
+    /// slab next to the shell's black. The edge is what defines the shape.
+    enum Surface {
+        static let control: Double = 0.065
+        static let hover: Double = 0.11
+        static let selected: Double = 0.14
+        static let edge: Double = 0.08
     }
+
+    // Motion lives in `NotchMotion`: the shell is still more elastic than
+    // its content, but the numbers now depend on the animation style.
 
     /// Hit targets. `control` is the floor for anything clickable; a smaller
     /// number here is always a bug, not a density choice.
     enum Hit {
         static let control = NotchShotDesignSystem.minimumControlTarget
+    }
+}
+
+extension View {
+    /// The island's one control surface: a near-black fill and a hairline.
+    func islandControlSurface<S: InsettableShape>(_ shape: S, isHovered: Bool = false) -> some View {
+        background(
+            shape.fill(Color.islandInk(isHovered ? NotchIsland.Surface.hover : NotchIsland.Surface.control))
+        )
+        .overlay(
+            shape.strokeBorder(Color.islandInk(NotchIsland.Surface.edge), lineWidth: NotchIsland.Stroke.hairline)
+        )
     }
 }
 

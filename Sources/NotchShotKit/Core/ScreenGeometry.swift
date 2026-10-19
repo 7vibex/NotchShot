@@ -128,6 +128,15 @@ public enum ScreenLookup {
         NSScreen.screens.first { self.displayID(for: $0) == displayID }
     }
 
+    /// Every attached display's backing scale, keyed by display id.
+    public static func backingScales() -> [CGDirectDisplayID: CGFloat] {
+        var scales: [CGDirectDisplayID: CGFloat] = [:]
+        for screen in NSScreen.screens {
+            if let id = displayID(for: screen) { scales[id] = screen.backingScaleFactor }
+        }
+        return scales
+    }
+
     /// Screen containing a Cocoa-space point, falling back to the main screen.
     public static func screen(containingCocoaPoint point: CGPoint) -> NSScreen? {
         NSScreen.screens.first { $0.frame.contains(point) } ?? NSScreen.main

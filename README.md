@@ -8,10 +8,13 @@ A local-first macOS 26 capture utility that lives in the MacBook notch. Screensh
 recording, annotation, OCR, history and floating captures, with the notch acting as the
 capture launcher, the recording HUD, and the post-capture shelf.
 
-No account, no backend, no telemetry, no subscription. Everything stays on the Mac. The
-only network calls are explicit: Spotify artwork over HTTPS (Apple Events fallback only),
-Open-Meteo on weather refresh, LocalSend to a user-approved private-network receiver, and
-signed update checks in configured builds.
+No NotchShot account, backend, telemetry, or subscription. Captures stay on the Mac
+unless you choose a sharing action. Optional integrations use the network: Spotify
+artwork over HTTPS (Apple Events fallback only), Open-Meteo weather, LRCLIB lyrics,
+GitHub through your installed `gh` CLI, LocalSend to a user-approved private-network
+receiver, upload links through your configured S3 bucket, and signed update checks
+in configured builds. Lyrics lookup sends track and artist names to LRCLIB; share-link
+upload sends the selected file to your configured storage provider.
 
 <details>
 <summary>See screenshots</summary>

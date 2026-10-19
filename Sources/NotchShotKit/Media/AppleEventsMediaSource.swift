@@ -18,35 +18,70 @@ struct AppleScriptExecution: Sendable {
 }
 
 /// `NSAppleScript` is synchronous and may wait several seconds for another
-/// application. The class is also main-thread-only by contract — scripting
-/// additions and the event machinery behind a script are main-thread
-/// residents — so compilation, the script cache, and execution all live on
-/// the main actor. The waits are bounded by the script timeout, and every
-/// caller is an actor, so a slow script delays a poll tick rather than
-/// freezing the interface.
+/// application. Every script runs on one dedicated thread, so a slow player
+/// delays a poll tick rather than the interface.
+///
+/// Not the main thread: there, every Apple Event blocked AppKit until the
+/// other app answered. Profiled with Spotify playing, polls held the main
+/// thread for hundreds of milliseconds and once for over a second, which
+/// froze the island mid-open. Not a pool of threads either: `NSAppleScript`
+/// is not safe to use concurrently, so compilation, the script cache, and
+/// execution are confined to the one thread, one script at a time.
 actor AppleScriptExecutor {
     private let timeoutSeconds = 2
 
     func execute(_ source: String) async -> AppleScriptExecution {
-        await MainThreadScriptRunner.shared.execute(source, timeoutSeconds: timeoutSeconds)
+        await ScriptThreadRunner.shared.execute(source, timeoutSeconds: timeoutSeconds)
     }
 }
 
-/// Owns every `NSAppleScript` on the thread its contract requires. One
-/// shared runner also means one shared cache: the queue, shuffle/repeat, and
-/// Now Playing services read the same compiled scripts instead of each
-/// keeping their own.
-@MainActor
-private final class MainThreadScriptRunner {
-    static let shared = MainThreadScriptRunner()
+/// Owns every `NSAppleScript` and the thread they run on. One shared runner
+/// also means one shared cache: the queue, shuffle/repeat, and Now Playing
+/// services read the same compiled scripts instead of each keeping their own.
+private final class ScriptThreadRunner: @unchecked Sendable {
+    static let shared = ScriptThreadRunner()
 
+    private let condition = NSCondition()
+    /// Guarded by `condition`.
+    private var jobs: [() -> Void] = []
+    /// Touched only on the script thread.
     private var scripts: [String: NSAppleScript] = [:]
     private var scriptOrder: [String] = []
     private let maximumCachedScripts = 16
 
-    private init() {}
+    private init() {
+        let thread = Thread { [unowned self] in run() }
+        thread.name = "NotchShot.AppleScript"
+        thread.qualityOfService = .utility
+        thread.start()
+    }
 
-    func execute(_ source: String, timeoutSeconds: Int) -> AppleScriptExecution {
+    func execute(_ source: String, timeoutSeconds: Int) async -> AppleScriptExecution {
+        await withCheckedContinuation { continuation in
+            enqueue {
+                continuation.resume(returning: self.run(source, timeoutSeconds: timeoutSeconds))
+            }
+        }
+    }
+
+    private func enqueue(_ job: @escaping () -> Void) {
+        condition.lock()
+        jobs.append(job)
+        condition.signal()
+        condition.unlock()
+    }
+
+    private func run() {
+        while true {
+            condition.lock()
+            while jobs.isEmpty { condition.wait() }
+            let job = jobs.removeFirst()
+            condition.unlock()
+            autoreleasepool { job() }
+        }
+    }
+
+    private func run(_ source: String, timeoutSeconds: Int) -> AppleScriptExecution {
         let boundedSource = """
         with timeout of \(timeoutSeconds) seconds
             \(source)

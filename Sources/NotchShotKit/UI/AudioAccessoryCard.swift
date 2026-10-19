@@ -15,52 +15,23 @@ import SwiftUI
 struct AudioAccessoryCard: View {
     let snapshot: ContextSnapshot
 
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
-    @State private var isFloating = false
-
-    private var accent: Color {
-        Color(nsColor: NotchShotColorPolicy.readableAccentOnBlack(
-            NSColor(hex: snapshot.accentHex) ?? .systemGreen
-        ))
-    }
-
     private var battery: AccessoryBattery? { snapshot.accessory }
 
     private var isConnected: Bool { snapshot.metric == "Connected" }
 
     var body: some View {
-        HStack(spacing: NotchIsland.Spacing.group) {
+        NotchAlertRow(
+            title: snapshot.subtitle ?? snapshot.title,
+            subtitle: isConnected ? "Connected" : "Disconnected"
+        ) {
             artwork
-
-            VStack(alignment: .leading, spacing: 3) {
-                Text(snapshot.subtitle ?? snapshot.title)
-                    .font(.system(size: 13, weight: .bold))
-                    .foregroundStyle(Color.islandInk(NotchIsland.Ink.primary))
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-
-                Text(isConnected ? "Connected" : "Disconnected")
-                    .font(.system(size: 10, weight: .semibold, design: .rounded))
-                    .foregroundStyle(accent)
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-
+        } trailing: {
             if let battery, battery.hasAnyLevel {
                 levels(for: battery)
             }
         }
-        .padding(.horizontal, NotchIsland.Spacing.gutter)
-        .padding(.vertical, NotchIsland.Spacing.row)
+        .padding(.horizontal, NotchAlertStyle.horizontalInset)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .task(id: snapshot.subtitle) {
-            guard !reduceMotion, isConnected else { return }
-            // A beat's delay so the float starts after the card has settled
-            // rather than fighting the island's own expansion.
-            try? await Task.sleep(for: .milliseconds(120))
-            guard !Task.isCancelled else { return }
-            isFloating = true
-        }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("\(snapshot.subtitle ?? snapshot.title), \(isConnected ? "connected" : "disconnected")")
         .accessibilityValue(accessibilityValue)
@@ -70,24 +41,16 @@ struct AudioAccessoryCard: View {
     /// small on purpose: this card appears unbidden, so it should not be the
     /// liveliest thing on screen.
     private var artwork: some View {
-        Image(systemName: battery?.symbolName ?? "headphones")
-            .font(.system(size: 30, weight: .light))
-            .foregroundStyle(Color.islandInk(NotchIsland.Ink.primary))
-            .symbolRenderingMode(.hierarchical)
-            .frame(width: 46, height: 46)
-            .offset(y: isFloating ? -3 : 3)
-            .shadow(
-                color: accent.opacity(isFloating ? 0.34 : 0.16),
-                radius: isFloating ? 12 : 6,
-                y: isFloating ? 6 : 3
-            )
-            .animation(
-                reduceMotion
-                    ? nil
-                    : .easeInOut(duration: 2.2).repeatForever(autoreverses: true),
-                value: isFloating
-            )
-            .accessibilityHidden(true)
+        // A beat's delay so the float starts after the card has settled
+        // rather than fighting the island's own expansion.
+        LayerDrift(amplitude: 2, halfPeriod: 2.2, delay: 0.12, drifts: isConnected) {
+            Image(systemName: battery?.symbolName ?? "headphones")
+                .font(.system(size: 26, weight: .light))
+                .foregroundStyle(Color.islandInk(isConnected ? NotchIsland.Ink.primary : NotchIsland.Ink.secondary))
+                .symbolRenderingMode(.hierarchical)
+        }
+        // A new accessory starts its drift over.
+        .id(snapshot.subtitle)
     }
 
     @ViewBuilder
@@ -110,17 +73,17 @@ struct AudioAccessoryCard: View {
         VStack(spacing: 3) {
             if let symbol {
                 Image(systemName: symbol)
-                    .font(.system(size: 8, weight: .semibold))
+                    .font(.system(size: 10, weight: .semibold))
                     .foregroundStyle(Color.islandInk(NotchIsland.Ink.tertiary))
                     .accessibilityHidden(true)
             } else if !label.isEmpty {
                 Text(label)
-                    .font(.system(size: 8, weight: .bold, design: .rounded))
+                    .font(.system(size: 10, weight: .semibold))
                     .foregroundStyle(Color.islandInk(NotchIsland.Ink.tertiary))
             }
 
             Text("\(percent)%")
-                .font(.system(size: 11, weight: .bold, design: .rounded))
+                .font(.system(size: 12, weight: .semibold))
                 .foregroundStyle(Color.islandInk(NotchIsland.Ink.primary))
                 .monospacedDigit()
 

@@ -28,6 +28,7 @@ public final class MediaCoordinator {
     /// `NSWorkspace` icon lookups hit the disk and the artwork badge would
     /// otherwise repeat one on every position tick.
     public private(set) var sourceApplicationIcon: NSImage?
+    @ObservationIgnored private var artworkLoad: Task<Void, Never>?
     /// Session and display state let the notch remove interaction at the lock
     /// window and stop decorative animation while the screens are asleep.
     public private(set) var isSessionActive = true
@@ -94,6 +95,7 @@ public final class MediaCoordinator {
         }
         distributedObservers.removeAll()
         snapshot = .empty
+        artworkLoad?.cancel()
         artwork = nil
         artworkAccentColor = ArtworkAccentColor.fallback
         sourceApplicationIcon = nil
@@ -303,6 +305,7 @@ public final class MediaCoordinator {
         }
         Log.media.notice("\(kind.rawValue) stream ended; re-selecting")
         snapshot = .empty
+        artworkLoad?.cancel()
         artwork = nil
         artworkAccentColor = ArtworkAccentColor.fallback
         sourceApplicationIcon = nil
@@ -325,13 +328,39 @@ public final class MediaCoordinator {
             return
         }
         if snapshot.artworkData != update.artworkData {
-            artwork = update.artworkData.flatMap(NSImage.init(data:))
-            artworkAccentColor = ArtworkAccentColor.extract(from: artwork)
+            loadArtwork(from: update.artworkData)
         }
         if snapshot.applicationBundleID != update.applicationBundleID {
             sourceApplicationIcon = Self.applicationIcon(for: update.applicationBundleID)
         }
         snapshot = update
+    }
+
+    /// Decodes cover art off the main thread, at the size the notch draws it.
+    ///
+    /// Players hand over covers up to 1000+ px. Decoding that on the main
+    /// thread hitched the notch on every track change, and drawing it into a
+    /// 20–56 pt tile made the GPU minify a huge texture every frame, which is
+    /// what made the cover shimmer while it moved. The previous cover stays up
+    /// until the new one is ready, so a track change never flashes the
+    /// placeholder.
+    private func loadArtwork(from data: Data?) {
+        artworkLoad?.cancel()
+        guard let data else {
+            artworkLoad = nil
+            artwork = nil
+            artworkAccentColor = ArtworkAccentColor.fallback
+            return
+        }
+        artworkLoad = Task { [weak self] in
+            let thumbnail = await Task.detached(priority: .userInitiated) {
+                ArtworkThumbnail.make(from: data)
+            }.value
+            guard !Task.isCancelled, let self else { return }
+            let image = thumbnail.map(ArtworkThumbnail.image(from:))
+            self.artwork = image
+            self.artworkAccentColor = ArtworkAccentColor.extract(from: image)
+        }
     }
 
     // MARK: Commands

@@ -1,0 +1,41 @@
+[0/1] Planning build
+Building for debugging...
+[0/17] Write sources
+[1/17] Write swift-version--58304C5D6DBC2206.txt
+[3/5] Emitting module NotchShotKitTests
+[4/5] Compiling NotchShotKitTests PrivacyIndicatorWorkerTests.swift
+/Users/vibex/Documents/NOTCH/Tests/NotchShotKitTests/PrivacyIndicatorWorkerTests.swift:181:18: warning: weak variable 'weakMonitor' was never mutated; consider changing to 'let' constant [#WeakMutability]
+179 |         backend.failedProperty = .cameraRunning(40)
+180 |         var monitor: PrivacyIndicatorMonitor? = PrivacyIndicatorMonitor(backend: backend, queue: queue)
+181 |         weak var weakMonitor = monitor
+    |                  `- warning: weak variable 'weakMonitor' was never mutated; consider changing to 'let' constant [#WeakMutability]
+182 |         monitor?.start()
+183 |         await drain(queue)
+
+[#WeakMutability]: <https://docs.swift.org/compiler/documentation/diagnostics/weak-mutability>
+[4/6] Write Objects.LinkFileList
+[5/6] Linking NotchShotPackageTests
+Build complete! (86.92s)
+Test Suite 'Selected tests' started at 2026-10-11 21:38:50.187.
+Test Suite 'NotchShotPackageTests.xctest' started at 2026-10-11 21:38:50.266.
+Test Suite 'NotchShotPackageTests.xctest' passed at 2026-10-11 21:38:50.267.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.000) seconds
+Test Suite 'Selected tests' passed at 2026-10-11 21:38:50.267.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.080) seconds
+􀟈  Test run started.
+􀄵  Testing Library Version: 1902
+􀄵  Target Platform: arm64e-apple-macos14.0
+􀟈  Suite "Privacy indicator worker" started.
+􀟈  Test "A blocked OS query does not block main, and stop/restart rejects its old snapshot" started.
+􁁛  Test "A blocked OS query does not block main, and stop/restart rejects its old snapshot" passed after 0.012 seconds.
+􀟈  Test "Every running event publishes in order and preserves client deduplication order" started.
+􁁛  Test "Every running event publishes in order and preserves client deduplication order" passed after 0.001 seconds.
+􀟈  Test "Old list and running callbacks cannot query or publish after restart; repeated starts are idempotent" started.
+􁁛  Test "Old list and running callbacks cannot query or publish after restart; repeated starts are idempotent" passed after 0.002 seconds.
+􀟈  Test "Rebuild removes each successful registration once, and deinitialization tears down without retention" started.
+􁁛  Test "Rebuild removes each successful registration once, and deinitialization tears down without retention" passed after 0.005 seconds.
+􀟈  Test "Actual OS initial snapshot completes on the dedicated queue" started.
+􁁛  Test "Actual OS initial snapshot completes on the dedicated queue" passed after 1.797 seconds.
+􁁛  Suite "Privacy indicator worker" passed after 1.821 seconds.
+Privacy actual OS initial snapshot: 1.775555709 seconds; main thread: false; microphone client count: 1
+􁁛  Test run with 5 tests in 1 suite passed after 1.829 seconds.

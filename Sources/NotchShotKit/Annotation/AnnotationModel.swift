@@ -283,7 +283,19 @@ public struct AnnotationDocument: Codable, Sendable, Equatable {
 
     /// Topmost element under a point, for selection.
     public func element(at point: CGPoint) -> AnnotationElement? {
-        sortedElements.reversed().first { $0.contains(point) }
+        var topmostIndex: Int?
+        var topmostOrder = Int.min
+        // Stable ascending sorting followed by reversal makes the last input
+        // element win a tie. Walk in that order without allocating or sorting.
+        for index in elements.indices.reversed() {
+            let order = elements[index].order
+            if topmostIndex != nil, order <= topmostOrder { continue }
+            if elements[index].contains(point) {
+                topmostIndex = index
+                topmostOrder = order
+            }
+        }
+        return topmostIndex.map { elements[$0] }
     }
 
     public var hasRedactions: Bool {

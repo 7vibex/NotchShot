@@ -1,0 +1,78 @@
+==> Building (release)
+[0/1] Planning build
+Building for production...
+[0/2] Write swift-version--58304C5D6DBC2206.txt
+[2/3] Compiling NotchShotAIReporterSupport ActivityHeartbeat.swift
+[3/4] Compiling NotchShotKit AnnotationDocumentController.swift
+/Users/vibex/Documents/NOTCH/Sources/NotchShotKit/Context/PrivacyIndicatorWorker.swift:164:20: warning: 'init(cString:)' is deprecated: Use String(decoding: array, as: UTF8.self) instead, after truncating the null termination. [#DeprecatedDeclaration]
+162 |         var buffer = [CChar](repeating: 0, count: Int(MAXPATHLEN) * 4)
+163 |         guard proc_pidpath(pid, &buffer, UInt32(buffer.count)) > 0 else { return nil }
+164 |         let path = String(cString: buffer)
+    |                    `- warning: 'init(cString:)' is deprecated: Use String(decoding: array, as: UTF8.self) instead, after truncating the null termination. [#DeprecatedDeclaration]
+165 |         guard let range = path.range(of: ".app/") else { return nil }
+166 |         let bundleURL = URL(fileURLWithPath: String(path[..<range.lowerBound]) + ".app")
+
+[#DeprecatedDeclaration]: <https://docs.swift.org/compiler/documentation/diagnostics/deprecated-declaration>
+[4/5] Compiling NotchShot BundledSelfTest.swift
+Build of product 'NotchShot' complete! (331.23s)
+Building for production...
+[0/2] Write swift-version--58304C5D6DBC2206.txt
+Build of product 'NotchShotOSDRecovery' complete! (0.31s)
+Building for production...
+[0/2] Write swift-version--58304C5D6DBC2206.txt
+Build of product 'NotchShotAdapterRunner' complete! (0.22s)
+Building for production...
+[0/2] Write swift-version--58304C5D6DBC2206.txt
+Build of product 'NotchShotAIReporter' complete! (0.55s)
+Building for production...
+[0/2] Write swift-version--58304C5D6DBC2206.txt
+Build of product 'notchshot-cli' complete! (0.23s)
+==> Assembling bundle
+==> Extracting App Intents metadata
+2026-10-11 22:57:45.518 appintentsmetadataprocessor[82036:6128724] Starting appintentsmetadataprocessor export
+2026-10-11 22:57:45.579 appintentsmetadataprocessor[82036:6128724] Writing Metadata.appintents
+2026-10-11 22:57:45.579 appintentsmetadataprocessor[82036:6128724] Metadata root: /Users/vibex/Documents/NOTCH/dist/.NotchShot.app.staging/Contents/Resources/Metadata.appintents
+==> Signing with identity: FCB1F84EC272464F32F1F439E16BE4A2824D0E7A
+/Users/vibex/Documents/NOTCH/dist/.NotchShot.app.staging/Contents/Frameworks/Sparkle.framework/Versions/B/XPCServices/Installer.xpc: replacing existing signature
+/Users/vibex/Documents/NOTCH/dist/.NotchShot.app.staging/Contents/Frameworks/Sparkle.framework/Versions/B/XPCServices/Downloader.xpc: replacing existing signature
+/Users/vibex/Documents/NOTCH/dist/.NotchShot.app.staging/Contents/Frameworks/Sparkle.framework/Versions/B/Autoupdate: replacing existing signature
+/Users/vibex/Documents/NOTCH/dist/.NotchShot.app.staging/Contents/Frameworks/Sparkle.framework/Versions/B/Updater.app: replacing existing signature
+/Users/vibex/Documents/NOTCH/dist/.NotchShot.app.staging/Contents/Frameworks/Sparkle.framework: replacing existing signature
+/Users/vibex/Documents/NOTCH/dist/.NotchShot.app.staging/Contents/MacOS/NotchShotOSDRecovery: replacing existing signature
+/Users/vibex/Documents/NOTCH/dist/.NotchShot.app.staging/Contents/MacOS/NotchShotAdapterRunner: replacing existing signature
+/Users/vibex/Documents/NOTCH/dist/.NotchShot.app.staging/Contents/MacOS/notchshot-ai: replacing existing signature
+/Users/vibex/Documents/NOTCH/dist/.NotchShot.app.staging/Contents/MacOS/notchshot-cli: replacing existing signature
+/Users/vibex/Documents/NOTCH/dist/.NotchShot.app.staging: replacing existing signature
+==> Verifying
+--prepared:/Users/vibex/Documents/NOTCH/dist/.NotchShot.app.staging/Contents/MacOS/NotchShotOSDRecovery
+--validated:/Users/vibex/Documents/NOTCH/dist/.NotchShot.app.staging/Contents/MacOS/NotchShotOSDRecovery
+--prepared:/Users/vibex/Documents/NOTCH/dist/.NotchShot.app.staging/Contents/MacOS/notchshot-ai
+--validated:/Users/vibex/Documents/NOTCH/dist/.NotchShot.app.staging/Contents/MacOS/notchshot-ai
+--prepared:/Users/vibex/Documents/NOTCH/dist/.NotchShot.app.staging/Contents/MacOS/notchshot-cli
+--validated:/Users/vibex/Documents/NOTCH/dist/.NotchShot.app.staging/Contents/MacOS/notchshot-cli
+--prepared:/Users/vibex/Documents/NOTCH/dist/.NotchShot.app.staging/Contents/MacOS/NotchShotAdapterRunner
+--validated:/Users/vibex/Documents/NOTCH/dist/.NotchShot.app.staging/Contents/MacOS/NotchShotAdapterRunner
+--prepared:/Users/vibex/Documents/NOTCH/dist/.NotchShot.app.staging/Contents/Frameworks/Sparkle.framework/Versions/Current/.
+--prepared:/Users/vibex/Documents/NOTCH/dist/.NotchShot.app.staging/Contents/Frameworks/Sparkle.framework/Versions/Current/Autoupdate
+--validated:/Users/vibex/Documents/NOTCH/dist/.NotchShot.app.staging/Contents/Frameworks/Sparkle.framework/Versions/Current/Autoupdate
+--prepared:/Users/vibex/Documents/NOTCH/dist/.NotchShot.app.staging/Contents/Frameworks/Sparkle.framework/Versions/Current/Updater.app
+--prepared:/Users/vibex/Documents/NOTCH/dist/.NotchShot.app.staging/Contents/Frameworks/Sparkle.framework/Versions/Current/XPCServices/Installer.xpc
+--validated:/Users/vibex/Documents/NOTCH/dist/.NotchShot.app.staging/Contents/Frameworks/Sparkle.framework/Versions/Current/Updater.app
+--prepared:/Users/vibex/Documents/NOTCH/dist/.NotchShot.app.staging/Contents/Frameworks/Sparkle.framework/Versions/Current/XPCServices/Downloader.xpc
+--validated:/Users/vibex/Documents/NOTCH/dist/.NotchShot.app.staging/Contents/Frameworks/Sparkle.framework/Versions/Current/XPCServices/Installer.xpc
+--validated:/Users/vibex/Documents/NOTCH/dist/.NotchShot.app.staging/Contents/Frameworks/Sparkle.framework/Versions/Current/XPCServices/Downloader.xpc
+--validated:/Users/vibex/Documents/NOTCH/dist/.NotchShot.app.staging/Contents/Frameworks/Sparkle.framework/Versions/Current/.
+/Users/vibex/Documents/NOTCH/dist/.NotchShot.app.staging: valid on disk
+/Users/vibex/Documents/NOTCH/dist/.NotchShot.app.staging: satisfies its Designated Requirement
+
+Built: /Users/vibex/Documents/NOTCH/dist/NotchShot.app
+
+Next steps:
+  open /Users/vibex/Documents/NOTCH/dist/NotchShot.app
+
+Signed as: FCB1F84EC272464F32F1F439E16BE4A2824D0E7A
+
+The first capture asks for Screen Recording. Allow it, then QUIT AND
+REOPEN NotchShot — macOS only applies a new capture grant to freshly
+launched processes. Because this build is signed with a real
+certificate, you only have to do this once; later rebuilds keep it.

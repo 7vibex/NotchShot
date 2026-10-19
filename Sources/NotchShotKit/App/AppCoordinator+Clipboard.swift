@@ -106,6 +106,21 @@ extension AppCoordinator {
         ))
     }
 
+    /// Copies a transformed clipping (pretty JSON, a decoded token…) without
+    /// adding it to history: the original stays the record.
+    public func copyClipboardTransform(_ transform: ClipboardTransform, from entry: ClipboardEntry) {
+        clipboardMonitor.copyDerivedTextToPasteboard(transform.output)
+        showContext(ContextSnapshot(
+            kind: .document,
+            title: "Copied",
+            subtitle: transform.preview,
+            metric: transform.title,
+            accentHex: "#64D2FF",
+            expiresAt: Date().addingTimeInterval(2),
+            mayInterruptMedia: false
+        ))
+    }
+
     public func revealClipboardFiles(_ entry: ClipboardEntry) {
         do {
             let urls = try ClipboardMonitor.validatedFileURLs(for: entry)

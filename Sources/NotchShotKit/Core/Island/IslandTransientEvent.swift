@@ -18,6 +18,12 @@ public enum IslandTransientKind: String, Sendable, Codable, Equatable, Hashable 
     case activityCompleted
     case activityFailed
     case captureSaved
+    /// A one-line confirmation from a NotchShot action ("Link copied").
+    case notice
+    /// Caps Lock turned on or off.
+    case capsLock
+    /// The keyboard switched to another language or layout.
+    case inputSource
 }
 
 /// A burst: the island stretches, shows an icon and a line, holds briefly,

@@ -77,6 +77,7 @@ extension AppCoordinator {
         externalActivities.stop()
         focusStatus.stop()
         islandGestureCoordinator?.stop()
+        stopUtilities()
     }
 
     /// Sources that change without passing through `refreshActivity` on their
@@ -133,7 +134,9 @@ extension AppCoordinator {
         var presentation = islandEngine.present(
             configuration: IslandEngineConfiguration(
                 maximumVisibleActivities: preferences.maximumVisibleActivities,
-                expandsOnHover: preferences.hoverPeekEnabled
+                expandsOnHover: preferences.hoverPeekEnabled,
+                anchoredKind: preferences.keepsMediaCentered ? .media : nil,
+                preferredSlots: preferences.keepsMediaCentered ? [.ai: .leading] : [:]
             ),
             isHoverPreviewing: isPeeking && media.isSessionActive,
             now: now
@@ -210,6 +213,28 @@ extension AppCoordinator {
             }
         } else {
             mediaActivityStartedAt = nil
+        }
+
+        if preferences.showsCallActivity {
+            let calls = context.privacy.microphoneClients.filter {
+                CallActivityPolicy.isCall(bundleIdentifier: $0.bundleIdentifier)
+            }
+            let live = Set(calls.map(\.bundleIdentifier))
+            callActivityStartedAt = callActivityStartedAt.filter { live.contains($0.key) }
+            hiddenCallActivities.formIntersection(live)
+            meetingMutedApps.formIntersection(live)
+            meetingCameraOffApps.formIntersection(live)
+            for call in calls where !hiddenCallActivities.contains(call.bundleIdentifier) {
+                let startedAt = callActivityStartedAt[call.bundleIdentifier] ?? now
+                callActivityStartedAt[call.bundleIdentifier] = startedAt
+                activities.append(IslandActivityAdapters.call(
+                    bundleIdentifier: call.bundleIdentifier,
+                    appName: CallActivityPolicy.displayName(bundleIdentifier: call.bundleIdentifier, fallback: call.name),
+                    startedAt: startedAt
+                ))
+            }
+        } else {
+            callActivityStartedAt = [:]
         }
 
         if preferences.showsTimerActivity, let timer = context.timer.current {
@@ -297,6 +322,13 @@ extension AppCoordinator {
     public func collapseIsland() {
         islandCollapseTask?.cancel()
         islandEngine.collapse()
+        // An agent opened from beside the music hands the centre back once
+        // the user is done with it.
+        if Preferences.shared.keepsMediaCentered,
+           let selected = islandEngine.selectedID, selected.kind != .media,
+           islandEngine.activities.values.contains(where: { $0.id.kind == .media && $0.lifecycle == .active }) {
+            islandEngine.clearSelection()
+        }
         if mediaPanel != .none {
             mediaPanel = .none
             mediaPanelRowCount = 0
@@ -343,6 +375,7 @@ extension AppCoordinator {
         case (.transfer, .dismiss):
             if let uuid = UUID(uuidString: id.key) { transfers.dismiss(uuid) }
         case (.external, .dismiss): externalActivities.dismiss(id: id.key)
+        case (.call, .dismiss): hiddenCallActivities.insert(id.key)
         default: return
         }
         scheduleIslandRefresh()
@@ -421,5 +454,19 @@ extension AppCoordinator {
             title: focused ? "Focus On" : "Focus Off",
             holdDuration: 1.8
         ))
+    }
+}
+
+extension AppCoordinator {
+    /// Brings the calling app forward. NotchShot never touches the call
+    /// itself; mute and hang-up stay in the app that owns it.
+    public func openCallApp(_ id: IslandActivityID) {
+        guard id.kind == .call,
+              let client = context.privacy.microphoneClients.first(where: { $0.bundleIdentifier == id.key }),
+              let url = client.applicationURL else { return }
+        let configuration = NSWorkspace.OpenConfiguration()
+        configuration.activates = true
+        NSWorkspace.shared.openApplication(at: url, configuration: configuration)
+        collapseIsland()
     }
 }

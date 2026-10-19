@@ -45,6 +45,8 @@ enum AgentIconCatalog {
                 "com.github.wez.wezterm",
                 "com.apple.Terminal",
             ]
+        case .crewline:
+            ["dev.crewline.desktop"]
         }
     }
 

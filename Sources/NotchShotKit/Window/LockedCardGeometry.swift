@@ -2,9 +2,9 @@ import CoreGraphics
 
 /// Responsive placement for the opted-in Now Playing card on loginwindow.
 public enum LockedCardGeometry {
-    /// Matches the compact player shown in the product reference while still
-    /// fitting immediately above the avatar and password field.
-    public static let preferredCardSize = CGSize(width: 360, height: 172)
+    /// The phone's small Lock Screen player, sized to sit just above the
+    /// avatar and password field without competing with them.
+    public static let preferredCardSize = CGSize(width: 320, height: 132)
     /// Slack around the card for its border and shadow.
     public static let padding: CGFloat = 30
     /// AppKit is bottom-origin. At 0.27 the visual bottom of this compact card

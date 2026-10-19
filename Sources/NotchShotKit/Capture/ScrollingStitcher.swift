@@ -114,6 +114,21 @@ public enum ScrollingStitcher {
         limits: StitchLimits = StitchLimits(),
         progress: (@Sendable (Double) -> Void)? = nil
     ) throws -> StitchOutput {
+        // Image decoding and composition create framework temporaries. Drain
+        // them at this job's boundary while the returned image stays retained.
+        try autoreleasepool {
+            try stitchFrames(frames: frames, axis: axis, settings: settings,
+                limits: limits, progress: progress)
+        }
+    }
+
+    private static func stitchFrames(
+        frames: [CGImage],
+        axis: ScrollingAxis,
+        settings: StitchSettings,
+        limits: StitchLimits,
+        progress: (@Sendable (Double) -> Void)?
+    ) throws -> StitchOutput {
         try Task.checkCancellation()
         try validate(settings: settings, limits: limits)
         progress?(0)
@@ -657,19 +672,35 @@ struct GrayBuffer: @unchecked Sendable {
         // converting an unbounded Double straight to Int would trap.
         let budget: Int? = earlyExit.isFinite ? Int(min(max(earlyExit, 0), 255)) : nil
 
-        for row in 0 ..< templateHeight {
-            let lhs = (templateTop + row) * width
-            let rhs = (position + row) * width
-            for column in 0 ..< width {
-                total += abs(Int(pixels[lhs + column]) - Int(other.pixels[rhs + column]))
-            }
-            counted += width
-            // Check every few rows so the early exit costs almost nothing.
-            if let budget, row % 8 == 7, total / counted > budget {
-                return .greatestFiniteMagnitude
+        return pixels.withUnsafeBufferPointer { left in
+            other.pixels.withUnsafeBufferPointer { right in
+                for row in 0 ..< templateHeight {
+                    let lhs = (templateTop + row) * width
+                    let rhs = (position + row) * width
+                    var column = 0
+                    while column + 16 <= width {
+                        let a = UnsafeRawPointer(left.baseAddress! + lhs + column)
+                            .loadUnaligned(as: SIMD16<UInt8>.self)
+                        let b = UnsafeRawPointer(right.baseAddress! + rhs + column)
+                            .loadUnaligned(as: SIMD16<UInt8>.self)
+                        let delta = pointwiseMax(a, b) &- pointwiseMin(a, b)
+                        // Widen before reduction: sixteen 255-byte differences
+                        // fit in UInt16, and the integer total stays exact.
+                        total += Int(SIMD16<UInt16>(truncatingIfNeeded: delta).wrappedSum())
+                        column += 16
+                    }
+                    while column < width {
+                        total += abs(Int(left[lhs + column]) - Int(right[rhs + column]))
+                        column += 1
+                    }
+                    counted += width
+                    // Preserve the original row checkpoints and integer budget.
+                    if let budget, row % 8 == 7, total / counted > budget {
+                        return .greatestFiniteMagnitude
+                    }
+                }
+                return counted == 0 ? .greatestFiniteMagnitude : Double(total) / Double(counted)
             }
         }
-
-        return counted == 0 ? .greatestFiniteMagnitude : Double(total) / Double(counted)
     }
 }

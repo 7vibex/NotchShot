@@ -32,16 +32,30 @@ struct ContextModuleSettings: View {
                         coordinator.refreshContextPreferences()
                     }
                 ))
-                Toggle("Show active AI work over music", isOn: Binding(
-                    get: { preferences.showsAIActivityOverMedia },
-                    set: { value in
-                        preferences.showsAIActivityOverMedia = value
-                        coordinator.refreshContextPreferences()
-                    }
-                ))
-                .disabled(!preferences.aiActivityEnabled)
+                if preferences.multipleActivitiesEnabled {
+                    // The island arranges music and agents side by side;
+                    // this decides which one holds the centre.
+                    Toggle("Keep music in the centre while agents work", isOn: Binding(
+                        get: { preferences.keepsMediaCentered },
+                        set: { value in
+                            preferences.keepsMediaCentered = value
+                            coordinator.refreshIsland()
+                        }
+                    ))
+                    .disabled(!preferences.aiActivityEnabled)
+                    .help("While music plays, agents wait in the left bubble instead of taking over. It glows orange when one needs an answer; click it to answer.")
+                } else {
+                    Toggle("Show active AI work over music", isOn: Binding(
+                        get: { preferences.showsAIActivityOverMedia },
+                        set: { value in
+                            preferences.showsAIActivityOverMedia = value
+                            coordinator.refreshContextPreferences()
+                        }
+                    ))
+                    .disabled(!preferences.aiActivityEnabled)
+                }
                 HStack {
-                    ForEach(AISource.allCases, id: \.rawValue) { source in
+                    ForEach(AISource.allCases.filter { $0 != .crewline }, id: \.rawValue) { source in
                         Toggle(source.title, isOn: Binding(
                             get: { preferences.enabledAISources.contains(source) },
                             set: { enabled in
@@ -66,6 +80,15 @@ struct ContextModuleSettings: View {
                         Button(integration.title) { pendingHookIntegration = integration }
                     }
                 }
+                HStack {
+                    Text("Usage rings")
+                        .foregroundStyle(.secondary)
+                    Button(AIHookInstaller.shared.hasClaudeStatusLine()
+                        ? "Claude Usage Connected"
+                        : "Show Claude Usage in the Notch") { installClaudeStatusLine() }
+                        .disabled(AIHookInstaller.shared.hasClaudeStatusLine())
+                        .help("Routes Claude Code's status line through notchshot-ai so the notch can show your 5-hour and weekly limits and the context window. An existing status line keeps showing.")
+                }
                 if let hookMessage {
                     Text(hookMessage).font(.caption).foregroundStyle(.secondary)
                 }
@@ -73,6 +96,8 @@ struct ContextModuleSettings: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
+
+            CrewlineSettingsSection(coordinator: coordinator, preferences: preferences)
 
             Section("Calendar glance") {
                 Toggle("Show upcoming calendar events", isOn: Binding(
@@ -206,7 +231,7 @@ struct ContextModuleSettings: View {
                 if let plannerMessage {
                     Text(plannerMessage).font(.caption).foregroundStyle(.secondary)
                 }
-                Text("Nothing is written until you preview and press Add. Calendar and Reminders permissions are requested separately by macOS.")
+                Text("Nothing is added until you preview it and press Add.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -233,7 +258,7 @@ struct ContextModuleSettings: View {
                         coordinator.refreshContextPreferences()
                     }
                 ))
-                Text("Low-battery alerts show the public Low Power Mode state and open Battery Settings; NotchShot cannot switch that system mode itself. Audio feedback uses the public Core Audio output route only and never guesses accessory battery level. Connectivity uses the system's own routing verdict — no probe traffic leaves this Mac, and the network's name is never read or stored.")
+                Text("Uses only what macOS reports. No network probes, and the Wi-Fi name is never read.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -274,6 +299,19 @@ struct ContextModuleSettings: View {
         let reporter = executable.deletingLastPathComponent().appendingPathComponent("notchshot-ai")
         do {
             hookMessage = try AIHookInstaller.shared.install(integration, reporterURL: reporter).message
+        } catch {
+            hookMessage = error.localizedDescription
+        }
+    }
+
+    private func installClaudeStatusLine() {
+        guard let executable = Bundle.main.executableURL else {
+            hookMessage = AIHookInstallerError.invalidReporter.localizedDescription
+            return
+        }
+        let reporter = executable.deletingLastPathComponent().appendingPathComponent("notchshot-ai")
+        do {
+            hookMessage = try AIHookInstaller.shared.installClaudeStatusLine(reporterURL: reporter).message
         } catch {
             hookMessage = error.localizedDescription
         }
@@ -546,5 +584,93 @@ struct RecipeSettings: View {
                 store.update(recipe)
             }
         )
+    }
+}
+
+// MARK: - Crewline
+
+/// Pairs NotchShot with the Crewline app as a scoped remote device, the same
+/// way Crewline's iPhone app pairs.
+struct CrewlineSettingsSection: View {
+    @Bindable var coordinator: AppCoordinator
+    @Bindable var preferences: Preferences
+    @Bindable private var crewline = CrewlineMonitor.shared
+    @State private var pairingCode = ""
+    @State private var showsCodeEntry = false
+
+    var body: some View {
+        Section {
+            Toggle("Show Crewline runs, approvals and questions", isOn: Binding(
+                get: { preferences.crewlineEnabled },
+                set: { value in
+                    preferences.crewlineEnabled = value
+                    coordinator.refreshContextPreferences()
+                }
+            ))
+            .disabled(!preferences.aiActivityEnabled)
+
+            LabeledContent("Status") {
+                HStack(spacing: 6) {
+                    Circle()
+                        .fill(statusColor)
+                        .frame(width: 7, height: 7)
+                    Text(crewline.state.title)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            if preferences.crewlineEnabled, preferences.aiActivityEnabled {
+                HStack {
+                    if crewline.hasCredential {
+                        Button("Disconnect") { crewline.unpair() }
+                        Button("Open Crewline") { crewline.openRun(nil) }
+                    } else {
+                        Button(crewline.isPairing ? "Connecting…" : "Connect to Crewline") {
+                            Task { await crewline.pairWithLocalCrewline() }
+                        }
+                        .disabled(crewline.isPairing || crewline.state == .notRunning)
+                        Button("Use a Pairing Code…") { showsCodeEntry.toggle() }
+                            .disabled(crewline.isPairing)
+                    }
+                }
+                if showsCodeEntry, !crewline.hasCredential {
+                    HStack {
+                        TextField("Code or crewline://pair link", text: $pairingCode)
+                            .textFieldStyle(.roundedBorder)
+                        Button("Pair") {
+                            let code = pairingCode
+                            Task {
+                                await crewline.pair(code: code)
+                                if crewline.hasCredential {
+                                    pairingCode = ""
+                                    showsCodeEntry = false
+                                }
+                            }
+                        }
+                        .disabled(pairingCode.trimmingCharacters(in: .whitespaces).isEmpty || crewline.isPairing)
+                    }
+                }
+            }
+
+            if let error = crewline.lastError {
+                Text(error).font(.caption).foregroundStyle(.orange)
+            }
+
+            Text("NotchShot pairs as a Crewline device that can read your workspace, answer runs and attach screenshots. It connects only to Crewline on this Mac. Revoke it any time from Crewline's Remote settings.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        } header: {
+            Text("Crewline")
+        }
+    }
+
+    private var statusColor: Color {
+        switch crewline.state {
+        case .connected: .green
+        case .connecting: .yellow
+        case .failed: .orange
+        case .needsPairing: .blue
+        case .off, .notRunning: .secondary
+        }
     }
 }

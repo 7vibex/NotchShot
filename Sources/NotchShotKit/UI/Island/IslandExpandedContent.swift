@@ -24,7 +24,9 @@ struct IslandExpandedContent: View {
             case .recording:
                 RecordingContent(coordinator: coordinator, sharedIndicatorID: activity.id)
             case .timer:
-                IslandTimerExpanded(activity: activity, coordinator: coordinator)
+                IslandTimerExpanded(activity: activity, physicalNotchWidth: physicalNotchWidth, coordinator: coordinator)
+            case .call:
+                IslandCallExpanded(activity: activity, physicalNotchWidth: physicalNotchWidth, coordinator: coordinator)
             case .ai:
                 IslandAIExpanded(activity: activity, coordinator: coordinator)
             case .transfer:
@@ -105,7 +107,6 @@ struct IslandProgressBar: View {
     var progress: IslandProgress
     var tint: Color
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var sweep = false
 
     var body: some View {
         GeometryReader { proxy in
@@ -118,16 +119,10 @@ struct IslandProgressBar: View {
                         .frame(width: max(4, proxy.size.width * fraction))
                         .animation(IslandMotion.liveValue(reduceMotion: reduceMotion), value: fraction)
                 case .indeterminate:
-                    Capsule()
-                        .fill(tint.opacity(0.8))
-                        .frame(width: proxy.size.width * 0.28)
-                        .offset(x: sweep ? proxy.size.width * 0.72 : 0)
-                        .onAppear {
-                            guard !reduceMotion else { return }
-                            withAnimation(.easeInOut(duration: 1.1).repeatForever(autoreverses: true)) {
-                                sweep = true
-                            }
-                        }
+                    // The sweep runs on the render server. As a SwiftUI
+                    // `repeatForever` offset it redrew the notch on the main
+                    // thread every frame the bar was on screen.
+                    LayerProgressSweep(tint: tint.opacity(0.8), segment: 0.28, pass: 1.1)
                 case .none:
                     EmptyView()
                 }
@@ -147,69 +142,167 @@ struct IslandTextButton: View {
     var role: ButtonRole?
     var action: () -> Void
 
+    @State private var isHovered = false
+
     var body: some View {
         Button(role: role, action: action) {
             Label(title, systemImage: systemImage)
                 .font(.system(size: 11.5, weight: .semibold))
                 .padding(.horizontal, NotchIsland.Spacing.row)
                 .frame(minHeight: 28)
-                .background(Capsule().fill(Color.islandInk(NotchIsland.Ink.fill * 1.6)))
+                .islandControlSurface(Capsule(), isHovered: isHovered)
                 .frame(minHeight: NotchIsland.Hit.control)
                 .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(NotchPressButtonStyle())
+        .onHover { isHovered = $0 }
         .foregroundStyle(role == .destructive ? Color.red : Color.islandInk(NotchIsland.Ink.primary))
     }
 }
 
 // MARK: - Timer
 
+/// One row of an expanded island that wraps the camera instead of hanging
+/// below it, as the phone's timer and call do: one group in the band to the
+/// camera's left, one to its right, the cutout's width left clear between.
+///
+/// The row is pinned to the top of the shell at its own height, so a level
+/// HUD appended below an open island never pulls it off-centre.
+struct IslandWrappingRow<Leading: View, Trailing: View>: View {
+    var physicalNotchWidth: CGFloat?
+    var height: CGFloat
+    var leadingInset: CGFloat = 12
+    var trailingInset: CGFloat = 14
+    @ViewBuilder var leading: () -> Leading
+    @ViewBuilder var trailing: () -> Trailing
+
+    var body: some View {
+        HStack(spacing: 0) {
+            leading()
+                .padding(.leading, leadingInset)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            if let physicalNotchWidth {
+                // A little wider than the cutout: content pressed against the
+                // camera's edge reads as clipped by it.
+                Color.clear.frame(width: physicalNotchWidth + 12).accessibilityHidden(true)
+            } else {
+                Spacer(minLength: NotchIsland.Spacing.group)
+            }
+            trailing()
+                .padding(.trailing, trailingInset)
+                .frame(maxWidth: .infinity, alignment: .trailing)
+        }
+        .frame(height: height)
+        .frame(maxHeight: .infinity, alignment: .top)
+    }
+}
+
+/// The timer opened, as the phone lays it out: pause and cancel to the left
+/// of the camera, the name and a large countdown to its right, all in the
+/// band the camera sits in.
 private struct IslandTimerExpanded: View {
     var activity: IslandActivity
+    var physicalNotchWidth: CGFloat?
     @Bindable var coordinator: AppCoordinator
 
     private var accent: Color { Color(nsColor: NSColor(hex: activity.accentHex) ?? .systemOrange) }
 
     var body: some View {
         let timer = coordinator.context.timer.current
-        VStack(alignment: .leading, spacing: NotchIsland.Spacing.row) {
-            IslandExpandedHeader(
-                activity: activity,
-                title: timer?.label ?? activity.title,
-                subtitle: activity.stateLabel
-            ) {
+        let state = timer?.state
+        let ink = accent.opacity(state == .paused ? 0.6 : 1)
+        IslandWrappingRow(
+            physicalNotchWidth: physicalNotchWidth,
+            height: NotchIsland.Geometry.expandedRowHeight,
+            trailingInset: 18
+        ) {
+            HStack(spacing: 8) {
+                if state == .completed {
+                    IslandRoundButton(systemName: "checkmark", label: "Done", tint: IslandSystemColor.green, filled: true) {
+                        coordinator.performIslandAction(.cancel, on: activity.id)
+                    }
+                } else {
+                    IslandRoundButton(
+                        systemName: state == .paused ? "play.fill" : "pause.fill",
+                        label: state == .paused ? "Resume" : "Pause",
+                        tint: accent,
+                        filled: true
+                    ) {
+                        coordinator.performIslandAction(state == .paused ? .resume : .pause, on: activity.id)
+                    }
+                    IslandRoundButton(systemName: "xmark", label: "Cancel timer", tint: .white, filled: false) {
+                        coordinator.performIslandAction(.cancel, on: activity.id)
+                    }
+                    .islandReveal(stage: 1)
+                }
+            }
+        } trailing: {
+            HStack(alignment: .firstTextBaseline, spacing: 7) {
+                Text(state == .completed ? "Done" : (timer?.label ?? activity.title))
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(ink)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
                 IslandNumericText(
-                    text: timer.map { FocusTimerPolicy.formatted($0.remaining) } ?? activity.metric ?? "",
+                    text: timer.map { IslandClock.formatted($0.remaining, roundingUp: true) } ?? activity.metric ?? "",
                     countsDown: true,
-                    font: .system(size: 26, weight: .semibold, design: .rounded),
-                    color: accent
+                    font: .system(size: 30, weight: .semibold, design: .rounded),
+                    color: ink
                 )
+                .fixedSize()
             }
-            IslandProgressBar(progress: activity.progress, tint: accent)
-                .islandReveal(stage: 2)
-            HStack(spacing: NotchIsland.Spacing.element) {
-                if timer?.state == .running {
-                    IslandTextButton(title: "Pause", systemImage: "pause.fill") {
-                        coordinator.performIslandAction(.pause, on: activity.id)
-                    }
-                } else if timer?.state == .paused {
-                    IslandTextButton(title: "Resume", systemImage: "play.fill") {
-                        coordinator.performIslandAction(.resume, on: activity.id)
-                    }
-                }
-                IslandTextButton(
-                    title: timer?.state == .completed ? "Done" : "Cancel",
-                    systemImage: timer?.state == .completed ? "checkmark" : "xmark",
-                    role: timer?.state == .completed ? nil : .destructive
-                ) {
-                    coordinator.performIslandAction(.cancel, on: activity.id)
-                }
-                Spacer(minLength: 0)
-            }
-            .islandReveal(stage: 1)
         }
-        .padding(.horizontal, NotchIsland.Spacing.gutter)
-        .padding(.vertical, NotchIsland.Spacing.row)
+    }
+}
+
+/// A 40 pt round control on the island's black. `filled` tints the circle in
+/// the control's own colour, as the phone does for a timer's pause; otherwise
+/// it takes the island's near-black surface.
+struct IslandRoundButton: View {
+    var systemName: String
+    var label: String
+    var tint: Color
+    var filled: Bool
+    /// A solid disc with a white glyph — the phone's answer and decline
+    /// buttons — instead of a tinted glyph on a dimmed disc.
+    var solid = false
+    var diameter: CGFloat = 40
+    var action: () -> Void
+
+    @State private var isHovered = false
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: systemName)
+                .font(.system(size: diameter * 0.38, weight: .bold))
+                .foregroundStyle(solid ? .white : (filled ? tint : Color.islandInk(NotchIsland.Ink.primary)))
+                .frame(width: diameter, height: diameter)
+                .modifier(RoundButtonSurface(tint: tint, filled: filled, solid: solid, isHovered: isHovered))
+                .contentShape(Circle())
+        }
+        .buttonStyle(NotchPressButtonStyle())
+        .onHover { isHovered = $0 }
+        .help(label)
+        .accessibilityLabel(label)
+    }
+}
+
+private struct RoundButtonSurface: ViewModifier {
+    var tint: Color
+    var filled: Bool
+    var solid: Bool
+    var isHovered: Bool
+
+    func body(content: Content) -> some View {
+        if solid {
+            content.background(tint.opacity(isHovered ? 0.86 : 1), in: Circle())
+        } else if filled {
+            content.background(tint.opacity(isHovered ? 0.34 : 0.24), in: Circle())
+        } else {
+            // The phone's neutral round button (cancel, hide) is a flat grey
+            // disc, lighter than the island's other controls and unedged.
+            content.background(Color.islandInk(isHovered ? 0.3 : 0.22), in: Circle())
+        }
     }
 }
 
@@ -219,31 +312,49 @@ private struct IslandAIExpanded: View {
     var activity: IslandActivity
     @Bindable var coordinator: AppCoordinator
 
+    /// Every run the list shows, so the header counts what the user sees.
+    private var liveRuns: [AIActivitySnapshot] {
+        var runs = coordinator.context.islandAIActivities
+        let ids = Set(runs.map(\.displayIdentifier))
+        for session in coordinator.context.claude.sessions where !ids.contains("claude:" + session.id) {
+            runs.append(session.aiActivity)
+        }
+        return runs
+    }
+
     var body: some View {
-        VStack(alignment: .leading, spacing: NotchIsland.Spacing.tight) {
-            IslandExpandedHeader(
-                activity: activity,
-                glyphSize: 30,
-                title: activity.title,
-                subtitle: activity.subtitle
-            ) {
-                HStack(spacing: NotchIsland.Spacing.snug) {
-                    IslandStateText(
-                        text: activity.stateLabel ?? "",
-                        font: .system(size: 11, weight: .semibold),
-                        color: IslandAccessibility.lifecycleColor(activity.lifecycle, accent: .white)
-                    )
-                    if let metric = activity.metric {
-                        IslandNumericText(
-                            text: metric,
-                            font: .system(size: 12, weight: .bold, design: .rounded),
-                            color: Color.islandInk(NotchIsland.Ink.primary)
-                        )
+        let runs = liveRuns
+        let interactions = coordinator.agentInteractions
+        let sessions = coordinator.context.claude.sessions
+        let needsYou = AgentVibePresentation.attentionCount(interactions: interactions, claudeSessions: sessions) > 0
+        VStack(alignment: .leading, spacing: 0) {
+            // The same band the notification stack uses: what this is beside
+            // the camera on the left, its one line of state on the right.
+            IslandBandHeader(leadingInset: 16, trailingInset: 16) {
+                HStack(spacing: 6) {
+                    if let source = runs.first?.source,
+                       runs.allSatisfy({ $0.source == source }) {
+                        AgentVibeIdentity(source: source, size: 15)
+                            .accessibilityHidden(true)
+                    } else {
+                        Image(systemName: "sparkles")
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundStyle(Color.islandInk(NotchIsland.Ink.secondary))
+                            .accessibilityHidden(true)
                     }
+                    Text(AgentVibePresentation.headerTitle(for: runs))
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(Color.islandInk(NotchIsland.Ink.secondary))
+                        .lineLimit(1)
                 }
+            } trailing: {
+                Text(AgentVibePresentation.summaryText(live: runs, interactions: interactions, claudeSessions: sessions))
+                    .font(NotchAlertStyle.meta)
+                    .monospacedDigit()
+                    .foregroundStyle(needsYou ? Color.orange : Color.islandInk(NotchIsland.Ink.tertiary))
+                    .lineLimit(1)
+                    .contentTransition(.numericText())
             }
-            .padding(.horizontal, NotchIsland.Spacing.group)
-            .padding(.top, NotchIsland.Spacing.element)
 
             AgentVibeActivitySurface(
                 activities: coordinator.context.islandAIActivities,
@@ -261,7 +372,12 @@ private struct IslandAIExpanded: View {
                         coordinator.dismissAIActivity(agent)
                     }
                 },
-                onClearHistory: { coordinator.clearAIActivityHistory() }
+                onClearHistory: { coordinator.clearAIActivityHistory() },
+                interactions: coordinator.agentInteractions,
+                onRespond: { coordinator.respondToAgent($0, with: $1) },
+                onJump: { coordinator.jumpToAgent($0) },
+                contextBySession: coordinator.context.claudeUsage.contextBySession,
+                accessory: AnyView(AgentUsageStrip(coordinator: coordinator))
             )
             .islandReveal(stage: 1)
         }
@@ -283,7 +399,11 @@ private struct IslandTransferExpanded: View {
             IslandExpandedHeader(
                 activity: activity,
                 title: transfer?.title ?? activity.title,
-                subtitle: transfer.map { "\($0.service.title) · \($0.direction == .outgoing ? "to" : "from") \($0.peerName)" }
+                subtitle: transfer.map {
+                    $0.service == .download
+                        ? $0.peerName
+                        : "\($0.service.title) · \($0.direction == .outgoing ? "to" : "from") \($0.peerName)"
+                }
             ) {
                 if let fraction = activity.progress.fraction, !activity.lifecycle.isTerminal {
                     IslandNumericText(
@@ -332,6 +452,8 @@ private struct IslandTransferExpanded: View {
                 ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
                     + " of " + ByteCountFormatter.string(fromByteCount: total, countStyle: .file)
             )
+        } else if let bytes = transfer.bytesTransferred {
+            parts.append(ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file))
         } else if transfer.service == .localSend {
             parts.append("\(transfer.completedFiles) of \(transfer.effectiveFileCount) files")
         } else {

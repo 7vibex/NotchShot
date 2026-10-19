@@ -36,8 +36,21 @@ public enum AnnotationRenderer {
         source: CGImage,
         options: Options = Options()
     ) throws -> CGImage {
+        try render(document: document, source: source, options: options, pixelation: pixelate)
+    }
+
+    // Per-render dependency keeps failure tests deterministic without changing
+    // another render running concurrently.
+    typealias Pixelation = (CGRect, CGImage, Int, Double) -> CGImage?
+
+    static func render(
+        document: AnnotationDocument,
+        source: CGImage,
+        options: Options = Options(),
+        pixelation: Pixelation
+    ) throws -> CGImage {
         let redacted = document.hasRedactions && !options.isPreview
-            ? try burnRedactions(document: document, into: source)
+            ? try burnRedactions(document: document, into: source, pixelation: pixelation)
             : source
 
         let cropped = try applyCrop(document: document, to: redacted)
@@ -61,7 +74,11 @@ public enum AnnotationRenderer {
 
     /// Rewrites the pixels under every redaction element. Returns a new image;
     /// the source is untouched so the editable project keeps the original.
-    static func burnRedactions(document: AnnotationDocument, into source: CGImage) throws -> CGImage {
+    static func burnRedactions(
+        document: AnnotationDocument,
+        into source: CGImage,
+        pixelation: Pixelation = pixelate
+    ) throws -> CGImage {
         let width = source.width
         let height = source.height
         guard let context = makeContext(width: width, height: height) else {
@@ -89,12 +106,11 @@ public enum AnnotationRenderer {
                 context.restoreGState()
 
             case .pixelate:
-                guard let block = pixelate(
-                    region: clipped,
-                    of: source,
-                    imageHeight: height,
-                    blockSize: max(8, element.style.pixelBlockSize)
-                ) else { continue }
+                guard let block = pixelation(
+                    clipped, source, height, max(8, element.style.pixelBlockSize)
+                ) else {
+                    throw NotchShotError.exportFailed("Could not safely pixelate the redacted region")
+                }
                 context.saveGState()
                 context.interpolationQuality = .none
                 // The context is flipped so element geometry reads in top-left

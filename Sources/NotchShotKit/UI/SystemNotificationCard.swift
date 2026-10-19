@@ -1,156 +1,277 @@
 import AppKit
 import SwiftUI
 
-/// Compact, source-aware presentation for a banner that macOS is visibly
-/// presenting. The card owns only appearance and local interaction; source
-/// activation and queue mutation stay with `AppCoordinator` through closures.
+/// The banners macOS is visibly presenting, stacked the way the Dynamic
+/// Island stacks messages: one row per sender, newest on top, the sender's
+/// initials with the app as a badge, and a count when a thread has more than
+/// one message. The card owns only appearance and local interaction; opening
+/// a source and clearing the stack stay with `AppCoordinator`.
 struct SystemNotificationCard: View {
     let snapshot: SystemNotificationSnapshot
-    var onOpenSource: () -> Void
+    var onOpenSource: (SystemNotificationSnapshot) -> Void
+    var onReply: (SystemNotificationSnapshot) -> Void = { _ in }
     var onDismiss: () -> Void
 
-    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var isHovered = false
+
+    private var rows: [SystemNotificationSnapshot] { snapshot.rows }
+
+    private var headerSource: SystemNotificationSourcePresentation {
+        SystemNotificationSourcePresentation(sourceName: snapshot.sourceName)
+    }
+
+    /// One app's banners are titled by the app; several apps by the count.
+    private var headerTitle: String {
+        let sources = Set(rows.map(\.sourceName))
+        if sources.count <= 1 { return snapshot.sourceName }
+        return "\(rows.count + snapshot.overflowCount) Notifications"
+    }
+
+    /// The app and the time beside the camera, where the open island used to
+    /// show an empty black strip above the first row.
+    private var bandHeader: some View {
+        IslandBandHeader(leadingInset: 16, trailingInset: 8) {
+            HStack(spacing: 6) {
+                if Set(rows.map(\.sourceName)).count <= 1 {
+                    SystemNotificationSourceGlyph(source: headerSource, size: 15)
+                        .clipShape(RoundedRectangle(cornerRadius: 3.5, style: .continuous))
+                        .accessibilityHidden(true)
+                } else {
+                    Image(systemName: "bell.badge.fill")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(Color.islandInk(NotchIsland.Ink.secondary))
+                }
+                Text(headerTitle)
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(Color.islandInk(NotchIsland.Ink.secondary))
+                    .lineLimit(1)
+            }
+        } trailing: {
+            ZStack(alignment: .trailing) {
+                TimelineView(.periodic(from: snapshot.receivedAt, by: 15)) { context in
+                    Text(SystemNotificationTimePolicy.compactElapsed(
+                        receivedAt: snapshot.receivedAt,
+                        now: context.date
+                    ))
+                    .font(NotchAlertStyle.meta)
+                    .monospacedDigit()
+                    .foregroundStyle(Color.islandInk(NotchIsland.Ink.tertiary))
+                    .padding(.trailing, 8)
+                }
+                .opacity(isHovered ? 0 : 1)
+
+                // The one control the stack needs, and only under the pointer.
+                IslandBandButton(systemName: "xmark", label: "Dismiss notifications", action: onDismiss)
+                    .opacity(isHovered ? 1 : 0)
+                    .allowsHitTesting(isHovered)
+            }
+        }
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            bandHeader
+                .padding(.horizontal, -(NotchAlertStyle.horizontalInset - 4))
+
+            ForEach(Array(rows.enumerated()), id: \.element.groupKey) { index, row in
+                if index > 0 {
+                    Rectangle()
+                        .fill(Color.islandInk(0.10))
+                        .frame(height: 1)
+                        .padding(.leading, SystemNotificationRow.avatarSize + NotchAlertStyle.leadingGap)
+                }
+                SystemNotificationRow(
+                    snapshot: row,
+                    // A row carries its own time only when the stack mixes
+                    // senders; one sender's time is already in the header.
+                    showsTime: rows.count > 1,
+                    onOpen: { onOpenSource(row) },
+                    onReply: row.replyKey != nil && ExtrasPreferences.shared.notificationRepliesEnabled
+                        ? { onReply(row) }
+                        : nil
+                )
+                .transition(.asymmetric(
+                    insertion: .move(edge: .top).combined(with: .opacity),
+                    removal: .opacity
+                ))
+            }
+            if snapshot.overflowCount > 0 {
+                Text("\(snapshot.overflowCount) more")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(Color.islandInk(NotchIsland.Ink.tertiary))
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.leading, SystemNotificationRow.avatarSize + NotchAlertStyle.leadingGap)
+                    .padding(.top, 2)
+            }
+        }
+        .padding(.horizontal, NotchAlertStyle.horizontalInset - 4)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .onHover { isHovered = $0 }
+        .animation(NotchMotion.selection(reduceMotion: reduceMotion), value: rows.map(\.id))
+        .animation(.easeOut(duration: 0.15), value: isHovered)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(
+            rows.count == 1
+                ? "Notification from \(snapshot.sourceName)"
+                : "\(rows.count) notifications"
+        )
+    }
+}
+
+/// One sender in the stack.
+private struct SystemNotificationRow: View {
+    static let avatarSize: CGFloat = 38
+
+    let snapshot: SystemNotificationSnapshot
+    var showsTime: Bool
+    var onOpen: () -> Void
+    /// Nil when the banner has no Reply action of its own.
+    var onReply: (() -> Void)?
+
+    @State private var isHovered = false
 
     private var source: SystemNotificationSourcePresentation {
         SystemNotificationSourcePresentation(sourceName: snapshot.sourceName)
     }
 
-    private var accent: Color {
-        Color(nsColor: NotchShotColorPolicy.readableAccentOnBlack(
-            NSColor(hex: source.accentHex) ?? .systemPurple
-        ))
-    }
-
-    private var canOpenSource: Bool {
+    private var canOpen: Bool {
         SystemNotificationSourceCatalog.applicationURL(for: source) != nil
     }
 
     var body: some View {
-        ZStack {
-            ambientGlow
-            notificationCard
-        }
-        .padding(.horizontal, NotchIsland.Spacing.row)
-        .padding(.vertical, NotchIsland.Spacing.snug)
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .accessibilityElement(children: .contain)
-        .accessibilityLabel("Notification from \(snapshot.sourceName)")
-        .accessibilityValue([snapshot.title, snapshot.body].filter { !$0.isEmpty }.joined(separator: ", "))
-    }
+        HStack(alignment: .center, spacing: NotchAlertStyle.leadingGap) {
+            SystemNotificationAvatar(snapshot: snapshot, source: source, size: Self.avatarSize)
 
-    private var notificationCard: some View {
-        HStack(spacing: NotchIsland.Spacing.element) {
-            SystemNotificationSourceGlyph(source: source, size: 34)
-
-            VStack(alignment: .leading, spacing: 3) {
+            VStack(alignment: .leading, spacing: 2) {
                 Text(snapshot.title)
-                    .font(.system(size: 11, weight: .bold, design: .rounded))
+                    .font(NotchAlertStyle.title)
                     .foregroundStyle(Color.islandInk(NotchIsland.Ink.primary))
                     .lineLimit(1)
+                Text(snapshot.body.isEmpty ? snapshot.sourceName : snapshot.body)
+                    .font(NotchAlertStyle.body)
+                    .foregroundStyle(Color.islandInk(0.82))
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
 
-                HStack(spacing: NotchIsland.Spacing.tight) {
-                    Image(systemName: source.symbolName)
-                        .font(.system(size: 7.5, weight: .bold))
-                        .accessibilityHidden(true)
-                    Text(snapshot.sourceName)
-                        .font(.system(size: 8.5, weight: .bold, design: .rounded))
-                        .lineLimit(1)
-
-                    if !snapshot.body.isEmpty {
-                        Circle()
-                            .fill(Color.islandInk(NotchIsland.Ink.hairline))
-                            .frame(width: 2, height: 2)
-                            .accessibilityHidden(true)
-                        Text(snapshot.body)
-                            .font(.system(size: 9.5, weight: .medium))
-                            .foregroundStyle(Color.islandInk(NotchIsland.Ink.secondary))
-                            .lineLimit(1)
+            HStack(spacing: 6) {
+                if let onReply {
+                    // Shown under the pointer only, so a resting stack reads
+                    // as messages rather than a row of buttons.
+                    Button(action: onReply) {
+                        Text("Reply")
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundStyle(Color.islandInk(NotchIsland.Ink.primary))
+                            .padding(.horizontal, 9)
+                            .frame(height: 22)
+                            .background(Color.islandInk(0.16), in: Capsule())
+                            .contentShape(Capsule())
+                    }
+                    .buttonStyle(NotchPressButtonStyle())
+                    .opacity(isHovered ? 1 : 0)
+                    .allowsHitTesting(isHovered)
+                    .help("Reply in \(snapshot.sourceName)")
+                    .accessibilityLabel("Reply to \(snapshot.title)")
+                }
+                if snapshot.groupCount > 1 {
+                    Text("\(min(snapshot.groupCount, 99))")
+                        .font(.system(size: 10, weight: .bold))
+                        .monospacedDigit()
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 5)
+                        .frame(minWidth: 17, minHeight: 17)
+                        .background(Color.red, in: Capsule())
+                        .accessibilityLabel("\(snapshot.groupCount) messages")
+                }
+                if showsTime {
+                    TimelineView(.periodic(from: snapshot.receivedAt, by: 15)) { context in
+                        Text(SystemNotificationTimePolicy.compactElapsed(
+                            receivedAt: snapshot.receivedAt,
+                            now: context.date
+                        ))
+                        .font(NotchAlertStyle.meta)
+                        .monospacedDigit()
+                        .foregroundStyle(Color.islandInk(NotchIsland.Ink.tertiary))
                     }
                 }
-                .foregroundStyle(accent)
             }
+            .frame(minWidth: 28, alignment: .trailing)
+        }
+        .padding(.vertical, 7)
+        .padding(.horizontal, 4)
+        .background(
+            Color.islandInk(isHovered && canOpen ? 0.06 : 0),
+            in: RoundedRectangle(cornerRadius: 12, style: .continuous)
+        )
+        .contentShape(Rectangle())
+        .onTapGesture { if canOpen { onOpen() } }
+        .onHover { isHovered = $0 }
+        .help(canOpen ? source.openAccessibilityLabel : snapshot.sourceName)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(snapshot.title), \(snapshot.sourceName)")
+        .accessibilityValue(snapshot.body)
+        .accessibilityAddTraits(canOpen ? .isButton : [])
+        .accessibilityAction { if canOpen { onOpen() } }
+        .accessibilityAction(named: "Reply") { onReply?() }
+    }
+}
 
-            Spacer(minLength: NotchIsland.Spacing.tight)
+/// A chat sender leads with their initials and the app shrinks to a badge;
+/// anything else leads with the app's own icon.
+struct SystemNotificationAvatar: View {
+    let snapshot: SystemNotificationSnapshot
+    let source: SystemNotificationSourcePresentation
+    let size: CGFloat
 
-            VStack(alignment: .trailing, spacing: NotchIsland.Spacing.hairline) {
-                TimelineView(.periodic(from: snapshot.receivedAt, by: 1)) { context in
-                    Text(SystemNotificationTimePolicy.compactElapsed(
-                        receivedAt: snapshot.receivedAt,
-                        now: context.date
-                    ))
-                    .font(.system(size: 8, weight: .semibold, design: .rounded))
-                    .monospacedDigit()
-                    .foregroundStyle(Color.islandInk(NotchIsland.Ink.tertiary))
+    var body: some View {
+        if source.kind.isConversation {
+            Circle()
+                .fill(LinearGradient(
+                    colors: [Color(white: 0.62), Color(white: 0.42)],
+                    startPoint: .top,
+                    endPoint: .bottom
+                ))
+                .overlay {
+                    Text(SystemNotificationInitials.initials(for: snapshot.title))
+                        .font(.system(size: size * 0.36, weight: .semibold, design: .rounded))
+                        .foregroundStyle(.white)
+                        .minimumScaleFactor(0.7)
+                        .padding(.horizontal, size * 0.14)
                 }
-
-                HStack(spacing: NotchIsland.Spacing.tight) {
-                    if canOpenSource {
-                        openSourceButton
-                    }
-                    dismissButton
+                .frame(width: size, height: size)
+                // The badge sits on the circle's edge, as the phone draws it:
+                // small, ringed in the island's black, mostly outside the
+                // initials so both letters stay readable.
+                .overlay(alignment: .bottomTrailing) {
+                    SystemNotificationSourceGlyph(source: source, size: size * 0.4)
+                        .clipShape(RoundedRectangle(cornerRadius: size * 0.09, style: .continuous))
+                        .padding(1.5)
+                        .background(
+                            RoundedRectangle(cornerRadius: size * 0.12, style: .continuous)
+                                .fill(.black)
+                        )
+                        .offset(x: size * 0.16, y: size * 0.12)
                 }
-            }
+                .accessibilityHidden(true)
+        } else {
+            SystemNotificationSourceGlyph(source: source, size: size)
         }
-        .padding(.leading, NotchIsland.Spacing.element)
-        .padding(.trailing, NotchIsland.Spacing.tight)
-        .background {
-            RoundedRectangle(cornerRadius: NotchIsland.Radius.control, style: .continuous)
-                .fill(Color.black.opacity(reduceTransparency ? 0.96 : 0.78))
-        }
-        .overlay {
-            RoundedRectangle(cornerRadius: NotchIsland.Radius.control, style: .continuous)
-                .stroke(Color.islandInk(NotchIsland.Ink.hairline), lineWidth: NotchIsland.Stroke.hairline)
-        }
-        .shadow(color: accent.opacity(reduceTransparency ? 0 : 0.16), radius: 12, y: 5)
     }
+}
 
-    private var openSourceButton: some View {
-        Button(action: onOpenSource) {
-            Image(systemName: source.supportsReplyHandoff
-                ? "arrowshape.turn.up.left.fill"
-                : "arrow.up.forward.app.fill")
-                .font(.system(size: 10, weight: .semibold))
-                .foregroundStyle(accent)
-                .frame(width: 24, height: 24)
-                .background(accent.opacity(0.14), in: Circle())
-                .frame(width: NotchIsland.Hit.control, height: NotchIsland.Hit.control)
-                .contentShape(Rectangle())
+enum SystemNotificationInitials {
+    /// Up to two letters from the first two words: "Mia Chen" is "MC",
+    /// "mom" is "M". A title with no letters at all falls back to its first
+    /// character so the circle is never blank.
+    static func initials(for name: String) -> String {
+        let words = name
+            .split(whereSeparator: { $0.isWhitespace || $0 == "-" || $0 == "_" })
+            .compactMap { word in word.first(where: { $0.isLetter || $0.isNumber }) }
+        if !words.isEmpty {
+            return String(words.prefix(2)).uppercased()
         }
-        .buttonStyle(NotchPressButtonStyle())
-        .help(source.openAccessibilityLabel)
-        .accessibilityLabel(source.openAccessibilityLabel)
-    }
-
-    private var dismissButton: some View {
-        Button(action: onDismiss) {
-            Image(systemName: "xmark")
-                .font(.system(size: 9, weight: .bold))
-                .foregroundStyle(Color.islandInk(NotchIsland.Ink.secondary))
-                .frame(width: 24, height: 24)
-                .background(Color.islandInk(NotchIsland.Ink.fill), in: Circle())
-                .frame(width: NotchIsland.Hit.control, height: NotchIsland.Hit.control)
-                .contentShape(Rectangle())
-        }
-        .buttonStyle(NotchPressButtonStyle())
-        .help("Dismiss notification")
-        .accessibilityLabel("Dismiss notification")
-    }
-
-    private var ambientGlow: some View {
-        RoundedRectangle(cornerRadius: NotchIsland.Radius.card, style: .continuous)
-            .fill(
-                LinearGradient(
-                    colors: [
-                        accent.opacity(reduceTransparency ? 0.10 : 0.28),
-                        Color(red: 0.26, green: 0.24, blue: 0.58)
-                            .opacity(reduceTransparency ? 0.08 : 0.22),
-                        .clear
-                    ],
-                    startPoint: .bottomLeading,
-                    endPoint: .topTrailing
-                )
-            )
-            .blur(radius: reduceTransparency ? 0 : 9)
-            .accessibilityHidden(true)
+        return name.first.map { String($0) } ?? "?"
     }
 }

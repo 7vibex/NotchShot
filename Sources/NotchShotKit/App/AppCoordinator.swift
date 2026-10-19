@@ -65,6 +65,10 @@ public final class AppCoordinator {
     public let transfers = TransferActivityStore.shared
     public let externalActivities = ExternalActivityStore.shared
     public let focusStatus = FocusStatusMonitor.shared
+    public let wellbeing = WellbeingMonitor()
+    public let displayBrightness = DisplayBrightnessController.shared
+    @ObservationIgnored let keyboardState = KeyboardStateMonitor()
+    @ObservationIgnored let downloads = DownloadProgressMonitor()
     @ObservationIgnored var islandEngine = IslandPresentationEngine()
     @ObservationIgnored var islandEvents = IslandTransientQueue()
     @ObservationIgnored var islandExpiryTask: Task<Void, Never>?
@@ -97,6 +101,16 @@ public final class AppCoordinator {
     var systemNotificationTask: Task<Void, Never>?
     var systemNotificationTaskID: UUID?
     var systemNotificationQueue = SystemNotificationQueue()
+    /// When each calling app started holding the microphone, for the call
+    /// activity's elapsed time. Keyed by bundle identifier.
+    var callActivityStartedAt: [String: Date] = [:]
+    /// Calls the user hid from the island; cleared when that call ends.
+    var hiddenCallActivities: Set<String> = []
+    /// Calls NotchShot muted or turned the camera off in, by bundle
+    /// identifier, from the toggles it sent. Cleared when the call ends.
+    var meetingMutedApps: Set<String> = []
+    var meetingCameraOffApps: Set<String> = []
+    var systemInputMuted = MeetingControls.isSystemInputMuted() ?? false
     var accessibilityLevelTask: Task<Void, Never>?
     var peekTask: Task<Void, Never>?
     var recordingStartTask: Task<Void, Never>?
@@ -115,6 +129,10 @@ public final class AppCoordinator {
     var voiceOverObservation: NSKeyValueObservation?
 
     public var windowController: NotchWindowController?
+    /// Previews and pixel checks have no window controller, so no display is
+    /// ever "active" and every transient UI would draw as idle. Set only
+    /// there; the running app never touches it.
+    @ObservationIgnored var rendersAsActiveDisplay = false
     public var onOpenEditor: ((AnnotationDocumentController) -> Void)?
     public var onOpenPrivacyReview: ((PrivacyReviewSession) -> Void)?
     public var onOpenBugReport: ((BugReportSession) -> Void)?
@@ -125,7 +143,10 @@ public final class AppCoordinator {
     public var onOpenInspector: ((ImageInspectionSession) -> Void)?
     public var onOpenCapturePreview: ((ShelfItem) -> Void)?
     public var onOpenDocumentSummary: ((DocumentSummarySession) -> Void)?
+    public var onOpenAppUninstall: ((AppUninstallSession) -> Void)?
     public var onOpenSettings: (() -> Void)?
+    /// A Settings pane to show next time Settings appears, by its raw value.
+    public var requestedSettingsSection: String?
     public var onOpenHistory: (() -> Void)?
     public var onOpenClipboard: (() -> Void)?
     public var onOpenProductivity: (() -> Void)?
@@ -168,6 +189,8 @@ public final class AppCoordinator {
                 )
             }
         }
+        // The dots widen the idle notch, so its hit region has to follow.
+        context.privacy.onChange = { [weak self] in self?.refreshActivity() }
         context.start()
         if history.loadOutcome.permitsManagedCleanup {
             history.applyRetention()
@@ -201,6 +224,16 @@ public final class AppCoordinator {
             self?.systemLevels.applyInterceptedKey(action) ?? false
         }
         FloatingBasketManager.shared.start(coordinator: self)
+        wellbeing.onEyeBreakDue = { [weak self] in
+            self?.presentIslandEvent(IslandTransientEvent(
+                kind: .notice,
+                coalescingKey: "eyeBreak",
+                symbolName: "eye",
+                title: "Time for an eye break",
+                detail: "Look at something 20 feet away for 20 seconds"
+            ))
+        }
+        wellbeing.refresh()
         // One-time migration: older builds could leave the native helper
         // suspended without a watchdog. Later launches resume only PIDs owned
         // by this process, so one app can never cancel another app's lease.
@@ -230,6 +263,7 @@ public final class AppCoordinator {
         observeMedia()
         observeDictation()
         startIsland()
+        refreshUtilities()
         refreshActivity()
     }
 
@@ -451,6 +485,37 @@ public final class AppCoordinator {
 
     func playCaptureSound() {
         guard Preferences.shared.playsCaptureSound else { return }
-        NSSound(named: "Grab")?.play()
+        CaptureSound.play()
+    }
+}
+
+/// The system's own screenshot shutter.
+///
+/// `NSSound(named: "Grab")` only searches the app bundle and the Sounds
+/// folders, and Grab is in none of them: it ships in CoreAudio's system-sound
+/// set. The lookup returned nil, so every capture was silent with the sound
+/// switched on.
+@MainActor
+enum CaptureSound {
+    static let shutterURL = URL(
+        fileURLWithPath: "/System/Library/Components/CoreAudio.component/Contents/SharedSupport/SystemSounds/system/Grab.aif"
+    )
+
+    /// Loaded once; decoding the file on every capture is wasted work.
+    private static let shutter: NSSound? = {
+        if let sound = NSSound(contentsOf: shutterURL, byReference: true) { return sound }
+        if let sound = NSSound(named: "Grab") { return sound }
+        Log.capture.notice("The system shutter sound is missing; captures will be silent")
+        return nil
+    }()
+
+    static var isAvailable: Bool { shutter != nil }
+
+    static func play() {
+        guard let shutter else { return }
+        // Two captures in quick succession: restart rather than drop the
+        // second, which `play()` does while the first is still sounding.
+        if shutter.isPlaying { shutter.stop() }
+        shutter.play()
     }
 }

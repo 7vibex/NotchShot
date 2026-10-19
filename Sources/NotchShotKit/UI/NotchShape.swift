@@ -167,8 +167,12 @@ public struct NotchShape: Shape {
         }
 
         var path = Path()
-        let bottom = min(bottomRadius, rect.height / 2, rect.width / 2)
         let top = min(topRadius, rect.height / 3, rect.width / 3)
+        // A continuous corner runs `reach` radii along each edge. Past the
+        // point where it would meet the top fillet, or the opposite corner,
+        // the outline would cross itself, so the radius stops there.
+        let reach = Self.continuousReach
+        let bottom = max(0, min(bottomRadius, (rect.height - top) / reach, rect.width / (2 * reach)))
 
         path.move(to: CGPoint(x: rect.minX - top, y: rect.minY))
         // Inverted fillet flaring out into the bezel.
@@ -176,15 +180,21 @@ public struct NotchShape: Shape {
             to: CGPoint(x: rect.minX, y: rect.minY + top),
             control: CGPoint(x: rect.minX, y: rect.minY)
         )
-        path.addLine(to: CGPoint(x: rect.minX, y: rect.maxY - bottom))
-        path.addQuadCurve(
-            to: CGPoint(x: rect.minX + bottom, y: rect.maxY),
-            control: CGPoint(x: rect.minX, y: rect.maxY)
+        path.addLine(to: CGPoint(x: rect.minX, y: rect.maxY - bottom * reach))
+        Self.addContinuousCorner(
+            to: &path,
+            corner: CGPoint(x: rect.minX, y: rect.maxY),
+            radius: bottom,
+            inwardX: 1,
+            verticalFirst: true
         )
-        path.addLine(to: CGPoint(x: rect.maxX - bottom, y: rect.maxY))
-        path.addQuadCurve(
-            to: CGPoint(x: rect.maxX, y: rect.maxY - bottom),
-            control: CGPoint(x: rect.maxX, y: rect.maxY)
+        path.addLine(to: CGPoint(x: rect.maxX - bottom * reach, y: rect.maxY))
+        Self.addContinuousCorner(
+            to: &path,
+            corner: CGPoint(x: rect.maxX, y: rect.maxY),
+            radius: bottom,
+            inwardX: -1,
+            verticalFirst: false
         )
         path.addLine(to: CGPoint(x: rect.maxX, y: rect.minY + top))
         path.addQuadCurve(
@@ -193,6 +203,51 @@ public struct NotchShape: Shape {
         )
         path.closeSubpath()
         return path
+    }
+
+    /// How far along each edge a continuous corner of radius 1 reaches.
+    static let continuousReach: CGFloat = 1.528665
+
+    /// The bottom corners use Apple's continuous ("squircle") curve, the one
+    /// the Dynamic Island itself is cut to. A circular or quadratic corner
+    /// starts abruptly where the straight edge ends, which is what made the
+    /// open shell read as a rounded rectangle rather than the island.
+    ///
+    /// The control points are SwiftUI's own `.continuous` rounded-rectangle
+    /// curve for a unit radius, as offsets from the corner toward the inside.
+    /// The curve is symmetric about the diagonal, so walking it the other way
+    /// round only swaps the axes.
+    private static let continuousCurve: [(c1: CGPoint, c2: CGPoint, end: CGPoint)] = [
+        (CGPoint(x: 0, y: 1.088490), CGPoint(x: 0, y: 0.868407), CGPoint(x: 0.074911, y: 0.631494)),
+        (CGPoint(x: 0.169060, y: 0.372824), CGPoint(x: 0.372824, y: 0.169060), CGPoint(x: 0.631494, y: 0.074911)),
+        (CGPoint(x: 0.868407, y: 0), CGPoint(x: 1.088490, y: 0), CGPoint(x: 1.528665, y: 0)),
+    ]
+
+    /// Adds one bottom corner, starting from the current point.
+    /// - Parameters:
+    ///   - inwardX: +1 when the inside of the shape lies to the corner's right.
+    ///   - verticalFirst: true when arriving down a side edge, false when
+    ///     arriving along the bottom edge.
+    private static func addContinuousCorner(
+        to path: inout Path,
+        corner: CGPoint,
+        radius: CGFloat,
+        inwardX: CGFloat,
+        verticalFirst: Bool
+    ) {
+        guard radius > 0 else {
+            path.addLine(to: corner)
+            return
+        }
+        // (along the bottom edge, up the side edge), both measured inward.
+        func point(_ offset: CGPoint) -> CGPoint {
+            let along = verticalFirst ? offset.x : offset.y
+            let up = verticalFirst ? offset.y : offset.x
+            return CGPoint(x: corner.x + inwardX * along * radius, y: corner.y - up * radius)
+        }
+        for segment in continuousCurve {
+            path.addCurve(to: point(segment.end), control1: point(segment.c1), control2: point(segment.c2))
+        }
     }
 }
 

@@ -64,6 +64,9 @@ public enum ClaudeConversationReader {
               let content = String(data: data, encoding: .utf8) else { return [] }
 
         var parsed: [ClaudeTranscriptMessage] = []
+        // Keep formatter state local to this read: repeated timestamps share
+        // its parser setup, while concurrent reads never share mutable state.
+        let dateFormatter = ISO8601DateFormatter()
         for (lineIndex, line) in content.split(separator: "\n", omittingEmptySubsequences: true).enumerated() {
             guard let lineData = line.data(using: .utf8),
                   let object = try? JSONSerialization.jsonObject(with: lineData) as? [String: Any],
@@ -81,7 +84,7 @@ public enum ClaudeConversationReader {
                 role: extracted.role,
                 text: extracted.text,
                 toolName: extracted.toolName,
-                timestamp: date(from: object["timestamp"] as? String)
+                timestamp: date(from: object["timestamp"] as? String, formatter: dateFormatter)
             ))
             if parsed.count > maximumMessages {
                 parsed.removeFirst(parsed.count - maximumMessages)
@@ -207,9 +210,8 @@ public enum ClaudeConversationReader {
         return bounded(trimmed.replacingOccurrences(of: "\0", with: ""), maximum: maximumMessageCharacters) ?? ""
     }
 
-    private static func date(from value: String?) -> Date {
+    private static func date(from value: String?, formatter: ISO8601DateFormatter) -> Date {
         guard let value else { return Date() }
-        let formatter = ISO8601DateFormatter()
         return formatter.date(from: value) ?? Date()
     }
 

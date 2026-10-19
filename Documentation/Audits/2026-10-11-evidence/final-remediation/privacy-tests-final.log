@@ -1,0 +1,24 @@
+[0/1] Planning build
+Test Suite 'Selected tests' started at 2026-10-11 21:32:59.668.
+Test Suite 'NotchShotPackageTests.xctest' started at 2026-10-11 21:32:59.678.
+Test Suite 'NotchShotPackageTests.xctest' passed at 2026-10-11 21:32:59.678.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.000) seconds
+Test Suite 'Selected tests' passed at 2026-10-11 21:32:59.678.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.009) seconds
+􀟈  Test run started.
+􀄵  Testing Library Version: 1902
+􀄵  Target Platform: arm64e-apple-macos14.0
+􀟈  Suite "Privacy indicator worker" started.
+􀟈  Test "A blocked OS query does not block main, and stop/restart rejects its old snapshot" started.
+􁁛  Test "A blocked OS query does not block main, and stop/restart rejects its old snapshot" passed after 0.001 seconds.
+􀟈  Test "Every running event publishes in order and preserves client deduplication order" started.
+􁁛  Test "Every running event publishes in order and preserves client deduplication order" passed after 0.001 seconds.
+􀟈  Test "Old list and running callbacks cannot query or publish after restart; repeated starts are idempotent" started.
+􁁛  Test "Old list and running callbacks cannot query or publish after restart; repeated starts are idempotent" passed after 0.001 seconds.
+􀟈  Test "Rebuild removes each successful registration once, and deinitialization tears down without retention" started.
+􁁛  Test "Rebuild removes each successful registration once, and deinitialization tears down without retention" passed after 0.001 seconds.
+􀟈  Test "Actual OS initial snapshot completes on the dedicated queue" started.
+Privacy actual OS initial snapshot: 0.221446292 seconds; main thread: false; microphone client count: 1
+􁁛  Test "Actual OS initial snapshot completes on the dedicated queue" passed after 0.221 seconds.
+􁁛  Suite "Privacy indicator worker" passed after 0.223 seconds.
+􁁛  Test run with 5 tests in 1 suite passed after 0.224 seconds.

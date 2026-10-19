@@ -96,17 +96,16 @@ extension AppCoordinator {
         )
 
         if intent.needsSelection {
-            guard let selection = await runSelection(for: intent) else { return }
-            guard isCurrentCapture(operationID) else { return }
-            switch selection {
-            case .area(let rect, let displayID):
-                request.rect = rect
-                request.displayID = displayID
-            case .window(let window):
-                request.windowID = window.id
-                request.intent = .window
-            case .cancelled:
-                return
+            guard let outcome = await selectRegion(for: intent) else { return }
+            guard isCurrentCapture(operationID), request.apply(outcome.result) else { return }
+            if case .area(_, let displayID) = outcome.result,
+               FrozenSelectionPolicy.usesFreezeFrame(
+                   intent: request.intent,
+                   timer: timer,
+                   includesCursor: request.includesCursor,
+                   freezeWasShown: outcome.freezeWasShown
+               ) {
+                request.selectionFreezeFrame = outcome.freezeFrames[displayID]
             }
         } else if intent == .display {
             request.displayID = displayID
@@ -185,6 +184,7 @@ extension AppCoordinator {
             }
 
             playCaptureSound()
+            playCaptureSwoop(image, intent: request.intent)
             await finishStillCapture(
                 image,
                 kind: .screenshot,
@@ -267,30 +267,22 @@ extension AppCoordinator {
         operationID: UUID? = nil
     ) async {
         do {
-            guard operationID.map(isCurrentCapture) ?? true else { return }
+            guard !Task.isCancelled, operationID.map(isCurrentCapture) ?? true else { return }
             let recipe = recipeOverride ?? CaptureRecipeStore.shared.activeRecipe
-            var prepared = try CaptureRecipeRenderer.render(image, recipe: recipe)
-            if let maximumBytes = recipe.targetMaximumBytes, maximumBytes > 0 {
-                let format = recipe.imageFormat ?? Preferences.shared.imageFormat
-                let fitted = try SmartExportService.renderToFit(
-                    prepared.cgImage,
-                    maximumBytes: maximumBytes,
-                    format: format,
-                    quality: Preferences.shared.jpegQuality,
-                    dpiScale: prepared.scale
-                )
-                prepared = CapturedImage(
-                    cgImage: fitted,
-                    scale: prepared.scale,
-                    sourceRect: prepared.sourceRect
-                )
-            }
+            let format = recipe.imageFormat ?? Preferences.shared.imageFormat
+            let quality = Preferences.shared.jpegQuality
+            let prepared = try await CaptureRecipeRenderer.prepare(
+                image, recipe: recipe, format: format, quality: quality
+            )
+            guard !Task.isCancelled, operationID.map(isCurrentCapture) ?? true else { return }
             let asset = try await persist(
                 prepared,
                 kind: kind,
                 sourceApplication: sourceApplication,
                 recipe: recipe,
-                clipboardOnly: clipboardOnly
+                clipboardOnly: clipboardOnly,
+                encodingFormat: format,
+                encodingQuality: quality
             )
             guard operationID.map(isCurrentCapture) ?? true else {
                 removeCancelledArtifactIfOwned(asset)
@@ -319,6 +311,13 @@ extension AppCoordinator {
             let ocrResult = recipe.runsOCR == true
                 ? try? await OCRService.shared.recognizeText(in: prepared)
                 : nil
+            // OCR suspends too, including when its optional result fails.
+            // A cancelled or superseded capture must not reach history, the
+            // shelf, or an editor after that suspension.
+            guard operationID.map(isCurrentCapture) ?? true else {
+                removeCancelledArtifactIfOwned(asset)
+                return
+            }
             history.record(
                 asset: asset,
                 image: prepared.cgImage,
@@ -343,6 +342,13 @@ extension AppCoordinator {
                 seams: seams
             )
             item.ocrResult = ocrResult
+            // The thumbnail arrives as the flying capture goes into the notch,
+            // not ahead of it. Usually the save already took longer.
+            let landing = CaptureSwoop.shared.timeUntilLanding
+            if landing > 0.02 {
+                try? await Task.sleep(for: .seconds(landing))
+                guard operationID.map(isCurrentCapture) ?? true else { return }
+            }
             push(item)
 
             let annotationMode: RecipeAnnotationMode = automationAction == .annotate
@@ -357,10 +363,31 @@ extension AppCoordinator {
                 openPrivacyReview(for: item)
             }
         } catch {
+            guard !(error is CancellationError) else { return }
             if let operationID {
                 guard isCurrentCapture(operationID), !(error is CancellationError) else { return }
             }
             present(error: error)
+        }
+    }
+
+    /// Flies the captured pixels from where they were on screen up into the
+    /// notch on that display. See `CaptureSwoop`.
+    func playCaptureSwoop(_ image: CapturedImage, intent: CaptureIntent) {
+        guard Preferences.shared.swoopsCaptureIntoNotch,
+              !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion,
+              let windowController, !windowController.isHiddenForCurrentApp else { return }
+        let source = ScreenGeometry.cocoaRect(fromCG: image.sourceRect, primaryFrame: ScreenLookup.primaryFrame)
+        let center = CGPoint(x: source.midX, y: source.midY)
+        let contexts = windowController.displayContexts
+        guard let metrics = contexts.first(where: { $0.metrics.screenFrame.contains(center) })?.metrics
+            ?? contexts.max(by: { overlap($0.metrics.screenFrame, source) < overlap($1.metrics.screenFrame, source) })?
+                .metrics else { return }
+        CaptureSwoop.shared.play(image, framed: intent != .window, metrics: metrics)
+
+        func overlap(_ a: CGRect, _ b: CGRect) -> CGFloat {
+            let shared = a.intersection(b)
+            return shared.isNull ? 0 : shared.width * shared.height
         }
     }
 
@@ -380,7 +407,9 @@ extension AppCoordinator {
         kind: CaptureAssetKind,
         sourceApplication: NSRunningApplication?,
         recipe: CaptureRecipe? = nil,
-        clipboardOnly: Bool = false
+        clipboardOnly: Bool = false,
+        encodingFormat: ImageFormat? = nil,
+        encodingQuality: Double? = nil
     ) async throws -> CaptureAsset {
         let preferences = Preferences.shared
         let recipe = recipe ?? CaptureRecipe.all[0]
@@ -388,7 +417,7 @@ extension AppCoordinator {
         let template = recipe.id == "standard" ? nil : recipe.filenameTemplate
         let name = preferences.expandFilename(template: template, appName: appName)
 
-        let format = recipe.imageFormat ?? preferences.imageFormat
+        let format = encodingFormat ?? recipe.imageFormat ?? preferences.imageFormat
         let url: URL
         let ownership: CaptureAssetOwnership
         // A clipboard-only capture keeps its file in the app's store so it stays
@@ -430,7 +459,7 @@ extension AppCoordinator {
             image,
             to: url,
             format: format,
-            quality: preferences.jpegQuality
+            quality: encodingQuality ?? preferences.jpegQuality
         )
 
         // If HEIC fell back to PNG the extension must follow, or Finder and
@@ -464,6 +493,19 @@ extension AppCoordinator {
     // MARK: Selection & countdown
 
     func runSelection(for intent: CaptureIntent) async -> SelectionResult? {
+        await selectRegion(for: intent)?.result
+    }
+
+    /// The overlay's answer and the frames it was drawn on.
+    struct SelectionOutcome {
+        var result: SelectionResult
+        var freezeFrames: [CGDirectDisplayID: CapturedImage]
+        /// Whether the overlay showed the frozen frames, rather than only
+        /// using them for the magnifier.
+        var freezeWasShown: Bool
+    }
+
+    func selectRegion(for intent: CaptureIntent) async -> SelectionOutcome? {
         let mode: SelectionMode = switch intent {
         case .window: .window
         case .scrolling: .scrollingRegion
@@ -479,21 +521,24 @@ extension AppCoordinator {
         }
 
         let excluded = WindowExclusionRegistry.shared.excludedWindowNumbers
-        var freezeFrames: [CGDirectDisplayID: CapturedImage] = [:]
         // Freeze frames double as the magnifier's pixel source, so they're
-        // taken even when the freeze itself is switched off.
-        for screen in NSScreen.screens {
-            guard let displayID = ScreenLookup.displayID(for: screen) else { continue }
-            if let frame = try? await CaptureService.shared.captureFreezeFrame(
-                displayID: displayID,
-                excludedWindows: excluded
-            ) {
-                freezeFrames[displayID] = frame
-            }
+        // taken even when the freeze itself is switched off. They and the
+        // window list come from one inventory fetch; see `prepareSelection`.
+        let prelude = await CaptureService.shared.prepareSelection(
+            displays: NSScreen.screens.compactMap(ScreenLookup.displayID(for:)),
+            scales: ScreenLookup.backingScales(),
+            frontmostBundleID: NSWorkspace.shared.frontmostApplication?.bundleIdentifier,
+            excludedWindows: excluded
+        )
+        let freezeFrames = prelude.freezeFrames
+        let inventory: ShareableSnapshot?
+        if let fetched = prelude.inventory {
+            await ShareableContentProvider.shared.store(fetched)
+            inventory = fetched
+        } else {
+            inventory = try? await ShareableContentProvider.shared.snapshot(forceRefresh: true)
         }
-
-        let windows = (try? await ShareableContentProvider.shared.snapshot(forceRefresh: true))?
-            .selectableWindows(excluding: excluded) ?? []
+        let windows = inventory?.selectableWindows(excluding: excluded) ?? []
 
         let previous = intent == .area ? await CaptureService.shared.previousAreaRect : nil
 
@@ -510,13 +555,17 @@ extension AppCoordinator {
         SelectionOverlayController.shared.onDismiss = { [weak self] in
             self?.windowController?.reassertPanels()
         }
+        // Read before presenting: the overlay decides from the same setting,
+        // and a change made while it is up must not relabel what was shown.
+        let freezeWasShown = Preferences.shared.freezeScreenDuringSelection && !freezeFrames.isEmpty
         let result = await SelectionOverlayController.shared.beginSelection(
             mode: mode,
             freezeFrames: freezeFrames,
             windows: windows,
             initialRect: previous
         )
-        return result == .cancelled ? nil : result
+        guard result != .cancelled else { return nil }
+        return SelectionOutcome(result: result, freezeFrames: freezeFrames, freezeWasShown: freezeWasShown)
     }
 
     /// Returns false if the user cancelled during the countdown.

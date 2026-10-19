@@ -293,7 +293,7 @@ struct DictationIslandContent: View {
         .lineLimit(snapshot.isHoverExpanded ? 2 : 1)
         .truncationMode(.head)
         .multilineTextAlignment(.leading)
-        .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: snapshot.volatileText)
+        .animation(reduceMotion ? nil : NotchMotion.fade(reduceMotion: true), value: snapshot.volatileText)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("Transcript")
         .accessibilityValue(snapshot.combinedText.isEmpty ? "Listening" : snapshot.combinedText)

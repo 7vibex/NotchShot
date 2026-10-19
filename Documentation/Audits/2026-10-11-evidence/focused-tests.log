@@ -1,0 +1,237 @@
+[0/1] Planning build
+Building for debugging...
+[0/20] Write sources
+[3/20] Write swift-version--58304C5D6DBC2206.txt
+[5/21] Compiling NotchShotKit MeetingShortcutDispatcher.swift
+[6/21] Compiling NotchShotKit CaptureRecipe.swift
+[7/21] Compiling NotchShotKit ShareLinkUploader.swift
+[8/21] Compiling NotchShotKit ContextCoordinator.swift
+[9/21] Compiling NotchShotKit ClipboardImport.swift
+[10/21] Compiling NotchShotKit AppCoordinator+Shelf.swift
+[11/21] Emitting module NotchShotKit
+[12/21] Compiling NotchShotKit AppCoordinator+Capture.swift
+[13/21] Compiling NotchShotKit SmartExport.swift
+[14/31] Compiling NotchShotKit SettingsView+Modules.swift
+[15/31] Compiling NotchShotKit NotchRootView+CaptureMenu.swift
+[16/31] Compiling NotchShotKit NotchRootView.swift
+[17/31] Compiling NotchShotKit SettingsView+Extras.swift
+[18/31] Compiling NotchShotKit NotchRootView+Context.swift
+[19/31] Compiling NotchShotKit MenuBarPanelView.swift
+[20/31] Compiling NotchShotKit AppCoordinator+Automation.swift
+[21/31] Compiling NotchShotKit AppDelegate.swift
+[22/31] Compiling NotchShotKit SettingsView.swift
+[23/31] Compiling NotchShotKit AppCoordinator.swift
+[24/34] Compiling NotchShotKit NotchRootView+Status.swift
+[25/34] Compiling NotchShotKit ShelfContent.swift
+[26/34] Compiling NotchShotKit AppCoordinator+Recording.swift
+[27/127] Emitting module NotchShot
+[28/127] Compiling NotchShot main.swift
+[29/127] Compiling NotchShot BundledSelfTest.swift
+[29/127] Write Objects.LinkFileList
+[31/127] Compiling NotchShotDiagnostics main.swift
+[32/127] Emitting module NotchShotDiagnostics
+[32/127] Write Objects.LinkFileList
+[34/127] Compiling NotchShotBench IslandBenchmarks.swift
+[35/127] Emitting module NotchShotBench
+[36/127] Compiling NotchShotBench RecipeResponsivenessBenchmarks.swift
+[37/127] Compiling NotchShotBench main.swift
+[38/127] Compiling NotchShotBench Harness.swift
+[39/127] Compiling NotchShotBench ExportHandlerBenchmarks.swift
+[40/127] Compiling NotchShotBench Fixtures.swift
+[41/127] Compiling NotchShotBench AIActivityBenchmarks.swift
+[42/127] Compiling NotchShotBench EditorBenchmarks.swift
+[43/127] Compiling NotchShotBench Baselines.swift
+[43/128] Write Objects.LinkFileList
+[44/128] Linking NotchShot
+[45/128] Linking notchshot-diagnostics
+[46/128] Applying NotchShot
+[47/128] Applying notchshot-diagnostics
+[48/128] Linking NotchShotBench
+[49/128] Applying NotchShotBench
+[51/128] Compiling NotchShotKitTests LiveActivityAPITests.swift
+[52/128] Compiling NotchShotKitTests LocalSendControlPolicyTests.swift
+[53/128] Compiling NotchShotKitTests LocalSendFileSnapshotTests.swift
+[54/128] Compiling NotchShotKitTests LocalSendHostPolicyTests.swift
+[55/128] Compiling NotchShotKitTests LocalSendRedirectRegressionTests.swift
+[56/128] Compiling NotchShotKitTests LockScreenRecoveryTests.swift
+[57/128] Compiling NotchShotKitTests LockedMediaNotificationDeliveryTests.swift
+[58/128] Compiling NotchShotKitTests LyricsTests.swift
+[59/136] Compiling NotchShotKitTests AIActivityHistoryTests.swift
+[60/136] Compiling NotchShotKitTests AIActivityRefreshCachingTests.swift
+[61/136] Compiling NotchShotKitTests AIReporterRedactionTests.swift
+[62/136] Compiling NotchShotKitTests ActivityHeartbeatTests.swift
+[63/136] Compiling NotchShotKitTests ActivityPriorityTests.swift
+[64/136] Compiling NotchShotKitTests AgentActivityPresentationTests.swift
+[65/136] Compiling NotchShotKitTests AnnotationEditorGeometryTests.swift
+[66/136] Compiling NotchShotKitTests AnnotationExportResultTests.swift
+[67/136] Compiling NotchShotKitTests AnnotationSerializationTests.swift
+[68/136] Compiling NotchShotKitTests ProductivityNotificationTests.swift
+[69/136] Compiling NotchShotKitTests ProductivitySuiteTests.swift
+[70/136] Compiling NotchShotKitTests ProjectRoundTripRegressionTests.swift
+[71/136] Compiling NotchShotKitTests RecordingAndHotKeySafetyTests.swift
+[72/136] Compiling NotchShotKitTests RecordingExportAndEffectsTests.swift
+[73/136] Compiling NotchShotKitTests RecordingPresentationLifecycleTests.swift
+[74/136] Compiling NotchShotKitTests RedactionExportTests.swift
+[75/136] Compiling NotchShotKitTests ResponsivenessRegressionTests.swift
+[76/136] Compiling NotchShotKitTests HistoryPersistenceTests.swift
+[77/136] Compiling NotchShotKitTests HistorySafetyRemediationTests.swift
+[78/136] Compiling NotchShotKitTests HistorySearchTests.swift
+[79/136] Compiling NotchShotKitTests IslandGestureAndBurstTests.swift
+[80/136] Compiling NotchShotKitTests IslandGlassPolicyTests.swift
+[81/136] Compiling NotchShotKitTests IslandIntegrationTests.swift
+[82/136] Compiling NotchShotKitTests IslandPresentationEngineTests.swift
+[83/136] Compiling NotchShotKitTests IslandSwipeReleaseVelocityTests.swift
+[84/136] Compiling NotchShotKitTests SafeAssetFileTests.swift
+[85/136] Compiling NotchShotKitTests SafeImageFileTests.swift
+[86/136] Compiling NotchShotKitTests ScreenGeometryTests.swift
+[87/136] Compiling NotchShotKitTests SecureUpdateControllerTests.swift
+[88/136] Compiling NotchShotKitTests SelectionOverlayTests.swift
+[89/136] Compiling NotchShotKitTests ShelfFileOperationsTests.swift
+[90/136] Compiling NotchShotKitTests SpotlightCaptureIndexTests.swift
+[91/136] Compiling NotchShotKitTests StackAndHUDTests.swift
+[92/136] Compiling NotchShotKitTests NotchAppVisibilityPolicyTests.swift
+[93/136] Compiling NotchShotKitTests NotchConsolidatedFixTests.swift
+[94/136] Compiling NotchShotKitTests NotchHoverZoneTests.swift
+[95/136] Compiling NotchShotKitTests NotchTabTests.swift
+[96/136] Compiling NotchShotKitTests PasteboardPromiseTests.swift
+[97/136] Compiling NotchShotKitTests PreferencesTests.swift
+[98/136] Compiling NotchShotKitTests ProcessAndConversionRegressionTests.swift
+[99/136] Compiling NotchShotKitTests ProductivityFeatureTests.swift
+[100/136] Compiling NotchShotKitTests AuditRegressionTests.swift
+[101/136] Compiling NotchShotKitTests AutomationExportInspectionTests.swift
+[102/136] Compiling NotchShotKitTests BatteryAlertPresentationTests.swift
+[103/136] Compiling NotchShotKitTests CaptureFreezeCutTests.swift
+[104/136] Compiling NotchShotKitTests CaptureSwoopTests.swift
+[105/136] Compiling NotchShotKitTests CaptureWorkflowFeatureTests.swift
+[106/136] Compiling NotchShotKitTests ClaudeCodeSessionTests.swift
+[107/136] Compiling NotchShotKitTests ClaudeHookSocketTests.swift
+[108/136] Compiling NotchShotKitTests ClaudeVibeNotchTests.swift
+[109/136] Compiling NotchShotKitTests ExternalActivityStoreTests.swift
+[110/136] Compiling NotchShotKitTests ExtrasFeatureTests.swift
+[111/136] Compiling NotchShotKitTests FileDropActionTests.swift
+[112/136] Compiling NotchShotKitTests ForegroundRemovalTests.swift
+[113/136] Compiling NotchShotKitTests HistoryAndMediaTests.swift
+[114/136] Compiling NotchShotKitTests HistoryCaptionRelocationTests.swift
+[115/136] Compiling NotchShotKitTests HistoryCoalesceTests.swift
+[116/136] Compiling NotchShotKitTests HistoryOverflowTests.swift
+[117/136] Compiling NotchShotKitTests StitchingTests.swift
+[118/136] Compiling NotchShotKitTests SymlinkEscapeTests.swift
+[119/136] Compiling NotchShotKitTests SystemIntegrationSafetyTests.swift
+[120/136] Compiling NotchShotKitTests TestSupport.swift
+[121/136] Compiling NotchShotKitTests TextInsertionRegressionTests.swift
+[122/136] Compiling NotchShotKitTests TransferActivityStoreTests.swift
+[123/136] Compiling NotchShotKitTests TransferPartialAcceptanceTests.swift
+[124/136] Compiling NotchShotKitTests WindowExclusionTests.swift
+[125/136] Compiling NotchShotKitTests ClipboardClearRegressionTests.swift
+[126/136] Compiling NotchShotKitTests ClipboardImageOverlapMeasurements.swift
+[127/136] Compiling NotchShotKitTests ClipboardTests.swift
+[128/136] Compiling NotchShotKitTests CodexHookConfigurationTests.swift
+[129/136] Compiling NotchShotKitTests ContextFeatureTests.swift
+[130/136] Compiling NotchShotKitTests ContextTimingRegressionTests.swift
+[131/136] Compiling NotchShotKitTests DesignSystemTests.swift
+[132/136] Compiling NotchShotKitTests DictationTests.swift
+[133/136] Compiling NotchShotKitTests ExportSafetyRegressionTests.swift
+[134/136] Emitting module NotchShotKitTests
+[134/136] Write Objects.LinkFileList
+[135/136] Linking NotchShotPackageTests
+Build complete! (28.91s)
+Test Suite 'Selected tests' started at 2026-10-11 18:07:57.175.
+Test Suite 'NotchShotPackageTests.xctest' started at 2026-10-11 18:07:57.181.
+Test Suite 'NotchShotPackageTests.xctest' passed at 2026-10-11 18:07:57.181.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.000) seconds
+Test Suite 'Selected tests' passed at 2026-10-11 18:07:57.181.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.005) seconds
+􀟈  Test run started.
+􀄵  Testing Library Version: 1902
+􀄵  Target Platform: arm64e-apple-macos14.0
+􀟈  Suite "GIF conversion progress" started.
+􀟈  Suite "Capture processing" started.
+􀟈  Suite "Cached context timing regressions" started.
+􀟈  Suite "Call shortcut routing" started.
+􀟈  Suite "Export safety regressions" started.
+􀟈  Suite "Clipboard import reporting" started.
+􀟈  Suite "Smart export contracts" started.
+􀟈  Suite "Bounded command execution" started.
+􀟈  Test "Replaced legacy expiry cannot overwrite a newer transient" started.
+􀟈  Test "Legacy completed timer and voice cards expire and restore the next persistent source" started.
+􀟈  Test "The worker preserves recipe pixels, scale, and source geometry" started.
+􀟈  Test "Owned assets without a stored identity are refused by the asset uploader" started.
+􀟈  Test "Calendar replacement and stop invalidate already queued reevaluations" started.
+􀟈  Test "Entirely outside redactions need no pixelation output" started.
+􀟈  Test "Legacy owned selection pins its identity before asynchronous upload" started.
+􀟈  Test "Transport errors and cancellation remove their snapshots" started.
+􀟈  Test "Service rejection removes its snapshot" started.
+􀟈  Test "External assets without a recorded identity are refused" started.
+􀟈  Test "Cached events advance through imminent, start, and end without EventKit refresh" started.
+􀟈  Test "Partly outside pixelation clips and still destroys visible detail" started.
+􀟈  Test "An empty file has a zero length and the SHA-256 of its empty body" started.
+􀟈  Test "The public URL uploader refuses symlinks before any request" started.
+􀟈  Test "The upload cap is enforced before the transport" started.
+􀟈  Test "A stalled or failed encoder exits without silently skipping frames" started.
+􀟈  Test "Both pipes are drained while retained output stays bounded" started.
+􀟈  Test "The asset uploader refuses replacement of the stored identity" started.
+􀟈  Test "Hash, length and body use a private snapshot even after source replacement" started.
+􀟈  Test "Task cancellation after transport returns cleans the snapshot" started.
+􀟈  Test "The real export worker uses preset quality" started.
+􀟈  Test "Pixelation failure refuses both burn-in and finished export" started.
+􀟈  Test "Failed and timed-out activation never posts keys" started.
+􀟈  Test "A full history reports new retained content instead of net growth" started.
+􁁛  Test "A stalled or failed encoder exits without silently skipping frames" passed after 0.004 seconds.
+􀟈  Test "The encoded movie keeps the final frame's delay" started.
+􁁛  Test "The upload cap is enforced before the transport" passed after 0.007 seconds.
+􁁛  Test "Entirely outside redactions need no pixelation output" passed after 0.007 seconds.
+􁁛  Test "External assets without a recorded identity are refused" passed after 0.007 seconds.
+􁁛  Test "The public URL uploader refuses symlinks before any request" passed after 0.007 seconds.
+􁁛  Test "Owned assets without a stored identity are refused by the asset uploader" passed after 0.007 seconds.
+􁁛  Test "The asset uploader refuses replacement of the stored identity" passed after 0.007 seconds.
+􁁛  Test "Legacy owned selection pins its identity before asynchronous upload" passed after 0.008 seconds.
+􁁛  Test "An empty file has a zero length and the SHA-256 of its empty body" passed after 0.010 seconds.
+􁁛  Test "Hash, length and body use a private snapshot even after source replacement" passed after 0.010 seconds.
+􁁛  Test "Service rejection removes its snapshot" passed after 0.011 seconds.
+􁁛  Test "Task cancellation after transport returns cleans the snapshot" passed after 0.011 seconds.
+􁁛  Test "Partly outside pixelation clips and still destroys visible detail" passed after 0.011 seconds.
+􁁛  Test "Transport errors and cancellation remove their snapshots" passed after 0.012 seconds.
+􁁛  Test "Pixelation failure refuses both burn-in and finished export" passed after 0.012 seconds.
+􁁛  Suite "Export safety regressions" passed after 0.013 seconds.
+􁁛  Test "Both pipes are drained while retained output stays bounded" passed after 0.054 seconds.
+􀟈  Test "A process ignoring termination is killed within the deadline" started.
+􁁛  Test "Calendar replacement and stop invalidate already queued reevaluations" passed after 0.122 seconds.
+􁁛  Test "Legacy completed timer and voice cards expire and restore the next persistent source" passed after 0.123 seconds.
+􁁛  Test "Replaced legacy expiry cannot overwrite a newer transient" passed after 0.122 seconds.
+􁁛  Test "Cached events advance through imminent, start, and end without EventKit refresh" passed after 0.153 seconds.
+􁁛  Suite "Cached context timing regressions" passed after 0.153 seconds.
+􁁛  Test "The encoded movie keeps the final frame's delay" passed after 0.320 seconds.
+􀟈  Test "Failure and cancellation preserve pre-existing destinations" started.
+􁁛  Test "Failure and cancellation preserve pre-existing destinations" passed after 0.043 seconds.
+􁁛  Suite "GIF conversion progress" passed after 0.369 seconds.
+􁁛  Test "A full history reports new retained content instead of net growth" passed after 0.572 seconds.
+􁁛  Test "The real export worker uses preset quality" passed after 0.572 seconds.
+􁁛  Suite "Clipboard import reporting" passed after 0.572 seconds.
+􀟈  Test "Original dimensions supports long scrolling images without another canvas" started.
+􁁛  Test "Original dimensions supports long scrolling images without another canvas" passed after 0.001 seconds.
+􁁛  Suite "Smart export contracts" passed after 0.572 seconds.
+􁁛  Test "Failed and timed-out activation never posts keys" passed after 0.573 seconds.
+􀟈  Test "Delayed activation waits for the target and restores prior focus" started.
+􁁛  Test "Delayed activation waits for the target and restores prior focus" passed after 0.001 seconds.
+􀟈  Test "Canceled activation and failed posting release focus without sending keys" started.
+􁁛  Test "Canceled activation and failed posting release focus without sending keys" passed after 0.001 seconds.
+􀟈  Test "Delivery preserves a later user focus change" started.
+􁁛  Test "Delivery preserves a later user focus change" passed after 0.001 seconds.
+􀟈  Test "Concurrent requests serialize their entire focus handoff" started.
+􁁛  Test "Concurrent requests serialize their entire focus handoff" passed after 0.001 seconds.
+􀟈  Test "Cancellation before delivery does not activate or post" started.
+􁁛  Test "Cancellation before delivery does not activate or post" passed after 0.001 seconds.
+􁁛  Suite "Call shortcut routing" passed after 0.574 seconds.
+􁁛  Test "The worker preserves recipe pixels, scale, and source geometry" passed after 0.609 seconds.
+􀟈  Test "Byte-limited recipes retain their actual encoder budget" started.
+􁁛  Test "Byte-limited recipes retain their actual encoder budget" passed after 0.002 seconds.
+􀟈  Test "A canceled capture does not run queued bitmap work" started.
+􁁛  Test "A canceled capture does not run queued bitmap work" passed after 0.001 seconds.
+􁁛  Suite "Capture processing" passed after 0.612 seconds.
+􁁛  Test "A process ignoring termination is killed within the deadline" passed after 1.212 seconds.
+􀟈  Test "An exited parent cannot leave an inherited output pipe hanging" started.
+􁁛  Test "An exited parent cannot leave an inherited output pipe hanging" passed after 0.057 seconds.
+􀟈  Test "Cancellation releases an active command" started.
+􁁛  Test "Cancellation releases an active command" passed after 0.184 seconds.
+􁁛  Suite "Bounded command execution" passed after 1.510 seconds.
+􁁛  Test run with 37 tests in 8 suites passed after 1.511 seconds.

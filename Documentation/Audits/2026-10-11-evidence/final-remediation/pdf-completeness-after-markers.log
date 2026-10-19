@@ -1,0 +1,36 @@
+Building for debugging...
+[0/17] Write sources
+[1/17] Write swift-version--58304C5D6DBC2206.txt
+[3/5] Compiling NotchShotKitTests PDFConversionCancellationTests.swift
+[4/5] Emitting module NotchShotKitTests
+[4/6] Write Objects.LinkFileList
+[5/6] Linking NotchShotPackageTests
+Build complete! (10.65s)
+Test Suite 'Selected tests' started at 2026-10-11 21:32:40.953.
+Test Suite 'NotchShotPackageTests.xctest' started at 2026-10-11 21:32:40.962.
+Test Suite 'NotchShotPackageTests.xctest' passed at 2026-10-11 21:32:40.962.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.000) seconds
+Test Suite 'Selected tests' passed at 2026-10-11 21:32:40.962.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.009) seconds
+􀟈  Test run started.
+􀄵  Testing Library Version: 1902
+􀄵  Target Platform: arm64e-apple-macos14.0
+􀟈  Suite "Media conversion" started.
+􀟈  Suite "PDF conversion cancellation" started.
+􀟈  Test "A PDF becomes one PNG per page" started.
+􀟈  Test "Targets never include the file's own format" started.
+􀟈  Test "Cancellation after publishing page one rolls back only this attempt's output" started.
+􀟈  Test "Rollback preserves a published page replaced by another writer" started.
+􀟈  Test "An unavailable second page fails and rolls back this attempt's first page" started.
+􀟈  Test "A canceled public PDF conversion writes no pages and preserves existing files" started.
+􀟈  Test "PDF conversion retains page limit, ordering and two-times raster dimensions" started.
+􁁛  Test "Targets never include the file's own format" passed after 0.003 seconds.
+􁁛  Test "A canceled public PDF conversion writes no pages and preserves existing files" passed after 0.007 seconds.
+􁁛  Test "Cancellation after publishing page one rolls back only this attempt's output" passed after 0.065 seconds.
+􁁛  Test "Rollback preserves a published page replaced by another writer" passed after 0.065 seconds.
+􁁛  Test "An unavailable second page fails and rolls back this attempt's first page" passed after 0.065 seconds.
+􁁛  Test "A PDF becomes one PNG per page" passed after 0.068 seconds.
+􁁛  Suite "Media conversion" passed after 0.068 seconds.
+􁁛  Test "PDF conversion retains page limit, ordering and two-times raster dimensions" passed after 0.106 seconds.
+􁁛  Suite "PDF conversion cancellation" passed after 0.106 seconds.
+􁁛  Test run with 7 tests in 2 suites passed after 0.107 seconds.

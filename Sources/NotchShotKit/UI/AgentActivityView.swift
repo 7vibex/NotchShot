@@ -59,23 +59,14 @@ struct AgentStatePill: View {
     var tint: Color
     var isDimmed = false
 
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var isPulsing = false
-
-    private var shouldPulse: Bool { state == .working && !reduceMotion && !isDimmed }
+    private var shouldPulse: Bool { state == .working && !isDimmed }
 
     var body: some View {
         HStack(spacing: NotchIsland.Spacing.tight) {
-            Circle()
-                .fill(tint)
+            // A layer animation: a SwiftUI `repeatForever` here redrew the
+            // whole notch every frame for as long as the agent worked.
+            LayerPulsingDot(diameter: 5, color: tint, pulseOpacity: 0.35, halfPeriod: 0.85, pulses: shouldPulse)
                 .frame(width: 5, height: 5)
-                .opacity(isPulsing ? 0.35 : 1)
-                .animation(
-                    shouldPulse
-                        ? .easeInOut(duration: 0.85).repeatForever(autoreverses: true)
-                        : nil,
-                    value: isPulsing
-                )
 
             Text(state.title)
                 .font(.system(size: 10, weight: .semibold))
@@ -92,8 +83,6 @@ struct AgentStatePill: View {
             Capsule(style: .continuous)
                 .stroke(tint.opacity(0.28), lineWidth: NotchIsland.Stroke.hairline)
         }
-        .onAppear { isPulsing = shouldPulse }
-        .onChange(of: shouldPulse) { _, pulse in isPulsing = pulse }
         .accessibilityElement()
         .accessibilityLabel(state.title)
     }
@@ -848,7 +837,6 @@ struct AgentRingGlyph: View {
     var isPulsing: Bool
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var isDimmed = false
 
     private let outer: CGFloat = 24
     private let ringWidth: CGFloat = 2
@@ -867,19 +855,29 @@ struct AgentRingGlyph: View {
                     .trim(from: 0, to: min(max(progress, 0), 1))
                     .stroke(tint, style: StrokeStyle(lineWidth: ringWidth, lineCap: .round))
                     .rotationEffect(.degrees(-90))
-                    .animation(reduceMotion ? nil : .easeOut(duration: 0.24), value: progress)
+                    .animation(reduceMotion ? nil : NotchMotion.liveValue(reduceMotion: false), value: progress)
             }
 
             AgentGlyph(source: source, size: outer - ringWidth * 2 - 4)
         }
         .frame(width: outer, height: outer)
-        .opacity(isDimmed ? 0.55 : 1)
-        .animation(
-            shouldPulse ? .easeInOut(duration: 0.9).repeatForever(autoreverses: true) : nil,
-            value: isDimmed
-        )
-        .onAppear { isDimmed = shouldPulse }
-        .onChange(of: shouldPulse) { _, pulse in isDimmed = pulse }
+        .overlay {
+            // The pulse dims the whole glyph. It sits on the island's black
+            // shell, so a black veil breathing to 45% reads exactly as the
+            // glyph breathing to 55% — and runs on the render server, where a
+            // SwiftUI `repeatForever` opacity redrew the notch every frame.
+            if shouldPulse {
+                // Wide enough to cover the ring's stroke, which straddles
+                // the frame's edge.
+                LayerPulsingDot(
+                    diameter: outer + ringWidth * 2,
+                    color: .black,
+                    restingOpacity: 0,
+                    pulseOpacity: 0.45,
+                    halfPeriod: 0.9
+                )
+            }
+        }
         .accessibilityHidden(true)
     }
 }

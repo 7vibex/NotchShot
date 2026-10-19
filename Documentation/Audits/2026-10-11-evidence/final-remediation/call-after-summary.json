@@ -1,0 +1,554 @@
+[
+  {
+    "interval": [
+      26.1744175,
+      26.68345875
+    ],
+    "samples": 210,
+    "app_frames": [
+      [
+        "NotchShot_main",
+        197
+      ],
+      [
+        "AppCoordinator.expandIslandPrimary()",
+        20
+      ],
+      [
+        "closure #1 in IslandCompactContent.body.getter",
+        20
+      ],
+      [
+        "specialized closure #1 in ZStack.init(alignment:content:)",
+        18
+      ],
+      [
+        "protocol witness for View.body.getter in conformance IslandCallAvatar",
+        16
+      ],
+      [
+        "static IslandAppIconCache.icon(for:)",
+        15
+      ],
+      [
+        "NotchWindowController.focusActivePanel()",
+        14
+      ],
+      [
+        "specialized static IslandAppIconCache.icon(for:)",
+        14
+      ],
+      [
+        "closure #1 in NotchRootView.standardPresentation.getter",
+        5
+      ],
+      [
+        "specialized closure #1 in VStack.init(alignment:spacing:content:)",
+        5
+      ]
+    ],
+    "all_frames": [
+      [
+        "NotchShot_main",
+        197
+      ],
+      [
+        "start",
+        197
+      ],
+      [
+        "-[NSApplication run]",
+        197
+      ],
+      [
+        "<deduplicated_symbol>",
+        195
+      ],
+      [
+        "AG::Graph::UpdateStack::update()",
+        177
+      ],
+      [
+        "_CFRunLoopRunSpecificWithOptions",
+        174
+      ],
+      [
+        "-[NSApplication(NSEventRouting) nextEventMatchingMask:untilDate:inMode:dequeue:]",
+        174
+      ],
+      [
+        "_DPSNextEvent",
+        174
+      ],
+      [
+        "RunCurrentEventLoopInMode",
+        174
+      ],
+      [
+        "-[NSApplication(NSEventRouting) _nextEventMatchingEventMask:untilDate:inMode:dequeue:]",
+        174
+      ],
+      [
+        "ReceiveNextEventCommon",
+        174
+      ],
+      [
+        "UC::DriverCore::continueProcessing()",
+        174
+      ],
+      [
+        "_BlockUntilNextEventMatchingListInMode",
+        174
+      ],
+      [
+        "_DPSBlockUntilNextEventMatchingListInMode",
+        174
+      ],
+      [
+        "0x190d5f4a4",
+        166
+      ],
+      [
+        "0x190d5f47c",
+        166
+      ]
+    ],
+    "leaves": [
+      [
+        "type metadata accessor for PrimitiveButtonStyleConfiguration",
+        "<deduplicated_symbol>",
+        "ButtonBehavior.ended()",
+        "partial apply for implicit closure #2 in implicit closure #1 in ButtonBehavior.body.getter",
+        "partial apply for closure #1 in closure #2 in closure #1 in _ButtonGesture.internalBody.getter",
+        "specialized static MainActor.assumeIsolated<A>(_:file:line:)",
+        "closure #2 in closure #1 in _ButtonGesture.internalBody.getter",
+        "partial apply for closure #2 in PrimitiveButtonGestureCallbacks.dispatch(phase:state:)",
+        "<deduplicated_symbol>",
+        "<deduplicated_symbol>"
+      ],
+      [
+        "_CFRelease",
+        "IslandPresentationEngine.present(configuration:isHoverPreviewing:overlay:now:)",
+        "AppCoordinator.refreshIsland(now:)",
+        "AppCoordinator.refreshActivity()",
+        "AppCoordinator.expandIslandPrimary()",
+        "closure #1 in IslandCompactContent.body.getter",
+        "partial apply for closure #1 in ButtonAction.callAsFunction()",
+        "specialized static MainActor.assumeIsolated<A>(_:file:line:)",
+        "ButtonAction.callAsFunction()",
+        "<deduplicated_symbol>"
+      ]
+    ]
+  },
+  {
+    "interval": [
+      27.652354083,
+      27.979951625
+    ],
+    "samples": 75,
+    "app_frames": [
+      [
+        "NotchShot_main",
+        75
+      ],
+      [
+        "@objc AppDelegate.applicationDidFinishLaunching(_:)",
+        3
+      ],
+      [
+        "AppDelegate.applicationDidBecomeActive(_:)",
+        2
+      ],
+      [
+        "closure #1 in default argument 0 of PermissionCenter.init(preflight:request:inputMonitoringPreflight:)",
+        1
+      ],
+      [
+        "PermissionCenter.refresh()",
+        1
+      ],
+      [
+        "SystemNotificationMirror.attachIfNeeded()",
+        1
+      ],
+      [
+        "SystemNotificationMirror.reconcile()",
+        1
+      ],
+      [
+        "SystemNotificationMirror.refreshPermission()",
+        1
+      ],
+      [
+        "lazy protocol witness table accessor for type AppCoordinator and conformance AppCoordinator",
+        1
+      ],
+      [
+        "specialized PermissionCenter.access<A>(keyPath:)",
+        1
+      ]
+    ],
+    "all_frames": [
+      [
+        "start",
+        75
+      ],
+      [
+        "NotchShot_main",
+        75
+      ],
+      [
+        "-[NSApplication run]",
+        75
+      ],
+      [
+        "-[NSApplication(NSEventRouting) nextEventMatchingMask:untilDate:inMode:dequeue:]",
+        40
+      ],
+      [
+        "-[NSApplication(NSEventRouting) _nextEventMatchingEventMask:untilDate:inMode:dequeue:]",
+        40
+      ],
+      [
+        "_BlockUntilNextEventMatchingListInMode",
+        39
+      ],
+      [
+        "_DPSBlockUntilNextEventMatchingListInMode",
+        39
+      ],
+      [
+        "ReceiveNextEventCommon",
+        39
+      ],
+      [
+        "_DPSNextEvent",
+        39
+      ],
+      [
+        "_CFRunLoopRunSpecificWithOptions",
+        37
+      ],
+      [
+        "CA::Transaction::commit()",
+        37
+      ],
+      [
+        "RunCurrentEventLoopInMode",
+        37
+      ],
+      [
+        "CA::Transaction::flush_as_runloop_observer(bool)",
+        37
+      ],
+      [
+        "UC::DriverCore::continueProcessing()",
+        37
+      ],
+      [
+        "stepTransactionFlush",
+        37
+      ],
+      [
+        "-[NSApplication _handleActivatedEvent:]",
+        35
+      ]
+    ],
+    "leaves": [
+      [
+        "SetMenuBarObscured",
+        "HIApplication::HandleActivated(OpaqueEventRef*, unsigned char, OpaqueWindowPtr*, unsigned char)",
+        "HIApplication::EventObserver(unsigned int, OpaqueEventRef*, void*)",
+        "_NotifyEventLoopObservers",
+        "AcquireEventFromQueue",
+        "ReceiveNextEventCommon",
+        "_BlockUntilNextEventMatchingListInMode",
+        "_DPSBlockUntilNextEventMatchingListInMode",
+        "_DPSNextEvent",
+        "-[NSApplication(NSEventRouting) _nextEventMatchingEventMask:untilDate:inMode:dequeue:]"
+      ],
+      [
+        "AXNotificationHIObjectNotifyForObject",
+        "HIApplication::EventObserver(unsigned int, OpaqueEventRef*, void*)",
+        "_NotifyEventLoopObservers",
+        "AcquireEventFromQueue",
+        "ReceiveNextEventCommon",
+        "_BlockUntilNextEventMatchingListInMode",
+        "_DPSBlockUntilNextEventMatchingListInMode",
+        "_DPSNextEvent",
+        "-[NSApplication(NSEventRouting) _nextEventMatchingEventMask:untilDate:inMode:dequeue:]",
+        "-[NSApplication(NSEventRouting) nextEventMatchingMask:untilDate:inMode:dequeue:]"
+      ]
+    ]
+  },
+  {
+    "interval": [
+      28.278928666,
+      29.188049583
+    ],
+    "samples": 588,
+    "app_frames": [
+      [
+        "NotchShot_main",
+        342
+      ],
+      [
+        "closure #5 in AppDelegate.applicationDidFinishLaunching(_:)",
+        325
+      ],
+      [
+        "partial apply for closure #1 in AppDelegate.showSettingsFromMenu()",
+        325
+      ],
+      [
+        "thunk for @escaping @callee_guaranteed @Sendable () -> ()",
+        324
+      ],
+      [
+        "AppDelegate.bringToFront(_:)",
+        201
+      ],
+      [
+        "@nonobjc NSWindow.init(contentRect:styleMask:backing:defer:)",
+        86
+      ],
+      [
+        "specialized AppDelegate.makeWindow<A>(title:content:size:)",
+        36
+      ],
+      [
+        "SettingsView.body.getter",
+        5
+      ],
+      [
+        "key path getter for NSRunningApplication.bundleIdentifier : NSRunningApplication",
+        5
+      ],
+      [
+        "AppleEventsMediaSource.snapshot()",
+        5
+      ]
+    ],
+    "all_frames": [
+      [
+        "AG::Graph::UpdateStack::update()",
+        421
+      ],
+      [
+        "<deduplicated_symbol>",
+        408
+      ],
+      [
+        "AG::Graph::update_attribute(AG::data::ptr<AG::Node>, unsigned int)",
+        407
+      ],
+      [
+        "AG::Graph::input_value_ref_slow(AG::data::ptr<AG::Node>, AG::AttributeID, unsigned int, unsigned int, AGSwiftMetadata const*, unsigned char&, long)",
+        406
+      ],
+      [
+        "AGGraphGetValue",
+        398
+      ],
+      [
+        "specialized implicit closure #1 in closure #1 in closure #1 in Attribute.init<A>(_:)",
+        388
+      ],
+      [
+        "partial apply for implicit closure #1 in closure #1 in closure #1 in Attribute.init<A>(_:)",
+        360
+      ],
+      [
+        "ViewGraphRootValueUpdater._updateViewGraph<A>(body:)",
+        350
+      ],
+      [
+        "_CFRunLoopRunSpecificWithOptions",
+        349
+      ],
+      [
+        "RunCurrentEventLoopInMode",
+        348
+      ],
+      [
+        "_BlockUntilNextEventMatchingListInMode",
+        348
+      ],
+      [
+        "_DPSBlockUntilNextEventMatchingListInMode",
+        348
+      ],
+      [
+        "ReceiveNextEventCommon",
+        348
+      ],
+      [
+        "_DPSNextEvent",
+        347
+      ],
+      [
+        "-[NSApplication(NSEventRouting) _nextEventMatchingEventMask:untilDate:inMode:dequeue:]",
+        346
+      ],
+      [
+        "-[NSApplication(NSEventRouting) nextEventMatchingMask:untilDate:inMode:dequeue:]",
+        344
+      ]
+    ],
+    "leaves": [
+      [
+        "getMethodFromRelativeList(relative_list_list_t<method_list_t>*, objc_selector*)",
+        "lookUpImpOrForward",
+        "_objc_msgSend_uncached",
+        "-[NSMutableCharacterSet init]",
+        "invocation function for block in _LSDNCGetForbiddenCharacters(unsigned int)",
+        "_dispatch_client_callout",
+        "_dispatch_once_callout",
+        "_LSDNCGetForbiddenCharacters(unsigned int)",
+        "_LSDNCReplaceForbiddenCharacters(NSString*, unsigned int)",
+        "+[_LSLocalizedStringRecord sanitizeString:]"
+      ],
+      [
+        "DYLD-STUB$$swift_beginAccess",
+        "closure #5 in AppDelegate.applicationDidFinishLaunching(_:)",
+        "partial apply for closure #1 in AppDelegate.showSettingsFromMenu()",
+        "thunk for @escaping @callee_guaranteed @Sendable () -> ()",
+        "_dispatch_call_block_and_release",
+        "_dispatch_client_callout",
+        "_dispatch_main_queue_drain.cold.6",
+        "_dispatch_main_queue_drain",
+        "_dispatch_main_queue_callback_4CF",
+        "__CFRUNLOOP_IS_SERVICING_THE_MAIN_DISPATCH_QUEUE__"
+      ]
+    ]
+  },
+  {
+    "interval": [
+      29.200070416,
+      29.846902291
+    ],
+    "samples": 521,
+    "app_frames": [
+      [
+        "NotchShot_main",
+        498
+      ],
+      [
+        "SystemNotificationMirror.attachIfNeeded()",
+        1
+      ],
+      [
+        "SystemNotificationMirror.reconcile()",
+        1
+      ],
+      [
+        "SystemNotificationMirror.refreshPermission()",
+        1
+      ],
+      [
+        "@objc AppDelegate.applicationDidFinishLaunching(_:)",
+        1
+      ],
+      [
+        "DYLD-STUB$$swift_retain",
+        1
+      ],
+      [
+        "initializeWithCopy for NotchShotContentSwapModifier",
+        1
+      ]
+    ],
+    "all_frames": [
+      [
+        "_CFRunLoopRunSpecificWithOptions",
+        506
+      ],
+      [
+        "CA::Transaction::commit()",
+        506
+      ],
+      [
+        "CA::Transaction::flush_as_runloop_observer(bool)",
+        506
+      ],
+      [
+        "UC::DriverCore::continueProcessing()",
+        506
+      ],
+      [
+        "stepTransactionFlush",
+        506
+      ],
+      [
+        "__CFRUNLOOP_IS_CALLING_OUT_TO_AN_OBSERVER_CALLBACK_FUNCTION__",
+        504
+      ],
+      [
+        "RunCurrentEventLoopInMode",
+        504
+      ],
+      [
+        "ReceiveNextEventCommon",
+        504
+      ],
+      [
+        "__CFRunLoopDoObservers",
+        504
+      ],
+      [
+        "_BlockUntilNextEventMatchingListInMode",
+        503
+      ],
+      [
+        "_DPSNextEvent",
+        501
+      ],
+      [
+        "_DPSBlockUntilNextEventMatchingListInMode",
+        501
+      ],
+      [
+        "-[NSApplication(NSEventRouting) _nextEventMatchingEventMask:untilDate:inMode:dequeue:]",
+        500
+      ],
+      [
+        "-[NSApplication run]",
+        499
+      ],
+      [
+        "NotchShot_main",
+        498
+      ],
+      [
+        "start",
+        498
+      ]
+    ],
+    "leaves": [
+      [
+        "mach_msg2_trap",
+        "mach_msg2_internal",
+        "mach_msg_overwrite",
+        "mach_msg",
+        "_AXMIGAddNotification",
+        "_AXObserverAddNotification",
+        "_AXObserverAddNotificationAndCheckRemote",
+        "SystemNotificationMirror.attachIfNeeded()",
+        "SystemNotificationMirror.reconcile()",
+        "SystemNotificationMirror.refreshPermission()"
+      ],
+      [
+        "NSHostingView.updateWindowContentSizeExtremaIfNecessary()",
+        "NSHostingView.updateConstraints()",
+        "@objc NSHostingView.updateConstraints()",
+        "0x190d5f47c",
+        "0x190d5f4a4",
+        "0x190d23558",
+        "0x190d2413c",
+        "___NSViewUpdateConstraints_block_invoke",
+        "NSPerformVisuallyAtomicChange",
+        "_NSViewUpdateConstraints"
+      ]
+    ]
+  }
+]

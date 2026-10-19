@@ -1,0 +1,243 @@
+[0/1] Planning build
+Building for debugging...
+[0/23] Write sources
+[3/23] Write swift-version--58304C5D6DBC2206.txt
+[5/21] Compiling NotchShotKit AIHookInstaller.swift
+[6/21] Compiling NotchShotKit IslandCallViews.swift
+[7/21] Compiling NotchShotKit AppCommandMenu.swift
+[8/21] Compiling NotchShotKit MeetingControls.swift
+[9/21] Emitting module NotchShotKit
+[10/21] Compiling NotchShotKit AppDelegate.swift
+[11/54] Compiling NotchShotKit SettingsView+Modules.swift
+[12/54] Compiling NotchShotKit SettingsView.swift
+[13/54] Compiling NotchShotKit AppCoordinator+Automation.swift
+[14/54] Compiling NotchShotKit AppCoordinator+Capture.swift
+[15/54] Compiling NotchShotKit AppCoordinator+Clipboard.swift
+[16/54] Compiling NotchShotKit AppCoordinator+Extras.swift
+[17/60] Compiling NotchShotKit AppCoordinator+Island.swift
+[18/60] Compiling NotchShotKit AppCoordinator+Recording.swift
+[19/60] Compiling NotchShotKit AppCoordinator+Shelf.swift
+[20/60] Compiling NotchShotKit AppCoordinator+System.swift
+[21/60] Compiling NotchShotKit IslandGestureCoordinator.swift
+[22/60] Compiling NotchShotKit ExtrasToolViews.swift
+[23/60] Compiling NotchShotKit ProductivityNotificationCenterView.swift
+[24/60] Compiling NotchShotKit ProductivitySuiteView.swift
+[25/60] Compiling NotchShotKit NotchRootView+Media.swift
+[26/60] Compiling NotchShotKit NotchRootView+Status.swift
+[27/60] Compiling NotchShotKit NotchRootView.swift
+[28/60] Compiling NotchShotKit LockedNowPlayingCard.swift
+[29/60] Compiling NotchShotKit MenuBarPanelView.swift
+[30/60] Compiling NotchShotKit NotchRootView+CaptureMenu.swift
+[31/60] Compiling NotchShotKit NotchRootView+Context.swift
+[32/60] Compiling NotchShotKit IslandActivityContainer.swift
+[33/60] Compiling NotchShotKit IslandCompactContent.swift
+[34/60] Compiling NotchShotKit IslandExpandedContent.swift
+[35/60] Compiling NotchShotKit IslandSharedElements.swift
+[36/60] Compiling NotchShotKit CapturePreviewView.swift
+[37/60] Compiling NotchShotKit ClipboardView.swift
+[38/60] Compiling NotchShotKit DictationIslandView.swift
+[39/60] Compiling NotchShotKit HistoryView.swift
+[40/60] Compiling NotchShotKit AppCoordinator+Tabs.swift
+[41/60] Compiling NotchShotKit AppCoordinator.swift
+[42/60] Compiling NotchShotKit MeetingShortcutDispatcher.swift
+[43/60] Compiling NotchShotKit FloatingBasket.swift
+[44/60] Compiling NotchShotKit NotchTabBar.swift
+[45/60] Compiling NotchShotKit SettingsView+Activities.swift
+[46/60] Compiling NotchShotKit SettingsView+Capture.swift
+[47/60] Compiling NotchShotKit SettingsView+Extras.swift
+[48/60] Compiling NotchShotKit SettingsView+System.swift
+[49/60] Compiling NotchShotKit ShelfContent.swift
+[50/152] Emitting module NotchShotDiagnostics
+[51/152] Compiling NotchShotDiagnostics main.swift
+[51/152] Write Objects.LinkFileList
+[53/152] Compiling NotchShot BundledSelfTest.swift
+[54/152] Emitting module NotchShot
+[55/152] Compiling NotchShot main.swift
+[55/152] Write Objects.LinkFileList
+[57/152] Compiling NotchShotBench IslandBenchmarks.swift
+[58/152] Compiling NotchShotBench main.swift
+[59/152] Emitting module NotchShotBench
+[60/152] Compiling NotchShotBench Fixtures.swift
+[61/152] Compiling NotchShotBench Harness.swift
+[62/152] Compiling NotchShotBench RecipeResponsivenessBenchmarks.swift
+[63/152] Compiling NotchShotBench AIActivityBenchmarks.swift
+[64/152] Compiling NotchShotBench ExportHandlerBenchmarks.swift
+[65/152] Compiling NotchShotBench EditorBenchmarks.swift
+[66/152] Compiling NotchShotBench Baselines.swift
+[66/152] Write Objects.LinkFileList
+[67/152] Linking notchshot-diagnostics
+[68/152] Linking NotchShot
+[69/152] Applying notchshot-diagnostics
+[70/152] Applying NotchShot
+[71/152] Linking NotchShotBench
+[72/152] Applying NotchShotBench
+[74/152] Compiling NotchShotKitTests LiveActivityAPITests.swift
+[75/152] Compiling NotchShotKitTests LocalSendControlPolicyTests.swift
+[76/152] Compiling NotchShotKitTests LocalSendFileSnapshotTests.swift
+[77/152] Compiling NotchShotKitTests LocalSendHostPolicyTests.swift
+[78/152] Compiling NotchShotKitTests LocalSendRedirectRegressionTests.swift
+[79/152] Compiling NotchShotKitTests LockScreenRecoveryTests.swift
+[80/152] Compiling NotchShotKitTests LockedMediaNotificationDeliveryTests.swift
+[81/152] Compiling NotchShotKitTests LyricsTests.swift
+[82/160] Emitting module NotchShotKitTests
+[83/160] Compiling NotchShotKitTests ProductivityNotificationTests.swift
+[84/160] Compiling NotchShotKitTests ProductivitySuiteTests.swift
+[85/160] Compiling NotchShotKitTests ProjectRoundTripRegressionTests.swift
+[86/160] Compiling NotchShotKitTests RecordingAndHotKeySafetyTests.swift
+[87/160] Compiling NotchShotKitTests RecordingExportAndEffectsTests.swift
+[88/160] Compiling NotchShotKitTests RecordingPresentationLifecycleTests.swift
+[89/160] Compiling NotchShotKitTests RedactionExportTests.swift
+[90/160] Compiling NotchShotKitTests ResponsivenessRegressionTests.swift
+[91/160] Compiling NotchShotKitTests HistoryPersistenceTests.swift
+[92/160] Compiling NotchShotKitTests HistorySafetyRemediationTests.swift
+[93/160] Compiling NotchShotKitTests HistorySearchTests.swift
+[94/160] Compiling NotchShotKitTests IslandGestureAndBurstTests.swift
+[95/160] Compiling NotchShotKitTests IslandGlassPolicyTests.swift
+[96/160] Compiling NotchShotKitTests IslandIntegrationTests.swift
+[97/160] Compiling NotchShotKitTests IslandPresentationEngineTests.swift
+[98/160] Compiling NotchShotKitTests IslandSwipeReleaseVelocityTests.swift
+[99/160] Compiling NotchShotKitTests SafeAssetFileTests.swift
+[100/160] Compiling NotchShotKitTests SafeImageFileTests.swift
+[101/160] Compiling NotchShotKitTests ScreenGeometryTests.swift
+[102/160] Compiling NotchShotKitTests SecureUpdateControllerTests.swift
+[103/160] Compiling NotchShotKitTests SelectionOverlayTests.swift
+[104/160] Compiling NotchShotKitTests ShelfFileOperationsTests.swift
+[105/160] Compiling NotchShotKitTests SpotlightCaptureIndexTests.swift
+[106/160] Compiling NotchShotKitTests StackAndHUDTests.swift
+[107/160] Compiling NotchShotKitTests ClaudeVibeNotchTests.swift
+[108/160] Compiling NotchShotKitTests ClipboardClearRegressionTests.swift
+[109/160] Compiling NotchShotKitTests ClipboardImageOverlapMeasurements.swift
+[110/160] Compiling NotchShotKitTests ClipboardTests.swift
+[111/160] Compiling NotchShotKitTests CodexHookConfigurationTests.swift
+[112/160] Compiling NotchShotKitTests ContextFeatureTests.swift
+[113/160] Compiling NotchShotKitTests ContextTimingRegressionTests.swift
+[114/160] Compiling NotchShotKitTests DesignSystemTests.swift
+[115/160] Compiling NotchShotKitTests DictationTests.swift
+[116/160] Compiling NotchShotKitTests AIActivityHistoryTests.swift
+[117/160] Compiling NotchShotKitTests AIActivityRefreshCachingTests.swift
+[118/160] Compiling NotchShotKitTests AIReporterRedactionTests.swift
+[119/160] Compiling NotchShotKitTests ActivityHeartbeatTests.swift
+[120/160] Compiling NotchShotKitTests ActivityPriorityTests.swift
+[121/160] Compiling NotchShotKitTests AgentActivityPresentationTests.swift
+[122/160] Compiling NotchShotKitTests AnnotationEditorGeometryTests.swift
+[123/160] Compiling NotchShotKitTests AnnotationExportResultTests.swift
+[124/160] Compiling NotchShotKitTests AnnotationSerializationTests.swift
+[125/160] Compiling NotchShotKitTests AuditRegressionTests.swift
+[126/160] Compiling NotchShotKitTests AutomationExportInspectionTests.swift
+[127/160] Compiling NotchShotKitTests BatteryAlertPresentationTests.swift
+[128/160] Compiling NotchShotKitTests CallControlsAndMenuRegressionTests.swift
+[129/160] Compiling NotchShotKitTests CaptureFreezeCutTests.swift
+[130/160] Compiling NotchShotKitTests CaptureSwoopTests.swift
+[131/160] Compiling NotchShotKitTests CaptureWorkflowFeatureTests.swift
+[132/160] Compiling NotchShotKitTests ClaudeCodeSessionTests.swift
+[133/160] Compiling NotchShotKitTests ClaudeHookSocketTests.swift
+[134/160] Compiling NotchShotKitTests StitchingTests.swift
+[135/160] Compiling NotchShotKitTests SymlinkEscapeTests.swift
+[136/160] Compiling NotchShotKitTests SystemIntegrationSafetyTests.swift
+[137/160] Compiling NotchShotKitTests TestSupport.swift
+[138/160] Compiling NotchShotKitTests TextInsertionRegressionTests.swift
+[139/160] Compiling NotchShotKitTests TransferActivityStoreTests.swift
+[140/160] Compiling NotchShotKitTests TransferPartialAcceptanceTests.swift
+[141/160] Compiling NotchShotKitTests WindowExclusionTests.swift
+[142/160] Compiling NotchShotKitTests NotchAppVisibilityPolicyTests.swift
+[143/160] Compiling NotchShotKitTests NotchConsolidatedFixTests.swift
+[144/160] Compiling NotchShotKitTests NotchHoverZoneTests.swift
+[145/160] Compiling NotchShotKitTests NotchTabTests.swift
+[146/160] Compiling NotchShotKitTests PasteboardPromiseTests.swift
+[147/160] Compiling NotchShotKitTests PreferencesTests.swift
+[148/160] Compiling NotchShotKitTests ProcessAndConversionRegressionTests.swift
+[149/160] Compiling NotchShotKitTests ProductivityFeatureTests.swift
+[150/160] Compiling NotchShotKitTests ExportSafetyRegressionTests.swift
+[151/160] Compiling NotchShotKitTests ExternalActivityStoreTests.swift
+[152/160] Compiling NotchShotKitTests ExtrasFeatureTests.swift
+[153/160] Compiling NotchShotKitTests FileDropActionTests.swift
+[154/160] Compiling NotchShotKitTests ForegroundRemovalTests.swift
+[155/160] Compiling NotchShotKitTests HistoryAndMediaTests.swift
+[156/160] Compiling NotchShotKitTests HistoryCaptionRelocationTests.swift
+[157/160] Compiling NotchShotKitTests HistoryCoalesceTests.swift
+[158/160] Compiling NotchShotKitTests HistoryOverflowTests.swift
+[158/160] Write Objects.LinkFileList
+[159/160] Linking NotchShotPackageTests
+Build complete! (31.07s)
+Test Suite 'Selected tests' started at 2026-10-11 21:02:31.685.
+Test Suite 'NotchShotPackageTests.xctest' started at 2026-10-11 21:02:31.692.
+Test Suite 'NotchShotPackageTests.xctest' passed at 2026-10-11 21:02:31.692.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.000) seconds
+Test Suite 'Selected tests' passed at 2026-10-11 21:02:31.692.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.007) seconds
+􀟈  Test run started.
+􀄵  Testing Library Version: 1902
+􀄵  Target Platform: arm64e-apple-macos14.0
+􀟈  Suite "Call actions and application commands" started.
+􀟈  Suite "Codex hook configuration preservation" started.
+􀟈  Suite "Call shortcut routing" started.
+􀟈  Suite "Claude hook socket" started.
+􀟈  Test "Updating the boolean preserves comments, similar keys, and line endings" started.
+􀟈  Test "Unsupported or ambiguous syntax changes neither configuration file" started.
+􀟈  Test "A non-conforming hooks value is rejected without mutating the file" started.
+􀟈  Test "Commented and quoted tables retain all unrelated bytes" started.
+􀟈  Test "Insertion handles a header at EOF and a missing table" started.
+􀟈  Test case passing 1 argument original → "features = { codex_hooks = false }
+" to "Unsupported or ambiguous syntax changes neither configuration file" started.
+􀟈  Test "Prompt strings and array comments cannot impersonate feature headers" started.
+􀟈  Test "Unknown call state describes a toggle rather than an assumed direction" started.
+􀟈  Test case passing 1 argument original → "[features.codex_hooks]
+child = true
+" to "Unsupported or ambiguous syntax changes neither configuration file" started.
+􀟈  Test "Failed and timed-out activation never posts keys" started.
+􀟈  Test case passing 1 argument original → "[[features]]
+codex_hooks = false
+" to "Unsupported or ambiguous syntax changes neither configuration file" started.
+􀟈  Test "The socket path is per-user and short enough for sockaddr_un" started.
+􀟈  Test case passing 1 argument original → "{"hooks":"nonsense"}" to "A non-conforming hooks value is rejected without mutating the file" started.
+􀟈  Test case passing 1 argument original → "instructions = """
+[features]
+" to "Unsupported or ambiguous syntax changes neither configuration file" started.
+􀟈  Test case passing 1 argument original → "[features]
+codex_hooks = 'false'
+" to "Unsupported or ambiguous syntax changes neither configuration file" started.
+􀟈  Test case passing 1 argument header → "["features"] # enabled features" to "Commented and quoted tables retain all unrelated bytes" started.
+􀟈  Test case passing 1 argument header → "[features] # enabled features" to "Commented and quoted tables retain all unrelated bytes" started.
+􀟈  Test case passing 1 argument original → "{"hooks":{"Stop":"nonsense"}}" to "A non-conforming hooks value is rejected without mutating the file" started.
+􀟈  Test case passing 1 argument original → "[features]
+codex_hooks = false
+codex_hooks = true
+" to "Unsupported or ambiguous syntax changes neither configuration file" started.
+􀟈  Test "A same-user peer is trusted and an invalid descriptor is not" started.
+􀟈  Test case passing 1 argument original → "[features]
+codex_hooks.child = true
+" to "Unsupported or ambiguous syntax changes neither configuration file" started.
+􀟈  Test case passing 1 argument original → "features.codex_hooks = false
+" to "Unsupported or ambiguous syntax changes neither configuration file" started.
+􀟈  Test case passing 1 argument header → "["\u0066eatures"] # escaped table name" to "Commented and quoted tables retain all unrelated bytes" started.
+􀟈  Test case passing 1 argument header → "[ 'features' ] # enabled features" to "Commented and quoted tables retain all unrelated bytes" started.
+􀟈  Test case passing 1 argument original → "[features]
+["features"] # duplicate table
+" to "Unsupported or ambiguous syntax changes neither configuration file" started.
+􁁛  Test "A same-user peer is trusted and an invalid descriptor is not" passed after 0.001 seconds.
+􁁛  Test "The socket path is per-user and short enough for sockaddr_un" passed after 0.001 seconds.
+􁁛  Suite "Claude hook socket" passed after 0.001 seconds.
+􁁛  Test "Updating the boolean preserves comments, similar keys, and line endings" passed after 0.020 seconds.
+􁁛  Test "A non-conforming hooks value is rejected without mutating the file" with 2 test cases passed after 0.030 seconds.
+􁁛  Test "Commented and quoted tables retain all unrelated bytes" with 4 test cases passed after 0.030 seconds.
+􁁛  Test "Prompt strings and array comments cannot impersonate feature headers" passed after 0.030 seconds.
+􁁛  Test "Unknown call state describes a toggle rather than an assumed direction" passed after 0.030 seconds.
+􁁛  Test "Unsupported or ambiguous syntax changes neither configuration file" with 9 test cases passed after 0.030 seconds.
+􁁛  Test "Insertion handles a header at EOF and a missing table" passed after 0.030 seconds.
+􀟈  Test "The application menu dispatches Quit and Settings without an open status menu" started.
+􁁛  Suite "Codex hook configuration preservation" passed after 0.030 seconds.
+􁁛  Test "The application menu dispatches Quit and Settings without an open status menu" passed after 0.120 seconds.
+􁁛  Suite "Call actions and application commands" passed after 0.151 seconds.
+􁁛  Test "Failed and timed-out activation never posts keys" passed after 0.151 seconds.
+􀟈  Test "Delayed activation waits for the target and restores prior focus" started.
+􁁛  Test "Delayed activation waits for the target and restores prior focus" passed after 0.001 seconds.
+􀟈  Test "Canceled activation and failed posting release focus without sending keys" started.
+􁁛  Test "Canceled activation and failed posting release focus without sending keys" passed after 0.001 seconds.
+􀟈  Test "Delivery preserves a later user focus change" started.
+􁁛  Test "Delivery preserves a later user focus change" passed after 0.001 seconds.
+􀟈  Test "Concurrent requests serialize their entire focus handoff" started.
+􁁛  Test "Concurrent requests serialize their entire focus handoff" passed after 0.001 seconds.
+􀟈  Test "Cancellation before delivery does not activate or post" started.
+􁁛  Test "Cancellation before delivery does not activate or post" passed after 0.001 seconds.
+􁁛  Suite "Call shortcut routing" passed after 0.152 seconds.
+􁁛  Test run with 16 tests in 4 suites passed after 0.153 seconds.

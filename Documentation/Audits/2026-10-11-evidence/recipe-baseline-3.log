@@ -1,0 +1,11 @@
+NotchShot benchmarks — Version 26.5.2 (Build 25F84)
+source c3b3bba368dafade32289a20d6fa206ea9fb847f · Apple Swift version 6.3.3 (swiftlang-6.3.3.1.3 clang-2100.1.1.101)
+Target: arm64-apple-macosx26.0
+────────────────────────────────────────────────────────────────────────────────────────────
+recipe standard: main-actor delivery median 0.008334 ms; work median 0.002958 ms; n=9
+recipe github-issue: main-actor delivery median 85.208458 ms; work median 85.194958 ms; n=9
+recipe app-store: main-actor delivery median 127.515667 ms; work median 127.499792 ms; n=9
+recipe custom-bounded: main-actor delivery median 40.059041 ms; work median 40.047291 ms; n=9
+recipe raw samples: /tmp/notchshot-audit-2026-10-11/recipe-baseline-3.jsonl
+────────────────────────────────────────────────────────────────────────────────────────────
+raw samples: /var/folders/5q/5zgpxz0j15139j1bj7zvks2w0000gn/T/notchshot-bench-72333-EB6ADE4F.jsonl

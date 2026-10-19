@@ -201,7 +201,7 @@ public enum IslandDisplayPolicy {
         case .media: true
         // A capture state belongs to the display being worked on.
         case .recording: false
-        case .ai, .timer, .calendar, .transfer, .external, .voiceNote: mirrorsPassiveContext
+        case .ai, .timer, .calendar, .transfer, .external, .voiceNote, .call: mirrorsPassiveContext
         }
         return mirrors ? .island(descriptor.restingCopy()) : .idle
     }
@@ -213,9 +213,23 @@ public struct IslandEngineConfiguration: Sendable, Equatable {
     /// Whether hover-peeking may present the primary at its expanded level.
     public var expandsOnHover: Bool
 
-    public init(maximumVisibleActivities: Int = 3, expandsOnHover: Bool = true) {
+    /// A kind that holds the centre while it is actively running, so others
+    /// wait beside it instead of taking over (music keeps playing in the
+    /// middle while an agent asks for attention on the side).
+    public var anchoredKind: IslandActivityKind?
+    /// Sides some kinds always take as satellites, ahead of slot memory.
+    public var preferredSlots: [IslandActivityKind: IslandSlot]
+
+    public init(
+        maximumVisibleActivities: Int = 3,
+        expandsOnHover: Bool = true,
+        anchoredKind: IslandActivityKind? = nil,
+        preferredSlots: [IslandActivityKind: IslandSlot] = [:]
+    ) {
         self.maximumVisibleActivities = min(3, max(1, maximumVisibleActivities))
         self.expandsOnHover = expandsOnHover
+        self.anchoredKind = anchoredKind
+        self.preferredSlots = preferredSlots
     }
 }
 
@@ -241,14 +255,16 @@ public struct IslandSyncResult: Sendable, Equatable {
 /// 1. A user selection wins — unless a `.pinned` activity (a recording)
 ///    arrived *after* the user chose.
 /// 2. Otherwise the earliest-arrived `.pinned` activity.
-/// 3. Otherwise the previous primary, while nothing of higher priority exists
+/// 3. Otherwise the configured anchored kind, while it is active.
+/// 4. Otherwise the previous primary, while nothing of higher priority exists
 ///    (hysteresis: relevance never flips a settled primary).
-/// 4. Otherwise the best by priority, then relevance, then arrival.
+/// 5. Otherwise the best by priority, then relevance, then arrival.
 ///    `.passive` activities are only candidates when nothing else is live.
 ///
 /// Satellite slots are sticky: an activity keeps its side while visible, and a
 /// promoted satellite trades places with the primary it replaced, so the
-/// activities physically swap instead of reshuffling.
+/// activities physically swap instead of reshuffling. A configured preferred
+/// side outranks that memory.
 public struct IslandPresentationEngine: Sendable {
     public private(set) var activities: [IslandActivityID: IslandActivity] = [:]
     public private(set) var selectedID: IslandActivityID?
@@ -376,7 +392,7 @@ public struct IslandPresentationEngine: Sendable {
             return IslandPresentation(transientOverlay: overlay)
         }
 
-        let primary = resolvePrimary(from: live)
+        let primary = resolvePrimary(from: live, anchoredKind: configuration.anchoredKind)
         let previousPrimaryID = lastPrimaryID
         lastPrimaryID = primary.id
 
@@ -404,6 +420,16 @@ public struct IslandPresentationEngine: Sendable {
 
         let visibleIDs = Set(visibleSecondary.map(\.id))
         slots = slots.filter { visibleIDs.contains($0.key) }
+        for activity in visibleSecondary {
+            guard let preferred = configuration.preferredSlots[activity.id.kind] else { continue }
+            for (id, slot) in slots where slot == preferred && id != activity.id
+                && configuration.preferredSlots[id.kind] != preferred {
+                slots[id] = nil
+            }
+            if !slots.contains(where: { $0.value == preferred && $0.key != activity.id }) {
+                slots[activity.id] = preferred
+            }
+        }
         // Two activities cannot share a side; the better-ranked keeps it.
         var taken: [IslandSlot: IslandActivityID] = [:]
         for activity in visibleSecondary {
@@ -463,7 +489,10 @@ public struct IslandPresentationEngine: Sendable {
         if expandedID == id { expandedID = nil }
     }
 
-    private mutating func resolvePrimary(from live: [IslandActivity]) -> IslandActivity {
+    private mutating func resolvePrimary(
+        from live: [IslandActivity],
+        anchoredKind: IslandActivityKind? = nil
+    ) -> IslandActivity {
         let pinned = live
             .filter { $0.interruptionPolicy == .pinned }
             .sorted { order(of: $0) < order(of: $1) }
@@ -477,6 +506,14 @@ public struct IslandPresentationEngine: Sendable {
         }
 
         if let firstPinned = pinned.first { return firstPinned }
+
+        if let anchoredKind,
+           let anchored = live
+            .filter({ $0.id.kind == anchoredKind && $0.lifecycle == .active })
+            .sorted(by: rankedBefore)
+            .first {
+            return anchored
+        }
 
         let hasNonPassive = live.contains { $0.interruptionPolicy != .passive }
         let candidates = hasNonPassive

@@ -1,0 +1,10 @@
+pair=1 exit=0 mode=standard layout_ms=20028.608583 cpu_ms=1819.932375 width=980.0 height=732.0 min_width=900.0 min_height=620.0
+pair=1 exit=0 mode=container layout_ms=43899.988334 cpu_ms=1811.670458 width=980.0 height=700.0 min_width=900.0 min_height=620.0
+pair=2 exit=0 mode=container layout_ms=24116.139 cpu_ms=1901.576083 width=980.0 height=700.0 min_width=900.0 min_height=620.0
+pair=2 exit=0 mode=standard layout_ms=7380.661167 cpu_ms=1458.835209 width=980.0 height=732.0 min_width=900.0 min_height=620.0
+pair=3 exit=0 mode=standard layout_ms=10057.349708 cpu_ms=1071.233583 width=980.0 height=732.0 min_width=900.0 min_height=620.0
+pair=3 exit=0 mode=container layout_ms=10173.03875 cpu_ms=1061.935625 width=980.0 height=700.0 min_width=900.0 min_height=620.0
+pair=4 exit=0 mode=container layout_ms=5461.728708 cpu_ms=876.608625 width=980.0 height=700.0 min_width=900.0 min_height=620.0
+pair=4 exit=0 mode=standard layout_ms=2708.156667 cpu_ms=875.100291 width=980.0 height=732.0 min_width=900.0 min_height=620.0
+pair=5 exit=0 mode=standard layout_ms=2647.499042 cpu_ms=846.735875 width=980.0 height=732.0 min_width=900.0 min_height=620.0
+pair=5 exit=0 mode=container layout_ms=2155.888167 cpu_ms=812.399917 width=980.0 height=700.0 min_width=900.0 min_height=620.0

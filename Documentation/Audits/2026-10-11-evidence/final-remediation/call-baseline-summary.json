@@ -1,0 +1,167 @@
+{
+  "workload": "20-second trace: active Discord call, notch expansion, first Settings open; previous signed candidate",
+  "main_samples": 2984,
+  "main_privacy_samples": 1,
+  "microhang_ms": 469.5,
+  "microhang_samples": 336,
+  "hang_app_frames": [
+    [
+      "NotchShot_main",
+      272
+    ],
+    [
+      "@objc AppDelegate.statusItemClicked()",
+      84
+    ],
+    [
+      "AppDelegate.bringToFront(_:)",
+      52
+    ],
+    [
+      "@nonobjc NSWindow.init(contentRect:styleMask:backing:defer:)",
+      23
+    ],
+    [
+      "specialized AppDelegate.makeWindow<A>(title:content:size:)",
+      8
+    ],
+    [
+      "SettingsView.body.getter",
+      2
+    ],
+    [
+      "SystemNotificationMirror.reconcile()",
+      1
+    ],
+    [
+      "SystemNotificationMirror.refreshPermission()",
+      1
+    ],
+    [
+      "@objc AppDelegate.applicationDidFinishLaunching(_:)",
+      1
+    ],
+    [
+      "specialized Dictionary.subscript.setter",
+      1
+    ],
+    [
+      "AppDelegate.attachCloseHandler(to:shouldClose:handler:)",
+      1
+    ],
+    [
+      "__swift_instantiateConcreteTypeFromMangledNameAbstractV2",
+      1
+    ],
+    [
+      "lazy protocol witness table accessor for type VStack<TupleView<(SettingsSidebarSearchField, SettingsSidebarIdentity, <<opaque return type of View.scrollContentBackground(_:)>>.0)>> and conformance VStack<A>",
+      1
+    ],
+    [
+      "lazy protocol witness table accessor for type ModifiedContent<VStack<TupleView<(SettingsSidebarSearchField, SettingsSidebarIdentity, <<opaque return type of View.scrollContentBackground(_:)>>.0)>>, _BackgroundStyleModifier<Color>> and conformance <> ModifiedContent<A, B>",
+      1
+    ],
+    [
+      "closure #1 in closure #1 in SettingsView.body.getter",
+      1
+    ],
+    [
+      "specialized closure #1 in VStack.init(alignment:spacing:content:)",
+      1
+    ],
+    [
+      "type metadata accessor for UpdateChannel",
+      1
+    ],
+    [
+      "specialized View.symbolRenderingMode(_:)",
+      1
+    ],
+    [
+      "specialized closure #1 in HStack.init(alignment:spacing:content:)",
+      1
+    ]
+  ],
+  "hang_inclusive_frames": [
+    [
+      "-[NSApplication run]",
+      274
+    ],
+    [
+      "start",
+      272
+    ],
+    [
+      "NotchShot_main",
+      272
+    ],
+    [
+      "-[NSApplication _handleEvent:]",
+      252
+    ],
+    [
+      "-[NSApplication(NSEventRouting) sendEvent:]",
+      251
+    ],
+    [
+      "-[NSMenu performKeyEquivalent:]",
+      231
+    ],
+    [
+      "routeKeyEquivalent",
+      221
+    ],
+    [
+      "_NSMenuPerformActionWithHighlighting",
+      214
+    ],
+    [
+      "-[NSMenu _performKeyEquivalentForItemAtIndex:]",
+      214
+    ],
+    [
+      "NSPerformVisuallyAtomicChange",
+      179
+    ],
+    [
+      "<deduplicated_symbol>",
+      170
+    ],
+    [
+      "AG::Graph::UpdateStack::update()",
+      153
+    ],
+    [
+      "AG::Graph::update_attribute(AG::data::ptr<AG::Node>, unsigned int)",
+      139
+    ],
+    [
+      "specialized implicit closure #1 in closure #1 in closure #1 in Attribute.init<A>(_:)",
+      134
+    ],
+    [
+      "AG::Graph::input_value_ref_slow(AG::data::ptr<AG::Node>, AG::AttributeID, unsigned int, unsigned int, AGSwiftMetadata const*, unsigned char&, long)",
+      133
+    ],
+    [
+      "AGGraphGetValue",
+      132
+    ],
+    [
+      "CA::Transaction::commit()",
+      123
+    ],
+    [
+      "partial apply for implicit closure #1 in closure #1 in closure #1 in Attribute.init<A>(_:)",
+      119
+    ],
+    [
+      "-[NSMenuBarImpl unhighlightItemIfNeeded]",
+      111
+    ],
+    [
+      "_NSUnhighlightMenu",
+      111
+    ]
+  ]
+}

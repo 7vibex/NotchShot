@@ -19,7 +19,7 @@ import NotchShotKit
 /// a benchmark whose iteration threw is reported as a failure rather than
 /// silently measured as a fast `try?` nil.
 @MainActor
-func runBenchmarks() {
+func runBenchmarks() async {
     defer {
         if let results = Benchmark.finish() {
             print("raw samples: \(results.path)")
@@ -437,6 +437,11 @@ func runBenchmarks() {
     IslandBenchmarks.run(enabled: enabled)
     AIActivityBenchmarks.run(enabled: enabled)
     EditorBenchmarks.run(enabled: enabled)
+    PerformanceSweepBenchmarks.run(enabled: enabled)
+    if enabled("recipe-responsiveness") {
+        do { try await RecipeResponsivenessBenchmarks.run() }
+        catch { fatalError("Recipe responsiveness benchmark failed: \(error)") }
+    }
     if enabled("export-handler") {
         do { try ExportHandlerBenchmarks.run() }
         catch { fatalError("Export handler benchmark failed: \(error)") }
@@ -454,4 +459,4 @@ private func decodedDimensions(_ data: Data) -> (width: Int, height: Int)? {
     return (width, height)
 }
 
-runBenchmarks()
+await runBenchmarks()

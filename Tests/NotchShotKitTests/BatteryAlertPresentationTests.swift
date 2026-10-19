@@ -37,6 +37,9 @@ struct BatteryAlertPresentationTests {
         #expect(PowerModePresentationPolicy.statusDescription(
             isLowPowerModeEnabled: true
         ) == "Low Power Mode is on")
+        #expect(PowerModePresentationPolicy.statusDescription(
+            isLowPowerModeEnabled: false
+        ) == "Turn on Low Power Mode to last longer")
         #expect(PowerModePresentationPolicy.settingsAccessibilityLabel(
             isLowPowerModeEnabled: false
         ) == "Open Battery Settings to enable Low Power Mode")

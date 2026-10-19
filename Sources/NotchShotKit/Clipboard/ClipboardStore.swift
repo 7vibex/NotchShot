@@ -23,6 +23,7 @@ public final class ClipboardStore {
     nonisolated static let storeByteBudget = 6 * 1_024 * 1_024
     nonisolated static let maximumRecoverableStoreBytes = 32 * 1_024 * 1_024
     nonisolated static let maximumEntryCount = 500
+    nonisolated static let maximumFileCount = 64
     /// A single clipping past this is remembered as a truncated preview instead
     /// of in full: a copied log file should not evict the rest of the history.
     nonisolated static let maximumTextBytes = 256 * 1_024
@@ -33,6 +34,7 @@ public final class ClipboardStore {
     /// Set when a corrupt/oversized store was set aside so the UI can say so
     /// instead of silently presenting an empty history.
     public private(set) var loadRecoveryMessage: String?
+    public private(set) var recordingRejectionMessage: String?
 
     private let storeURL: URL
     private let imageDirectory: URL
@@ -124,16 +126,21 @@ public final class ClipboardStore {
     @discardableResult
     public func record(_ entry: ClipboardEntry, image: CGImage? = nil) -> ClipboardEntry? {
         guard isEnabled() else { return nil }
+        guard acceptsFileCount(entry.kind == .files ? entry.filePaths.count : 0) else { return nil }
 
         // Re-copying something already held is the common case, and it should
         // feel like the row moving to the top rather than the list growing a
         // near-identical neighbour.
-        if let existingIndex = entries.firstIndex(where: { $0.contentHash == entry.contentHash }) {
+        if let existingIndex = entries.firstIndex(where: { $0.kind == entry.kind && $0.contentHash == entry.contentHash }) {
             var existing = entries.remove(at: existingIndex)
-            existing.createdAt = entry.createdAt
-            existing.sourceApplicationName = entry.sourceApplicationName
-            existing.sourceApplicationBundleID = entry.sourceApplicationBundleID
-            if entry.kind == .files {
+            // Completion order can differ from copy order. Older completions
+            // must not replace the latest timestamp or source metadata.
+            if entry.createdAt >= existing.createdAt {
+                existing.createdAt = entry.createdAt
+                existing.sourceApplicationName = entry.sourceApplicationName
+                existing.sourceApplicationBundleID = entry.sourceApplicationBundleID
+            }
+            if entry.kind == .files, entry.createdAt >= existing.createdAt {
                 existing.filePaths = entry.filePaths
                 existing.fileIdentities = entry.fileIdentities
             }
@@ -163,7 +170,7 @@ public final class ClipboardStore {
         // Decoding in the monitor can finish after Clear, before this method
         // even starts. The copy timestamp closes that earlier suspension gap.
         guard isEnabled(), clearedThrough.map({ entry.createdAt > $0 }) ?? true else { return nil }
-        if entries.contains(where: { $0.contentHash == entry.contentHash }) {
+        if entries.contains(where: { $0.kind == entry.kind && $0.contentHash == entry.contentHash }) {
             return record(entry)
         }
 
@@ -172,10 +179,16 @@ public final class ClipboardStore {
         let filename = await imageWriter(image, entry.id, directory)
         guard let filename else { return nil }
         guard isEnabled(), generation == clearGeneration else {
-            try? FileManager.default.removeItem(at: directory.appendingPathComponent(filename))
+            retireUncommittedImage(filename, id: entry.id)
             return nil
         }
 
+        // Another identical copy may have committed while the writer was
+        // suspended. Reuse that row and retire only this writer's own sidecar.
+        if entries.contains(where: { $0.kind == entry.kind && $0.contentHash == entry.contentHash }) {
+            retireUncommittedImage(filename, id: entry.id)
+            return record(entry)
+        }
         var stored = entry
         stored.imageFilename = filename
         stored.pixelWidth = image.width
@@ -184,6 +197,24 @@ public final class ClipboardStore {
         enforceStoreBudget()
         scheduleSave()
         return stored
+    }
+
+    /// Reject an over-limit copy as a whole, without reading or replaying a
+    /// partial file list. The clipboard view displays this feedback.
+    @discardableResult
+    func acceptsFileCount(_ count: Int) -> Bool {
+        guard count <= Self.maximumFileCount else {
+            recordingRejectionMessage = "A clipping of \(count) files was not saved. Copy at most \(Self.maximumFileCount) files at once."
+            return false
+        }
+        recordingRejectionMessage = nil
+        return true
+    }
+
+    private func retireUncommittedImage(_ filename: String, id: UUID) {
+        guard filename == "\(id.uuidString).png",
+              !entries.contains(where: { $0.imageFilename == filename }) else { return }
+        try? FileManager.default.removeItem(at: imageDirectory.appendingPathComponent(filename))
     }
 
     /// Pinned rows sort above unpinned ones; within each group, newest first.
@@ -213,6 +244,48 @@ public final class ClipboardStore {
         entries[index].label = label
         scheduleSave()
         return true
+    }
+
+    /// Replaces a clipping's tags. Like the label, tags never change what is
+    /// pasted; they only help find it.
+    @discardableResult
+    public func setTags(_ rawTags: [String], id: UUID) -> Bool {
+        guard let index = entries.firstIndex(where: { $0.id == id }) else { return false }
+        let tags = Self.sanitizedTags(rawTags)
+        guard entries[index].tags != tags else { return true }
+        entries[index].tags = tags
+        scheduleSave()
+        return true
+    }
+
+    /// Every tag in use, alphabetically, for the filter menu.
+    public var allTags: [String] {
+        Array(Set(entries.flatMap { $0.tags ?? [] })).sorted {
+            $0.localizedStandardCompare($1) == .orderedAscending
+        }
+    }
+
+    nonisolated static let maximumTagCount = 8
+    nonisolated static let maximumTagLength = 24
+
+    /// Lowercased, single-spaced, deduplicated and bounded; nil when empty.
+    nonisolated static func sanitizedTags(_ rawTags: [String]?) -> [String]? {
+        guard let rawTags else { return nil }
+        var seen = Set<String>()
+        var tags: [String] = []
+        for raw in rawTags {
+            let tag = raw
+                .components(separatedBy: .whitespacesAndNewlines)
+                .filter { !$0.isEmpty }
+                .joined(separator: " ")
+                .trimmingCharacters(in: CharacterSet(charactersIn: "#,"))
+                .lowercased()
+            guard !tag.isEmpty else { continue }
+            let bounded = String(tag.prefix(maximumTagLength))
+            if seen.insert(bounded).inserted { tags.append(bounded) }
+            if tags.count == maximumTagCount { break }
+        }
+        return tags.isEmpty ? nil : tags
     }
 
     nonisolated static func sanitizedLabel(_ rawLabel: String?) -> String? {
@@ -340,7 +413,8 @@ public final class ClipboardStore {
         // example, control characters become `\u0000`). Budget the encoded
         // document, not only an estimate, or a store that looks like 6 MB here
         // can exceed the loader's 8 MB contract on disk.
-        while Self.encodedStoreBytes(entries) > Self.storeByteBudget {
+        while !Self.isStoreGuaranteedWithinByteBudget(entries)
+            && Self.encodedStoreBytes(entries) > Self.storeByteBudget {
             let unpinnedText = entries.indices.filter {
                 !entries[$0].isPinned && (entries[$0].text?.utf8.count ?? 0) > 4_096
             }
@@ -390,6 +464,40 @@ public final class ClipboardStore {
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
         return (try? encoder.encode(entries).count) ?? Int.max
+    }
+
+    /// A strict upper bound, not the optimistic retention estimate above.
+    /// JSON uses at most six bytes per UTF-8 input byte (a control character's
+    /// escape). Fixed fields include every Codable key, punctuation, UUID,
+    /// date, boolean and two full-width integers with ample room to spare.
+    /// Uncertain or large inputs still use the exact encoder and old policy.
+    nonisolated static func isStoreGuaranteedWithinByteBudget(_ entries: [ClipboardEntry]) -> Bool {
+        var remaining = storeByteBudget - 2 // Array brackets.
+        func account(_ value: String?) -> Bool {
+            guard let value else { return true }
+            let count = value.utf8.count
+            guard remaining >= 3, count <= (remaining - 3) / 6 else { return false }
+            remaining -= 3 + count * 6 // Quotes and a possible comma.
+            return true
+        }
+        for entry in entries {
+            guard remaining >= 1_024,
+                  entry.createdAt >= .distantPast, entry.createdAt <= .distantFuture else { return false }
+            remaining -= 1_024
+            guard account(entry.label), account(entry.text), account(entry.imageFilename),
+                  account(entry.sourceApplicationName), account(entry.sourceApplicationBundleID),
+                  account(entry.contentHash) else { return false }
+            for tag in entry.tags ?? [] {
+                guard account(tag) else { return false }
+            }
+            for path in entry.filePaths {
+                guard account(path) else { return false }
+            }
+            let identityCount = entry.fileIdentities?.count ?? 0
+            guard identityCount <= remaining / 512 else { return false }
+            remaining -= identityCount * 512
+        }
+        return true
     }
 
     // MARK: Storage
@@ -549,6 +657,9 @@ public final class ClipboardStore {
             let decoder = JSONDecoder()
             decoder.dateDecodingStrategy = .iso8601
             let raw = try decoder.decode([ClipboardEntry].self, from: data)
+            if raw.contains(where: { $0.kind == .files && $0.filePaths.count > Self.maximumFileCount }) {
+                loadRecoveryMessage = "Some saved file clippings exceed the 64-file limit. Their full lists were retained; copy them again in smaller groups to replay."
+            }
             entries = raw
                 .map(Self.sanitizedEntry)
                 .sorted { lhs, rhs in
@@ -570,6 +681,7 @@ public final class ClipboardStore {
     private nonisolated static func sanitizedEntry(_ entry: ClipboardEntry) -> ClipboardEntry {
         var entry = entry
         entry.label = sanitizedLabel(entry.label)
+        entry.tags = sanitizedTags(entry.tags)
         // A row can only ever name its own UUID image, so anything else is
         // dropped rather than trusted.
         if entry.imageURL == nil { entry.imageFilename = nil }
@@ -580,7 +692,8 @@ public final class ClipboardStore {
         if let text = entry.text, text.utf8.count > Self.maximumTextBytes {
             entry.text = String(text.prefix(Self.maximumTextBytes / 4))
         }
-        entry.filePaths = Array(entry.filePaths.prefix(64))
+        // Keep every persisted path. Older oversized rows are visibly
+        // rejected at replay rather than silently becoming a partial copy.
         if let identities = entry.fileIdentities,
            identities.count >= entry.filePaths.count {
             entry.fileIdentities = Array(identities.prefix(entry.filePaths.count))

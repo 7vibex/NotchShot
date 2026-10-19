@@ -1,0 +1,10 @@
+run 1: baseline main-actor start and initial snapshot: 0.594585875 seconds; client count: 1
+run 1: updated main-actor enqueue: 0.000203 seconds; worker initial snapshot: 0.4380965 seconds; main publication usable completion: 0.4381385 seconds; client count: 1; query completed on main: false
+run 2: baseline main-actor start and initial snapshot: 0.402866375 seconds; client count: 1
+run 2: updated main-actor enqueue: 5.1291e-05 seconds; worker initial snapshot: 0.252854333 seconds; main publication usable completion: 0.252889208 seconds; client count: 1; query completed on main: false
+run 3: baseline main-actor start and initial snapshot: 0.300949917 seconds; client count: 1
+run 3: updated main-actor enqueue: 0.000282125 seconds; worker initial snapshot: 0.261301458 seconds; main publication usable completion: 0.261366042 seconds; client count: 1; query completed on main: false
+run 4: baseline main-actor start and initial snapshot: 0.420717833 seconds; client count: 1
+run 4: updated main-actor enqueue: 6.2792e-05 seconds; worker initial snapshot: 0.320854 seconds; main publication usable completion: 0.320889583 seconds; client count: 1; query completed on main: false
+run 5: baseline main-actor start and initial snapshot: 0.70941 seconds; client count: 1
+run 5: updated main-actor enqueue: 6.6667e-05 seconds; worker initial snapshot: 0.442074875 seconds; main publication usable completion: 0.442103667 seconds; client count: 1; query completed on main: false

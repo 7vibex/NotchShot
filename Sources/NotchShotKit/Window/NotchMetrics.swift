@@ -126,10 +126,16 @@ public struct NotchLayout: Sendable, Equatable {
     public var satelliteDiameter: CGFloat
     /// Gap between the primary shell and a satellite.
     public var satelliteSpacing: CGFloat
+    /// Extra width for a lone satellite that shows a short value beside its
+    /// glyph ("4:12", "63%"), turning the circle into a pill. Zero otherwise.
+    public var satelliteValueWidth: CGFloat = 0
     /// Horizontal shift of the primary shell. A synthetic island with a single
     /// satellite moves the pair so the group, not just the pill, is centred.
     /// Always zero on a physical notch, which must stay under the camera.
     public var clusterOffset: CGFloat = 0
+    /// The content draws its own header in the camera band (see
+    /// `IslandCameraBand`) instead of starting below it.
+    public var wrapsCamera = false
 
     public init(
         size: CGSize,
@@ -147,14 +153,34 @@ public struct NotchLayout: Sendable, Equatable {
         self.satelliteSpacing = satelliteSpacing
     }
 
+    /// A copy with `wrapsCamera` set.
+    public func wrappingCamera(_ wraps: Bool) -> NotchLayout {
+        var copy = self
+        copy.wrapsCamera = wraps
+        return copy
+    }
+
     /// Horizontal reach of the satellite band on each side of the primary,
     /// including the part of each satellite's hit target that is wider than
     /// the circle drawn. Symmetric, so the hit region stays centred.
     public var satelliteExtent: CGFloat {
         guard satelliteDiameter > 0 else { return 0 }
-        let hitWidth = max(satelliteDiameter, NotchShotDesignSystem.minimumControlTarget)
-        return satelliteSpacing + satelliteDiameter / 2 + hitWidth / 2
+        let hitWidth = max(satelliteWidth, NotchShotDesignSystem.minimumControlTarget)
+        return satelliteSpacing + satelliteWidth / 2 + hitWidth / 2
     }
+
+    /// Drawn width of each satellite: its circle, or the pill when it carries
+    /// a value.
+    public var satelliteWidth: CGFloat {
+        satelliteDiameter + satelliteValueWidth
+    }
+
+    /// Width the idle notch grows by on each side while the microphone or a
+    /// camera is in use, to show the indicator dots beside the camera.
+    public static let privacyIndicatorWing: CGFloat = 22
+
+    /// Width reserved for a lone satellite's value.
+    public static let satelliteValueSlot: CGFloat = 40
 
     /// Largest island the panel must be able to contain. The panel is sized to
     /// this plus shadow padding, once, so state changes never resize the window.
@@ -181,8 +207,9 @@ public struct NotchLayout: Sendable, Equatable {
     /// they stop reading as part of the island and start reading as a window
     /// hanging off the notch.
     static func mediaPeekContentHeight(panelRows: Int) -> CGFloat {
-        // 10 + 56 artwork row + 22 scrubber + 40 transport + 12.
-        let player: CGFloat = 140
+        // 4 + 56 artwork row + 22 scrubber + 40 transport + 12. The source and
+        // meter sit above this, in the camera band.
+        let player: CGFloat = 134
         guard panelRows > 0 else { return player }
         let visibleRows = min(panelRows, mediaPanelVisibleRowLimit)
         let rows = CGFloat(visibleRows) * mediaPanelRowHeight
@@ -214,14 +241,20 @@ public struct NotchLayout: Sendable, Equatable {
         hasStack: Bool
     ) -> CGFloat {
         let control = NotchShotDesignSystem.minimumControlTarget
-        // `ShelfContent`: 14pt padding all round, 10pt between rows.
-        let padding: CGFloat = 28
+        // `ShelfContent`: the count and view switch sit in the camera band;
+        // below it 6 pt on top, 14 pt at the bottom, 10 pt between rows.
+        let padding: CGFloat = 20
         let rowSpacing: CGFloat = 10
-        // The header's segmented control carries 2pt of padding either side.
-        var rows: [CGFloat] = [control + 4]
-        // A 48pt grid strip, or the 66pt thumbnail beside its details column.
-        rows.append(style == .grid ? 50 : 66)
-        rows.append(control)
+        var rows: [CGFloat] = []
+        if style == .grid {
+            // The 48 pt strip, then the action toolbar under it.
+            rows.append(50)
+            rows.append(control)
+        } else {
+            // The thumbnail beside its details, with the actions at the
+            // bottom of the details column.
+            rows.append(shelfDetailRowHeight)
+        }
         if hasStack {
             // The stack strip pads its buttons by 5pt top and bottom.
             rows.append(control + 10)
@@ -236,6 +269,59 @@ public struct NotchLayout: Sendable, Equatable {
             + rowSpacing * CGFloat(max(rows.count - 1, 0))
     }
 
+    /// The detail layout's thumbnail height, which its details column and
+    /// action toolbar share.
+    static let shelfDetailRowHeight: CGFloat = 84
+
+    /// A single banner keeps the original 78 pt card; each further sender
+    /// adds a 52 pt row and its hairline.
+    static func systemNotificationContentHeight(rows: Int, hasOverflow: Bool) -> CGFloat {
+        // A row is 52 pt plus its hairline, with 10 pt under the last one so
+        // it clears the bottom corners.
+        10 + CGFloat(max(1, rows)) * 53 + (hasOverflow ? 18 : 0)
+    }
+
+    /// Bottom lip under a status card that lives entirely in the camera band,
+    /// so its corners have something to round.
+    static let statusLip: CGFloat = 8
+
+    /// Visible width either side of the camera for the recording card: the
+    /// red dot, the time and its size on the left; the meters on the right.
+    /// Each side of the camera in the idle hover bar.
+    static let idlePeekWing: CGFloat = 156
+    static let recordingWing: CGFloat = 150
+    /// The meters and the three round controls, below the band.
+    static let recordingBodyHeight: CGFloat = 58
+
+    /// The message and, when a permission is missing, its fix.
+    static let errorBodyHeight: CGFloat = 52
+
+    static func processingBodyHeight(isScrolling: Bool) -> CGFloat {
+        isScrolling ? 50 : statusLip
+    }
+
+    /// An expanded card whose header row sits in the camera band and whose
+    /// body starts straight below the camera.
+    static func bandedLayout(
+        width: CGFloat,
+        bodyHeight: CGFloat,
+        cornerRadius: CGFloat,
+        metrics: NotchMetrics,
+        floatingTopInset: CGFloat
+    ) -> NotchLayout {
+        let band = metrics.hasPhysicalNotch
+            ? max(metrics.notchSize.height, 1)
+            : IslandCameraBand.floatingRowHeight + 4
+        var layout = NotchLayout(
+            size: CGSize(width: width, height: min(band + bodyHeight, maximumSize.height)),
+            cornerRadius: cornerRadius,
+            contentTopInset: 0,
+            topInset: floatingTopInset
+        )
+        layout.wrapsCamera = true
+        return layout
+    }
+
     public static func layout(
         for activity: NotchActivity,
         metrics: NotchMetrics,
@@ -243,7 +329,9 @@ public struct NotchLayout: Sendable, Equatable {
         resultCount: Int,
         hasStack: Bool = false,
         mediaPanelRows: Int = 0,
-        shelfStyle: ShelfPresentationStyle = .detail
+        shelfStyle: ShelfPresentationStyle = .detail,
+        privacyIndicators: Bool = false,
+        isScrollingCapture: Bool = false
     ) -> NotchLayout {
         let closed = CGSize(
             width: max(metrics.notchSize.width, 1),
@@ -278,15 +366,41 @@ public struct NotchLayout: Sendable, Equatable {
             )
         }
 
+        /// An expanded card whose header sits beside the camera. `bodyHeight`
+        /// is everything below that header row.
+        func banded(width: CGFloat, bodyHeight: CGFloat, cornerRadius: CGFloat) -> NotchLayout {
+            bandedLayout(
+                width: width,
+                bodyHeight: bodyHeight,
+                cornerRadius: cornerRadius,
+                metrics: metrics,
+                floatingTopInset: floatingTopInset
+            )
+        }
+
+        /// Width for a card that only needs its two wings: enough either side
+        /// of a physical camera for `wing`, or a pill of `floatingWidth`.
+        func wingWidth(_ wing: CGFloat, floatingWidth: CGFloat) -> CGFloat {
+            metrics.hasPhysicalNotch
+                ? closed.width + IslandCameraBand.cameraClearance + 2 * wing
+                : floatingWidth
+        }
+
         switch activity {
         case .idle:
             if isPeeking {
-                return revealed(
-                    width: closed.width + 150,
-                    contentHeight: 46,
-                    cornerRadius: metrics.hasPhysicalNotch
-                        ? 12
-                        : NotchIsland.Geometry.compactHeight / 2
+                // The hover bar wraps the camera: Capture (and the user's
+                // idle animation) to its left, Area and Record to its right,
+                // instead of a row hung below an empty band.
+                return banded(width: wingWidth(idlePeekWing, floatingWidth: 360), bodyHeight: statusLip, cornerRadius: 18)
+            }
+            if privacyIndicators {
+                // A strip either side of the camera, symmetric so the shell
+                // stays centred under it; the dots sit in the trailing one.
+                return NotchLayout(
+                    size: CGSize(width: closed.width + 2 * privacyIndicatorWing, height: closed.height),
+                    cornerRadius: metrics.hasPhysicalNotch ? 12 : NotchIsland.Geometry.compactHeight / 2,
+                    topInset: floatingTopInset
                 )
             }
             return closedLayout(
@@ -311,14 +425,13 @@ public struct NotchLayout: Sendable, Equatable {
                 ? max(closed.width + 170, Self.mediaPeekMinimumWidth)
                 : compactWidth
             if isPeeking {
-                // Three stacked rows — artwork and titles, the scrubber with a
-                // time either side, then a full-width transport bar — rather
-                // than the old single row with the controls squeezed in beside
-                // the track name.
-                return revealed(
+                // The source and meter in the band beside the camera, then
+                // three stacked rows: artwork and titles, the scrubber with a
+                // time either side, and a full-width transport bar.
+                return banded(
                     width: width,
-                    contentHeight: mediaPeekContentHeight(panelRows: mediaPanelRows),
-                    cornerRadius: 22
+                    bodyHeight: mediaPeekContentHeight(panelRows: mediaPanelRows),
+                    cornerRadius: 26
                 )
             }
             // Compact media lives in the visible wings beside the camera and
@@ -334,9 +447,21 @@ public struct NotchLayout: Sendable, Equatable {
             // Dynamic-Island-style expansion: enough room for the three core
             // capture actions and one secondary command strip, but no large
             // dashboard floating from the camera cutout.
+            // On a physical notch the preset, timer and close controls sit in
+            // the band either side of the camera, so only the tiles and the
+            // command strip need room below it.
+            // Each wing needs room for a preset pill, or a timer pill and the
+            // close button, so a wider cutout widens the menu with it.
             return revealed(
-                width: NotchIsland.Geometry.expandedCaptureWidth,
-                contentHeight: NotchIsland.Geometry.expandedCaptureHeight,
+                width: metrics.hasPhysicalNotch
+                    ? max(
+                        NotchIsland.Geometry.expandedCaptureWidth,
+                        closed.width + 2 * NotchIsland.Geometry.expandedCaptureWing
+                    )
+                    : NotchIsland.Geometry.expandedCaptureWidth,
+                contentHeight: metrics.hasPhysicalNotch
+                    ? NotchIsland.Geometry.expandedCaptureBodyHeight
+                    : NotchIsland.Geometry.expandedCaptureHeight,
                 cornerRadius: NotchIsland.Geometry.expandedCornerRadius
             )
         case .fileDrop:
@@ -346,23 +471,34 @@ public struct NotchLayout: Sendable, Equatable {
             // drag remains active.
             return revealed(width: 500, contentHeight: 168, cornerRadius: 24)
         case .selecting:
-            return revealed(width: 340, contentHeight: 54, cornerRadius: 18)
+            // A status line needs no room below the camera: icon and title in
+            // one wing, the hint in the other.
+            return banded(width: wingWidth(130, floatingWidth: 340), bodyHeight: statusLip, cornerRadius: 18)
         case .countdown:
-            return revealed(width: 260, contentHeight: 92, cornerRadius: 22)
+            return banded(width: wingWidth(110, floatingWidth: 280), bodyHeight: statusLip, cornerRadius: 18)
         case .recording:
-            return revealed(width: 420, contentHeight: 96, cornerRadius: 22)
+            return banded(
+                width: wingWidth(recordingWing, floatingWidth: 440),
+                bodyHeight: recordingBodyHeight,
+                cornerRadius: 26
+            )
         case .processing:
-            return revealed(width: 320, contentHeight: 62, cornerRadius: 18)
+            return banded(
+                width: wingWidth(130, floatingWidth: 340),
+                // Scrolling capture keeps its three controls in a row below.
+                bodyHeight: processingBodyHeight(isScrolling: isScrollingCapture),
+                cornerRadius: 18
+            )
         case .result:
             let extra = min(max(resultCount - 1, 0), 4) * 12
-            return revealed(
-                width: 470 + CGFloat(extra),
-                contentHeight: shelfContentHeight(
+            return banded(
+                width: 500 + CGFloat(extra),
+                bodyHeight: shelfContentHeight(
                     style: shelfStyle,
                     itemCount: resultCount,
                     hasStack: hasStack
                 ),
-                cornerRadius: 24
+                cornerRadius: 28
             )
         case .systemLevel:
             // A physical notch already provides the black centre of the HUD.
@@ -388,13 +524,13 @@ public struct NotchLayout: Sendable, Equatable {
                 // controls; regaining it is a single quiet row with nothing to
                 // decide, so it must not reserve the button height.
                 return NetworkContextPolicy.isOfflineAlert(snapshot)
-                    ? revealed(width: 400, contentHeight: 152, cornerRadius: 26)
+                    ? revealed(width: 410, contentHeight: 128, cornerRadius: 24)
                     : revealed(width: 410, contentHeight: 74, cornerRadius: 22)
             }
-            // An accessory card carries artwork, a name and up to three battery
-            // readouts, so it gets a card rather than the compact wings the
-            // other passive contexts use.
-            if snapshot.kind == .audioRoute {
+            // An accessory announces itself in the compact wings — the device
+            // and a charge ring — and only the hovered island opens to the
+            // card with each bud and the case.
+            if snapshot.kind == .audioRoute, isPeeking || snapshot.presentation == .expanded {
                 return revealed(width: 420, contentHeight: 78, cornerRadius: 22)
             }
             if snapshot.presentation == .expanded {
@@ -407,6 +543,11 @@ public struct NotchLayout: Sendable, Equatable {
                 return revealed(width: 520, contentHeight: 390, cornerRadius: 24)
             }
             if isPeeking {
+                // An agent peek is one row: its mark, name, state and task.
+                // At 430 pt the row stretched into a wide black bar.
+                if snapshot.kind == .ai {
+                    return revealed(width: 360, contentHeight: 60, cornerRadius: 20)
+                }
                 return revealed(width: 430, contentHeight: 70, cornerRadius: 18)
             }
             return NotchLayout(
@@ -419,12 +560,19 @@ public struct NotchLayout: Sendable, Equatable {
                     : NotchIsland.Geometry.compactHeight / 2,
                 topInset: floatingTopInset
             )
-        case .systemNotification:
-            // Source icon, sender, one-line message, time, and two full-size
-            // actions in a compact shell inspired by native message banners.
-            return revealed(width: 410, contentHeight: 78, cornerRadius: 22)
+        case .systemNotification(let snapshot):
+            // The app and time beside the camera, then one row per sender,
+            // stacked like the Dynamic Island's messages.
+            return banded(
+                width: 420,
+                bodyHeight: systemNotificationContentHeight(
+                    rows: snapshot.rows.count,
+                    hasOverflow: snapshot.overflowCount > 0
+                ),
+                cornerRadius: 26
+            )
         case .error:
-            return revealed(width: 360, contentHeight: 62, cornerRadius: 18)
+            return banded(width: 460, bodyHeight: errorBodyHeight, cornerRadius: 24)
         case .dictation(let snapshot):
             return dictationLayout(
                 for: snapshot,
@@ -454,7 +602,7 @@ public struct NotchLayout: Sendable, Equatable {
     public static func compactIslandWing(for kind: IslandActivityKind) -> CGFloat {
         switch kind {
         case .media: 38
-        case .recording: 72
+        case .recording, .call: 72
         case .timer: 60
         case .ai, .calendar: compactContextWing
         case .transfer: 58
@@ -489,17 +637,53 @@ public struct NotchLayout: Sendable, Equatable {
             )
         }
 
+        /// A row that wraps the camera instead of hanging below it. Content
+        /// is laid out from the top edge (no camera inset): the views keep the
+        /// cutout's width clear themselves.
+        func wrappingRow(wing: CGFloat, floatingWidth: CGFloat, height: CGFloat) -> NotchLayout {
+            NotchLayout(
+                size: CGSize(width: physical ? closed.width + 2 * wing : floatingWidth, height: height),
+                cornerRadius: height / 2,
+                contentTopInset: 0,
+                topInset: floatingTopInset
+            )
+        }
+
         func expandedLayout(for kind: IslandActivityKind) -> NotchLayout {
             switch kind {
             case .media:
-                return revealed(
-                    max(closed.width + 170, mediaPeekMinimumWidth),
-                    mediaPeekContentHeight(panelRows: mediaPanelRows),
-                    22
+                return bandedLayout(
+                    width: max(closed.width + 170, mediaPeekMinimumWidth),
+                    bodyHeight: mediaPeekContentHeight(panelRows: mediaPanelRows),
+                    cornerRadius: 26,
+                    metrics: metrics,
+                    floatingTopInset: floatingTopInset
                 )
-            case .recording: return revealed(420, 96, 22)
-            case .timer: return revealed(380, 118, 24)
-            case .ai: return revealed(520, 320, 24)
+            case .recording:
+                return bandedLayout(
+                    width: physical
+                        ? closed.width + IslandCameraBand.cameraClearance + 2 * recordingWing
+                        : 440,
+                    bodyHeight: recordingBodyHeight,
+                    cornerRadius: 26,
+                    metrics: metrics,
+                    floatingTopInset: floatingTopInset
+                )
+            case .timer:
+                return wrappingRow(
+                    wing: NotchIsland.Geometry.expandedTimerWing,
+                    floatingWidth: NotchIsland.Geometry.expandedTimerFloatingWidth,
+                    height: NotchIsland.Geometry.expandedRowHeight
+                )
+            case .call:
+                return wrappingRow(
+                    wing: NotchIsland.Geometry.expandedCallWing,
+                    floatingWidth: NotchIsland.Geometry.expandedCallFloatingWidth,
+                    height: NotchIsland.Geometry.expandedCallHeight
+                )
+            // Room for the usage rings plus one answer card without
+            // scrolling; more agents scroll beneath.
+            case .ai: return revealed(520, 400, 24)
             case .transfer: return revealed(400, 134, 24)
             case .external: return revealed(400, 124, 24)
             case .voiceNote: return revealed(440, 204, 24)
@@ -529,8 +713,7 @@ public struct NotchLayout: Sendable, Equatable {
             case .lowBattery: return revealed(410, 78, 22)
             case .networkOffline: return revealed(400, 152, 26)
             case .networkOnline: return revealed(410, 74, 22)
-            case .audioRoute: return revealed(420, 78, 22)
-            case .contextNotice:
+            case .audioRoute, .contextNotice:
                 return NotchLayout(
                     size: CGSize(
                         width: closed.width + compactContextWing * 2,
@@ -580,8 +763,16 @@ public struct NotchLayout: Sendable, Equatable {
             // On a physical notch the shell's top fillets flare 10 pt beyond
             // its body, so the gap is measured from the flare, not the body.
             layout.satelliteSpacing = physical ? 16 : 10
+            // With room for one satellite only, it keeps a short value beside
+            // its glyph instead of shrinking to an icon, as a second Live
+            // Activity does on iPhone. Music has no short value worth showing.
+            if descriptor.satelliteCount == 1,
+               let lone = descriptor.leadingID ?? descriptor.trailingID,
+               lone.kind != .media {
+                layout.satelliteValueWidth = NotchLayout.satelliteValueSlot
+            }
             if !physical, descriptor.satelliteCount == 1 {
-                let half = (layout.satelliteDiameter + layout.satelliteSpacing) / 2
+                let half = (layout.satelliteWidth + layout.satelliteSpacing) / 2
                 layout.clusterOffset = descriptor.leadingID != nil ? half : -half
             }
         }

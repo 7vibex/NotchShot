@@ -198,7 +198,10 @@ struct NotchMetricsTests {
             isPeeking: false,
             resultCount: 0
         )
-        #expect(layout.size == CGSize(width: 432, height: 201))
+        // Below the camera only the tiles and the command strip; the preset,
+        // timer and close sit beside it. A 250 pt cutout widens the menu so
+        // both wings keep room for those controls.
+        #expect(layout.size == CGSize(width: 500, height: 155))
         #expect(layout.contentTopInset == 37)
         #expect(layout.cornerRadius == 32)
     }
@@ -245,9 +248,13 @@ struct NotchMetricsTests {
             resultCount: 0
         )
 
-        #expect(layout.size == CGSize(width: 410, height: 115))
-        #expect(layout.contentTopInset == 37)
-        #expect(layout.cornerRadius == 22)
+        // The app and time sit beside the camera, so the card is the 37 pt
+        // band plus one 53 pt row and its 10 pt bottom margin, with no empty
+        // strip under the camera.
+        #expect(layout.size == CGSize(width: 420, height: 100))
+        #expect(layout.contentTopInset == 0)
+        #expect(layout.wrapsCamera)
+        #expect(layout.cornerRadius == 26)
     }
 
     @Test("Low-battery alerts reveal their settings action immediately")
@@ -654,7 +661,7 @@ struct NotchMetricsTests {
         )
         #expect(expanded.islandRect(in: metrics).midX == metrics.notchRect.midX)
         #expect(expanded.contentTopInset == 33)
-        #expect(expanded.size.height - expanded.contentTopInset == NotchIsland.Geometry.expandedCaptureHeight)
+        #expect(expanded.size.height - expanded.contentTopInset == NotchIsland.Geometry.expandedCaptureBodyHeight)
     }
 
     @Test("An external display falls back to a synthetic island")
@@ -808,13 +815,12 @@ struct NotchMetricsTests {
             isPeeking: true,
             resultCount: 0
         )
-        #expect(mediaPeek.contentTopInset == 37)
-        // 140pt of content plus the 37pt cutout band. The expanded player
-        // stacks artwork and titles, the scrubber with a time either side, and
-        // a full-width transport bar.
-        #expect(mediaPeek.size.height == 177)
-        // Whatever the content height, it must clear the camera.
-        #expect(mediaPeek.size.height - mediaPeek.contentTopInset == 140)
+        // The source and meter wrap the camera in its 37 pt band; below it the
+        // player stacks artwork and titles, the scrubber with a time either
+        // side, and a full-width transport bar (134 pt).
+        #expect(mediaPeek.contentTopInset == 0)
+        #expect(mediaPeek.wrapsCamera)
+        #expect(mediaPeek.size.height == 171)
 
         // Opening a list — audio routes or Playing Next — grows the same
         // island rather than opening a popover beside it.
@@ -905,8 +911,8 @@ struct LockedCardGeometryTests {
         let frame = LockedCardGeometry.panelFrame(in: screen)
         let card = LockedCardGeometry.cardSize(in: screen)
         #expect(card == LockedCardGeometry.preferredCardSize)
-        #expect(card.width == 360)
-        #expect(card.height == 172)
+        #expect(card.width == 320)
+        #expect(card.height == 132)
 
         let cocoaCenterFromBottom = frame.midY - screen.minY
         #expect(abs(
@@ -972,17 +978,17 @@ struct AudioAccessoryCardLayoutTests {
         menuBarHeight: 37
     )
 
-    private func layout(for snapshot: ContextSnapshot) -> NotchLayout {
+    private func layout(for snapshot: ContextSnapshot, isPeeking: Bool = false) -> NotchLayout {
         NotchLayout.layout(
             for: .context(snapshot),
             metrics: metrics,
-            isPeeking: false,
+            isPeeking: isPeeking,
             resultCount: 0
         )
     }
 
-    @Test("An accessory card gets a card, not the compact wings")
-    func accessoryGetsACard() {
+    @Test("An accessory arrives in the compact wings and opens to a card")
+    func accessoryArrivesCompactAndOpensToACard() {
         let connected = ContextSnapshot(
             kind: .audioRoute,
             title: "Audio Connected",
@@ -990,9 +996,14 @@ struct AudioAccessoryCardLayoutTests {
             metric: "Connected",
             accessory: AccessoryBattery(name: "Test AirPods Pro", left: 100, right: 95, enclosure: 15)
         )
-        let card = layout(for: connected)
-        // The compact context strip is the notch plus two 75pt wings; the card
-        // has to be wider than that to hold artwork, a name and three levels.
+        // Like the phone: the device and a charge ring either side of the
+        // camera, in the notch's own height.
+        let arrival = layout(for: connected)
+        #expect(arrival.size.width == metrics.notchSize.width + NotchLayout.compactContextWing * 2)
+        #expect(arrival.contentTopInset == 0)
+        // Hovered, it opens to the card with each bud and the case, which has
+        // to be wider than the strip to hold a name and three levels.
+        let card = layout(for: connected, isPeeking: true)
         #expect(card.size.width > metrics.notchSize.width + NotchLayout.compactContextWing * 2)
         #expect(card.size.height - card.contentTopInset == 78)
     }
@@ -1005,7 +1016,8 @@ struct AudioAccessoryCardLayoutTests {
             subtitle: "Test AirPods Pro",
             metric: "Disconnected"
         )
-        #expect(layout(for: disconnected).size.height - layout(for: disconnected).contentTopInset == 78)
+        let card = layout(for: disconnected, isPeeking: true)
+        #expect(card.size.height - card.contentTopInset == 78)
     }
 
     @Test("Other passive contexts keep the compact strip")
@@ -1021,5 +1033,74 @@ struct AudioAccessoryCardLayoutTests {
         #expect(AccessoryBatteryPolicy.tint(forPercent: 20) == .red)
         #expect(AccessoryBatteryPolicy.tint(forPercent: 45) == .orange)
         #expect(AccessoryBatteryPolicy.tint(forPercent: 100) == .green)
+    }
+}
+
+@Suite("Camera-wrapping cards")
+struct CameraWrappingCardTests {
+    static let notched = NotchMetrics(
+        screenFrame: CGRect(x: 0, y: 0, width: 1512, height: 982),
+        hasPhysicalNotch: true,
+        notchSize: CGSize(width: 185, height: 32),
+        menuBarHeight: 32
+    )
+    static let floating = NotchMetrics(
+        screenFrame: CGRect(x: 0, y: 0, width: 1920, height: 1080),
+        hasPhysicalNotch: false,
+        notchSize: NotchMetrics.syntheticIslandSize,
+        menuBarHeight: 25
+    )
+
+    static let cards: [NotchActivity] = [
+        .result,
+        .recording,
+        .processing("Saving screenshot…"),
+        .error("Something failed"),
+        .systemNotification(SystemNotificationSnapshot(sourceName: "Mail", title: "A", body: "B")),
+        .selecting(.area),
+        .countdown(remaining: 3, intent: .area),
+    ]
+
+    @Test("Expanded cards put their header beside the camera, not below it")
+    func noEmptyBand() {
+        for activity in Self.cards {
+            let layout = NotchLayout.layout(for: activity, metrics: Self.notched, isPeeking: false, resultCount: 1)
+            #expect(layout.wrapsCamera, "\(activity)")
+            #expect(layout.contentTopInset == 0, "\(activity)")
+            #expect(layout.size.height >= Self.notched.notchSize.height, "\(activity)")
+        }
+        let media = NotchLayout.layout(for: .media, metrics: Self.notched, isPeeking: true, resultCount: 0)
+        #expect(media.wrapsCamera)
+        // The idle hover bar too: Capture left of the camera, Area and Record
+        // right of it, with no strip hung underneath.
+        let idlePeek = NotchLayout.layout(for: .idle, metrics: Self.notched, isPeeking: true, resultCount: 0)
+        #expect(idlePeek.wrapsCamera)
+        #expect(idlePeek.contentTopInset == 0)
+        #expect(idlePeek.size.width == 185 + IslandCameraBand.cameraClearance + 2 * NotchLayout.idlePeekWing)
+        #expect(idlePeek.size.height == 32 + NotchLayout.statusLip)
+    }
+
+    @Test("Each wing leaves room beside the camera for its header")
+    func wingsClearCamera() {
+        for activity in Self.cards {
+            let layout = NotchLayout.layout(for: activity, metrics: Self.notched, isPeeking: false, resultCount: 1)
+            let wing = (layout.size.width - Self.notched.notchSize.width - IslandCameraBand.cameraClearance) / 2
+            #expect(wing >= 100, "\(activity) wing \(wing)")
+        }
+    }
+
+    @Test("A floating island adds a header row instead of a camera band")
+    func floatingHeaderRow() {
+        let error = NotchLayout.layout(for: .error("x"), metrics: Self.floating, isPeeking: false, resultCount: 0)
+        #expect(error.size.height == IslandCameraBand.floatingRowHeight + 4 + NotchLayout.errorBodyHeight)
+    }
+
+    @Test("Scrolling capture keeps its controls row; a plain save does not")
+    func processingBody() {
+        let plain = NotchLayout.layout(for: .processing("Saving"), metrics: Self.notched, isPeeking: false, resultCount: 0)
+        let scrolling = NotchLayout.layout(
+            for: .processing("Scroll"), metrics: Self.notched, isPeeking: false, resultCount: 0, isScrollingCapture: true
+        )
+        #expect(scrolling.size.height - plain.size.height == 50 - NotchLayout.statusLip)
     }
 }

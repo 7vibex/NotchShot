@@ -75,6 +75,9 @@ public struct CaptureRequest: Sendable {
     /// Display id for `.display`.
     public var displayID: CGDirectDisplayID?
     public var includesCursor: Bool
+    /// The frozen display the user drew the selection on, when the result
+    /// should be exactly that frame. See `FrozenSelectionPolicy`.
+    public var selectionFreezeFrame: CapturedImage?
 
     public init(
         intent: CaptureIntent,
@@ -90,5 +93,49 @@ public struct CaptureRequest: Sendable {
         self.windowID = windowID
         self.displayID = displayID
         self.includesCursor = includesCursor
+    }
+}
+
+extension CaptureRequest {
+    /// Folds the overlay's answer into the request. Returns false when the
+    /// user cancelled.
+    ///
+    /// Window mode takes a drag as an area, as its instructions say ("Click a
+    /// window · drag for an area"). The request used to keep `.window` with no
+    /// window id for that drag, so the capture failed as "window not found".
+    mutating func apply(_ selection: SelectionResult) -> Bool {
+        switch selection {
+        case .area(let selected, let displayID):
+            rect = selected
+            self.displayID = displayID
+            if intent == .window { intent = .area }
+            return true
+        case .window(let window):
+            windowID = window.id
+            intent = .window
+            return true
+        case .cancelled:
+            return false
+        }
+    }
+}
+
+/// When an area capture is cut from the frozen frame the user selected on
+/// instead of being taken again.
+enum FrozenSelectionPolicy {
+    static func usesFreezeFrame(
+        intent: CaptureIntent,
+        timer: CaptureTimer,
+        includesCursor: Bool,
+        freezeWasShown: Bool
+    ) -> Bool {
+        // What was on screen is the point only when the user was looking at
+        // the frozen frame and the capture fires straight away. A countdown
+        // means "capture what is there when it ends"; the cursor isn't in the
+        // freeze frame; scrolling captures live frames by design.
+        freezeWasShown
+            && timer == .none
+            && !includesCursor
+            && (intent == .area || intent == .ocr)
     }
 }

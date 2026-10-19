@@ -367,6 +367,33 @@ struct ClipboardStoreTests {
         }
     }
 
+    @Test("Tags are sanitized, searchable, filterable and survive a reload")
+    func tagsPersistAndSearch() throws {
+        try withClipboardOn {
+            let directory = URL(fileURLWithPath: NSTemporaryDirectory())
+                .appendingPathComponent("notchshot-clip-\(UUID().uuidString)", isDirectory: true)
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(at: directory) }
+            let storeURL = directory.appendingPathComponent("clipboard.json")
+            let store = ClipboardStore(storeURL: storeURL, imageDirectory: directory)
+            let recorded = try #require(store.record(entry("ssh deploy@example")))
+
+            #expect(store.setTags([" Work ", "#ssh", "work", "", "Ops\nteam"], id: recorded.id))
+            #expect(store.entry(id: recorded.id)?.tags == ["work", "ssh", "ops team"])
+            #expect(store.allTags == ["ops team", "ssh", "work"])
+            #expect(store.search("ops team").map(\.id) == [recorded.id])
+            try store.save()
+
+            let reloaded = ClipboardStore(storeURL: storeURL, imageDirectory: directory)
+            #expect(reloaded.entry(id: recorded.id)?.tags == ["work", "ssh", "ops team"])
+            #expect(store.setTags([], id: recorded.id))
+            #expect(store.entry(id: recorded.id)?.tags == nil)
+            let many = (0..<20).map { "t\($0)" }
+            #expect(ClipboardStore.sanitizedTags(many)?.count == ClipboardStore.maximumTagCount)
+            #expect(ClipboardStore.sanitizedTags([String(repeating: "x", count: 60)])?.first?.count == ClipboardStore.maximumTagLength)
+        }
+    }
+
     @Test("Image OCR becomes searchable only after explicit indexing")
     func imageOCRIsExplicitAndSearchable() throws {
         try withClipboardOn {

@@ -9,6 +9,31 @@ public struct SystemNotificationSnapshot: Sendable, Equatable, Identifiable {
     public let title: String
     public let body: String
     public let receivedAt: Date
+    /// How many banners from this sender the row stands for. A second message
+    /// from the same person bumps the badge instead of adding a row.
+    public var groupCount: Int = 1
+    /// Other senders shown under this one, newest first. Empty for a single
+    /// banner, which is the card every notification used to be.
+    public var earlier: [SystemNotificationSnapshot] = []
+    /// Senders that arrived in the same burst but did not fit the stack.
+    public var overflowCount: Int = 0
+    /// Set when the banner macOS is showing offers its own Reply action, so
+    /// the notch can open that reply field. Nil for banners without one.
+    public var replyKey: String?
+
+    /// Every row the stack draws, this one first.
+    public var rows: [SystemNotificationSnapshot] {
+        var head = self
+        head.earlier = []
+        return [head] + earlier
+    }
+
+    /// Groups banners by source and sender, so a thread reads as one row.
+    public var groupKey: String {
+        [sourceName, title]
+            .map { $0.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current) }
+            .joined(separator: "\u{001F}")
+    }
 
     public init(
         id: UUID = UUID(),
@@ -70,6 +95,38 @@ struct SystemNotificationQueue: Sendable, Equatable {
     mutating func removeAll() {
         current = nil
         pending.removeAll(keepingCapacity: false)
+    }
+
+    /// Everything waiting, shown at once the way the Dynamic Island stacks
+    /// messages: one row per sender, newest sender on top, with a count when
+    /// a sender sent more than one. `nil` when nothing is queued.
+    func presented(rowLimit: Int = 3) -> SystemNotificationSnapshot? {
+        let all = ([current].compactMap { $0 } + pending).sorted { $0.receivedAt > $1.receivedAt }
+        var order: [String] = []
+        var groups: [String: SystemNotificationSnapshot] = [:]
+        for snapshot in all {
+            let key = snapshot.groupKey
+            if var group = groups[key] {
+                group.groupCount += 1
+                groups[key] = group
+            } else {
+                order.append(key)
+                groups[key] = snapshot
+            }
+        }
+        let rows = order.compactMap { groups[$0] }
+        guard var head = rows.first else { return nil }
+        let limit = max(1, rowLimit)
+        head.earlier = Array(rows.dropFirst().prefix(limit - 1))
+        head.overflowCount = max(0, rows.count - limit)
+        return head
+    }
+
+    /// Drops every banner from one sender, after the user opened that row.
+    mutating func removeGroup(_ key: String) {
+        let remaining = ([current].compactMap { $0 } + pending).filter { $0.groupKey != key }
+        current = remaining.first
+        pending = Array(remaining.dropFirst())
     }
 
     private func containsEquivalent(_ snapshot: SystemNotificationSnapshot) -> Bool {
@@ -162,9 +219,9 @@ public final class SystemNotificationMirror {
     public var onNotification: ((SystemNotificationSnapshot) -> Void)?
 
     private static let notificationCenterBundleID = "com.apple.notificationcenterui"
-    private static let notificationBannerSubrole = "AXNotificationCenterBanner"
+    private nonisolated static let notificationBannerSubrole = "AXNotificationCenterBanner"
     private static let scanInterval: TimeInterval = 0.45
-    private static let maximumAXElements = 240
+    private nonisolated static let maximumAXElements = 240
 
     private var isEnabled = false
     private var isSessionActive = true
@@ -173,6 +230,24 @@ public final class SystemNotificationMirror {
     private var observedPID: pid_t?
     private var scanTimer: Timer?
     private var visibleFingerprints: Set<String> = []
+    /// Banners on screen that offer Reply, by fingerprint, with the AX
+    /// action's exact name. Rebuilt on every scan, so a banner that has gone
+    /// can never be acted on.
+    private var replyTargets: [String: (element: AXElementBox, action: String)] = [:]
+    /// Walking Notification Center's hierarchy is hundreds of cross-process
+    /// Accessibility calls. On the main thread that cost the island frames
+    /// every scan, and a busy Notification Center could stall the whole
+    /// interface for the length of the AX timeout, so the walk runs here.
+    private let scanQueue = DispatchQueue(label: "NotchShot.NotificationMirror", qos: .utility)
+    private var isScanning = false
+    private var needsRescan = false
+    /// Bumped whenever monitoring stops, so a walk already in flight cannot
+    /// report banners into a session that has since ended.
+    private var scanGeneration = 0
+    /// Per-call ceiling on Notification Center's answers. The default is
+    /// six seconds; a banner that cannot be read in this long is skipped
+    /// and picked up by a later scan.
+    private static let messagingTimeout: Float = 0.5
 
     private init() {}
 
@@ -205,36 +280,107 @@ public final class SystemNotificationMirror {
         }
         attachIfNeeded()
         guard let applicationElement else { return }
-
-        let windows = Self.elements(applicationElement, attribute: kAXWindowsAttribute as CFString)
-        var budget = Self.maximumAXElements
-        var banners: [AXUIElement] = []
-        for window in windows {
-            Self.collectBanners(from: window, budget: &budget, into: &banners)
-            if budget == 0 { break }
+        guard !isScanning else {
+            needsRescan = true
+            return
         }
+        isScanning = true
+        let generation = scanGeneration
+        let application = AXElementBox(element: applicationElement)
+        scanQueue.async { [weak self] in
+            let banners = Self.readBanners(in: application.element)
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated { self?.finishScan(banners, generation: generation) }
+            }
+        }
+    }
 
+    private func finishScan(_ banners: [ScannedBanner], generation: Int) {
+        isScanning = false
+        // A request that arrived mid-walk runs now, even when this walk's
+        // result is stale because monitoring restarted underneath it.
+        defer {
+            if needsRescan {
+                needsRescan = false
+                scanNow()
+            }
+        }
+        guard generation == scanGeneration, isEnabled, isSessionActive else { return }
         var currentFingerprints: Set<String> = []
+        replyTargets.removeAll()
         for banner in banners {
-            // Banner discovery and banner parsing use separate bounds. A large
-            // Notification Center hierarchy must not consume the text budget
-            // before a discovered banner can be read.
-            var textBudget = Self.maximumAXElements
-            let texts = Self.staticTexts(from: banner, budget: &textBudget)
-            let description = Self.string(banner, attribute: kAXDescriptionAttribute as CFString)
-            guard let content = SystemNotificationBannerParser.parse(
-                description: description,
-                staticTexts: texts
-            ) else { continue }
+            let content = banner.content
             currentFingerprints.insert(content.fingerprint)
+            if let action = banner.replyAction {
+                replyTargets[content.fingerprint] = (banner.element, action)
+            }
             guard !visibleFingerprints.contains(content.fingerprint), shouldMirror(content) else { continue }
-            onNotification?(SystemNotificationSnapshot(
+            var snapshot = SystemNotificationSnapshot(
                 sourceName: content.sourceName,
                 title: content.title,
                 body: content.body
-            ))
+            )
+            snapshot.replyKey = banner.replyAction == nil ? nil : content.fingerprint
+            onNotification?(snapshot)
         }
         visibleFingerprints = currentFingerprints
+    }
+
+    /// The Accessibility walk itself. Runs on `scanQueue`, never the main
+    /// thread; touches nothing but its argument.
+    /// Opens the reply field macOS itself attaches to a banner — the same as
+    /// hovering the banner and choosing Reply — so the message is typed and
+    /// routed by the posting app, never guessed at by NotchShot. False when
+    /// the banner has already gone.
+    public func performReply(for snapshot: SystemNotificationSnapshot) async -> Bool {
+        guard let key = snapshot.replyKey, let target = replyTargets[key] else { return false }
+        let element = target.element
+        let action = target.action
+        return await withCheckedContinuation { continuation in
+            scanQueue.async {
+                let result = AXUIElementPerformAction(element.element, action as CFString)
+                continuation.resume(returning: result == .success)
+            }
+        }
+    }
+
+    /// A banner's AX action that replies. Notification Center publishes
+    /// custom actions as "Name:Reply\nTarget:…"; the localized name is
+    /// matched loosely, and the raw action string is what gets performed.
+    nonisolated static func replyAction(in actionNames: [String]) -> String? {
+        let replyWords = ["reply", "antworten", "répondre", "responder", "rispondi", "返信", "回复", "回覆", "답장"]
+        return actionNames.first { name in
+            let label = name
+                .components(separatedBy: "\n")
+                .first { $0.hasPrefix("Name:") }
+                .map { String($0.dropFirst("Name:".count)) } ?? name
+            let folded = label.lowercased()
+            return replyWords.contains { folded.contains($0) }
+        }
+    }
+
+    private nonisolated static func readBanners(in application: AXUIElement) -> [ScannedBanner] {
+        let windows = elements(application, attribute: kAXWindowsAttribute as CFString)
+        var budget = maximumAXElements
+        var banners: [AXUIElement] = []
+        for window in windows {
+            collectBanners(from: window, budget: &budget, into: &banners)
+            if budget == 0 { break }
+        }
+        return banners.compactMap { banner in
+            // Banner discovery and banner parsing use separate bounds. A large
+            // Notification Center hierarchy must not consume the text budget
+            // before a discovered banner can be read.
+            var textBudget = maximumAXElements
+            let texts = staticTexts(from: banner, budget: &textBudget)
+            let description = string(banner, attribute: kAXDescriptionAttribute as CFString)
+            guard let content = SystemNotificationBannerParser.parse(description: description, staticTexts: texts) else {
+                return nil
+            }
+            var names: CFArray?
+            let actions = AXUIElementCopyActionNames(banner, &names) == .success ? (names as? [String] ?? []) : []
+            return ScannedBanner(content: content, replyAction: replyAction(in: actions), element: AXElementBox(element: banner))
+        }
     }
 
     private func reconcile() {
@@ -282,6 +428,7 @@ public final class SystemNotificationMirror {
 
         detachObserver()
         let element = AXUIElementCreateApplication(app.processIdentifier)
+        AXUIElementSetMessagingTimeout(element, Self.messagingTimeout)
         var newObserver: AXObserver?
         guard AXObserverCreate(
             app.processIdentifier,
@@ -324,6 +471,8 @@ public final class SystemNotificationMirror {
     private func stopMonitoring() {
         scanTimer?.invalidate()
         scanTimer = nil
+        scanGeneration += 1
+        needsRescan = false
         detachObserver()
         visibleFingerprints.removeAll()
     }
@@ -341,7 +490,7 @@ public final class SystemNotificationMirror {
         observedPID = nil
     }
 
-    private static func collectBanners(
+    private nonisolated static func collectBanners(
         from element: AXUIElement,
         budget: inout Int,
         into result: inout [AXUIElement]
@@ -358,7 +507,7 @@ public final class SystemNotificationMirror {
         }
     }
 
-    private static func staticTexts(from element: AXUIElement, budget: inout Int) -> [String] {
+    private nonisolated static func staticTexts(from element: AXUIElement, budget: inout Int) -> [String] {
         guard budget > 0 else { return [] }
         budget -= 1
         var result: [String] = []
@@ -373,17 +522,31 @@ public final class SystemNotificationMirror {
         return result
     }
 
-    private static func elements(_ element: AXUIElement, attribute: CFString) -> [AXUIElement] {
+    private nonisolated static func elements(_ element: AXUIElement, attribute: CFString) -> [AXUIElement] {
         var value: CFTypeRef?
         guard AXUIElementCopyAttributeValue(element, attribute, &value) == .success else { return [] }
         return value as? [AXUIElement] ?? []
     }
 
-    private static func string(_ element: AXUIElement, attribute: CFString) -> String? {
+    private nonisolated static func string(_ element: AXUIElement, attribute: CFString) -> String? {
         var value: CFTypeRef?
         guard AXUIElementCopyAttributeValue(element, attribute, &value) == .success else { return nil }
         return value as? String
     }
+}
+
+/// One banner read by a scan: its text, and how to reply to it if it can.
+private struct ScannedBanner: @unchecked Sendable {
+    var content: SystemNotificationBannerContent
+    var replyAction: String?
+    var element: AXElementBox
+}
+
+/// Carries an `AXUIElement` to the scan queue. The element is an immutable
+/// reference to another process's UI, and the Accessibility API may be called
+/// from any thread.
+private struct AXElementBox: @unchecked Sendable {
+    let element: AXUIElement
 }
 
 private func systemNotificationObserverCallback(

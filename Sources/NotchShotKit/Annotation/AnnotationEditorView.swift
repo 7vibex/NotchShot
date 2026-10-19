@@ -15,6 +15,8 @@ public struct AnnotationEditorView: View {
     @State private var editingTextID: UUID?
     @State private var errorMessage: String?
     @State private var colorEditingTask: Task<Void, Never>?
+    @State private var imageActionTask: Task<Void, Never>?
+    @State private var imageActionID: UUID?
     @FocusState private var isEditingSelectedText: Bool
     @FocusState private var isCanvasFocused: Bool
 
@@ -55,7 +57,13 @@ public struct AnnotationEditorView: View {
         } message: {
             Text(errorMessage ?? "")
         }
+        .task(id: controller.basePreviewKey) {
+            await controller.prepareBasePreview()
+        }
         .onDisappear {
+            imageActionID = nil
+            imageActionTask?.cancel()
+            imageActionTask = nil
             finishColorEditing()
             if isEditingSelectedText { controller.endCoalescing() }
         }
@@ -151,7 +159,7 @@ public struct AnnotationEditorView: View {
             .accessibilityLabel("Rotate right")
 
             Button {
-                withAnimation(reduceMotion ? nil : .snappy) { showsBackgroundPanel.toggle() }
+                withAnimation(NotchMotion.selection(reduceMotion: reduceMotion)) { showsBackgroundPanel.toggle() }
             } label: {
                 Image(systemName: "square.on.square.dashed")
                     .frame(
@@ -533,11 +541,15 @@ public struct AnnotationEditorView: View {
 
             Spacer()
 
+            if imageActionTask != nil { ProgressView().controlSize(.small) }
             Button("Copy") { performCopy() }
                 .keyboardShortcut("c", modifiers: [.command, .shift])
+                .disabled(imageActionTask != nil)
             Button("Share…") { performShare() }
+                .disabled(imageActionTask != nil)
             Button("Save Project") { performSaveProject() }
             Button("Export…") { performExport() }
+                .disabled(imageActionTask != nil)
                 .keyboardShortcut("s", modifiers: .command)
                 .notchShotPrimaryActionStyle()
             Button("Close") { onClose() }
@@ -548,24 +560,46 @@ public struct AnnotationEditorView: View {
 
     // MARK: Actions
 
+    private func beginImageAction(_ operation: @escaping @MainActor () async throws -> Void) {
+        guard imageActionTask == nil else { return }
+        let actionID = UUID()
+        imageActionID = actionID
+        imageActionTask = Task { @MainActor in
+            defer {
+                if imageActionID == actionID {
+                    imageActionID = nil
+                    imageActionTask = nil
+                }
+            }
+            do {
+                try await operation()
+            } catch is CancellationError {
+                return
+            } catch {
+                guard !Task.isCancelled, imageActionID == actionID else { return }
+                errorMessage = error.localizedDescription
+            }
+        }
+    }
+
     private func performCopy() {
-        do {
-            try controller.copyFlattenedToPasteboard()
-        } catch {
-            errorMessage = error.localizedDescription
+        guard imageActionTask == nil else { return }
+        let snapshot = controller.makeRenderSnapshot()
+        beginImageAction {
+            let flattened = try await AnnotationRenderWorker.shared.render(snapshot)
+            try Task.checkCancellation()
+            ImageExport.copyToPasteboard(flattened.cgImage)
         }
     }
 
     private func performShare() {
-        do {
-            let flattened = try controller.renderFlattened()
-            let image = NSImage(
-                cgImage: flattened,
-                size: NSSize(width: flattened.width, height: flattened.height)
-            )
+        guard imageActionTask == nil else { return }
+        let snapshot = controller.makeRenderSnapshot()
+        beginImageAction {
+            let flattened = try await AnnotationRenderWorker.shared.render(snapshot)
+            try Task.checkCancellation()
+            let image = NSImage(cgImage: flattened.cgImage, size: flattened.pixelSize)
             try MacSharePresenter.shared.present(items: [image])
-        } catch {
-            errorMessage = error.localizedDescription
         }
     }
 
@@ -580,23 +614,22 @@ public struct AnnotationEditorView: View {
     }
 
     private func performExport() {
+        guard imageActionTask == nil else { return }
         let format = Preferences.shared.imageFormat
+        let quality = Preferences.shared.jpegQuality
         let panel = NSSavePanel()
         panel.allowedContentTypes = [ImageExport.utType(for: format)]
         panel.nameFieldStringValue = "\(Preferences.shared.expandFilename()).\(format.fileExtension)"
         panel.directoryURL = Preferences.shared.outputFolder
         guard panel.runModal() == .OK, let url = panel.url else { return }
-
-        do {
-            let result = try controller.exportImageResult(to: url, format: format)
+        let snapshot = controller.makeRenderSnapshot()
+        beginImageAction {
+            let result = try await AnnotationRenderWorker.shared.export(snapshot, to: url, format: format, quality: quality)
+            guard !Task.isCancelled else { return }
             onExported(CaptureAsset(
-                url: result.url,
-                kind: .screenshot,
-                pixelSize: result.pixelSize,
-                scale: controller.document.sourceScale
+                url: result.url, kind: .screenshot,
+                pixelSize: result.pixelSize, scale: result.sourceScale
             ))
-        } catch {
-            errorMessage = error.localizedDescription
         }
     }
 

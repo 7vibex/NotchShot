@@ -1,0 +1,26 @@
+{
+  "first_attempt": {
+    "workload": "detected Discord call, expansion, Settings",
+    "result": "xctrace crashed at recording end; no completed trace metric",
+    "exception": "EXC_BAD_ACCESS SIGSEGV",
+    "app_remained_running": true
+  },
+  "retry": {
+    "workload": "Now Playing expansion and already-initialized Settings",
+    "recording_limit_seconds": 15,
+    "result": "saved after slow finalization",
+    "potential_hangs": [
+      {
+        "start_seconds": 1.736982541,
+        "duration_ms": 499.288,
+        "type": "Microhang"
+      }
+    ]
+  },
+  "limits": [
+    "No matched baseline",
+    "No established cause for this hitch",
+    "No animation FPS measurement",
+    "Does not establish that cold Settings or call hitches are resolved"
+  ]
+}

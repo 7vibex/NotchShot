@@ -116,6 +116,12 @@ public enum ImageExport {
         dpiScale: CGFloat
     ) throws -> ImageFormat {
         let (data, usedFormat) = try encode(image, format: format, quality: quality, dpiScale: dpiScale)
+        try writeEncoded(data, to: url)
+        return usedFormat
+    }
+
+    /// Shared disk guard and atomic commit for synchronous and worker exports.
+    static func writeEncoded(_ data: Data, to url: URL) throws {
         let directory = url.deletingLastPathComponent()
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
 
@@ -129,7 +135,6 @@ public enum ImageExport {
         } catch {
             throw NotchShotError.destinationUnwritable(url.path)
         }
-        return usedFormat
     }
 
     /// `write`, moved off the caller's actor.

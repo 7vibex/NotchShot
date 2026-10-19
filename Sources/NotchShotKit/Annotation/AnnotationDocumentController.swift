@@ -21,7 +21,7 @@ enum EditableProjectPrivacyAlertPolicy {
 @Observable
 public final class AnnotationDocumentController {
 
-    private struct BasePreviewCacheKey: Equatable {
+    struct BasePreviewCacheKey: Equatable, Sendable {
         var sourcePixelSize: CGSize
         var sourceScale: CGFloat
         var cropRect: CGRect?
@@ -58,7 +58,11 @@ public final class AnnotationDocumentController {
     /// operations. Annotation drags and selection changes do not affect this
     /// layer, so keep it until crop, rotation, or background geometry changes.
     @ObservationIgnored private var cachedBasePreviewKey: BasePreviewCacheKey?
-    @ObservationIgnored private var cachedBasePreview: NSImage?
+    private var cachedBasePreview: NSImage?
+    @ObservationIgnored private var previewRequestID: UUID?
+    @ObservationIgnored var previewRenderer: @Sendable (AnnotationRenderSnapshot) async throws -> CapturedImage = {
+        try await AnnotationRenderWorker.shared.render($0, isPreview: true)
+    }
 
     public init(source: CGImage, document: AnnotationDocument, asset: CaptureAsset? = nil) {
         self.source = source
@@ -224,35 +228,50 @@ public final class AnnotationDocumentController {
     ///
     /// This deliberately excludes annotation elements from the cache key:
     /// they are rendered by the live `Canvas`, not burned into this image.
-    func basePreviewImage() -> NSImage? {
-        let key = BasePreviewCacheKey(
+    var basePreviewKey: BasePreviewCacheKey {
+        BasePreviewCacheKey(
             sourcePixelSize: document.sourcePixelSize,
             sourceScale: document.sourceScale,
             cropRect: document.cropRect,
             rotation: document.rotation,
             background: document.background
         )
-        if cachedBasePreviewKey == key {
-            return cachedBasePreview
-        }
+    }
 
+    /// A cache-only read: SwiftUI view evaluation never renders a bitmap.
+    func basePreviewImage() -> NSImage? {
+        // Read the observed image even on a miss so its later publication
+        // invalidates the view that is currently displaying the placeholder.
+        let preview = cachedBasePreview
+        return cachedBasePreviewKey == basePreviewKey ? preview : nil
+    }
+
+    func makeRenderSnapshot() -> AnnotationRenderSnapshot {
+        AnnotationRenderSnapshot(source: source, document: document, seams: seams)
+    }
+
+    func prepareBasePreview() async {
+        let key = basePreviewKey
+        if cachedBasePreviewKey == key { return }
+        let requestID = UUID()
+        previewRequestID = requestID
         var stripped = document
         stripped.elements = []
-        cachedBasePreviewKey = key
-        guard let image = try? AnnotationRenderer.render(
-            document: stripped,
-            source: source,
-            options: AnnotationRenderer.Options(isPreview: true)
-        ) else {
+        let snapshot = AnnotationRenderSnapshot(source: source, document: stripped, seams: [])
+        do {
+            let image = try await previewRenderer(snapshot)
+            guard !Task.isCancelled, previewRequestID == requestID, basePreviewKey == key else { return }
+            cachedBasePreviewKey = key
+            cachedBasePreview = NSImage(cgImage: image.cgImage, size: image.pixelSize)
+        } catch {
+            guard !Task.isCancelled, previewRequestID == requestID, basePreviewKey == key else { return }
+            cachedBasePreviewKey = key
             cachedBasePreview = nil
-            return nil
         }
-        let preview = NSImage(
-            cgImage: image,
-            size: NSSize(width: image.width, height: image.height)
-        )
-        cachedBasePreview = preview
-        return preview
+    }
+
+    public func renderFlattenedAsync() async throws -> CapturedImage {
+        try await AnnotationRenderWorker.shared.render(makeRenderSnapshot())
     }
 
     // MARK: Saving
@@ -286,39 +305,19 @@ public final class AnnotationDocumentController {
     public struct ImageExportResult: Sendable {
         public let url: URL
         public let pixelSize: CGSize
+        public let sourceScale: CGFloat
     }
 
     /// Metadata comes from the exact flattened image written to disk, avoiding
     /// a second render and preserving crop, rotation and background dimensions.
     public func exportImageResult(to url: URL, format: ImageFormat) throws -> ImageExportResult {
-        let flattened = try renderFlattened()
-        let written = try ImageExport.write(
-            flattened,
-            to: url,
-            format: format,
-            quality: Preferences.shared.jpegQuality,
-            dpiScale: document.sourceScale
-        )
-        // If HEIC or JPEG fell back to PNG, the extension has to follow the
-        // bytes or the exported file is mislabeled.
-        var finalURL = url
-        if written != format {
-            let preferred = url.deletingPathExtension().appendingPathExtension(written.fileExtension)
-            if FileManager.default.fileExists(atPath: preferred.path) {
-                finalURL = AppPaths.uniqueURL(
-                    in: preferred.deletingLastPathComponent(),
-                    name: preferred.deletingPathExtension().lastPathComponent,
-                    extension: written.fileExtension
-                )
-            } else {
-                finalURL = preferred
-            }
-            try FileManager.default.moveItem(at: url, to: finalURL)
-        }
-        return ImageExportResult(
-            url: finalURL,
-            pixelSize: CGSize(width: flattened.width, height: flattened.height)
-        )
+        try makeRenderSnapshot().export(to: url, format: format, quality: Preferences.shared.jpegQuality)
+    }
+
+    public func exportImageResultAsync(to url: URL, format: ImageFormat) async throws -> ImageExportResult {
+        let snapshot = makeRenderSnapshot()
+        let quality = Preferences.shared.jpegQuality
+        return try await AnnotationRenderWorker.shared.export(snapshot, to: url, format: format, quality: quality)
     }
 
     @discardableResult

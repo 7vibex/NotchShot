@@ -1,0 +1,109 @@
+Building for debugging...
+[0/17] Write sources
+[1/17] Write swift-version--58304C5D6DBC2206.txt
+[3/12] Compiling NotchShotKit ContextCoordinator.swift
+/Users/vibex/Documents/NOTCH/Sources/NotchShotKit/Context/ContextCoordinator.swift:113:78: warning: trailing closure in this context is confusable with the body of the statement; pass as a parenthesized argument to silence this warning
+111 |         }
+112 |         calendarSnapshot = updated
+113 |         guard snapshot == nil || snapshot?.kind == .calendar || snapshot.map { isExpired($0) } == true else { return }
+    |                                                                              `- warning: trailing closure in this context is confusable with the body of the statement; pass as a parenthesized argument to silence this warning
+114 |         restorePersistentSnapshot()
+115 |     }
+
+/Users/vibex/Documents/NOTCH/Sources/NotchShotKit/Context/ContextCoordinator.swift:126:33: warning: trailing closure in this context is confusable with the body of the statement; pass as a parenthesized argument to silence this warning
+124 |                 || snapshot?.kind == .ai
+125 |                 || snapshot?.kind == .calendar
+126 |                 || snapshot.map { isExpired($0) } == true
+    |                                 `- warning: trailing closure in this context is confusable with the body of the statement; pass as a parenthesized argument to silence this warning
+127 |         else { return }
+128 |         restorePersistentSnapshot()
+
+/Users/vibex/Documents/NOTCH/Sources/NotchShotKit/Context/ContextCoordinator.swift:136:33: warning: trailing closure in this context is confusable with the body of the statement; pass as a parenthesized argument to silence this warning
+134 |                 || snapshot?.kind == .ai
+135 |                 || snapshot?.kind == .calendar
+136 |                 || snapshot.map { isExpired($0) } == true
+    |                                 `- warning: trailing closure in this context is confusable with the body of the statement; pass as a parenthesized argument to silence this warning
+137 |         else { return }
+138 |         restorePersistentSnapshot()
+
+/Users/vibex/Documents/NOTCH/Sources/NotchShotKit/Context/ContextCoordinator.swift:151:33: warning: trailing closure in this context is confusable with the body of the statement; pass as a parenthesized argument to silence this warning
+149 |                 || snapshot?.kind == .ai
+150 |                 || snapshot?.kind == .calendar
+151 |                 || snapshot.map { isExpired($0) } == true
+    |                                 `- warning: trailing closure in this context is confusable with the body of the statement; pass as a parenthesized argument to silence this warning
+152 |         else { return }
+153 |         restorePersistentSnapshot()
+[4/12] Compiling NotchShotKit CalendarGlanceService.swift
+[5/12] Emitting module NotchShotKit
+[6/51] Compiling NotchShotKit LockedNowPlayingCard.swift
+[7/51] Compiling NotchShotKit MenuBarPanelView.swift
+[8/51] Compiling NotchShotKit NotchRootView+CaptureMenu.swift
+[9/51] Compiling NotchShotKit NotchRootView+Context.swift
+[10/51] Compiling NotchShotKit IslandCallViews.swift
+[11/51] Compiling NotchShotKit IslandCompactContent.swift
+[12/51] Compiling NotchShotKit IslandExpandedContent.swift
+[13/51] Compiling NotchShotKit IslandSharedElements.swift
+[14/51] Compiling NotchShotKit AppCoordinator+Automation.swift
+[15/51] Compiling NotchShotKit AppCoordinator+Capture.swift
+[16/51] Compiling NotchShotKit AppCoordinator+Clipboard.swift
+[17/51] Compiling NotchShotKit AppCoordinator+Island.swift
+[18/51] Compiling NotchShotKit ClipboardView.swift
+[19/51] Compiling NotchShotKit DictationIslandView.swift
+[20/51] Compiling NotchShotKit HistoryView.swift
+[21/51] Compiling NotchShotKit IslandActivityContainer.swift
+[22/51] Compiling NotchShotKit AppCoordinator+Recording.swift
+[23/51] Compiling NotchShotKit AppCoordinator+Shelf.swift
+[24/51] Compiling NotchShotKit AppCoordinator+System.swift
+[25/51] Compiling NotchShotKit AppCoordinator+Tabs.swift
+[26/51] Compiling NotchShotKit SettingsView+Activities.swift
+[27/51] Compiling NotchShotKit SettingsView+Capture.swift
+[28/51] Compiling NotchShotKit SettingsView+Extras.swift
+[29/51] Compiling NotchShotKit SettingsView+Modules.swift
+[30/51] Compiling NotchShotKit NotchRootView+Media.swift
+[31/51] Compiling NotchShotKit NotchRootView+Status.swift
+[32/51] Compiling NotchShotKit NotchRootView.swift
+[33/51] Compiling NotchShotKit NotchTabBar.swift
+[34/51] Compiling NotchShotKit AppCoordinator.swift
+[35/51] Compiling NotchShotKit AppDelegate.swift
+[36/51] Compiling NotchShotKit FloatingBasket.swift
+[37/51] Compiling NotchShotKit IslandGestureCoordinator.swift
+[38/51] Compiling NotchShotKit ExtrasToolViews.swift
+[39/51] Compiling NotchShotKit ProductivityNotificationCenterView.swift
+[40/51] Compiling NotchShotKit ProductivitySuiteView.swift
+[41/51] Compiling NotchShotKit CapturePreviewView.swift
+[42/51] Compiling NotchShotKit SettingsView+System.swift
+[43/51] Compiling NotchShotKit SettingsView.swift
+[44/51] Compiling NotchShotKit ShelfContent.swift
+[44/53] Write Objects.LinkFileList
+[47/57] Linking notchshot-diagnostics
+[47/57] Linking NotchShotBench
+[49/57] Linking NotchShot
+[50/57] Applying NotchShot
+[51/57] Applying NotchShotBench
+[52/57] Applying notchshot-diagnostics
+[54/57] Compiling NotchShotKitTests ContextTimingRegressionTests.swift
+[55/57] Compiling NotchShotKitTests ContextFeatureTests.swift
+[56/57] Emitting module NotchShotKitTests
+[56/58] Write Objects.LinkFileList
+[57/58] Linking NotchShotPackageTests
+Build complete! (57.30s)
+Test Suite 'Selected tests' started at 2026-10-11 17:57:16.899.
+Test Suite 'NotchShotPackageTests.xctest' started at 2026-10-11 17:57:16.912.
+Test Suite 'NotchShotPackageTests.xctest' passed at 2026-10-11 17:57:16.912.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.000) seconds
+Test Suite 'Selected tests' passed at 2026-10-11 17:57:16.912.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.013) seconds
+􀟈  Test run started.
+􀄵  Testing Library Version: 1902
+􀄵  Target Platform: arm64e-apple-macos14.0
+􀟈  Suite "Cached context timing regressions" started.
+􀟈  Test "Legacy completed timer and voice cards expire and restore the next persistent source" started.
+􀟈  Test "Calendar replacement and stop invalidate already queued reevaluations" started.
+􀟈  Test "Cached events advance through imminent, start, and end without EventKit refresh" started.
+􀟈  Test "Replaced legacy expiry cannot overwrite a newer transient" started.
+􁁛  Test "Legacy completed timer and voice cards expire and restore the next persistent source" passed after 0.151 seconds.
+􁁛  Test "Cached events advance through imminent, start, and end without EventKit refresh" passed after 0.214 seconds.
+􁁛  Test "Replaced legacy expiry cannot overwrite a newer transient" passed after 0.214 seconds.
+􁁛  Test "Calendar replacement and stop invalidate already queued reevaluations" passed after 0.214 seconds.
+􁁛  Suite "Cached context timing regressions" passed after 0.215 seconds.
+􁁛  Test run with 4 tests in 1 suite passed after 0.215 seconds.

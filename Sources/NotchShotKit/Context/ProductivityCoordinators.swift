@@ -100,14 +100,20 @@ public final class FocusTimerCoordinator {
     }
 
     private func updateElapsed(now: Date = Date()) {
-        guard current?.state == .running, let lastTick else { return }
-        current?.elapsed = min(current?.duration ?? 0, (current?.elapsed ?? 0) + now.timeIntervalSince(lastTick))
+        // Work on a copy and assign once. `current?.elapsed = … current …`
+        // reads the property inside its own optional-chained write, which
+        // the observation macro turns into overlapping accesses: Swift's
+        // exclusivity check aborts on it at runtime.
+        guard var timer = current, timer.state == .running, let lastTick else { return }
+        timer.elapsed = min(timer.duration, timer.elapsed + now.timeIntervalSince(lastTick))
         self.lastTick = now
-        guard let current, current.remaining <= 0 else { return }
-        var completed = current
-        completed.state = .completed
-        self.current = completed
-        recent.insert(completed, at: 0)
+        guard timer.remaining <= 0 else {
+            current = timer
+            return
+        }
+        timer.state = .completed
+        current = timer
+        recent.insert(timer, at: 0)
         recent = Array(recent.prefix(12))
         tickTask?.cancel()
         tickTask = nil

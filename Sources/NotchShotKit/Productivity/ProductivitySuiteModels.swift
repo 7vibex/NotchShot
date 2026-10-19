@@ -7,6 +7,10 @@ import UserNotifications
 
 public enum ProductivityTool: String, CaseIterable, Identifiable, Sendable {
     case notifications
+    case today
+    case shortcuts
+    case apps
+    case reviews
     case notes
     case schedule
     case lyrics
@@ -17,12 +21,17 @@ public enum ProductivityTool: String, CaseIterable, Identifiable, Sendable {
     case localSend
     case windowSnap
     case camera
+    case displays
 
     public var id: String { rawValue }
 
     public var title: String {
         switch self {
         case .notifications: "Notification Center"
+        case .today: "Today"
+        case .shortcuts: "Shortcuts"
+        case .apps: "Running Apps"
+        case .reviews: "Review Queue"
         case .notes: "Notes"
         case .schedule: "Schedule"
         case .lyrics: "Lyrics"
@@ -33,12 +42,17 @@ public enum ProductivityTool: String, CaseIterable, Identifiable, Sendable {
         case .localSend: "LocalSend"
         case .windowSnap: "Window Snap"
         case .camera: "Camera"
+        case .displays: "Displays"
         }
     }
 
     public var symbolName: String {
         switch self {
         case .notifications: "bell.badge"
+        case .today: "sun.horizon"
+        case .shortcuts: "square.stack.3d.up"
+        case .apps: "app.badge"
+        case .reviews: "arrow.triangle.pull"
         case .notes: "note.text"
         case .schedule: "calendar.badge.clock"
         case .lyrics: "quote.bubble"
@@ -49,6 +63,7 @@ public enum ProductivityTool: String, CaseIterable, Identifiable, Sendable {
         case .localSend: "paperplane"
         case .windowSnap: "rectangle.split.2x1"
         case .camera: "video"
+        case .displays: "display.2"
         }
     }
 }
@@ -92,19 +107,28 @@ public final class ProductivityNoteStore {
 
     public private(set) var notes: [ProductivityNote] = []
     public private(set) var lastError: String?
-
-    private let storeURL: URL
+    public var isWriteLocked: Bool { !file.canWrite }
+    public var recoveryBackupURL: URL? { file.recoveryBackupURL }
+    private var file: AuthoredContentFile
 
     public init(storeURL: URL = AppPaths.support.appendingPathComponent("productivity-notes.json")) {
-        self.storeURL = storeURL
-        load()
+        file = AuthoredContentFile(url: storeURL)
+        do {
+            notes = try file.load([ProductivityNote].self)?.sorted { $0.updatedAt > $1.updatedAt } ?? []
+            if file.recoveredOversizedContent {
+                lastError = "Oversized Notes were recovered. Reduce them to 8 MiB before saving; the original file is retained."
+            }
+        } catch {
+            lastError = "Notes could not be loaded: \(error.localizedDescription) The file was left untouched and saving is locked."
+        }
     }
 
     @discardableResult
     public func create() -> ProductivityNote {
         let note = ProductivityNote()
-        notes.insert(note, at: 0)
-        persist()
+        var candidate = notes
+        candidate.insert(note, at: 0)
+        commit(candidate)
         return note
     }
 
@@ -115,46 +139,20 @@ public final class ProductivityNoteStore {
         if updated.title.isEmpty { updated.title = "Untitled Note" }
         updated.body = String(updated.body.prefix(200_000))
         updated.updatedAt = Date()
-        notes[index] = updated
-        notes.sort { $0.updatedAt > $1.updatedAt }
-        persist()
+        var candidate = notes
+        candidate[index] = updated
+        candidate.sort { $0.updatedAt > $1.updatedAt }
+        commit(candidate)
     }
 
     public func delete(id: UUID) {
-        notes.removeAll { $0.id == id }
-        persist()
+        commit(notes.filter { $0.id != id })
     }
 
-    private func load() {
-        // Bound the read: a runaway or corrupted notes file must not be
-        // decoded into memory.
-        guard let values = try? storeURL.resourceValues(forKeys: [.fileSizeKey]),
-              let size = values.fileSize,
-              size <= 8 * 1_024 * 1_024 else {
-            lastError = "Notes file is missing or too large to load safely."
-            return
-        }
-        guard let data = try? Data(contentsOf: storeURL) else { return }
+    private func commit(_ candidate: [ProductivityNote]) {
         do {
-            notes = try JSONDecoder().decode([ProductivityNote].self, from: data)
-                .sorted { $0.updatedAt > $1.updatedAt }
-        } catch {
-            lastError = "Notes could not be loaded: \(error.localizedDescription)"
-        }
-    }
-
-    private func persist() {
-        do {
-            try FileManager.default.createDirectory(
-                at: storeURL.deletingLastPathComponent(),
-                withIntermediateDirectories: true
-            )
-            let data = try JSONEncoder().encode(notes)
-            try data.write(to: storeURL, options: .atomic)
-            try FileManager.default.setAttributes(
-                [.posixPermissions: 0o600],
-                ofItemAtPath: storeURL.path
-            )
+            try file.save(candidate)
+            notes = candidate
             lastError = nil
         } catch {
             lastError = "Notes could not be saved: \(error.localizedDescription)"
@@ -168,17 +166,20 @@ public final class LyricsStore {
     public static let shared = LyricsStore()
 
     public private(set) var lyricsByTrack: [String: String] = [:]
-    private let storeURL: URL
+    public private(set) var lastError: String?
+    public var isWriteLocked: Bool { !file.canWrite }
+    public var recoveryBackupURL: URL? { file.recoveryBackupURL }
+    private var file: AuthoredContentFile
 
     public init(storeURL: URL = AppPaths.support.appendingPathComponent("lyrics.json")) {
-        self.storeURL = storeURL
-        // Bound the read: an oversized lyrics file must not be decoded.
-        guard let values = try? storeURL.resourceValues(forKeys: [.fileSizeKey]),
-              let size = values.fileSize,
-              size <= 8 * 1_024 * 1_024 else { return }
-        if let data = try? Data(contentsOf: storeURL),
-           let decoded = try? JSONDecoder().decode([String: String].self, from: data) {
-            lyricsByTrack = decoded
+        file = AuthoredContentFile(url: storeURL)
+        do {
+            lyricsByTrack = try file.load([String: String].self) ?? [:]
+            if file.recoveredOversizedContent {
+                lastError = "Oversized Lyrics were recovered. Reduce them to 8 MiB before saving; the original file is retained."
+            }
+        } catch {
+            lastError = "Lyrics could not be loaded: \(error.localizedDescription) The file was left untouched and saving is locked."
         }
     }
 
@@ -193,14 +194,20 @@ public final class LyricsStore {
 
     public func setLyrics(_ text: String, for key: String) throws {
         let bounded = String(text.prefix(300_000))
+        var candidate = lyricsByTrack
         if bounded.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            lyricsByTrack.removeValue(forKey: key)
+            candidate.removeValue(forKey: key)
         } else {
-            lyricsByTrack[key] = bounded
+            candidate[key] = bounded
         }
-        let data = try JSONEncoder().encode(lyricsByTrack)
-        try data.write(to: storeURL, options: .atomic)
-        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: storeURL.path)
+        do {
+            try file.save(candidate)
+            lyricsByTrack = candidate
+            lastError = nil
+        } catch {
+            lastError = "Lyrics could not be saved: \(error.localizedDescription)"
+            throw error
+        }
     }
 }
 

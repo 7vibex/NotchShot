@@ -25,6 +25,18 @@ public struct PowerSourceReading: Sendable, Equatable {
     }
 }
 
+/// Whether the locked activity stack should carry a charging card: only
+/// while plugged in, and only when the user hasn't turned it off.
+@MainActor
+enum LockedChargingPolicy {
+    static func reading() -> PowerSourceReading? {
+        guard ExtrasPreferences.shared.showsChargingWhileLocked,
+              let reading = PowerSourceMonitor.currentReading(),
+              reading.isConnectedToPower else { return nil }
+        return reading
+    }
+}
+
 enum PowerContextPolicy {
     static func snapshot(
         previous: PowerSourceReading?,
@@ -114,7 +126,7 @@ final class PowerSourceMonitor {
         }
     }
 
-    private static func currentReading() -> PowerSourceReading? {
+    static func currentReading() -> PowerSourceReading? {
         let info = IOPSCopyPowerSourcesInfo().takeRetainedValue()
         let sources = IOPSCopyPowerSourcesList(info).takeRetainedValue() as Array
         for source in sources {

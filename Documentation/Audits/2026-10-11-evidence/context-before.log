@@ -1,0 +1,491 @@
+Building for debugging...
+[0/23] Write sources
+[3/23] Write swift-version--58304C5D6DBC2206.txt
+[5/27] Compiling NotchShotKit MediaConversion.swift
+[6/28] Compiling NotchShotKit MeetingShortcutDispatcher.swift
+[7/28] Compiling NotchShotKit ContextCoordinator.swift
+/Users/vibex/Documents/NOTCH/Sources/NotchShotKit/Context/ContextCoordinator.swift:115:78: warning: trailing closure in this context is confusable with the body of the statement; pass as a parenthesized argument to silence this warning
+113 |         }
+114 |         calendarSnapshot = updated
+115 |         guard snapshot == nil || snapshot?.kind == .calendar || snapshot.map { isExpired($0) } == true else { return }
+    |                                                                              `- warning: trailing closure in this context is confusable with the body of the statement; pass as a parenthesized argument to silence this warning
+116 |         restorePersistentSnapshot()
+117 |     }
+
+/Users/vibex/Documents/NOTCH/Sources/NotchShotKit/Context/ContextCoordinator.swift:128:33: warning: trailing closure in this context is confusable with the body of the statement; pass as a parenthesized argument to silence this warning
+126 |                 || snapshot?.kind == .ai
+127 |                 || snapshot?.kind == .calendar
+128 |                 || snapshot.map { isExpired($0) } == true
+    |                                 `- warning: trailing closure in this context is confusable with the body of the statement; pass as a parenthesized argument to silence this warning
+129 |         else { return }
+130 |         restorePersistentSnapshot()
+
+/Users/vibex/Documents/NOTCH/Sources/NotchShotKit/Context/ContextCoordinator.swift:138:33: warning: trailing closure in this context is confusable with the body of the statement; pass as a parenthesized argument to silence this warning
+136 |                 || snapshot?.kind == .ai
+137 |                 || snapshot?.kind == .calendar
+138 |                 || snapshot.map { isExpired($0) } == true
+    |                                 `- warning: trailing closure in this context is confusable with the body of the statement; pass as a parenthesized argument to silence this warning
+139 |         else { return }
+140 |         restorePersistentSnapshot()
+
+/Users/vibex/Documents/NOTCH/Sources/NotchShotKit/Context/ContextCoordinator.swift:153:33: warning: trailing closure in this context is confusable with the body of the statement; pass as a parenthesized argument to silence this warning
+151 |                 || snapshot?.kind == .ai
+152 |                 || snapshot?.kind == .calendar
+153 |                 || snapshot.map { isExpired($0) } == true
+    |                                 `- warning: trailing closure in this context is confusable with the body of the statement; pass as a parenthesized argument to silence this warning
+154 |         else { return }
+155 |         restorePersistentSnapshot()
+[8/28] Compiling NotchShotKit CalendarGlanceService.swift
+[9/28] Compiling NotchShotKit SmartExport.swift
+[10/44] Compiling NotchShotKit ExtrasServices.swift
+[11/48] Compiling NotchShotKit ShareLinkUploader.swift
+[12/52] Compiling NotchShotKit CaptureStack.swift
+[13/52] Compiling NotchShotKit VisualComparison.swift
+[14/52] Compiling NotchShotKit MeetingControls.swift
+[15/60] Compiling NotchShotKit AnnotationRenderer.swift
+[16/60] Compiling NotchShotKit AppCoordinator+Shelf.swift
+[17/63] Compiling NotchShotKit AppCoordinator+Automation.swift
+[18/63] Compiling NotchShotKit AppCoordinator+Capture.swift
+[19/63] Compiling NotchShotKit AppCoordinator+Clipboard.swift
+[20/63] Compiling NotchShotKit AppCoordinator+Island.swift
+[21/66] Compiling NotchShotKit AppCoordinator+Recording.swift
+[22/66] Compiling NotchShotKit AppCoordinator+System.swift
+[23/66] Compiling NotchShotKit AppCoordinator+Tabs.swift
+[24/66] Compiling NotchShotKit AppCoordinator.swift
+[25/80] Compiling NotchShotKit DictationIslandView.swift
+[26/80] Compiling NotchShotKit HistoryView.swift
+[27/80] Compiling NotchShotKit IslandActivityContainer.swift
+[28/80] Compiling NotchShotKit IslandCallViews.swift
+[29/94] Compiling NotchShotKit IslandCompactContent.swift
+[30/94] Compiling NotchShotKit IslandExpandedContent.swift
+[31/94] Compiling NotchShotKit IslandSharedElements.swift
+[32/94] Compiling NotchShotKit LockedNowPlayingCard.swift
+[33/108] Compiling NotchShotKit NotchRootView+Status.swift
+[34/108] Compiling NotchShotKit NotchRootView.swift
+[35/108] Compiling NotchShotKit NotchTabBar.swift
+[36/108] Compiling NotchShotKit SettingsView+Activities.swift
+[37/122] Compiling NotchShotKit ProductivityNotificationCenterView.swift
+[38/122] Compiling NotchShotKit ProductivitySuiteView.swift
+[39/122] Compiling NotchShotKit CapturePreviewView.swift
+[40/122] Compiling NotchShotKit ClipboardView.swift
+[41/136] Compiling NotchShotKit MenuBarPanelView.swift
+[42/136] Compiling NotchShotKit NotchRootView+CaptureMenu.swift
+[43/136] Compiling NotchShotKit NotchRootView+Context.swift
+[44/136] Compiling NotchShotKit NotchRootView+Media.swift
+[45/150] Compiling NotchShotKit SettingsView+Capture.swift
+[46/150] Compiling NotchShotKit SettingsView+Extras.swift
+[47/150] Compiling NotchShotKit SettingsView+Modules.swift
+[48/164] Compiling NotchShotKit AppDelegate.swift
+[49/164] Compiling NotchShotKit FloatingBasket.swift
+[50/164] Compiling NotchShotKit IslandGestureCoordinator.swift
+[51/164] Compiling NotchShotKit ExtrasToolViews.swift
+[52/178] Emitting module NotchShotKit
+[53/192] Compiling NotchShotKit ClaudeCodeSessionMonitor.swift
+/Users/vibex/Documents/NOTCH/Sources/NotchShotKit/Context/PrivacyIndicatorMonitor.swift:161:20: warning: 'init(cString:)' is deprecated: Use String(decoding: array, as: UTF8.self) instead, after truncating the null termination. [#DeprecatedDeclaration]
+159 |         var buffer = [CChar](repeating: 0, count: Int(MAXPATHLEN) * 4)
+160 |         guard proc_pidpath(pid, &buffer, UInt32(buffer.count)) > 0 else { return nil }
+161 |         let path = String(cString: buffer)
+    |                    `- warning: 'init(cString:)' is deprecated: Use String(decoding: array, as: UTF8.self) instead, after truncating the null termination. [#DeprecatedDeclaration]
+162 |         guard let range = path.range(of: ".app/") else { return nil }
+163 |         let bundleURL = URL(fileURLWithPath: String(path[..<range.lowerBound]) + ".app")
+
+[#DeprecatedDeclaration]: <https://docs.swift.org/compiler/documentation/diagnostics/deprecated-declaration>
+[54/192] Compiling NotchShotKit ClaudeConversationReader.swift
+/Users/vibex/Documents/NOTCH/Sources/NotchShotKit/Context/PrivacyIndicatorMonitor.swift:161:20: warning: 'init(cString:)' is deprecated: Use String(decoding: array, as: UTF8.self) instead, after truncating the null termination. [#DeprecatedDeclaration]
+159 |         var buffer = [CChar](repeating: 0, count: Int(MAXPATHLEN) * 4)
+160 |         guard proc_pidpath(pid, &buffer, UInt32(buffer.count)) > 0 else { return nil }
+161 |         let path = String(cString: buffer)
+    |                    `- warning: 'init(cString:)' is deprecated: Use String(decoding: array, as: UTF8.self) instead, after truncating the null termination. [#DeprecatedDeclaration]
+162 |         guard let range = path.range(of: ".app/") else { return nil }
+163 |         let bundleURL = URL(fileURLWithPath: String(path[..<range.lowerBound]) + ".app")
+
+[#DeprecatedDeclaration]: <https://docs.swift.org/compiler/documentation/diagnostics/deprecated-declaration>
+[55/192] Compiling NotchShotKit CodexHookConfigurationEditor.swift
+/Users/vibex/Documents/NOTCH/Sources/NotchShotKit/Context/PrivacyIndicatorMonitor.swift:161:20: warning: 'init(cString:)' is deprecated: Use String(decoding: array, as: UTF8.self) instead, after truncating the null termination. [#DeprecatedDeclaration]
+159 |         var buffer = [CChar](repeating: 0, count: Int(MAXPATHLEN) * 4)
+160 |         guard proc_pidpath(pid, &buffer, UInt32(buffer.count)) > 0 else { return nil }
+161 |         let path = String(cString: buffer)
+    |                    `- warning: 'init(cString:)' is deprecated: Use String(decoding: array, as: UTF8.self) instead, after truncating the null termination. [#DeprecatedDeclaration]
+162 |         guard let range = path.range(of: ".app/") else { return nil }
+163 |         let bundleURL = URL(fileURLWithPath: String(path[..<range.lowerBound]) + ".app")
+
+[#DeprecatedDeclaration]: <https://docs.swift.org/compiler/documentation/diagnostics/deprecated-declaration>
+[56/192] Compiling NotchShotKit ContextModels.swift
+/Users/vibex/Documents/NOTCH/Sources/NotchShotKit/Context/PrivacyIndicatorMonitor.swift:161:20: warning: 'init(cString:)' is deprecated: Use String(decoding: array, as: UTF8.self) instead, after truncating the null termination. [#DeprecatedDeclaration]
+159 |         var buffer = [CChar](repeating: 0, count: Int(MAXPATHLEN) * 4)
+160 |         guard proc_pidpath(pid, &buffer, UInt32(buffer.count)) > 0 else { return nil }
+161 |         let path = String(cString: buffer)
+    |                    `- warning: 'init(cString:)' is deprecated: Use String(decoding: array, as: UTF8.self) instead, after truncating the null termination. [#DeprecatedDeclaration]
+162 |         guard let range = path.range(of: ".app/") else { return nil }
+163 |         let bundleURL = URL(fileURLWithPath: String(path[..<range.lowerBound]) + ".app")
+
+[#DeprecatedDeclaration]: <https://docs.swift.org/compiler/documentation/diagnostics/deprecated-declaration>
+[57/192] Compiling NotchShotKit DocumentSummary.swift
+/Users/vibex/Documents/NOTCH/Sources/NotchShotKit/Context/PrivacyIndicatorMonitor.swift:161:20: warning: 'init(cString:)' is deprecated: Use String(decoding: array, as: UTF8.self) instead, after truncating the null termination. [#DeprecatedDeclaration]
+159 |         var buffer = [CChar](repeating: 0, count: Int(MAXPATHLEN) * 4)
+160 |         guard proc_pidpath(pid, &buffer, UInt32(buffer.count)) > 0 else { return nil }
+161 |         let path = String(cString: buffer)
+    |                    `- warning: 'init(cString:)' is deprecated: Use String(decoding: array, as: UTF8.self) instead, after truncating the null termination. [#DeprecatedDeclaration]
+162 |         guard let range = path.range(of: ".app/") else { return nil }
+163 |         let bundleURL = URL(fileURLWithPath: String(path[..<range.lowerBound]) + ".app")
+
+[#DeprecatedDeclaration]: <https://docs.swift.org/compiler/documentation/diagnostics/deprecated-declaration>
+[58/192] Compiling NotchShotKit NetworkContextPolicy.swift
+/Users/vibex/Documents/NOTCH/Sources/NotchShotKit/Context/PrivacyIndicatorMonitor.swift:161:20: warning: 'init(cString:)' is deprecated: Use String(decoding: array, as: UTF8.self) instead, after truncating the null termination. [#DeprecatedDeclaration]
+159 |         var buffer = [CChar](repeating: 0, count: Int(MAXPATHLEN) * 4)
+160 |         guard proc_pidpath(pid, &buffer, UInt32(buffer.count)) > 0 else { return nil }
+161 |         let path = String(cString: buffer)
+    |                    `- warning: 'init(cString:)' is deprecated: Use String(decoding: array, as: UTF8.self) instead, after truncating the null termination. [#DeprecatedDeclaration]
+162 |         guard let range = path.range(of: ".app/") else { return nil }
+163 |         let bundleURL = URL(fileURLWithPath: String(path[..<range.lowerBound]) + ".app")
+
+[#DeprecatedDeclaration]: <https://docs.swift.org/compiler/documentation/diagnostics/deprecated-declaration>
+[59/192] Compiling NotchShotKit NetworkReachabilityMonitor.swift
+/Users/vibex/Documents/NOTCH/Sources/NotchShotKit/Context/PrivacyIndicatorMonitor.swift:161:20: warning: 'init(cString:)' is deprecated: Use String(decoding: array, as: UTF8.self) instead, after truncating the null termination. [#DeprecatedDeclaration]
+159 |         var buffer = [CChar](repeating: 0, count: Int(MAXPATHLEN) * 4)
+160 |         guard proc_pidpath(pid, &buffer, UInt32(buffer.count)) > 0 else { return nil }
+161 |         let path = String(cString: buffer)
+    |                    `- warning: 'init(cString:)' is deprecated: Use String(decoding: array, as: UTF8.self) instead, after truncating the null termination. [#DeprecatedDeclaration]
+162 |         guard let range = path.range(of: ".app/") else { return nil }
+163 |         let bundleURL = URL(fileURLWithPath: String(path[..<range.lowerBound]) + ".app")
+
+[#DeprecatedDeclaration]: <https://docs.swift.org/compiler/documentation/diagnostics/deprecated-declaration>
+[60/192] Compiling NotchShotKit PowerModePresentation.swift
+/Users/vibex/Documents/NOTCH/Sources/NotchShotKit/Context/PrivacyIndicatorMonitor.swift:161:20: warning: 'init(cString:)' is deprecated: Use String(decoding: array, as: UTF8.self) instead, after truncating the null termination. [#DeprecatedDeclaration]
+159 |         var buffer = [CChar](repeating: 0, count: Int(MAXPATHLEN) * 4)
+160 |         guard proc_pidpath(pid, &buffer, UInt32(buffer.count)) > 0 else { return nil }
+161 |         let path = String(cString: buffer)
+    |                    `- warning: 'init(cString:)' is deprecated: Use String(decoding: array, as: UTF8.self) instead, after truncating the null termination. [#DeprecatedDeclaration]
+162 |         guard let range = path.range(of: ".app/") else { return nil }
+163 |         let bundleURL = URL(fileURLWithPath: String(path[..<range.lowerBound]) + ".app")
+
+[#DeprecatedDeclaration]: <https://docs.swift.org/compiler/documentation/diagnostics/deprecated-declaration>
+[61/192] Compiling NotchShotKit PrivacyIndicatorMonitor.swift
+/Users/vibex/Documents/NOTCH/Sources/NotchShotKit/Context/PrivacyIndicatorMonitor.swift:161:20: warning: 'init(cString:)' is deprecated: Use String(decoding: array, as: UTF8.self) instead, after truncating the null termination. [#DeprecatedDeclaration]
+159 |         var buffer = [CChar](repeating: 0, count: Int(MAXPATHLEN) * 4)
+160 |         guard proc_pidpath(pid, &buffer, UInt32(buffer.count)) > 0 else { return nil }
+161 |         let path = String(cString: buffer)
+    |                    `- warning: 'init(cString:)' is deprecated: Use String(decoding: array, as: UTF8.self) instead, after truncating the null termination. [#DeprecatedDeclaration]
+162 |         guard let range = path.range(of: ".app/") else { return nil }
+163 |         let bundleURL = URL(fileURLWithPath: String(path[..<range.lowerBound]) + ".app")
+
+[#DeprecatedDeclaration]: <https://docs.swift.org/compiler/documentation/diagnostics/deprecated-declaration>
+[62/192] Compiling NotchShotKit ProductivityCoordinators.swift
+/Users/vibex/Documents/NOTCH/Sources/NotchShotKit/Context/PrivacyIndicatorMonitor.swift:161:20: warning: 'init(cString:)' is deprecated: Use String(decoding: array, as: UTF8.self) instead, after truncating the null termination. [#DeprecatedDeclaration]
+159 |         var buffer = [CChar](repeating: 0, count: Int(MAXPATHLEN) * 4)
+160 |         guard proc_pidpath(pid, &buffer, UInt32(buffer.count)) > 0 else { return nil }
+161 |         let path = String(cString: buffer)
+    |                    `- warning: 'init(cString:)' is deprecated: Use String(decoding: array, as: UTF8.self) instead, after truncating the null termination. [#DeprecatedDeclaration]
+162 |         guard let range = path.range(of: ".app/") else { return nil }
+163 |         let bundleURL = URL(fileURLWithPath: String(path[..<range.lowerBound]) + ".app")
+
+[#DeprecatedDeclaration]: <https://docs.swift.org/compiler/documentation/diagnostics/deprecated-declaration>
+[63/192] Compiling NotchShotKit SystemContextMonitors.swift
+/Users/vibex/Documents/NOTCH/Sources/NotchShotKit/Context/PrivacyIndicatorMonitor.swift:161:20: warning: 'init(cString:)' is deprecated: Use String(decoding: array, as: UTF8.self) instead, after truncating the null termination. [#DeprecatedDeclaration]
+159 |         var buffer = [CChar](repeating: 0, count: Int(MAXPATHLEN) * 4)
+160 |         guard proc_pidpath(pid, &buffer, UInt32(buffer.count)) > 0 else { return nil }
+161 |         let path = String(cString: buffer)
+    |                    `- warning: 'init(cString:)' is deprecated: Use String(decoding: array, as: UTF8.self) instead, after truncating the null termination. [#DeprecatedDeclaration]
+162 |         guard let range = path.range(of: ".app/") else { return nil }
+163 |         let bundleURL = URL(fileURLWithPath: String(path[..<range.lowerBound]) + ".app")
+
+[#DeprecatedDeclaration]: <https://docs.swift.org/compiler/documentation/diagnostics/deprecated-declaration>
+[64/192] Compiling NotchShotKit CaptureAsset.swift
+/Users/vibex/Documents/NOTCH/Sources/NotchShotKit/Context/PrivacyIndicatorMonitor.swift:161:20: warning: 'init(cString:)' is deprecated: Use String(decoding: array, as: UTF8.self) instead, after truncating the null termination. [#DeprecatedDeclaration]
+159 |         var buffer = [CChar](repeating: 0, count: Int(MAXPATHLEN) * 4)
+160 |         guard proc_pidpath(pid, &buffer, UInt32(buffer.count)) > 0 else { return nil }
+161 |         let path = String(cString: buffer)
+    |                    `- warning: 'init(cString:)' is deprecated: Use String(decoding: array, as: UTF8.self) instead, after truncating the null termination. [#DeprecatedDeclaration]
+162 |         guard let range = path.range(of: ".app/") else { return nil }
+163 |         let bundleURL = URL(fileURLWithPath: String(path[..<range.lowerBound]) + ".app")
+
+[#DeprecatedDeclaration]: <https://docs.swift.org/compiler/documentation/diagnostics/deprecated-declaration>
+[65/192] Compiling NotchShotKit CaptureIntent.swift
+/Users/vibex/Documents/NOTCH/Sources/NotchShotKit/Context/PrivacyIndicatorMonitor.swift:161:20: warning: 'init(cString:)' is deprecated: Use String(decoding: array, as: UTF8.self) instead, after truncating the null termination. [#DeprecatedDeclaration]
+159 |         var buffer = [CChar](repeating: 0, count: Int(MAXPATHLEN) * 4)
+160 |         guard proc_pidpath(pid, &buffer, UInt32(buffer.count)) > 0 else { return nil }
+161 |         let path = String(cString: buffer)
+    |                    `- warning: 'init(cString:)' is deprecated: Use String(decoding: array, as: UTF8.self) instead, after truncating the null termination. [#DeprecatedDeclaration]
+162 |         guard let range = path.range(of: ".app/") else { return nil }
+163 |         let bundleURL = URL(fileURLWithPath: String(path[..<range.lowerBound]) + ".app")
+
+[#DeprecatedDeclaration]: <https://docs.swift.org/compiler/documentation/diagnostics/deprecated-declaration>
+[66/192] Compiling NotchShotKit ExtrasPreferences.swift
+/Users/vibex/Documents/NOTCH/Sources/NotchShotKit/Context/PrivacyIndicatorMonitor.swift:161:20: warning: 'init(cString:)' is deprecated: Use String(decoding: array, as: UTF8.self) instead, after truncating the null termination. [#DeprecatedDeclaration]
+159 |         var buffer = [CChar](repeating: 0, count: Int(MAXPATHLEN) * 4)
+160 |         guard proc_pidpath(pid, &buffer, UInt32(buffer.count)) > 0 else { return nil }
+161 |         let path = String(cString: buffer)
+    |                    `- warning: 'init(cString:)' is deprecated: Use String(decoding: array, as: UTF8.self) instead, after truncating the null termination. [#DeprecatedDeclaration]
+162 |         guard let range = path.range(of: ".app/") else { return nil }
+163 |         let bundleURL = URL(fileURLWithPath: String(path[..<range.lowerBound]) + ".app")
+
+[#DeprecatedDeclaration]: <https://docs.swift.org/compiler/documentation/diagnostics/deprecated-declaration>
+[67/206] Compiling NotchShotKit AnnotationDocumentController.swift
+[68/206] Compiling NotchShotKit AnnotationEditorView.swift
+[69/206] Compiling NotchShotKit AnnotationModel.swift
+[70/206] Compiling NotchShotKit AnnotationRenderWorker.swift
+[71/206] Compiling NotchShotKit BackgroundConfiguration.swift
+[72/206] Compiling NotchShotKit ForegroundRemovalService.swift
+[73/206] Compiling NotchShotKit NotchShotPackage.swift
+[74/206] Compiling NotchShotKit AppCoordinator+Extras.swift
+[75/206] Compiling NotchShotKit ShelfItem.swift
+[76/206] Compiling NotchShotKit VideoThumbnail.swift
+[77/206] Compiling NotchShotKit NotchShotAppIntents.swift
+[78/206] Compiling NotchShotKit NotchShotURLRouter.swift
+[79/206] Compiling NotchShotKit CaptureRecipe.swift
+[80/206] Compiling NotchShotKit CaptureService.swift
+[81/206] Compiling NotchShotKit CapturedImage.swift
+[82/206] Compiling NotchShotKit SafeImageFile.swift
+[83/206] Compiling NotchShotKit ScrollingCaptureSession.swift
+[84/206] Compiling NotchShotKit ScrollingStitcher.swift
+[85/206] Compiling NotchShotKit SelectionOverlay.swift
+[86/206] Compiling NotchShotKit ShareableContent.swift
+[87/206] Compiling NotchShotKit ClipboardEntry.swift
+[88/206] Compiling NotchShotKit ClipboardImport.swift
+[89/206] Compiling NotchShotKit ClipboardMonitor.swift
+[90/206] Compiling NotchShotKit ClipboardStore.swift
+[91/206] Compiling NotchShotKit AIActivityMonitor.swift
+[92/206] Compiling NotchShotKit AIHookInstaller.swift
+[93/206] Compiling NotchShotKit AgentIconCatalog.swift
+[94/206] Compiling NotchShotKit BluetoothAccessoryBattery.swift
+[95/206] Compiling NotchShotKit FileDropAction.swift
+[96/206] Compiling NotchShotKit IslandActivity.swift
+[97/206] Compiling NotchShotKit IslandActivityAdapters.swift
+[98/206] Compiling NotchShotKit IslandPresentation.swift
+[99/206] Compiling NotchShotKit IslandTransientEvent.swift
+[100/206] Compiling NotchShotKit IslandAnimationStyle.swift
+[101/206] Compiling NotchShotKit Logging.swift
+[102/206] Compiling NotchShotKit MediaSnapshot.swift
+[103/206] Compiling NotchShotKit NotchActivity.swift
+[104/206] Compiling NotchShotKit NotchTab.swift
+[105/206] Compiling NotchShotKit Preferences.swift
+[106/206] Compiling NotchShotKit RecordingConfiguration.swift
+[107/206] Compiling NotchShotKit SafeAssetFile.swift
+[108/206] Compiling NotchShotKit ScreenGeometry.swift
+[109/206] Compiling NotchShotKit ScreenLockSignal.swift
+[110/206] Compiling NotchShotKit DictationAudioCapture.swift
+[111/206] Compiling NotchShotKit DictationCoordinator.swift
+[112/206] Compiling NotchShotKit DictationModelCatalog.swift
+[113/206] Compiling NotchShotKit DictationState.swift
+[114/206] Compiling NotchShotKit LocalDictationEngine.swift
+[115/206] Compiling NotchShotKit TextInsertionService.swift
+[116/206] Compiling NotchShotKit RecordingExport.swift
+[117/206] Compiling NotchShotKit ExternalActivityRegistry.swift
+[118/206] Compiling NotchShotKit ExternalActivityStore.swift
+[119/206] Compiling NotchShotKit LiveActivitySocketServer.swift
+[120/206] Compiling NotchShotKit QuickLookPresenter.swift
+[121/206] Compiling NotchShotKit ShelfFileOperations.swift
+[122/206] Compiling NotchShotKit FloatingCaptureWindow.swift
+[123/206] Compiling NotchShotKit CaptureSpotlightIndexer.swift
+[124/206] Compiling NotchShotKit CaptureTranslationView.swift
+[125/206] Compiling NotchShotKit HistoryRepository.swift
+[126/206] Compiling NotchShotKit HotKeyController.swift
+[127/206] Compiling NotchShotKit SystemScreenshotHotKeys.swift
+[128/206] Compiling NotchShotKit ImageInspector.swift
+[129/206] Compiling NotchShotKit AppleEventsMediaSource.swift
+[130/206] Compiling NotchShotKit ArtworkAccentColor.swift
+[131/206] Compiling NotchShotKit LockedMediaNotification.swift
+[132/206] Compiling NotchShotKit LockedMediaSnapshotPolicy.swift
+[133/206] Compiling NotchShotKit LyricsService.swift
+[134/206] Compiling NotchShotKit MediaCoordinator.swift
+[135/206] Compiling NotchShotKit MediaPlaybackModeService.swift
+[136/206] Compiling NotchShotKit MediaQueueService.swift
+[137/206] Compiling NotchShotKit MediaRemoteAdapterSource.swift
+[138/206] Compiling NotchShotKit OCRService.swift
+[139/206] Compiling NotchShotKit StructuredOCR.swift
+[140/206] Compiling NotchShotKit PermissionCenter.swift
+[141/206] Compiling NotchShotKit PrivacyReview.swift
+[142/206] Compiling NotchShotKit AuthoredContentFile.swift
+[143/206] Compiling NotchShotKit LocalSendClient.swift
+[144/206] Compiling NotchShotKit LocalSendControlPolicy.swift
+[145/206] Compiling NotchShotKit ProductivityNotificationStore.swift
+[146/206] Compiling NotchShotKit ProductivitySuiteModels.swift
+[147/206] Compiling NotchShotKit SystemNotificationMirror.swift
+[148/206] Compiling NotchShotKit SystemNotificationSourceCatalog.swift
+[149/206] Compiling NotchShotKit TransferActivityStore.swift
+[150/206] Compiling NotchShotKit AudioMeter.swift
+[151/206] Compiling NotchShotKit AgentVibeNotchView.swift
+[152/206] Compiling NotchShotKit AudioAccessoryCard.swift
+[153/206] Compiling NotchShotKit BatteryAlertCard.swift
+[154/206] Compiling NotchShotKit ClaudeCodeActivityView.swift
+[155/206] Compiling NotchShotKit ClaudeVibeNotchView.swift
+[156/206] Compiling NotchShotKit DocumentSummaryView.swift
+[157/206] Compiling NotchShotKit IdleAnimationView.swift
+[158/206] Compiling NotchShotKit InlineErrorMessage.swift
+[159/206] Compiling NotchShotKit IslandCameraBand.swift
+[160/206] Compiling NotchShotKit IslandMotion.swift
+[161/206] Compiling NotchShotKit IslandSystemIndicators.swift
+[162/206] Compiling NotchShotKit LyricsPanel.swift
+[163/206] Compiling NotchShotKit MarqueeText.swift
+[164/206] Compiling NotchShotKit NetworkStatusCard.swift
+[165/206] Compiling NotchShotKit LiveVoiceNoteTranscription.swift
+[166/206] Compiling NotchShotKit OnDeviceTranscriptionService.swift
+[167/206] Compiling NotchShotKit RecordingInteractionEffects.swift
+[168/206] Compiling NotchShotKit RecordingPresentationOverlay.swift
+[169/206] Compiling NotchShotKit RecordingSegmentJoiner.swift
+[170/206] Compiling NotchShotKit RecordingService.swift
+[171/206] Compiling NotchShotKit VideoTrim.swift
+[172/206] Compiling NotchShotKit BugReportPackage.swift
+[173/206] Compiling NotchShotKit MacSharePresenter.swift
+[174/206] Compiling NotchShotKit FocusStatusMonitor.swift
+[175/206] Compiling NotchShotKit SystemLevelMonitor.swift
+[176/206] Compiling NotchShotKit SystemMediaKeyInterceptor.swift
+[177/206] Compiling NotchShotKit SystemOSDSuppressor.swift
+[178/206] Compiling NotchShotKit AgentActivityView.swift
+[179/206] Compiling NotchShotKit SettingsView+System.swift
+[180/206] Compiling NotchShotKit SettingsView.swift
+[181/206] Compiling NotchShotKit ShelfContent.swift
+[182/206] Compiling NotchShotKit NotchAlertRow.swift
+[183/206] Compiling NotchShotKit NotchRootView+FileDrop.swift
+[184/206] Compiling NotchShotKit NotchShape.swift
+[185/206] Compiling NotchShotKit OnboardingView.swift
+[186/206] Compiling NotchShotKit PlaybackIndicator.swift
+[187/206] Compiling NotchShotKit PowerStatusViews.swift
+[188/206] Compiling NotchShotKit SettingsView+Sidebar.swift
+[189/206] Compiling NotchShotKit SystemNotificationCard.swift
+[190/206] Compiling NotchShotKit SecureUpdateController.swift
+[191/206] Compiling NotchShotKit CaptureSwoop.swift
+[192/206] Compiling NotchShotKit LockScreenSpaceBridge.swift
+[193/206] Compiling NotchShotKit NotchMetrics.swift
+[194/206] Compiling NotchShotKit NotchPanel.swift
+[195/206] Compiling NotchShotKit NotchWindowController.swift
+[196/295] Compiling NotchShotDiagnostics main.swift
+[197/295] Emitting module NotchShotDiagnostics
+[197/295] Write Objects.LinkFileList
+[199/295] Compiling NotchShot BundledSelfTest.swift
+[200/295] Emitting module NotchShot
+[201/295] Compiling NotchShot main.swift
+[201/295] Write Objects.LinkFileList
+[203/295] Compiling NotchShotBench ExportHandlerBenchmarks.swift
+[204/295] Compiling NotchShotBench Baselines.swift
+[205/295] Compiling NotchShotBench IslandBenchmarks.swift
+[206/295] Compiling NotchShotBench Harness.swift
+[207/295] Compiling NotchShotBench Fixtures.swift
+[208/295] Emitting module NotchShotBench
+[209/295] Compiling NotchShotBench EditorBenchmarks.swift
+[210/295] Compiling NotchShotBench RecipeResponsivenessBenchmarks.swift
+[211/295] Compiling NotchShotBench main.swift
+[212/295] Compiling NotchShotBench AIActivityBenchmarks.swift
+[212/295] Write Objects.LinkFileList
+[213/295] Linking notchshot-diagnostics
+[214/295] Applying notchshot-diagnostics
+[215/295] Linking NotchShot
+[216/295] Applying NotchShot
+[217/295] Linking NotchShotBench
+[218/295] Applying NotchShotBench
+[220/295] Emitting module NotchShotKitTests
+[221/303] Compiling NotchShotKitTests IslandPresentationEngineTests.swift
+[222/303] Compiling NotchShotKitTests IslandSwipeReleaseVelocityTests.swift
+[223/303] Compiling NotchShotKitTests LiveActivityAPITests.swift
+[224/303] Compiling NotchShotKitTests LocalSendControlPolicyTests.swift
+[225/303] Compiling NotchShotKitTests LocalSendFileSnapshotTests.swift
+[226/303] Compiling NotchShotKitTests LocalSendHostPolicyTests.swift
+[227/303] Compiling NotchShotKitTests LocalSendRedirectRegressionTests.swift
+[228/303] Compiling NotchShotKitTests LockScreenRecoveryTests.swift
+[229/303] Compiling NotchShotKitTests LockedMediaNotificationDeliveryTests.swift
+[230/303] Compiling NotchShotKitTests LyricsTests.swift
+[231/303] Compiling NotchShotKitTests NotchAppVisibilityPolicyTests.swift
+[232/303] Compiling NotchShotKitTests NotchConsolidatedFixTests.swift
+[233/303] Compiling NotchShotKitTests NotchHoverZoneTests.swift
+[234/303] Compiling NotchShotKitTests NotchTabTests.swift
+[235/303] Compiling NotchShotKitTests PasteboardPromiseTests.swift
+[236/303] Compiling NotchShotKitTests PreferencesTests.swift
+[237/303] Compiling NotchShotKitTests AuditRegressionTests.swift
+[238/303] Compiling NotchShotKitTests AutomationExportInspectionTests.swift
+[239/303] Compiling NotchShotKitTests BatteryAlertPresentationTests.swift
+[240/303] Compiling NotchShotKitTests CaptureFreezeCutTests.swift
+[241/303] Compiling NotchShotKitTests CaptureSwoopTests.swift
+[242/303] Compiling NotchShotKitTests CaptureWorkflowFeatureTests.swift
+[243/303] Compiling NotchShotKitTests ClaudeCodeSessionTests.swift
+[244/303] Compiling NotchShotKitTests ClaudeHookSocketTests.swift
+[245/303] Compiling NotchShotKitTests ProductivityFeatureTests.swift
+[246/303] Compiling NotchShotKitTests ProductivityNotificationTests.swift
+[247/303] Compiling NotchShotKitTests ProductivitySuiteTests.swift
+[248/303] Compiling NotchShotKitTests ProjectRoundTripRegressionTests.swift
+[249/303] Compiling NotchShotKitTests RecordingAndHotKeySafetyTests.swift
+[250/303] Compiling NotchShotKitTests RecordingExportAndEffectsTests.swift
+[251/303] Compiling NotchShotKitTests RecordingPresentationLifecycleTests.swift
+[252/303] Compiling NotchShotKitTests RedactionExportTests.swift
+[253/303] Compiling NotchShotKitTests ClaudeVibeNotchTests.swift
+[254/303] Compiling NotchShotKitTests ClipboardClearRegressionTests.swift
+[255/303] Compiling NotchShotKitTests ClipboardImageOverlapMeasurements.swift
+[256/303] Compiling NotchShotKitTests ClipboardTests.swift
+[257/303] Compiling NotchShotKitTests CodexHookConfigurationTests.swift
+[258/303] Compiling NotchShotKitTests ContextFeatureTests.swift
+[259/303] Compiling NotchShotKitTests ContextTimingRegressionTests.swift
+[260/303] Compiling NotchShotKitTests DesignSystemTests.swift
+[261/303] Compiling NotchShotKitTests AIActivityHistoryTests.swift
+[262/303] Compiling NotchShotKitTests AIActivityRefreshCachingTests.swift
+[263/303] Compiling NotchShotKitTests AIReporterRedactionTests.swift
+[264/303] Compiling NotchShotKitTests ActivityHeartbeatTests.swift
+[265/303] Compiling NotchShotKitTests ActivityPriorityTests.swift
+[266/303] Compiling NotchShotKitTests AgentActivityPresentationTests.swift
+[267/303] Compiling NotchShotKitTests AnnotationEditorGeometryTests.swift
+[268/303] Compiling NotchShotKitTests AnnotationExportResultTests.swift
+[269/303] Compiling NotchShotKitTests AnnotationSerializationTests.swift
+[270/303] Compiling NotchShotKitTests SafeAssetFileTests.swift
+[271/303] Compiling NotchShotKitTests SafeImageFileTests.swift
+[272/303] Compiling NotchShotKitTests ScreenGeometryTests.swift
+[273/303] Compiling NotchShotKitTests SecureUpdateControllerTests.swift
+[274/303] Compiling NotchShotKitTests SelectionOverlayTests.swift
+[275/303] Compiling NotchShotKitTests ShelfFileOperationsTests.swift
+[276/303] Compiling NotchShotKitTests SpotlightCaptureIndexTests.swift
+[277/303] Compiling NotchShotKitTests StackAndHUDTests.swift
+[278/303] Compiling NotchShotKitTests StitchingTests.swift
+[279/303] Compiling NotchShotKitTests SymlinkEscapeTests.swift
+[280/303] Compiling NotchShotKitTests SystemIntegrationSafetyTests.swift
+[281/303] Compiling NotchShotKitTests TestSupport.swift
+[282/303] Compiling NotchShotKitTests TextInsertionRegressionTests.swift
+[283/303] Compiling NotchShotKitTests TransferActivityStoreTests.swift
+[284/303] Compiling NotchShotKitTests TransferPartialAcceptanceTests.swift
+[285/303] Compiling NotchShotKitTests WindowExclusionTests.swift
+[286/303] Compiling NotchShotKitTests HistoryCoalesceTests.swift
+[287/303] Compiling NotchShotKitTests HistoryOverflowTests.swift
+[288/303] Compiling NotchShotKitTests HistoryPersistenceTests.swift
+[289/303] Compiling NotchShotKitTests HistorySafetyRemediationTests.swift
+[290/303] Compiling NotchShotKitTests HistorySearchTests.swift
+[291/303] Compiling NotchShotKitTests IslandGestureAndBurstTests.swift
+[292/303] Compiling NotchShotKitTests IslandGlassPolicyTests.swift
+[293/303] Compiling NotchShotKitTests IslandIntegrationTests.swift
+[294/303] Compiling NotchShotKitTests DictationTests.swift
+[295/303] Compiling NotchShotKitTests ExportSafetyRegressionTests.swift
+[296/303] Compiling NotchShotKitTests ExternalActivityStoreTests.swift
+[297/303] Compiling NotchShotKitTests ExtrasFeatureTests.swift
+[298/303] Compiling NotchShotKitTests FileDropActionTests.swift
+[299/303] Compiling NotchShotKitTests ForegroundRemovalTests.swift
+[300/303] Compiling NotchShotKitTests HistoryAndMediaTests.swift
+[301/303] Compiling NotchShotKitTests HistoryCaptionRelocationTests.swift
+[301/303] Write Objects.LinkFileList
+[302/303] Linking NotchShotPackageTests
+Build complete! (137.48s)
+Test Suite 'Selected tests' started at 2026-10-11 17:56:12.054.
+Test Suite 'NotchShotPackageTests.xctest' started at 2026-10-11 17:56:12.069.
+Test Suite 'NotchShotPackageTests.xctest' passed at 2026-10-11 17:56:12.069.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.000) seconds
+Test Suite 'Selected tests' passed at 2026-10-11 17:56:12.070.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.016) seconds
+􀟈  Test run started.
+􀄵  Testing Library Version: 1902
+􀄵  Target Platform: arm64e-apple-macos14.0
+􀟈  Suite "Cached context timing regressions" started.
+􀟈  Test "Legacy completed timer and voice cards expire and restore the next persistent source" started.
+􀟈  Test "Replaced legacy expiry cannot overwrite a newer transient" started.
+􀟈  Test "Calendar replacement and stop invalidate already queued reevaluations" started.
+􀟈  Test "Cached events advance through imminent, start, and end without EventKit refresh" started.
+􀢄  Test "Legacy completed timer and voice cards expire and restore the next persistent source" recorded an issue at ContextTimingRegressionTests.swift:84:9: Expectation failed: (coordinator.snapshot?.kind → .voiceNote) == .timer
+􀢄  Test "Legacy completed timer and voice cards expire and restore the next persistent source" recorded an issue at ContextTimingRegressionTests.swift:86:9: Expectation failed: (coordinator.snapshot?.kind → .voiceNote) == .calendar
+􀢄  Test "Replaced legacy expiry cannot overwrite a newer transient" recorded an issue at ContextTimingRegressionTests.swift:101:9: Expectation failed: (coordinator.snapshot?.kind → .power) == .calendar
+􀢄  Test "Replaced legacy expiry cannot overwrite a newer transient" failed after 0.246 seconds with 1 issue.
+􁁛  Test "Calendar replacement and stop invalidate already queued reevaluations" passed after 0.246 seconds.
+􀢄  Test "Legacy completed timer and voice cards expire and restore the next persistent source" failed after 0.246 seconds with 2 issues.
+􀢄  Test "Cached events advance through imminent, start, and end without EventKit refresh" recorded an issue at ContextTimingRegressionTests.swift:40:9: Expectation failed: !((clock.scheduled → []).isEmpty → true → true)
+􀢄  Test "Cached events advance through imminent, start, and end without EventKit refresh" recorded an issue at ContextTimingRegressionTests.swift:42:9: Expectation failed: (latest?.metric → "11m") == "10m"
+􀢄  Test "Cached events advance through imminent, start, and end without EventKit refresh" recorded an issue at ContextTimingRegressionTests.swift:43:9: Expectation failed: (latest?.mayInterruptMedia → false) == true
+􀢄  Test "Cached events advance through imminent, start, and end without EventKit refresh" recorded an issue at ContextTimingRegressionTests.swift:45:9: Expectation failed: (latest?.metric → "11m") == "Now · 5m left"
+􀢄  Test "Cached events advance through imminent, start, and end without EventKit refresh" recorded an issue at ContextTimingRegressionTests.swift:48:9: Expectation failed: (latest?.metric → "11m") == "Now · 3m left"
+􀢄  Test "Cached events advance through imminent, start, and end without EventKit refresh" recorded an issue at ContextTimingRegressionTests.swift:50:9: Expectation failed: (latest?.title → "First") == "Second"
+􀢄  Test "Cached events advance through imminent, start, and end without EventKit refresh" recorded an issue at ContextTimingRegressionTests.swift:51:9: Expectation failed: (latest?.events.map(\.id) → ["First", "Second"]) == ["Second"]
+􀢄  Test "Cached events advance through imminent, start, and end without EventKit refresh" recorded an issue at ContextTimingRegressionTests.swift:53:9: Expectation failed: (latest → ContextSnapshot(kind: NotchShotKit.ContextKind.calendar, title: "First", subtitle: Optional("5m"), metric: Optional("11m"), accentHex: "#123456", presentation: NotchShotKit.ContextPresentation.compact, events: [NotchShotKit.CalendarEventSnapshot(id: "First", calendarIdentifier: "test", title: "First", startDate: 2029-07-09 16:11:00 +0000, endDate: 2029-07-09 16:16:00 +0000, isAllDay: false, colorHex: "#123456", eventURL: nil), NotchShotKit.CalendarEventSnapshot(id: "Second", calendarIdentifier: "test", title: "Second", startDate: 2029-07-09 16:18:00 +0000, endDate: 2029-07-09 16:23:00 +0000, isAllDay: false, colorHex: "#123456", eventURL: nil)], aiActivities: [], aiRecentActivities: [], focusTimer: nil, voiceNote: nil, accessory: nil, createdAt: 2026-10-11 14:56:12 +0000, expiresAt: nil, mayInterruptMedia: false)) == nil
+􀢄  Test "Cached events advance through imminent, start, and end without EventKit refresh" failed after 0.271 seconds with 8 issues.
+􀢄  Suite "Cached context timing regressions" failed after 0.271 seconds with 11 issues.
+􀢄  Test run with 4 tests in 1 suite failed after 0.271 seconds with 11 issues.

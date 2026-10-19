@@ -585,7 +585,7 @@ public final class HistoryRepository {
         var retainedForRetry: [HistoryEntry] = []
         for entry in dropped {
             do {
-                try Self.removeManagedArtifacts(for: entry, excluding: protectedPaths)
+                try removeManagedArtifacts(for: entry, excluding: protectedPaths)
                 if let thumbnailURL = entry.thumbnailURL {
                     try? FileManager.default.removeItem(at: thumbnailURL)
                 }
@@ -755,7 +755,7 @@ public final class HistoryRepository {
         } else {
             // Removing a row must also retire hidden unredacted working files
             // that no other row owns. User documents remain untouched.
-            try Self.removeManagedArtifacts(for: entry, excluding: protectedPaths)
+            try removeManagedArtifacts(for: entry, excluding: protectedPaths)
         }
         entries.remove(at: index)
         if let thumbnailURL = entry.thumbnailURL {
@@ -790,7 +790,7 @@ public final class HistoryRepository {
                 }
             } else {
                 do {
-                    try Self.removeManagedArtifacts(for: entry, excluding: [])
+                    try removeManagedArtifacts(for: entry, excluding: [])
                 } catch {
                     failed.append(entry.fileURL)
                     retained.append(entry)
@@ -937,7 +937,6 @@ public final class HistoryRepository {
             return 0
         }
         let fileManager = FileManager.default
-        let allowedExtensions = Set(["png", "jpg", "jpeg", "heic", "mp4", "srt"])
         var candidates: [URL] = []
         for directory in managedArtifactDirectories {
             guard let contents = try? fileManager.contentsOfDirectory(
@@ -951,7 +950,7 @@ public final class HistoryRepository {
                 )
                 return values?.isRegularFile == true
                     && values?.isSymbolicLink != true
-                    && allowedExtensions.contains(url.pathExtension.lowercased())
+                    && Self.untrackedSweepExtensions.contains(url.pathExtension.lowercased())
             })
         }
 
@@ -966,17 +965,13 @@ public final class HistoryRepository {
         // is deliberately preserved with an explanation. That asymmetry is the
         // Q1 product question; until it is decided, err on the side of not
         // silently deleting the user's finished take.
+        // Captions are siblings of recordings and are kept with them.
         let deletable = untracked.filter { url in
-            if url.pathExtension.lowercased() == "mp4",
-               !Preferences.shared.historyEnabled {
-                return false
-            }
-            if url.pathExtension.lowercased() == "srt",
-               !Preferences.shared.historyEnabled {
-                // Captions are siblings of recordings; keep them together.
-                return false
-            }
-            return true
+            Self.untrackedSweepRemoves(
+                url,
+                sweptDirectories: managedArtifactDirectories,
+                historyEnabled: Preferences.shared.historyEnabled
+            )
         }
         let preservedRecordings = untracked.count - deletable.count
         if preservedRecordings > 0 {
@@ -1086,7 +1081,7 @@ public final class HistoryRepository {
             // app's private Projects directory. Expiry must remove that hidden
             // unredacted copy without touching the user's primary document.
             do {
-                try Self.removeManagedArtifacts(for: entry, excluding: protectedPaths)
+                try removeManagedArtifacts(for: entry, excluding: protectedPaths)
                 if let thumbnailURL = entry.thumbnailURL {
                     try? FileManager.default.removeItem(at: thumbnailURL)
                 }
@@ -1118,27 +1113,116 @@ public final class HistoryRepository {
         return ownership == .managedTemporary
     }
 
-    private nonisolated static func removeManagedArtifacts(
+    /// Removes the row's hidden managed working files, never the user's own
+    /// documents.
+    private func removeManagedArtifacts(
         for entry: HistoryEntry,
         excluding protectedPaths: Set<String>
     ) throws {
+        try Self.removeManagedArtifacts(
+            for: entry,
+            excluding: protectedPaths,
+            sweptDirectories: managedArtifactDirectories,
+            // The same setting `removeUntrackedManagedFiles` consults.
+            historyEnabled: Preferences.shared.historyEnabled
+        )
+    }
+
+    /// - Parameters:
+    ///   - sweptDirectories: the folders `removeUntrackedManagedFiles` empties
+    ///     of files no row owns.
+    ///   - supportRoot: NotchShot's storage root; injected only by tests.
+    nonisolated static func removeManagedArtifacts(
+        for entry: HistoryEntry,
+        excluding protectedPaths: Set<String>,
+        sweptDirectories: [URL],
+        historyEnabled: Bool,
+        supportRoot: URL = AppPaths.support
+    ) throws {
         let fileManager = FileManager.default
-        let artifacts = managedArtifactRecords(for: entry).filter {
+        let artifacts = managedArtifactRecords(for: entry, supportRoot: supportRoot).filter {
             !protectedPaths.contains(canonicalPath($0.url))
                 && fileManager.fileExists(atPath: $0.url.path)
         }
         // As with Trash, verify the complete set before removing any member.
         for artifact in artifacts {
-            try SafeAssetFile.requireCurrentItem(
-                at: artifact.url,
-                expectedIdentity: artifact.identity,
-                maximumBytes: SafeAssetFile.maximumOwnedBytes,
-                allowsDirectory: artifact.allowsDirectory
+            try requireRemovableManagedArtifact(
+                artifact,
+                sweptWithoutOwner: !artifact.allowsDirectory && untrackedSweepRemoves(
+                    artifact.url,
+                    sweptDirectories: sweptDirectories,
+                    historyEnabled: historyEnabled
+                )
             )
         }
         for artifact in artifacts {
             try fileManager.removeItem(at: artifact.url)
         }
+    }
+
+    /// `SafeAssetFile.requireCurrentItem`, adjusted for files that live inside
+    /// NotchShot's own storage root. Everything that check refuses — a
+    /// symbolic link, an oversized file, a directory where a file belongs, a
+    /// different inode, size or modification time — is still refused. Two
+    /// things are not:
+    ///
+    /// - The device number. APFS assigns `st_dev` when a volume mounts, so
+    ///   every row recorded before a restart carried a stale one and failed
+    ///   here forever. `AppPaths.owns` has already pinned the path to the
+    ///   storage root's volume with no symbolic link on the way, so the inode
+    ///   still names the same item.
+    /// - A missing identity on a legacy row, but only for a file the
+    ///   untracked-file sweep would delete anyway once the row is gone. Holding
+    ///   such a row protects nothing and retries on every launch. Projects and
+    ///   anything else the sweep leaves alone still fail closed, so an
+    ///   unredacted project never loses its owner.
+    private nonisolated static func requireRemovableManagedArtifact(
+        _ artifact: ManagedArtifact,
+        sweptWithoutOwner: Bool
+    ) throws {
+        guard let current = SafeAssetFile.fileSystemIdentity(
+            at: artifact.url,
+            maximumBytes: SafeAssetFile.maximumOwnedBytes,
+            allowsDirectory: artifact.allowsDirectory
+        ) else {
+            throw NotchShotError.exportFailed(
+                "That file is no longer a file NotchShot can safely remove. It was left untouched."
+            )
+        }
+        guard let expected = artifact.identity else {
+            guard sweptWithoutOwner else {
+                throw NotchShotError.exportFailed(
+                    "NotchShot cannot verify this older file safely. Remove only its History entry, or add the current file again."
+                )
+            }
+            return
+        }
+        var remounted = expected
+        remounted.device = current.device
+        guard current == remounted else {
+            throw NotchShotError.exportFailed(
+                "That file changed after NotchShot recorded it. The replacement was left untouched."
+            )
+        }
+    }
+
+    nonisolated static let untrackedSweepExtensions: Set<String> = [
+        "png", "jpg", "jpeg", "heic", "mp4", "srt",
+    ]
+
+    /// True when `removeUntrackedManagedFiles` would delete `url` if no row
+    /// referenced it. The caller still has to confirm it is a regular file.
+    nonisolated static func untrackedSweepRemoves(
+        _ url: URL,
+        sweptDirectories: [URL],
+        historyEnabled: Bool
+    ) -> Bool {
+        let fileExtension = url.pathExtension.lowercased()
+        guard untrackedSweepExtensions.contains(fileExtension) else { return false }
+        // Recordings and their captions survive the sweep while History is off.
+        if !historyEnabled, fileExtension == "mp4" || fileExtension == "srt" { return false }
+        let folder = url.standardizedFileURL.deletingLastPathComponent().path
+        return sweptDirectories.contains { $0.standardizedFileURL.path == folder }
     }
 
     private struct ManagedArtifact: Sendable {
@@ -1148,11 +1232,12 @@ public final class HistoryRepository {
     }
 
     private nonisolated static func managedArtifactRecords(
-        for entry: HistoryEntry
+        for entry: HistoryEntry,
+        supportRoot: URL = AppPaths.support
     ) -> [ManagedArtifact] {
         var artifacts: [ManagedArtifact] = []
         if let captionURL = validatedCaptionURL(path: entry.captionPath, for: entry.fileURL),
-           AppPaths.owns(captionURL) {
+           AppPaths.owns(captionURL, within: supportRoot) {
             artifacts.append(ManagedArtifact(
                 url: captionURL,
                 identity: entry.captionFileIdentity,
@@ -1161,7 +1246,7 @@ public final class HistoryRepository {
         }
         if let projectPath = entry.projectPath {
             let projectURL = URL(fileURLWithPath: projectPath)
-            if AppPaths.owns(projectURL) {
+            if AppPaths.owns(projectURL, within: supportRoot) {
                 artifacts.append(ManagedArtifact(
                     url: projectURL,
                     identity: entry.projectFileIdentity,
@@ -1169,7 +1254,7 @@ public final class HistoryRepository {
                 ))
             }
         }
-        if AppPaths.owns(entry.fileURL) {
+        if AppPaths.owns(entry.fileURL, within: supportRoot) {
             artifacts.append(ManagedArtifact(
                 url: entry.fileURL,
                 identity: entry.externalFileIdentity,
@@ -1230,12 +1315,7 @@ public final class HistoryRepository {
                       !retainedPaths.contains(canonicalPath(url)),
                       fileManager.fileExists(atPath: url.path) else { continue }
                 do {
-                    try SafeAssetFile.requireCurrentItem(
-                        at: url,
-                        expectedIdentity: sidecar.identity,
-                        maximumBytes: SafeAssetFile.maximumOwnedBytes,
-                        allowsDirectory: sidecar.allowsDirectory
-                    )
+                    try requireRemovableManagedArtifact(sidecar, sweptWithoutOwner: false)
                     try fileManager.removeItem(at: url)
                 } catch {
                     Log.history.error(
@@ -1415,7 +1495,7 @@ public final class HistoryRepository {
             let protectedPaths = Self.referencedPaths(in: entries)
             for entry in result.droppedEntries {
                 do {
-                    try Self.removeManagedArtifacts(for: entry, excluding: protectedPaths)
+                    try removeManagedArtifacts(for: entry, excluding: protectedPaths)
                     if let thumbnailURL = entry.thumbnailURL {
                         try? FileManager.default.removeItem(at: thumbnailURL)
                     }

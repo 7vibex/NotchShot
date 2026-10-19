@@ -249,10 +249,6 @@ public final class AIHookInstaller {
         try manager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
     }
 
-    private static func containsNotchShotCommand(_ entries: [[String: Any]]) -> Bool {
-        entries.contains { notchShotCommand($0) != nil }
-    }
-
     /// The NotchShot reporter command inside one hook entry, if present at any
     /// nesting depth.
     private static func notchShotCommand(_ entry: [String: Any]) -> String? {
@@ -269,5 +265,122 @@ public final class AIHookInstaller {
 
     private static func shellQuoted(_ value: String) -> String {
         "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"
+    }
+}
+
+// MARK: - Claude status line
+
+public enum ClaudeStatusLineInstallResult: Equatable, Sendable {
+    case alreadyInstalled
+    case installed
+    /// The user's own status line now runs through NotchShot's, which prints
+    /// its output unchanged.
+    case wrapped
+
+    public var message: String {
+        switch self {
+        case .alreadyInstalled: "Claude usage is already reaching the notch."
+        case .installed: "Claude usage now reaches the notch. It appears after Claude's next reply."
+        case .wrapped: "Claude usage now reaches the notch. Your own status line still shows as before."
+        }
+    }
+}
+
+extension AIHookInstaller {
+    /// Points Claude Code's `statusLine` at `notchshot-ai statusline`, which
+    /// records plan limits and context for the usage rings. An existing
+    /// command status line is kept by passing it to `--then`; any other
+    /// unrelated setting is left untouched and the file is backed up first.
+    public func installClaudeStatusLine(reporterURL: URL) throws -> ClaudeStatusLineInstallResult {
+        let reporterValues = try? reporterURL.resourceValues(forKeys: [.isRegularFileKey, .isExecutableKey])
+        guard reporterValues?.isRegularFile == true, reporterValues?.isExecutable == true else {
+            throw AIHookInstallerError.invalidReporter
+        }
+        let destination = configurationURL(for: .claude)
+        let manager = FileManager.default
+        let parent = destination.deletingLastPathComponent()
+        try manager.createDirectory(at: parent, withIntermediateDirectories: true)
+
+        var root: [String: Any] = [:]
+        if manager.fileExists(atPath: destination.path) {
+            let values = try destination.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey])
+            guard values.isRegularFile == true, values.isSymbolicLink != true else {
+                throw AIHookInstallerError.unsafeConfiguration
+            }
+            guard (values.fileSize ?? Self.statusLineMaximumBytes + 1) <= Self.statusLineMaximumBytes else {
+                throw AIHookInstallerError.oversizedConfiguration
+            }
+            let data = try Data(contentsOf: destination)
+            guard let decoded = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                throw AIHookInstallerError.malformedConfiguration
+            }
+            root = decoded
+        }
+
+        let ours = Self.shellQuoted(reporterURL.path) + " statusline"
+        let result: ClaudeStatusLineInstallResult
+        var statusLine: [String: Any] = ["type": "command"]
+        if let existing = root["statusLine"] {
+            guard let object = existing as? [String: Any] else { throw AIHookInstallerError.malformedConfiguration }
+            let command = object["command"] as? String ?? ""
+            if command.contains("notchshot-ai") {
+                if command.hasPrefix(ours) { return .alreadyInstalled }
+                // A moved install: keep whatever it was chaining to.
+                let chained = Self.chainedCommand(in: command)
+                statusLine = object
+                statusLine["command"] = chained.map { ours + " --then " + Self.shellQuoted($0) } ?? ours
+                result = chained == nil ? .installed : .wrapped
+            } else if object["type"] as? String == "command", !command.isEmpty {
+                statusLine = object
+                statusLine["command"] = ours + " --then " + Self.shellQuoted(command)
+                result = .wrapped
+            } else {
+                throw AIHookInstallerError.malformedConfiguration
+            }
+        } else {
+            statusLine["command"] = ours
+            result = .installed
+        }
+        root["statusLine"] = statusLine
+
+        if manager.fileExists(atPath: destination.path) {
+            let stamp = ISO8601DateFormatter().string(from: Date()).replacingOccurrences(of: ":", with: "-")
+            let backup = destination.appendingPathExtension("notchshot-backup-\(stamp)-\(UUID().uuidString.prefix(8))")
+            try manager.copyItem(at: destination, to: backup)
+        }
+        let data = try JSONSerialization.data(withJSONObject: root, options: [.prettyPrinted, .sortedKeys])
+        let temporary = parent.appendingPathComponent(".notchshot-statusline-\(UUID().uuidString).tmp")
+        try data.write(to: temporary, options: .atomic)
+        try manager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: temporary.path)
+        if manager.fileExists(atPath: destination.path) {
+            _ = try manager.replaceItemAt(destination, withItemAt: temporary)
+        } else {
+            try manager.moveItem(at: temporary, to: destination)
+        }
+        try manager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: destination.path)
+        return result
+    }
+
+    /// Whether Claude's settings already route the status line through
+    /// NotchShot.
+    public func hasClaudeStatusLine() -> Bool {
+        let destination = configurationURL(for: .claude)
+        guard let data = try? Data(contentsOf: destination),
+              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let statusLine = root["statusLine"] as? [String: Any],
+              let command = statusLine["command"] as? String
+        else { return false }
+        return command.contains("notchshot-ai") && command.contains("statusline")
+    }
+
+    private static let statusLineMaximumBytes = 1_048_576
+
+    /// The single-quoted command after `--then`, unescaped.
+    static func chainedCommand(in command: String) -> String? {
+        guard let range = command.range(of: " --then '") else { return nil }
+        var quoted = String(command[range.upperBound...])
+        guard quoted.hasSuffix("'") else { return nil }
+        quoted.removeLast()
+        return quoted.replacingOccurrences(of: "'\\''", with: "'")
     }
 }

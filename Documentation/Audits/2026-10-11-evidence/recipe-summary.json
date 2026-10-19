@@ -1,0 +1,182 @@
+{
+  "standard": {
+    "baseline": {
+      "n": 27,
+      "mainActorMedianMS": 0.025291,
+      "processingMedianMS": 0.010208,
+      "mainActorP95MS": 0.048459,
+      "runMedians": {
+        "1": {
+          "mainActorMedianMS": 0.031292,
+          "processingMedianMS": 0.012542
+        },
+        "2": {
+          "mainActorMedianMS": 0.025291,
+          "processingMedianMS": 0.010208
+        },
+        "3": {
+          "mainActorMedianMS": 0.008334,
+          "processingMedianMS": 0.002958
+        }
+      }
+    },
+    "worker": {
+      "n": 27,
+      "mainActorMedianMS": 0.017,
+      "processingMedianMS": 0.02375,
+      "mainActorP95MS": 0.024167,
+      "runMedians": {
+        "1": {
+          "mainActorMedianMS": 0.019916,
+          "processingMedianMS": 0.033125
+        },
+        "2": {
+          "mainActorMedianMS": 0.015917,
+          "processingMedianMS": 0.016875
+        },
+        "3": {
+          "mainActorMedianMS": 0.016416,
+          "processingMedianMS": 0.021917
+        }
+      }
+    },
+    "mainActorDelayReductionPercent": 32.78241271598592,
+    "processingGuardrailPassed": true,
+    "mainActorGuardrailPassed": true
+  },
+  "github-issue": {
+    "baseline": {
+      "n": 27,
+      "mainActorMedianMS": 139.107583,
+      "processingMedianMS": 139.088666,
+      "mainActorP95MS": 185.371875,
+      "runMedians": {
+        "1": {
+          "mainActorMedianMS": 139.107583,
+          "processingMedianMS": 139.088666
+        },
+        "2": {
+          "mainActorMedianMS": 178.307208,
+          "processingMedianMS": 178.287083
+        },
+        "3": {
+          "mainActorMedianMS": 85.208458,
+          "processingMedianMS": 85.194958
+        }
+      }
+    },
+    "worker": {
+      "n": 27,
+      "mainActorMedianMS": 0.02475,
+      "processingMedianMS": 115.986542,
+      "mainActorP95MS": 0.03875,
+      "runMedians": {
+        "1": {
+          "mainActorMedianMS": 0.030083,
+          "processingMedianMS": 169.515542
+        },
+        "2": {
+          "mainActorMedianMS": 0.0245,
+          "processingMedianMS": 114.652791
+        },
+        "3": {
+          "mainActorMedianMS": 0.024083,
+          "processingMedianMS": 112.48775
+        }
+      }
+    },
+    "mainActorDelayReductionPercent": 99.98220801521653,
+    "processingGuardrailPassed": true,
+    "mainActorGuardrailPassed": true
+  },
+  "app-store": {
+    "baseline": {
+      "n": 27,
+      "mainActorMedianMS": 207.28025,
+      "processingMedianMS": 207.262125,
+      "mainActorP95MS": 257.728791,
+      "runMedians": {
+        "1": {
+          "mainActorMedianMS": 234.467959,
+          "processingMedianMS": 234.445875
+        },
+        "2": {
+          "mainActorMedianMS": 207.28025,
+          "processingMedianMS": 207.262125
+        },
+        "3": {
+          "mainActorMedianMS": 127.515667,
+          "processingMedianMS": 127.499792
+        }
+      }
+    },
+    "worker": {
+      "n": 27,
+      "mainActorMedianMS": 0.023208,
+      "processingMedianMS": 159.105375,
+      "mainActorP95MS": 0.029583,
+      "runMedians": {
+        "1": {
+          "mainActorMedianMS": 0.028166,
+          "processingMedianMS": 241.626667
+        },
+        "2": {
+          "mainActorMedianMS": 0.0205,
+          "processingMedianMS": 132.721833
+        },
+        "3": {
+          "mainActorMedianMS": 0.02175,
+          "processingMedianMS": 159.105375
+        }
+      }
+    },
+    "mainActorDelayReductionPercent": 99.9888035642566,
+    "processingGuardrailPassed": true,
+    "mainActorGuardrailPassed": true
+  },
+  "custom-bounded": {
+    "baseline": {
+      "n": 27,
+      "mainActorMedianMS": 53.601792,
+      "processingMedianMS": 53.587,
+      "mainActorP95MS": 116.801208,
+      "runMedians": {
+        "1": {
+          "mainActorMedianMS": 103.839375,
+          "processingMedianMS": 103.722334
+        },
+        "2": {
+          "mainActorMedianMS": 53.601792,
+          "processingMedianMS": 53.587
+        },
+        "3": {
+          "mainActorMedianMS": 40.059041,
+          "processingMedianMS": 40.047291
+        }
+      }
+    },
+    "worker": {
+      "n": 27,
+      "mainActorMedianMS": 0.023791,
+      "processingMedianMS": 60.483916,
+      "mainActorP95MS": 0.030125,
+      "runMedians": {
+        "1": {
+          "mainActorMedianMS": 0.025542,
+          "processingMedianMS": 89.316084
+        },
+        "2": {
+          "mainActorMedianMS": 0.021208,
+          "processingMedianMS": 41.98375
+        },
+        "3": {
+          "mainActorMedianMS": 0.023791,
+          "processingMedianMS": 60.483916
+        }
+      }
+    },
+    "mainActorDelayReductionPercent": 99.95561528987687,
+    "processingGuardrailPassed": true,
+    "mainActorGuardrailPassed": true
+  }
+}

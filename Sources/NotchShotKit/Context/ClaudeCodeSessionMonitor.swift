@@ -49,6 +49,19 @@ public struct ClaudeCodePermissionRequest: Codable, Equatable, Identifiable, Sen
     }
 }
 
+/// An `AskUserQuestion` the hook is holding open for the island to answer.
+public struct ClaudeCodeQuestion: Equatable, Identifiable, Sendable {
+    public var id: String
+    public var form: AgentQuestionForm
+    public var receivedAt: Date
+
+    public init(id: String = UUID().uuidString, form: AgentQuestionForm, receivedAt: Date = Date()) {
+        self.id = id
+        self.form = form
+        self.receivedAt = receivedAt
+    }
+}
+
 public struct ClaudeCodeSession: Codable, Equatable, Identifiable, Sendable {
     public var id: String
     public var cwd: String
@@ -59,8 +72,14 @@ public struct ClaudeCodeSession: Codable, Equatable, Identifiable, Sendable {
     public var detail: String?
     public var lastTool: String?
     public var permission: ClaudeCodePermissionRequest?
+    /// Not persisted: a held question dies with the hook process holding it.
+    public var question: ClaudeCodeQuestion?
     public var startedAt: Date
     public var updatedAt: Date
+
+    private enum CodingKeys: String, CodingKey {
+        case id, cwd, pid, tty, phase, title, detail, lastTool, permission, startedAt, updatedAt
+    }
 
     public init(
         id: String,
@@ -149,6 +168,36 @@ enum ClaudeCodeHookPolicy {
         return .working
     }
 
+    /// Reads the redacted questions the bundled hook forwards for
+    /// `AskUserQuestion`. Options answer by index, which the hook maps back to
+    /// Claude's own labels.
+    static func questionForm(from value: Any?) -> AgentQuestionForm? {
+        guard let questions = value as? [[String: Any]], !questions.isEmpty else { return nil }
+        let parsed = questions.prefix(ClaudeQuestionBridge.maximumQuestions).compactMap { question -> AgentQuestion? in
+            guard let prompt = bounded(question["question"] as? String, maximum: 240) else { return nil }
+            let options = (question["options"] as? [[String: Any]] ?? [])
+                .prefix(ClaudeQuestionBridge.maximumOptions)
+                .enumerated()
+                .compactMap { index, option -> AgentQuestionOption? in
+                    guard let label = bounded(option["label"] as? String, maximum: 80) else { return nil }
+                    return AgentQuestionOption(
+                        value: String(index),
+                        label: label,
+                        hint: bounded(option["description"] as? String, maximum: 160)
+                    )
+                }
+            guard !options.isEmpty else { return nil }
+            return AgentQuestion(
+                header: bounded(question["header"] as? String, maximum: 40) ?? "",
+                prompt: prompt,
+                kind: question["multiSelect"] as? Bool == true ? .multiSelect : .select,
+                options: options
+            )
+        }
+        guard parsed.count == min(questions.count, ClaudeQuestionBridge.maximumQuestions) else { return nil }
+        return AgentQuestionForm(title: parsed[0].prompt, questions: parsed, encoding: .claudeIndexed)
+    }
+
     static func normalized(_ value: String) -> String {
         value.lowercased().filter(\.isLetter)
     }
@@ -230,8 +279,19 @@ private final class ClaudeCodeHookServer: @unchecked Sendable {
     }
 
     func respond(sessionID: String, decision: String, reason: String?) {
+        var response: [String: Any] = ["decision": decision]
+        if let reason {
+            response["reason"] = String(reason.prefix(240))
+        }
+        respond(sessionID: sessionID, object: response)
+    }
+
+    /// Writes one JSON line to the hook process waiting for this session and
+    /// lets it go.
+    func respond(sessionID: String, object: [String: Any]) {
+        guard let data = try? JSONSerialization.data(withJSONObject: object) else { return }
         queue.async { [weak self] in
-            self?.respondOnQueue(sessionID: sessionID, decision: decision, reason: reason)
+            self?.respondOnQueue(sessionID: sessionID, line: data)
         }
     }
 
@@ -385,6 +445,7 @@ private final class ClaudeCodeHookServer: @unchecked Sendable {
         let normalizedEvent = ClaudeCodeHookPolicy.normalized(event)
         let expectsResponse = normalizedEvent.contains("permissionrequest")
             || ClaudeCodeHookPolicy.normalized(status).contains("waitingforapproval")
+            || status == ClaudeQuestionBridge.waitingStatus
 
         guard expectsResponse, !sessionID.isEmpty else {
             closeClient(client.fileDescriptor)
@@ -397,14 +458,9 @@ private final class ClaudeCodeHookServer: @unchecked Sendable {
         pendingBySession[sessionID] = client.fileDescriptor
     }
 
-    private func respondOnQueue(sessionID: String, decision: String, reason: String?) {
+    private func respondOnQueue(sessionID: String, line data: Data) {
         guard let fileDescriptor = pendingBySession.removeValue(forKey: sessionID) else { return }
-        var response: [String: Any] = ["decision": decision]
-        if let reason {
-            response["reason"] = String(reason.prefix(240))
-        }
-        guard let data = try? JSONSerialization.data(withJSONObject: response),
-              writeAll(data + Data([10]), to: fileDescriptor) else {
+        guard writeAll(data + Data([10]), to: fileDescriptor) else {
             closeClient(fileDescriptor)
             return
         }
@@ -523,9 +579,12 @@ public final class ClaudeCodeSessionMonitor {
         // waiting on. Removing the row without answering it would strand the
         // request until the reporter's timeout and hide Allow/Deny, so dismiss
         // resolves it as a denial first.
-        if let index = sessions.firstIndex(where: { $0.id == sessionID }),
-           sessions[index].permission != nil {
-            server.respond(sessionID: sessionID, decision: "deny", reason: "Dismissed")
+        if let index = sessions.firstIndex(where: { $0.id == sessionID }) {
+            if sessions[index].permission != nil {
+                server.respond(sessionID: sessionID, decision: "deny", reason: "Dismissed")
+            } else if sessions[index].question != nil {
+                server.respond(sessionID: sessionID, object: ["decision": "defer"])
+            }
         }
         let previousCount = sessions.count
         sessions.removeAll { $0.id == sessionID }
@@ -556,6 +615,40 @@ public final class ClaudeCodeSessionMonitor {
         sessions[index].permission = nil
         sessions[index].phase = .failed
         sessions[index].detail = boundedReason ?? "Permission denied"
+        sessions[index].updatedAt = Date()
+        publish()
+    }
+
+    /// Answers a held `AskUserQuestion`. Claude continues as if the user had
+    /// picked the same options in its terminal picker.
+    public func answer(
+        sessionID: String,
+        questionID: String,
+        form: AgentQuestionForm,
+        answers: AgentQuestionAnswers
+    ) {
+        guard let index = sessions.firstIndex(where: { $0.id == sessionID }),
+              sessions[index].question?.id == questionID,
+              let encoded = AgentAnswerEncoder.encode(answers, for: form)
+        else { return }
+        server.respond(sessionID: sessionID, object: [
+            "decision": "answer",
+            "answers": AgentAnswerEncoder.jsonObject(encoded),
+        ])
+        sessions[index].question = nil
+        sessions[index].phase = .working
+        sessions[index].detail = "Answered in NotchShot"
+        sessions[index].updatedAt = Date()
+        publish()
+    }
+
+    /// Lets the held question go to Claude's own terminal picker instead.
+    public func answerInTerminal(sessionID: String) {
+        guard let index = sessions.firstIndex(where: { $0.id == sessionID }),
+              sessions[index].question != nil else { return }
+        server.respond(sessionID: sessionID, object: ["decision": "defer"])
+        sessions[index].question = nil
+        sessions[index].detail = "Answer in the terminal"
         sessions[index].updatedAt = Date()
         publish()
     }
@@ -614,6 +707,19 @@ public final class ClaudeCodeSessionMonitor {
         session.updatedAt = now
 
         let normalizedEvent = ClaudeCodeHookPolicy.normalized(event)
+        if let form = ClaudeCodeHookPolicy.questionForm(from: object["question_form"]),
+           status == ClaudeQuestionBridge.waitingStatus {
+            session.question = ClaudeCodeQuestion(form: form, receivedAt: now)
+            session.phase = .waiting
+            session.detail = "Asked a question"
+        } else if normalizedEvent.contains("posttooluse")
+                    || normalizedEvent.contains("userpromptsubmit")
+                    || normalizedEvent == "stop"
+                    || normalizedEvent.contains("sessionend")
+                    || normalizedEvent.contains("pretooluse") {
+            // The hook that held the question has returned or moved on.
+            session.question = nil
+        }
         if normalizedEvent.contains("permissionrequest") {
             session.permission = ClaudeCodePermissionRequest(
                 toolName: tool ?? "Claude Code tool",
@@ -635,8 +741,10 @@ public final class ClaudeCodeSessionMonitor {
             if lhs.phase.isTerminal != rhs.phase.isTerminal {
                 return !lhs.phase.isTerminal
             }
-            if (lhs.permission != nil) != (rhs.permission != nil) {
-                return lhs.permission != nil
+            let lhsAsks = lhs.permission != nil || lhs.question != nil
+            let rhsAsks = rhs.permission != nil || rhs.question != nil
+            if lhsAsks != rhsAsks {
+                return lhsAsks
             }
             return lhs.updatedAt > rhs.updatedAt
         }
@@ -644,6 +752,19 @@ public final class ClaudeCodeSessionMonitor {
     }
 
     private func pruneExpiredSessions(now: Date = Date()) {
+        // The hook gives up on a question after its timeout and Claude falls
+        // back to the terminal picker; the card must not outlive it.
+        let questionLifetime = TimeInterval(ClaudeQuestionBridge.answerTimeoutMilliseconds) / 1_000
+        var expiredQuestion = false
+        for index in sessions.indices {
+            if let question = sessions[index].question,
+               now.timeIntervalSince(question.receivedAt) >= questionLifetime {
+                sessions[index].question = nil
+                sessions[index].detail = "Answer in the terminal"
+                expiredQuestion = true
+            }
+        }
+        if expiredQuestion { publish() }
         let oldCount = sessions.count
         sessions.removeAll { session in
             let lifetime = session.phase.isTerminal

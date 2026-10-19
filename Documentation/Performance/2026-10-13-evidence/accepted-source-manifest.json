@@ -1,0 +1,7 @@
+{
+  "Sources/NotchShotKit/Annotation/AnnotationModel.swift": "61041f9f621eafb8106430c3751fa87028eab9630ae0ff6cde6b6e7844b4e111",
+  "Sources/NotchShotKit/Capture/ScrollingStitcher.swift": "9c3967d63f0fde51eaa38b5fe734f6b31f5e6efbf5d6dfd4ae0b7189d2ae26c5",
+  "Sources/NotchShotKit/Clipboard/ClipboardEntry.swift": "a8b3cea6a3c0cf70091eba267bf742d460fa1e620b034d00c9b49ff481209d02",
+  "Sources/NotchShotKit/Clipboard/ClipboardStore.swift": "af5f6dd65d0248ff56f8537566d2f52f0ee9e0dbdbb6631a686079eabc5110af",
+  "Sources/NotchShotKit/Context/ClaudeConversationReader.swift": "6c76120da4ac116227207d8994c0be9ce91ce1aa00a273d5cf0fd3bbf71ef1df"
+}

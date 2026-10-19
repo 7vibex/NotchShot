@@ -180,24 +180,22 @@ enum NotchShotMotion {
         isActive && !reduceMotion ? activeOffset : 0
     }
 
+    // The curves themselves live in `NotchMotion`, so windows and the island
+    // share one family and follow the animation style setting.
     static func interaction(reduceMotion: Bool) -> Animation? {
-        reduceMotion ? nil : .spring(duration: 0.20, bounce: 0.20)
+        NotchMotion.hover(reduceMotion: reduceMotion)
     }
 
     static func press(reduceMotion: Bool) -> Animation? {
-        reduceMotion ? nil : .spring(duration: 0.12, bounce: 0.10)
+        NotchMotion.press(reduceMotion: reduceMotion)
     }
 
     static func selection(reduceMotion: Bool) -> Animation? {
-        reduceMotion
-            ? .easeOut(duration: 0.12)
-            : .spring(duration: 0.24, bounce: 0.16)
+        NotchMotion.selection(reduceMotion: reduceMotion)
     }
 
     static func content(reduceMotion: Bool) -> Animation {
-        reduceMotion
-            ? .easeOut(duration: 0.14)
-            : .spring(duration: 0.30, bounce: 0.10)
+        NotchMotion.content(reduceMotion: reduceMotion)
     }
 
     static func contentTransition(reduceMotion: Bool) -> AnyTransition {
@@ -249,6 +247,12 @@ extension View {
     /// Motion keeps a short cross-fade but removes scale and travel.
     func notchShotContentSwap<Identity: Hashable>(id: Identity) -> some View {
         modifier(NotchShotContentSwapModifier(identity: id))
+    }
+
+    /// The open notch's optional glass base (Settings → Glass notch). Tinted
+    /// dark because everything drawn on the shell is white ink.
+    func notchShotShellGlass<S: Shape>(in shape: S, tintOpacity: Double) -> some View {
+        glassEffect(.regular.tint(.black.opacity(tintOpacity)), in: shape)
     }
 
     /// Coordinates the separate activity cards as one native Liquid Glass

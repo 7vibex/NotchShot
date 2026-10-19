@@ -1,0 +1,10 @@
+{
+  "workload": "Five balanced fresh-process optimized hidden native SettingsView layouts; concurrent builds confound wall time",
+  "rejected": true,
+  "reason": "No material paired thread-CPU improvement; container layout also changes content height, and no visual equivalence was established",
+  "median_thread_cpu_ms": {
+    "standard": 1071.233583,
+    "container": 1061.935625
+  },
+  "pairs": 5
+}

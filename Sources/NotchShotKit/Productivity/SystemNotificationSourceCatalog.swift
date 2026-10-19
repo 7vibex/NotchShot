@@ -7,6 +7,10 @@ import SwiftUI
 enum SystemNotificationSourceKind: String, Sendable, Equatable {
     case messages
     case whatsApp
+    case telegram
+    case signal
+    case discord
+    case messenger
     case mail
     case slack
     case generic
@@ -17,6 +21,10 @@ enum SystemNotificationSourceKind: String, Sendable, Equatable {
             locale: .current
         )
         if folded.contains("whatsapp") { return .whatsApp }
+        if folded.contains("telegram") { return .telegram }
+        if folded == "signal" { return .signal }
+        if folded.contains("discord") { return .discord }
+        if folded == "messenger" || folded.contains("facebook messenger") { return .messenger }
         if folded == "messages" || folded.contains("imessage") { return .messages }
         if folded == "mail" || folded.contains("apple mail") { return .mail }
         if folded.contains("slack") { return .slack }
@@ -27,6 +35,10 @@ enum SystemNotificationSourceKind: String, Sendable, Equatable {
         switch self {
         case .messages: "message.fill"
         case .whatsApp: "bubble.left.and.bubble.right.fill"
+        case .telegram: "paperplane.fill"
+        case .signal: "bubble.fill"
+        case .discord: "gamecontroller.fill"
+        case .messenger: "bolt.horizontal.circle.fill"
         case .mail: "envelope.fill"
         case .slack: "number"
         case .generic: "app.badge.fill"
@@ -37,6 +49,10 @@ enum SystemNotificationSourceKind: String, Sendable, Equatable {
         switch self {
         case .messages: "#0A84FF"
         case .whatsApp: "#25D366"
+        case .telegram: "#2AABEE"
+        case .signal: "#3A76F0"
+        case .discord: "#5865F2"
+        case .messenger: "#0084FF"
         case .mail: "#64D2FF"
         case .slack: "#C084FC"
         case .generic: "#A78BFA"
@@ -49,6 +65,14 @@ enum SystemNotificationSourceKind: String, Sendable, Equatable {
             ["com.apple.MobileSMS"]
         case .whatsApp:
             ["net.whatsapp.WhatsApp", "desktop.WhatsApp"]
+        case .telegram:
+            ["ru.keepcoder.Telegram", "org.telegram.desktop"]
+        case .signal:
+            ["org.whispersystems.signal-desktop"]
+        case .discord:
+            ["com.hnc.Discord"]
+        case .messenger:
+            ["com.facebook.archon.developerID", "com.facebook.archon"]
         case .mail:
             ["com.apple.mail"]
         case .slack:
@@ -58,10 +82,17 @@ enum SystemNotificationSourceKind: String, Sendable, Equatable {
         }
     }
 
-    /// Messages and WhatsApp are the sources for which the card describes the
-    /// launch as a reply handoff. NotchShot still does not send the message.
-    var supportsReplyHandoff: Bool {
-        self == .messages || self == .whatsApp
+    /// Chat apps, for which the card describes the launch as a reply handoff.
+    /// NotchShot still does not send the message.
+    var supportsReplyHandoff: Bool { isConversation }
+
+    /// Sources whose banner title is a person or a group, so the row leads
+    /// with that sender's initials and the app shrinks to a badge.
+    var isConversation: Bool {
+        switch self {
+        case .messages, .whatsApp, .telegram, .signal, .discord, .messenger, .slack: true
+        case .mail, .generic: false
+        }
     }
 }
 
@@ -88,7 +119,7 @@ struct SystemNotificationSourcePresentation: Sendable, Equatable {
 enum SystemNotificationTimePolicy {
     static func compactElapsed(receivedAt: Date, now: Date = Date()) -> String {
         let seconds = max(0, Int(now.timeIntervalSince(receivedAt)))
-        if seconds < 60 { return "\(seconds)s" }
+        if seconds < 60 { return "now" }
         let minutes = seconds / 60
         if minutes < 60 { return "\(minutes)m" }
         return "\(minutes / 60)h"
@@ -163,24 +194,14 @@ struct SystemNotificationSourceGlyph: View {
                     .interpolation(.high)
                     .aspectRatio(contentMode: .fit)
             } else {
-                RoundedRectangle(cornerRadius: size * 0.27, style: .continuous)
-                    .fill(
-                        LinearGradient(
-                            colors: reduceTransparency
-                                ? [accent.opacity(0.30), accent.opacity(0.30)]
-                                : [accent.opacity(0.34), accent.opacity(0.15)],
-                            startPoint: .top,
-                            endPoint: .bottom
-                        )
-                    )
+                // Shaped like an app icon, in the source's colour, so an app
+                // whose icon can't be found still reads as an app.
+                RoundedRectangle(cornerRadius: size * 0.225, style: .continuous)
+                    .fill(accent.opacity(reduceTransparency ? 0.9 : 0.85))
                     .overlay {
                         Image(systemName: source.symbolName)
                             .font(.system(size: size * 0.46, weight: .semibold))
-                            .foregroundStyle(accent)
-                    }
-                    .overlay {
-                        RoundedRectangle(cornerRadius: size * 0.27, style: .continuous)
-                            .stroke(accent.opacity(0.34), lineWidth: NotchIsland.Stroke.hairline)
+                            .foregroundStyle(.white)
                     }
             }
         }

@@ -166,6 +166,31 @@ public final class FloatingBasketWindow: NSPanel {
     }
 }
 
+// MARK: - Basket colours
+
+/// Colour-coded baskets. Every shelf item belongs to exactly one; items
+/// nobody sorted stay in the first. The floating basket shows one colour at a
+/// time, and the notch shelf still shows them all.
+public enum BasketColor: String, CaseIterable, Identifiable, Sendable {
+    case blue, green, orange, pink, purple
+
+    public static let standard: BasketColor = .blue
+
+    public var id: String { rawValue }
+
+    public var title: String { rawValue.capitalized }
+
+    public var tint: Color {
+        switch self {
+        case .blue: Color(nsColor: .systemBlue)
+        case .green: Color(nsColor: .systemGreen)
+        case .orange: Color(nsColor: .systemOrange)
+        case .pink: Color(nsColor: .systemPink)
+        case .purple: Color(nsColor: .systemPurple)
+        }
+    }
+}
+
 // MARK: - Floating Basket Manager
 
 @MainActor
@@ -178,6 +203,14 @@ public final class FloatingBasketManager {
     private var autoHideWorkItem: DispatchWorkItem?
     private var isVisible = false
     private weak var coordinator: AppCoordinator?
+    /// The basket the floating panel is showing, and the one drops go into.
+    public private(set) var activeColor: BasketColor = .standard
+    /// Bumped on every switch so the view can flash the switcher.
+    public private(set) var switchCount = 0
+    /// Keyed by standardized file path: a dropped file keeps its own URL, and
+    /// a path outlives the shelf item made from it if the file is re-added.
+    /// Absent means the standard basket. In memory only, like the shelf.
+    private var colorsByPath: [String: BasketColor] = [:]
 
     public init() {}
 
@@ -265,6 +298,44 @@ public final class FloatingBasketManager {
     func keepAlive() {
         scheduleAutoHide()
     }
+
+    // MARK: Colours
+
+    public func color(for item: ShelfItem) -> BasketColor {
+        colorsByPath[item.asset.url.standardizedFileURL.path] ?? .standard
+    }
+
+    public func items(in color: BasketColor, from shelf: [ShelfItem]) -> [ShelfItem] {
+        shelf.filter { self.color(for: $0) == color }
+    }
+
+    /// Files dropped on the floating panel go into the basket it shows.
+    func assignToActiveBasket(_ urls: [URL]) {
+        for url in urls {
+            let path = url.standardizedFileURL.path
+            colorsByPath[path] = activeColor == .standard ? nil : activeColor
+        }
+    }
+
+    public func move(_ item: ShelfItem, to color: BasketColor) {
+        let path = item.asset.url.standardizedFileURL.path
+        colorsByPath[path] = color == .standard ? nil : color
+    }
+
+    public func select(_ color: BasketColor) {
+        guard color != activeColor else { return }
+        activeColor = color
+        switchCount &+= 1
+        keepAlive()
+    }
+
+    /// ⌘-Tab style: step to the next basket, wrapping.
+    public func cycle(forward: Bool) {
+        let all = BasketColor.allCases
+        guard let index = all.firstIndex(of: activeColor) else { return }
+        let next = (index + (forward ? 1 : all.count - 1)) % all.count
+        select(all[next])
+    }
 }
 
 // Helper to access AppCoordinator from MainActor-isolated manager without
@@ -297,16 +368,25 @@ public struct FloatingBasketView: View {
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var isDropTargeted = false
+    @State private var isShowingSwitcher = false
+    @State private var switcherDismissal: Task<Void, Never>?
 
     public init(manager: FloatingBasketManager, coordinator: AppCoordinator) {
         self.manager = manager
         self.coordinator = coordinator
     }
 
+    /// Only the active basket's files.
+    private var visibleItems: [ShelfItem] {
+        manager.items(in: manager.activeColor, from: coordinator.shelfItems)
+    }
+
+    private var tint: Color { manager.activeColor.tint }
+
     public var body: some View {
         VStack(spacing: 10) {
             header
-            if coordinator.shelfItems.isEmpty {
+            if visibleItems.isEmpty {
                 emptyDropZone
             } else {
                 itemList
@@ -321,8 +401,17 @@ public struct FloatingBasketView: View {
                 .shadow(color: .black.opacity(0.22), radius: 18, y: 8)
         }
         .overlay {
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .strokeBorder(isDropTargeted ? Color.accentColor.opacity(0.9) : Color.white.opacity(0.14), lineWidth: isDropTargeted ? 2 : 1)
+            if isDropTargeted {
+                MarchingDashStroke(
+                    shape: RoundedRectangle(cornerRadius: 16, style: .continuous).inset(by: 1),
+                    color: tint.opacity(0.9),
+                    lineWidth: 2,
+                    dash: [8, 5]
+                )
+            } else {
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .strokeBorder(Color.white.opacity(0.14), lineWidth: 1)
+            }
         }
         .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -334,25 +423,96 @@ public struct FloatingBasketView: View {
             coordinator.setDraggingFiles(targeted)
             if targeted { manager.keepAlive() }
         }
+        .overlay {
+            if isShowingSwitcher {
+                BasketSwitcher(active: manager.activeColor) { color in
+                    coordinator.shelfItems.filter { manager.color(for: $0) == color }.count
+                }
+                .transition(.opacity.combined(with: .scale(scale: reduceMotion ? 1 : 0.94)))
+            }
+        }
+        .animation(NotchMotion.content(reduceMotion: reduceMotion), value: isShowingSwitcher)
+        .animation(NotchMotion.selection(reduceMotion: reduceMotion), value: manager.activeColor)
+        .onChange(of: manager.switchCount) { _, _ in flashSwitcher() }
+        // Tab and Shift-Tab step through the baskets while the panel is key,
+        // like ⌘-Tab through apps; ⌘1…⌘5 jump straight to one.
+        .focusable()
+        .focusEffectDisabled()
+        .onKeyPress(.tab, phases: .down) { press in
+            manager.cycle(forward: !press.modifiers.contains(.shift))
+            return .handled
+        }
+        .background { basketShortcuts }
         .accessibilityElement(children: .contain)
-        .accessibilityLabel("Floating Basket")
+        .accessibilityLabel("Floating Basket, \(manager.activeColor.title)")
+    }
+
+    private var basketShortcuts: some View {
+        ForEach(Array(BasketColor.allCases.enumerated()), id: \.element) { index, color in
+            Button("\(color.title) basket") { manager.select(color) }
+                .keyboardShortcut(KeyEquivalent(Character("\(index + 1)")), modifiers: .command)
+                .opacity(0)
+                .frame(width: 0, height: 0)
+                .accessibilityHidden(true)
+        }
+    }
+
+    private func flashSwitcher() {
+        isShowingSwitcher = true
+        switcherDismissal?.cancel()
+        switcherDismissal = Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(850))
+            guard !Task.isCancelled else { return }
+            isShowingSwitcher = false
+        }
+    }
+
+    /// One dot per basket; the active one is ringed. A dot with files in it is
+    /// filled, an empty one is an outline.
+    private var basketDots: some View {
+        HStack(spacing: 5) {
+            ForEach(BasketColor.allCases) { color in
+                let count = coordinator.shelfItems.filter { manager.color(for: $0) == color }.count
+                Button {
+                    manager.select(color)
+                } label: {
+                    Circle()
+                        .fill(count > 0 ? color.tint : color.tint.opacity(0.22))
+                        .frame(width: 10, height: 10)
+                        .padding(2.5)
+                        .overlay {
+                            Circle().strokeBorder(
+                                color == manager.activeColor ? color.tint : .clear,
+                                lineWidth: 1.5
+                            )
+                        }
+                        .frame(width: 20, height: 24)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help("\(color.title) basket (⌘\((BasketColor.allCases.firstIndex(of: color) ?? 0) + 1))")
+                .accessibilityLabel("\(color.title) basket, \(count) \(count == 1 ? "file" : "files")")
+                .accessibilityAddTraits(color == manager.activeColor ? [.isSelected] : [])
+            }
+        }
     }
 
     private var header: some View {
         HStack(spacing: 8) {
             Image(systemName: "basket.fill")
                 .font(.system(size: 13, weight: .semibold))
-                .foregroundStyle(Color.accentColor)
-            Text(coordinator.shelfItems.isEmpty ? "Basket — drop files here" : "\(coordinator.shelfItems.count) \(coordinator.shelfItems.count == 1 ? "file" : "files")")
+                .foregroundStyle(tint)
+            Text(visibleItems.isEmpty ? "Drop files here" : "\(visibleItems.count) \(visibleItems.count == 1 ? "file" : "files")")
                 .font(.system(size: 12, weight: .semibold))
                 .foregroundStyle(.primary)
-            if !coordinator.shelfItems.isEmpty {
+            if !visibleItems.isEmpty {
                 Text(totalSize)
                     .font(.system(size: 10, weight: .medium, design: .rounded))
                     .foregroundStyle(.secondary)
                     .monospacedDigit()
             }
             Spacer()
+            basketDots
             Button {
                 manager.hide()
             } label: {
@@ -371,7 +531,7 @@ public struct FloatingBasketView: View {
     }
 
     private var totalSize: String {
-        let total = coordinator.shelfItems.reduce(Int64.zero) { partial, item in
+        let total = visibleItems.reduce(Int64.zero) { partial, item in
             let (sum, overflow) = partial.addingReportingOverflow(item.asset.fileSize)
             return overflow ? Int64.max : sum
         }
@@ -396,21 +556,24 @@ public struct FloatingBasketView: View {
         .padding(12)
         .background {
             RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .fill(isDropTargeted ? Color.accentColor.opacity(0.12) : Color.primary.opacity(0.04))
+                .fill(isDropTargeted ? tint.opacity(0.12) : Color.primary.opacity(0.04))
                 .overlay {
-                    RoundedRectangle(cornerRadius: 12, style: .continuous)
-                        .strokeBorder(style: StrokeStyle(lineWidth: 1.2, dash: [6, 4]))
-                        .foregroundStyle(isDropTargeted ? Color.accentColor.opacity(0.7) : Color.secondary.opacity(0.18))
+                    MarchingDashStroke(
+                        shape: RoundedRectangle(cornerRadius: 12, style: .continuous).inset(by: 0.6),
+                        color: isDropTargeted ? tint.opacity(0.7) : Color.secondary.opacity(0.18),
+                        lineWidth: 1.2,
+                        isMarching: isDropTargeted
+                    )
                 }
         }
-        .animation(reduceMotion ? nil : .snappy, value: isDropTargeted)
+        .animation(NotchMotion.selection(reduceMotion: reduceMotion), value: isDropTargeted)
     }
 
     private var itemList: some View {
         ScrollView(.vertical) {
             LazyVStack(spacing: 6) {
-                ForEach(Array(coordinator.shelfItems.enumerated()), id: \.element.id) { index, item in
-                    BasketRow(item: item)
+                ForEach(visibleItems) { item in
+                    BasketRow(item: item, tint: tint)
                         .onDrag {
                             let provider = NSItemProvider(contentsOf: item.asset.url) ?? NSItemProvider()
                             provider.suggestedName = item.asset.url.lastPathComponent
@@ -429,6 +592,12 @@ public struct FloatingBasketView: View {
                         .contextMenu {
                             Button("Open") { coordinator.perform(.open, on: item) }
                             Button("Reveal in Finder") { NSWorkspace.shared.activateFileViewerSelecting([item.asset.url]) }
+                            Menu("Move to Basket") {
+                                ForEach(BasketColor.allCases) { color in
+                                    Button(color.title) { manager.move(item, to: color) }
+                                        .disabled(color == manager.color(for: item))
+                                }
+                            }
                             Divider()
                             Button("Remove from Basket") { coordinator.dismissShelfItem(item) }
                             if item.asset.ownership != .externalReference {
@@ -455,24 +624,24 @@ public struct FloatingBasketView: View {
     private var dropHint: some View {
         Label(isDropTargeted ? "Release to add to basket" : "Drag files here or out", systemImage: isDropTargeted ? "arrow.down.circle.fill" : "arrow.left.arrow.right")
             .font(.caption.weight(.medium))
-            .foregroundStyle(isDropTargeted ? Color.accentColor : .secondary)
+            .foregroundStyle(isDropTargeted ? tint : .secondary)
             .frame(maxWidth: .infinity)
             .padding(.vertical, 6)
             .background {
                 RoundedRectangle(cornerRadius: 8)
-                    .fill(isDropTargeted ? Color.accentColor.opacity(0.10) : Color.primary.opacity(0.04))
+                    .fill(isDropTargeted ? tint.opacity(0.10) : Color.primary.opacity(0.04))
             }
-            .animation(reduceMotion ? nil : .easeInOut(duration: 0.15), value: isDropTargeted)
+            .animation(NotchMotion.hover(reduceMotion: reduceMotion), value: isDropTargeted)
     }
 
     private var footer: some View {
         HStack(spacing: 8) {
-            if !coordinator.shelfItems.isEmpty {
+            if !visibleItems.isEmpty {
                 Button("Clear Basket") {
-                    for item in coordinator.shelfItems {
+                    for item in visibleItems {
                         coordinator.dismissShelfItem(item)
                     }
-                    manager.hide()
+                    if coordinator.shelfItems.isEmpty { manager.hide() }
                 }
                 .font(.caption.weight(.medium))
                 .foregroundStyle(.secondary)
@@ -505,6 +674,7 @@ public struct FloatingBasketView: View {
                 }
             }
             await MainActor.run {
+                manager.assignToActiveBasket(urls)
                 coordinator.performFileDropAction(
                     .shelf,
                     urls: urls,
@@ -517,6 +687,7 @@ public struct FloatingBasketView: View {
 
 private struct BasketRow: View {
     let item: ShelfItem
+    var tint: Color = .accentColor
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
 
     var body: some View {
@@ -544,7 +715,7 @@ private struct BasketRow: View {
             Spacer(minLength: 4)
             Image(systemName: "arrow.up.forward.app")
                 .font(.system(size: 10, weight: .semibold))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(tint.opacity(0.8))
                 .help("Drag this file out to any app or folder")
         }
         .padding(.horizontal, 10)
@@ -555,5 +726,44 @@ private struct BasketRow: View {
         .accessibilityElement(children: .combine)
         .accessibilityLabel(item.asset.displayName)
         .accessibilityValue("\(item.asset.dimensionsDescription), \(item.asset.fileSizeDescription)")
+    }
+}
+
+/// The ⌘-Tab style strip that flashes over the basket when it switches: every
+/// basket as a tile, the active one lifted and ringed, with its file count.
+private struct BasketSwitcher: View {
+    var active: BasketColor
+    var count: (BasketColor) -> Int
+
+    var body: some View {
+        HStack(spacing: 8) {
+            ForEach(BasketColor.allCases) { color in
+                let isActive = color == active
+                VStack(spacing: 4) {
+                    Image(systemName: "basket.fill")
+                        .font(.system(size: 18, weight: .semibold))
+                        .foregroundStyle(color.tint)
+                        .frame(width: 46, height: 40)
+                        .background(
+                            color.tint.opacity(isActive ? 0.22 : 0.08),
+                            in: RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        )
+                        .overlay {
+                            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                .strokeBorder(isActive ? color.tint : .clear, lineWidth: 2)
+                        }
+                    Text("\(count(color))")
+                        .font(.system(size: 10, weight: .semibold, design: .rounded))
+                        .monospacedDigit()
+                        .foregroundStyle(isActive ? .primary : .secondary)
+                }
+                .scaleEffect(isActive ? 1.08 : 1)
+            }
+        }
+        .padding(12)
+        .background(.thickMaterial, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .shadow(color: .black.opacity(0.25), radius: 16, y: 6)
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
     }
 }

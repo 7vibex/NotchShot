@@ -23,7 +23,13 @@ struct ContextContent: View {
                 onOpenNetworkSettings: { coordinator.openNetworkSettings() }
             )
         } else if snapshot.kind == .audioRoute, snapshot.presentation != .expanded {
-            AudioAccessoryCard(snapshot: snapshot)
+            // Compact first, as the phone announces AirPods: the device and a
+            // charge ring beside the camera. Hovering opens the full card.
+            if isPreviewing {
+                AudioAccessoryCard(snapshot: snapshot)
+            } else {
+                AudioAccessoryCompact(snapshot: snapshot, physicalNotchWidth: physicalNotchWidth)
+            }
         } else if snapshot.presentation == .expanded {
             expanded
         } else if isPreviewing {
@@ -56,6 +62,11 @@ struct ContextContent: View {
                         coordinator.setContextExpanded(true)
                     }
                 }
+            } else if snapshot.kind == .power {
+                PowerCompactStrip(
+                    snapshot: snapshot,
+                    physicalNotchWidth: physicalNotchWidth
+                ) { coordinator.setContextExpanded(true) }
             } else {
                 compact
             }
@@ -213,7 +224,12 @@ struct ContextContent: View {
                                 coordinator.dismissAIActivity(activity)
                             }
                         },
-                        onClearHistory: { coordinator.clearAIActivityHistory() }
+                        onClearHistory: { coordinator.clearAIActivityHistory() },
+                        interactions: coordinator.agentInteractions,
+                        onRespond: { coordinator.respondToAgent($0, with: $1) },
+                        onJump: { coordinator.jumpToAgent($0) },
+                        contextBySession: coordinator.context.claudeUsage.contextBySession,
+                        accessory: AnyView(AgentUsageStrip(coordinator: coordinator))
                     )
                 } else {
                     AgentActivityList(
@@ -448,42 +464,142 @@ struct ContextContent: View {
 struct IdleContent: View {
     var isPeeking: Bool
     @Bindable var coordinator: AppCoordinator
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    private var captureMenuButton: some View {
+        Button {
+            coordinator.toggleExpanded()
+            coordinator.noteIslandOpenedByPointer()
+        } label: {
+            HStack(spacing: 5) {
+                Image(systemName: "camera.viewfinder")
+                    .font(.system(size: 12, weight: .semibold))
+                Text("Capture")
+                    .font(.system(size: 12, weight: .semibold))
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 8, weight: .bold))
+                    .foregroundStyle(Color.islandInk(NotchIsland.Ink.tertiary))
+            }
+            .foregroundStyle(.white)
+            .frame(minHeight: NotchShotDesignSystem.minimumControlTarget)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(NotchPressButtonStyle())
+        .help("Open the capture menu")
+    }
 
     var body: some View {
         if isPeeking {
-            HStack(spacing: 10) {
-                Button {
-                    coordinator.toggleExpanded()
-                } label: {
-                    Label("Capture", systemImage: "camera.viewfinder")
-                        .labelStyle(.titleAndIcon)
-                        .font(.system(size: 11, weight: .semibold))
+            // The hover bar wraps the camera: Capture on its left with the
+            // user's idle animation, the two one-click shortcuts on its right.
+            VStack(spacing: 0) {
+                IslandBandHeader(leadingInset: 10, trailingInset: 8) {
+                    HStack(spacing: 6) {
+                        if let url = IdleAnimationStore.currentURL {
+                            IdleAnimationView(url: url, animates: !reduceMotion)
+                                .frame(width: 22, height: 22)
+                        }
+                        captureMenuButton
+                    }
+                } trailing: {
+                    HStack(spacing: 6) {
+                        IdleShortcutButton(title: "Area", systemImage: "square.dashed", help: "Capture an area") {
+                            coordinator.capture(.area)
+                        }
+                        IdleShortcutButton(title: "Record", systemImage: "circle.fill", iconTint: .red, help: "Record the screen") {
+                            coordinator.startRecording()
+                        }
+                    }
                 }
-                .buttonStyle(.plain)
-                .foregroundStyle(.white)
-
-                Divider().frame(height: 14).overlay(.white.opacity(0.2))
-
-                NotchIconButton(systemName: "square.dashed", label: "Capture area", visualScale: 0.8) {
-                    coordinator.capture(.area)
-                }
-
-                NotchIconButton(systemName: "record.circle", label: "Record", visualScale: 0.8) {
-                    coordinator.startRecording()
-                }
+                Spacer(minLength: 0)
             }
-            .padding(.horizontal, 14)
         } else {
             // AppKit also bridges clicks from the physical cutout's trigger
             // band, because hardware pixels themselves cannot be hit-tested.
             Button {
                 coordinator.toggleExpanded()
+                coordinator.noteIslandOpenedByPointer()
             } label: {
                 Color.clear
                     .contentShape(Rectangle())
             }
                 .buttonStyle(.plain)
                 .accessibilityLabel("Open NotchShot")
+                .overlay(alignment: .trailing) {
+                    // Only drawn when the layout has widened the notch for
+                    // them; see `NotchLayout.privacyIndicatorWing`.
+                    if privacy.isActive, Preferences.shared.showsPrivacyIndicators {
+                        PrivacyIndicatorDots(microphone: privacy.microphoneInUse, camera: privacy.cameraInUse)
+                            .frame(width: NotchLayout.privacyIndicatorWing)
+                            .transition(.opacity)
+                    }
+                }
+        }
+    }
+
+    private var privacy: PrivacyIndicatorMonitor { .shared }
+}
+
+/// A labelled capsule for the hover bar's two one-click shortcuts.
+private struct IdleShortcutButton: View {
+    var title: String
+    var systemImage: String
+    var iconTint: Color = .white
+    var help: String
+    var action: () -> Void
+
+    @State private var isHovered = false
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 5) {
+                Image(systemName: systemImage)
+                    .font(.system(size: systemImage == "circle.fill" ? 8 : 11, weight: .bold))
+                    .foregroundStyle(iconTint)
+                Text(title)
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(.white)
+            }
+            .padding(.horizontal, 10)
+            .frame(height: 26)
+            .islandControlSurface(Capsule(), isHovered: isHovered)
+            .frame(minHeight: NotchShotDesignSystem.minimumControlTarget)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(NotchPressButtonStyle())
+        .onHover { isHovered = $0 }
+        .help(help)
+        .accessibilityLabel(help)
+    }
+}
+
+/// macOS's own colours: orange for the microphone, green for a camera.
+struct PrivacyIndicatorDots: View {
+    var microphone: Bool
+    var camera: Bool
+
+    var body: some View {
+        HStack(spacing: 4) {
+            if camera { dot(.green) }
+            if microphone { dot(.orange) }
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(label)
+    }
+
+    private func dot(_ color: Color) -> some View {
+        Circle()
+            .fill(color)
+            .frame(width: 6, height: 6)
+            .shadow(color: color.opacity(0.6), radius: 3)
+    }
+
+    private var label: String {
+        switch (microphone, camera) {
+        case (true, true): "Microphone and camera in use"
+        case (true, false): "Microphone in use"
+        case (false, true): "Camera in use"
+        case (false, false): ""
         }
     }
 }

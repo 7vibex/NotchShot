@@ -101,7 +101,9 @@ public enum NotchActivity: Sendable, Equatable {
             // the identity.
             "systemLevel(\(level.kind.rawValue))-\(level.value)-\(level.isMuted)"
         case .systemNotification(let snapshot):
-            "systemNotification(\(snapshot.id))"
+            // The row count reshapes the island; a new message on the same
+            // row does not.
+            "systemNotification(\(snapshot.rows.map(\.groupKey).joined(separator: ",")))"
         case .island(let descriptor):
             // Stable activity IDs, level, slots and overlay kind only.
             descriptor.identity

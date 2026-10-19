@@ -29,12 +29,54 @@ struct ActivityIslandSettings: View {
                 Text("One activity leads the notch; others wait beside it as small satellites. Short events like volume changes appear over the island and hand it back. Turning this off restores the single-activity notch.")
             }
 
+            // These shape the whole notch, island or not.
+            Section {
+                Picker("Animation style", selection: binding(\.islandAnimationStyle)) {
+                    ForEach(IslandAnimationStyle.allCases) { style in
+                        Text(style.title).tag(style)
+                    }
+                }
+                .pickerStyle(.segmented)
+                LabeledContent("Shadow") {
+                    Slider(value: binding(\.islandShadowStrength), in: 0...1) {
+                        Text("Shadow")
+                    } minimumValueLabel: {
+                        Image(systemName: "circle").imageScale(.small)
+                    } maximumValueLabel: {
+                        Image(systemName: "circle.fill").imageScale(.small)
+                    }
+                    .labelsHidden()
+                    .frame(maxWidth: 220)
+                }
+                Toggle("Glass notch", isOn: binding(\.islandGlassEnabled))
+                LabeledContent("Glass level") {
+                    Slider(value: binding(\.islandGlassLevel), in: 0...1) {
+                        Text("Glass level")
+                    } minimumValueLabel: {
+                        Image(systemName: "square.fill").imageScale(.small)
+                    } maximumValueLabel: {
+                        Image(systemName: "square.dashed").imageScale(.small)
+                    }
+                    .labelsHidden()
+                    .frame(maxWidth: 220)
+                    .accessibilityValue("\(Int((preferences.islandGlassLevel * 100).rounded())) percent")
+                }
+                .disabled(!preferences.islandGlassEnabled)
+                Toggle("Press and hold to open the capture menu", isOn: binding(\.longPressExpandsIsland))
+            } header: {
+                Text("Motion and Feel")
+            } footer: {
+                Text("Subtle never overshoots; Bouncy settles with a visible spring. Reduce Motion in System Settings replaces all of them with short fades. Shadow sets how strongly the open notch lifts off the screen. Glass notch lets the open notch melt from black into Liquid Glass; the level sets how high the glass reaches and how much shows through. The closed notch stays black, and Reduce Transparency or Increase Contrast keeps it all black.")
+            }
+
             Group {
                 Section("Show in the Island") {
                     Toggle("Now Playing", isOn: binding(\.showsMediaActivity))
                     Toggle("AI agent activity", isOn: binding(\.showsAIIslandActivity))
                         .disabled(!preferences.aiActivityEnabled)
                     Toggle("Timers", isOn: binding(\.showsTimerActivity))
+                    Toggle("Calls", isOn: binding(\.showsCallActivity))
+                        .help("FaceTime, Zoom, Teams, Discord, Slack huddles and other calling apps, while they use the microphone.")
                     Toggle("File transfers", isOn: binding(\.showsTransferActivity))
                     Toggle("Upcoming calendar events", isOn: binding(\.showsPassiveActivities))
                         .disabled(!preferences.calendarGlanceEnabled)
@@ -45,9 +87,18 @@ struct ActivityIslandSettings: View {
 
                 Section("Interaction") {
                     Toggle("Expand on hover", isOn: binding(\.hoverPeekEnabled))
+                    Toggle("Show tabs below the open notch", isOn: binding(\.showsNotchTabBar))
+                        .help("Capture, Shelf and Now Playing, one click apart.")
+                    Picker("Fourth tab", selection: binding(\.notchTabLastSlot)) {
+                        ForEach(NotchTabLastSlot.allCases) { slot in
+                            Text(slot.title).tag(slot)
+                        }
+                    }
+                    .disabled(!preferences.showsNotchTabBar)
+                    .help("AI Agents opens your Claude Code, Codex and Cursor sessions in the notch. The Productivity Center stays in the capture page's More menu.")
                     Toggle("Swipe between activities on the trackpad", isOn: binding(\.swipesBetweenActivities))
                     Toggle("Haptic feedback", isOn: binding(\.islandHapticsEnabled))
-                    Text("Click a satellite to bring it forward. Haptics play only for your own gestures, never for background events, and follow the system's Reduce Motion setting for animation.")
+                    Text("Click a satellite to bring it forward. Haptics follow your own gestures only.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -61,6 +112,7 @@ struct ActivityIslandSettings: View {
                 Toggle("Low battery and charging", isOn: contextBinding(\.powerStatusEnabled))
                 Toggle("Connectivity changes", isOn: contextBinding(\.networkStatusEnabled))
                 Toggle("Audio accessories", isOn: contextBinding(\.audioRouteStatusEnabled))
+                Toggle("Microphone and camera in use", isOn: contextBinding(\.showsPrivacyIndicators))
                 Group {
                     Toggle("Show these alerts over activities", isOn: binding(\.allowsAlertsOverActivities))
                     Toggle("Transfer completion", isOn: binding(\.showsTransferCompletionAlerts))
@@ -89,7 +141,7 @@ struct ActivityIslandSettings: View {
                             }
                         }
                     }
-                    Text("Scripts and build tools can run `notchshot-cli activity start|update|finish|fail|dismiss`. Only your user account can connect. Messages carry bounded plain text, a progress value, and an icon from a fixed list — never commands, paths, links, or markup. Recent history stays in memory only.")
+                    Text("Scripts can run `notchshot-cli activity start|update|finish`. Only your account can connect; messages are plain text.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -115,7 +167,7 @@ struct ActivityIslandSettings: View {
         .disabled(focus.availability == .unavailable)
         switch focus.availability {
         case .unavailable:
-            Text("This build is not signed with the Focus Status capability macOS requires, so Focus changes cannot be read. Nothing is inferred instead.")
+            Text("This build lacks the Focus Status entitlement, so Focus changes can't be read.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         case .denied:

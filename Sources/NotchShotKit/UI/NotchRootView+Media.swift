@@ -135,14 +135,13 @@ struct MediaContent: View {
     var sharedArtworkID: IslandActivityID?
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var now = Date()
     @State private var audioOutputs: [AudioRouteReading] = []
     @State private var upcoming: [MediaQueueEntry] = []
     @State private var isLoadingQueue = false
     @State private var queueUnavailable = false
     @State private var modes: MediaPlaybackModes?
     @State private var currentAudioOutputID: UInt32?
-    @State private var artworkMotion = false
+    @State private var lyrics: LyricsPanelState = .idle
 
     private var snapshot: MediaSnapshot { coordinator.media.snapshot }
 
@@ -154,28 +153,9 @@ struct MediaContent: View {
                 compact
             }
         }
-        // The timer exists only while something is playing, so a paused notch
-        // stops waking the CPU once a second. An autoconnected publisher held in
-        // a property could not do that: it fires for as long as the view lives,
-        // whatever the playback state.
-        .task(id: snapshot.isPlaying && coordinator.media.areScreensAwake) {
-            guard snapshot.isPlaying, coordinator.media.areScreensAwake else { return }
-            while !Task.isCancelled {
-                try? await Task.sleep(for: .seconds(1))
-                guard !Task.isCancelled else { return }
-                now = Date()
-            }
-        }
         .task(id: isPeeking) {
             guard isPeeking else { return }
             refreshAudioOutputs()
-        }
-        .task(id: snapshot.isPlaying && !reduceMotion && coordinator.media.areScreensAwake) {
-            artworkMotion = false
-            guard snapshot.isPlaying, !reduceMotion, coordinator.media.areScreensAwake else { return }
-            try? await Task.sleep(for: .milliseconds(80))
-            guard !Task.isCancelled else { return }
-            artworkMotion = true
         }
     }
 
@@ -221,9 +201,16 @@ struct MediaContent: View {
     /// at half their comfortable size.
     private var expanded: some View {
         VStack(spacing: 0) {
-            header
+            bandHeader
+                .padding(.horizontal, -NotchIsland.Spacing.gutter)
 
-            MediaScrubber(snapshot: snapshot, now: now) { position in
+            header
+                .padding(.top, NotchIsland.Spacing.tight)
+
+            MediaScrubber(
+                snapshot: snapshot,
+                ticks: coordinator.media.areScreensAwake
+            ) { position in
                 coordinator.media.send(.seek(position))
             }
 
@@ -232,7 +219,6 @@ struct MediaContent: View {
             openPanel
         }
         .padding(.horizontal, NotchIsland.Spacing.gutter)
-        .padding(.top, NotchIsland.Spacing.row)
         .padding(.bottom, NotchIsland.Spacing.group)
         .animation(NotchShotMotion.content(reduceMotion: reduceMotion), value: coordinator.mediaPanel)
         // A track change while Playing Next is open would otherwise leave the
@@ -241,15 +227,15 @@ struct MediaContent: View {
             guard coordinator.mediaPanel == .playingNext else { return }
             await refreshQueue()
         }
+        .task(id: lyricsRefreshKey) {
+            guard coordinator.mediaPanel == .lyrics else { return }
+            await refreshLyrics()
+        }
         // Re-read on every track change as well as on open: shuffle and repeat
         // can be changed in the player itself while this card is closed.
         .task(id: playbackModeRefreshKey) {
             await refreshPlaybackModes()
         }
-        // `now` is read so the progress bar re-evaluates on each tick. It must
-        // not become a view identity — keying the view on it rebuilt the whole
-        // subtree every second and restarted the marquee mid-scroll.
-        .opacity(now == .distantPast ? 0 : 1)
     }
 
     private var header: some View {
@@ -289,44 +275,44 @@ struct MediaContent: View {
                 .frame(height: 15)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
-
-            headerChrome
         }
         .frame(height: 56)
     }
 
-    /// The meter and the capture button. Playback controls all live in the row
-    /// below; this side of the header is chrome only.
-    private var headerChrome: some View {
-        HStack(spacing: 0) {
+    /// Where the audio is coming from, left of the camera, and the live
+    /// meter right of it: the band the camera sits in, which used to be an
+    /// empty black strip above the cover.
+    ///
+    /// The capture button that sat beside the meter is gone; the Capture page
+    /// is one click away in the pill under the island.
+    private var bandHeader: some View {
+        IslandBandHeader(leadingInset: 16, trailingInset: 18) {
+            HStack(spacing: 6) {
+                if let icon = coordinator.media.sourceApplicationIcon {
+                    Image(nsImage: icon)
+                        .resizable()
+                        .frame(width: 15, height: 15)
+                        .clipShape(RoundedRectangle(cornerRadius: 3.5, style: .continuous))
+                        .accessibilityHidden(true)
+                }
+                Text(snapshot.applicationName ?? "Now Playing")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(Color.islandInk(NotchIsland.Ink.secondary))
+                    .lineLimit(1)
+            }
+        } trailing: {
             PlaybackIndicator(
                 isPlaying: snapshot.isPlaying,
                 accentColor: Color(nsColor: coordinator.media.artworkAccentColor),
                 animates: coordinator.media.areScreensAwake,
-                scale: 1.4
+                scale: 1.3
             )
-            .padding(.trailing, NotchIsland.Spacing.snug)
-
-            MediaControlButton(
-                systemName: "camera.viewfinder",
-                label: "Open capture tools",
-                diameter: 26,
-                symbolSize: 13,
-                opacity: NotchIsland.Ink.secondary
-            ) {
-                coordinator.toggleExpanded()
-            }
+            .accessibilityLabel(snapshot.isPlaying ? "Playing" : "Paused")
         }
     }
 
-    /// Transport between the modes and the panel openers, with the two gaps
-    /// equal.
-    ///
-    /// Two spacers rather than a centred layer: centring the trio on the card
-    /// made the gap to shuffle wider than the gap to repeat, because the
-    /// trailing side carries one more control. Equal spacers put the same
-    /// distance on both sides of the transport, which is the spacing the eye
-    /// actually reads — the trio then sits slightly left of the card's centre.
+    /// Transport centred on the card, between the modes and the panel
+    /// openers.
     private var controlBar: some View {
         HStack(spacing: 0) {
             HStack(spacing: NotchIsland.Spacing.snug) {
@@ -359,14 +345,30 @@ struct MediaContent: View {
                     )
                 }
             }
-
-            Spacer(minLength: 0)
+            // Both sides take equal flexible columns, so play sits on the
+            // card's centre line whatever each side carries. Spacers either
+            // side of the trio put it about 20 pt left of centre, because the
+            // right side has one more control than the left.
+            .frame(maxWidth: .infinity, alignment: .leading)
 
             transportControls
-
-            Spacer(minLength: 0)
+                .fixedSize()
 
             HStack(spacing: NotchIsland.Spacing.snug) {
+                if Preferences.shared.lyricsEnabled {
+                    MediaControlButton(
+                        systemName: "quote.bubble",
+                        label: "Lyrics",
+                        diameter: 30,
+                        symbolSize: 14,
+                        opacity: coordinator.mediaPanel == .lyrics
+                            ? NotchIsland.Ink.primary
+                            : NotchIsland.Ink.tertiary,
+                        isSelected: coordinator.mediaPanel == .lyrics,
+                        action: toggleLyrics
+                    )
+                }
+
                 if supportsPlaybackModes {
                     MediaControlButton(
                         systemName: repeatMode.symbolName,
@@ -395,6 +397,7 @@ struct MediaContent: View {
                     action: toggleRouteList
                 )
             }
+            .frame(maxWidth: .infinity, alignment: .trailing)
         }
         .frame(height: 40)
         .accessibilityElement(children: .contain)
@@ -510,6 +513,17 @@ struct MediaContent: View {
                     }
                 }
             }
+        case .lyrics:
+            panel(title: "Lyrics", onRefresh: { Task { await refreshLyrics() } }) {
+                LyricsPanel(
+                    state: lyrics,
+                    snapshot: snapshot,
+                    ticks: coordinator.media.areScreensAwake,
+                    height: Self.panelListHeight(rowCount: Self.lyricsRows)
+                ) { position in
+                    coordinator.media.send(.seek(position))
+                }
+            }
         case .playingNext:
             panel(title: "Playing Next", onRefresh: { Task { await refreshQueue() } }) {
                 if upcoming.isEmpty {
@@ -590,6 +604,57 @@ struct MediaContent: View {
     /// Identity for the queue refresh: the track and which panel is open.
     private var queueRefreshKey: String {
         "\(coordinator.mediaPanel == .playingNext)—\(snapshot.title ?? "")—\(snapshot.artist ?? "")"
+    }
+
+    /// Lyrics fill the tallest panel the island allows, so a few lines of
+    /// context show either side of the one being sung.
+    private static let lyricsRows = NotchLayout.mediaPanelVisibleRowLimit
+
+    private struct LyricsRefreshKey: Equatable {
+        var isPresented: Bool
+        var isEnabled: Bool
+        var query: LyricsQuery?
+    }
+
+    private var lyricsRefreshKey: LyricsRefreshKey {
+        LyricsRefreshKey(
+            isPresented: coordinator.mediaPanel == .lyrics,
+            isEnabled: Preferences.shared.lyricsEnabled,
+            query: LyricsQuery(snapshot: snapshot)
+        )
+    }
+
+    private func toggleLyrics() {
+        guard coordinator.mediaPanel != .lyrics else {
+            coordinator.setMediaPanel(.none)
+            return
+        }
+        coordinator.setMediaPanel(.lyrics, rowCount: Self.lyricsRows)
+        coordinator.windowController?.focusActivePanel()
+        // The keyed task fetches once the panel is open.
+    }
+
+    private func refreshLyrics() async {
+        guard Preferences.shared.lyricsEnabled, let query = LyricsQuery(snapshot: snapshot) else {
+            lyrics = .unavailable(LyricsPanelState.noTrackMessage)
+            return
+        }
+        if lyrics.query != query { lyrics = .loading(query) }
+        let result = await LyricsService.shared.lyrics(for: query)
+        // A shared lookup can finish after this panel task was cancelled.
+        // Apply the same live-query gate to failures and successes.
+        guard !Task.isCancelled,
+              Preferences.shared.lyricsEnabled,
+              coordinator.mediaPanel == .lyrics,
+              LyricsQuery(snapshot: snapshot) == query else { return }
+        switch result {
+        case .success(let found):
+            lyrics = .loaded(query, found)
+        case .failure(.notFound):
+            lyrics = .unavailable(LyricsPanelState.notFoundMessage, query)
+        case .failure(.unavailable):
+            lyrics = .unavailable(LyricsPanelState.offlineMessage, query)
+        }
     }
 
     private var playbackModeRefreshKey: String {
@@ -692,6 +757,8 @@ struct MediaContent: View {
             if let image = coordinator.media.artwork {
                 Image(nsImage: image)
                     .resizable()
+                    .interpolation(.high)
+                    .antialiased(true)
                     .aspectRatio(contentMode: .fill)
             } else {
                 RoundedRectangle(cornerRadius: size / 5)
@@ -715,18 +782,11 @@ struct MediaContent: View {
                     .offset(x: size / 12, y: size / 12)
             }
         }
-        .scaleEffect(artworkMotion ? 1.035 : 0.99)
-        .rotationEffect(.degrees(artworkMotion ? 0.65 : -0.35))
-        .shadow(
-            color: Color(nsColor: coordinator.media.artworkAccentColor).opacity(artworkMotion ? 0.46 : 0.18),
-            radius: artworkMotion ? 12 : 4
-        )
-        .animation(
-            reduceMotion || !snapshot.isPlaying
-                ? .easeOut(duration: 0.16)
-                : .easeInOut(duration: 2.8).repeatForever(autoreverses: true),
-            value: artworkMotion
-        )
+        // The cover used to breathe, tilt and pulse an accent glow on a
+        // 2.8 s loop. Rotating a small raster by a fraction of a degree
+        // resamples it every frame, which is what made the cover look soft
+        // and shimmer; the animated shadow radius re-blurred it every frame
+        // on top. The cover now holds still, as the system player's does.
         .accessibilityHidden(true)
     }
 }
@@ -801,13 +861,29 @@ private struct AudioOutputDeviceRow: View {
 /// dragged — the bar moved and that was all it did.
 private struct MediaScrubber: View {
     var snapshot: MediaSnapshot
-    /// Ticks once a second so the elapsed time advances between source polls.
-    var now: Date
+    /// False while the screens sleep, which stops the tick.
+    var ticks: Bool
     var onSeek: (TimeInterval) -> Void
 
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    /// Advances once a second so the elapsed time moves between source polls.
+    /// Owned here rather than by the player: held one level up, every tick
+    /// re-evaluated the whole expanded card — header, marquees, controls —
+    /// to move one bar.
+    @State private var now = Date()
     /// Where the user just dragged to, and when. Held briefly after release —
     /// see `displayedFraction`.
     @State private var pending: (fraction: Double, at: Date)?
+    @State private var isDragging = false
+
+    /// While playing, the bar glides continuously instead of stepping once a
+    /// second. The glide is a layer animation (see `MediaPlaybackFill`); the
+    /// view itself still updates only once a second, for the time labels.
+    private var glides: Bool {
+        snapshot.isPlaying && ticks && !reduceMotion && !isDragging && pending == nil && duration != nil
+    }
+
+    private static let tick: TimeInterval = 1
 
     private var duration: TimeInterval? {
         guard let duration = snapshot.duration, duration > 0, duration.isFinite else { return nil }
@@ -826,16 +902,16 @@ private struct MediaScrubber: View {
                 ZStack(alignment: .leading) {
                     Capsule()
                         .fill(Color.islandInk(NotchIsland.Ink.recessed))
-                        .frame(height: 5)
-                    Capsule()
-                        .fill(.white.opacity(canSeek ? 0.95 : 0.6))
-                        .frame(width: max(5, geometry.size.width * displayedFraction), height: 5)
-                    if canSeek {
-                        Circle()
-                            .fill(.white)
-                            .frame(width: 9, height: 9)
-                            .offset(x: max(0, geometry.size.width * displayedFraction - 4.5))
-                    }
+                        .frame(height: isDragging ? 7 : 5)
+                        .animation(NotchMotion.hover(reduceMotion: reduceMotion), value: isDragging)
+                    MediaPlaybackFill(
+                        fraction: displayedFraction,
+                        anchor: now,
+                        velocity: glides ? 1 / (duration ?? 1) : 0,
+                        barHeight: isDragging ? 7 : 5,
+                        knobDiameter: canSeek ? (isDragging ? 12 : 9) : 0,
+                        fillOpacity: canSeek ? 0.95 : 0.6
+                    )
                 }
                 // The bar is 3pt tall but the whole row is grabbable, or seeking
                 // would demand pixel-accurate aim at a hairline.
@@ -849,6 +925,22 @@ private struct MediaScrubber: View {
             // length, which is the number you actually want mid-listen: how
             // much of this track is left.
             timeLabel(remaining, alignment: .trailing, isCountdown: duration != nil)
+        }
+        // Only while something is playing, so a paused notch stops waking
+        // the CPU once a second.
+        .task(id: snapshot.isPlaying && ticks) {
+            now = Date()
+            guard snapshot.isPlaying, ticks else { return }
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(Self.tick))
+                guard !Task.isCancelled else { return }
+                now = Date()
+                // Hand the bar back to the player once it has caught up with
+                // the seek (or given up on it), so gliding resumes.
+                if !isDragging, pending != nil, displayedFraction != pending?.fraction {
+                    pending = nil
+                }
+            }
         }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("Playback position")
@@ -886,9 +978,11 @@ private struct MediaScrubber: View {
         DragGesture(minimumDistance: 0)
             .onChanged { value in
                 guard canSeek, width > 0 else { return }
+                isDragging = true
                 pending = (Self.clamped(value.location.x / width), Date())
             }
             .onEnded { value in
+                isDragging = false
                 guard canSeek, width > 0, let duration else { return }
                 let fraction = Self.clamped(value.location.x / width)
                 pending = (fraction, Date())
@@ -902,15 +996,20 @@ private struct MediaScrubber: View {
     /// the dragged value on release makes the bar snap back to where the track
     /// was and then jump forward — it reads as the seek having failed.
     private var displayedFraction: Double {
-        guard let pending, let duration else { return snapshot.progress }
+        guard let pending, let duration else { return fraction(at: now) }
         let target = pending.fraction * duration
         if let position = snapshot.interpolatedPosition(at: now), abs(position - target) < 1.5 {
-            return snapshot.progress
+            return fraction(at: now)
         }
         // Give up waiting rather than showing a stale position forever if the
         // player ignored the seek.
-        if Date().timeIntervalSince(pending.at) > 3 { return snapshot.progress }
+        if Date().timeIntervalSince(pending.at) > 3 { return fraction(at: now) }
         return pending.fraction
+    }
+
+    private func fraction(at date: Date) -> Double {
+        guard let duration, let position = snapshot.interpolatedPosition(at: date) else { return 0 }
+        return Self.clamped(position / duration)
     }
 
     private var elapsed: TimeInterval? {
@@ -936,22 +1035,159 @@ private struct MediaScrubber: View {
     }
 
     static func formatted(_ time: TimeInterval?) -> String {
-        guard let time, time.isFinite, time >= 0 else { return "--:--" }
-        let total = Int(time.rounded())
-        let hours = total / 3600
-        let minutes = (total % 3600) / 60
-        let seconds = total % 60
-        return hours > 0
-            ? String(format: "%d:%02d:%02d", hours, minutes, seconds)
-            : String(format: "%d:%02d", minutes, seconds)
+        MediaTimePolicy.formatted(time)
     }
 }
 
-/// Three bars that bounce while audio is playing.
+/// The played part of the scrubber and its knob, as layers.
 ///
-/// Each bar animates its own height between a short and a tall value, on its own
-/// duration, so they drift out of step and read as a level meter rather than
-/// three things moving together. Driving a shared phase through `sin` does not
-/// work here: SwiftUI interpolates the resulting height, not the phase, so a
-/// phase running 0 → 2π starts and ends at the same height and nothing appears
-/// to move at all.
+/// While playing, the fill glides to the end of the track in one linear layer
+/// animation, which the render server runs. It used to be a SwiftUI
+/// `.linear(1s)` animation restarted every second, so SwiftUI was mid-
+/// animation on every frame the expanded player was open and redrew the notch
+/// at the display's full rate to move one bar. The animation restarts only
+/// when the position stops matching it: a seek, a pause, a correction from
+/// the player, or a resize.
+private struct MediaPlaybackFill: NSViewRepresentable {
+    /// The fraction played at `anchor`.
+    var fraction: Double
+    var anchor: Date
+    /// Fraction per second; zero holds the bar still.
+    var velocity: Double
+    var barHeight: CGFloat
+    /// Zero draws no knob.
+    var knobDiameter: CGFloat
+    var fillOpacity: Double
+
+    func makeNSView(context: Context) -> MediaPlaybackFillView {
+        MediaPlaybackFillView()
+    }
+
+    func updateNSView(_ view: MediaPlaybackFillView, context: Context) {
+        let elapsed = max(0, Date().timeIntervalSince(anchor))
+        view.configure(
+            fraction: min(max(fraction + velocity * elapsed, 0), 1),
+            velocity: velocity,
+            barHeight: barHeight,
+            knobDiameter: knobDiameter,
+            fillOpacity: fillOpacity
+        )
+    }
+}
+
+private final class MediaPlaybackFillView: NSView {
+    private let fill = CALayer()
+    private let knob = CALayer()
+    /// The fraction at `origin`, in media time, and how fast it grows.
+    private var origin: CFTimeInterval = 0
+    private var originFraction: Double = 0
+    private var velocity: Double = 0
+    private var barHeight: CGFloat = 5
+    private var knobDiameter: CGFloat = 0
+    private var laidOutWidth: CGFloat = -1
+
+    init() {
+        super.init(frame: .zero)
+        let host = CALayer()
+        layer = host
+        wantsLayer = true
+        fill.anchorPoint = CGPoint(x: 0, y: 0.5)
+        host.addSublayer(fill)
+        host.addSublayer(knob)
+        knob.backgroundColor = NSColor.white.cgColor
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
+
+    /// Clicks belong to the scrubber's drag gesture underneath.
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+    private func currentFraction(at time: CFTimeInterval = CACurrentMediaTime()) -> Double {
+        min(max(originFraction + velocity * (time - origin), 0), 1)
+    }
+
+    func configure(fraction: Double, velocity: Double, barHeight: CGFloat, knobDiameter: CGFloat, fillOpacity: Double) {
+        let reshapes = barHeight != self.barHeight || knobDiameter != self.knobDiameter
+        fill.backgroundColor = NSColor.white.withAlphaComponent(fillOpacity).cgColor
+        let width = max(bounds.width, 1)
+        // Within half a point of where the running glide already is, and at
+        // the same speed: leave it running.
+        let drifted = abs(currentFraction() - fraction) * width > 0.5
+        guard drifted || velocity != self.velocity || reshapes || laidOutWidth < 0 else { return }
+        origin = CACurrentMediaTime()
+        originFraction = fraction
+        self.velocity = velocity
+        self.barHeight = barHeight
+        self.knobDiameter = knobDiameter
+        // A drag grows the bar and knob with the track's own spring-free ease.
+        restart(animatingShape: reshapes && laidOutWidth >= 0)
+    }
+
+    override func layout() {
+        super.layout()
+        guard abs(bounds.width - laidOutWidth) > 0.25 else { return }
+        // Keep the position, re-aim the glide at the new width.
+        originFraction = currentFraction()
+        origin = CACurrentMediaTime()
+        restart(animatingShape: false)
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if window != nil {
+            originFraction = currentFraction()
+            origin = CACurrentMediaTime()
+            restart(animatingShape: false)
+        }
+    }
+
+    override func viewDidChangeBackingProperties() {
+        super.viewDidChangeBackingProperties()
+        let scale = window?.backingScaleFactor ?? 2
+        [layer, fill, knob].forEach { $0?.contentsScale = scale }
+    }
+
+    private func fillWidth(_ fraction: Double) -> CGFloat {
+        max(5, bounds.width * fraction)
+    }
+
+    private func knobX(_ fraction: Double) -> CGFloat {
+        max(knobDiameter / 2, bounds.width * fraction)
+    }
+
+    private func restart(animatingShape: Bool) {
+        laidOutWidth = bounds.width
+        fill.removeAnimation(forKey: "glide")
+        knob.removeAnimation(forKey: "glide")
+        let fraction = currentFraction()
+
+        CATransaction.begin()
+        CATransaction.setDisableActions(!animatingShape)
+        CATransaction.setAnimationDuration(0.18)
+        fill.bounds = CGRect(x: 0, y: 0, width: fillWidth(fraction), height: barHeight)
+        fill.position = CGPoint(x: 0, y: bounds.midY)
+        fill.cornerRadius = barHeight / 2
+        knob.isHidden = knobDiameter <= 0
+        knob.bounds = CGRect(x: 0, y: 0, width: knobDiameter, height: knobDiameter)
+        knob.cornerRadius = knobDiameter / 2
+        knob.position = CGPoint(x: knobX(fraction), y: bounds.midY)
+        CATransaction.commit()
+
+        guard velocity > 0, fraction < 1, window != nil, bounds.width > 0 else { return }
+        let remaining = (1 - fraction) / velocity
+        let fillGlide = CABasicAnimation(keyPath: "bounds.size.width")
+        fillGlide.fromValue = fillWidth(fraction)
+        fillGlide.toValue = fillWidth(1)
+        let knobGlide = CABasicAnimation(keyPath: "position.x")
+        knobGlide.fromValue = knobX(fraction)
+        knobGlide.toValue = knobX(1)
+        for (layer, glide) in [(fill, fillGlide), (knob, knobGlide)] {
+            glide.duration = remaining
+            glide.timingFunction = CAMediaTimingFunction(name: .linear)
+            glide.fillMode = .forwards
+            glide.isRemovedOnCompletion = false
+            layer.add(glide, forKey: "glide")
+        }
+    }
+}

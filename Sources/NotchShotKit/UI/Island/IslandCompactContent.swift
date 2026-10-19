@@ -23,6 +23,7 @@ struct IslandCompactContent: View {
         switch activity.kind {
         case .media: 20
         case .recording: 16
+        case .call: 16
         default: 21
         }
     }
@@ -30,10 +31,11 @@ struct IslandCompactContent: View {
     var body: some View {
         Button {
             coordinator.expandIslandPrimary()
+            coordinator.noteIslandOpenedByPointer()
         } label: {
             HStack(spacing: 0) {
                 HStack(spacing: NotchIsland.Spacing.snug) {
-                    IslandGlyphSlot(id: activity.id, size: glyphSize)
+                    IslandGlyphSlot(id: activity.id, level: .compact, size: glyphSize)
                     leadingDetail
                 }
                 .padding(.leading, isFloating ? NotchIsland.Geometry.floatingContentInset : 7)
@@ -56,7 +58,7 @@ struct IslandCompactContent: View {
             .frame(maxHeight: .infinity)
             .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(IslandSquishButtonStyle())
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(activity.kind.title)
         .accessibilityValue(IslandAccessibility.value(for: activity, coordinator: coordinator))
@@ -79,6 +81,11 @@ struct IslandCompactContent: View {
                 text: coordinator.recordingStatus.elapsedDescription,
                 font: .system(size: 11, weight: .semibold, design: .rounded),
                 color: .red
+            )
+        } else if activity.kind == .call {
+            IslandCallElapsed(
+                startedAt: activity.startedAt,
+                font: .system(size: isFloating ? 12 : 11, weight: .semibold, design: .rounded)
             )
         }
     }
@@ -105,7 +112,7 @@ struct IslandCompactContent: View {
             }
         case .timer:
             IslandNumericText(
-                text: coordinator.context.timer.current.map { FocusTimerPolicy.formatted($0.remaining) }
+                text: coordinator.context.timer.current.map { IslandClock.formatted($0.remaining, roundingUp: true) }
                     ?? activity.metric ?? "",
                 countsDown: true,
                 font: .system(size: 12, weight: .semibold, design: .rounded),
@@ -113,16 +120,23 @@ struct IslandCompactContent: View {
             )
         case .voiceNote:
             IslandNumericText(
-                text: coordinator.context.voiceNotes.snapshot.map { FocusTimerPolicy.formatted($0.elapsed) }
+                text: coordinator.context.voiceNotes.snapshot.map { IslandClock.formatted($0.elapsed) }
                     ?? activity.metric ?? "",
                 font: .system(size: 12, weight: .semibold, design: .rounded),
                 color: .red
             )
+        case .transfer where !activity.lifecycle.isTerminal && activity.progress.fraction != nil:
+            IslandRingGlyph(
+                progress: activity.progress,
+                lifecycle: activity.lifecycle,
+                accent: accent,
+                side: 19
+            ) { EmptyView() }
         case .ai, .transfer, .external:
             if activity.lifecycle.isTerminal || activity.progress.fraction == nil {
                 IslandStateText(
                     text: activity.stateLabel ?? "",
-                    font: .system(size: 11, weight: .semibold),
+                    font: .system(size: 12, weight: .semibold),
                     color: IslandAccessibility.lifecycleColor(activity.lifecycle, accent: accent)
                 )
                 .minimumScaleFactor(0.8)
@@ -139,6 +153,8 @@ struct IslandCompactContent: View {
                 .foregroundStyle(accent)
                 .lineLimit(1)
                 .minimumScaleFactor(0.75)
+        case .call:
+            IslandCallWaveform(animates: coordinator.media.areScreensAwake)
         }
     }
 }
@@ -178,6 +194,9 @@ enum IslandAccessibility {
         case .media:
             if let artist = coordinator.media.snapshot.artist { parts.append(artist) }
             parts.append(coordinator.media.snapshot.isPlaying ? "Playing" : "Paused")
+        case .call:
+            parts.append("On a call")
+            parts.append(FocusTimerPolicy.formatted(max(0, Date().timeIntervalSince(activity.startedAt))))
         default:
             if let state = activity.stateLabel { parts.append(state) }
             if let fraction = activity.progress.fraction {
@@ -195,5 +214,64 @@ enum IslandAccessibility {
         case .paused: Color.islandInk(NotchIsland.Ink.secondary)
         case .active: accent
         }
+    }
+}
+
+/// The short value a lone satellite shows beside its glyph: the same numbers
+/// the compact primary shows, at a size that fits a 40 pt slot.
+struct IslandSatelliteValue: View {
+    var activity: IslandActivity
+    @Bindable var coordinator: AppCoordinator
+
+    private var accent: Color {
+        Color(nsColor: NotchShotColorPolicy.readableAccentOnBlack(
+            NSColor(hex: activity.accentHex) ?? .systemBlue
+        ))
+    }
+    private let font = Font.system(size: 11, weight: .semibold, design: .rounded)
+
+    var body: some View {
+        Group {
+            switch activity.kind {
+            case .recording:
+                IslandNumericText(text: coordinator.recordingStatus.elapsedDescription, font: font, color: .red)
+            case .timer:
+                IslandNumericText(
+                    text: coordinator.context.timer.current.map { IslandClock.formatted($0.remaining, roundingUp: true) }
+                        ?? activity.metric ?? "",
+                    countsDown: true,
+                    font: font,
+                    color: accent
+                )
+            case .voiceNote:
+                IslandNumericText(
+                    text: coordinator.context.voiceNotes.snapshot.map { IslandClock.formatted($0.elapsed) }
+                        ?? activity.metric ?? "",
+                    font: font,
+                    color: .red
+                )
+            case .ai, .transfer, .external:
+                if activity.lifecycle.isTerminal || activity.progress.fraction == nil {
+                    IslandStateText(
+                        text: activity.stateLabel ?? "",
+                        font: .system(size: 10, weight: .semibold),
+                        color: IslandAccessibility.lifecycleColor(activity.lifecycle, accent: accent)
+                    )
+                } else {
+                    IslandNumericText(text: activity.metric ?? "", font: font, color: accent)
+                }
+            case .calendar:
+                Text(activity.metric ?? "")
+                    .font(font)
+                    .foregroundStyle(accent)
+                    .lineLimit(1)
+            case .call:
+                IslandCallElapsed(startedAt: activity.startedAt, font: font)
+            case .media:
+                EmptyView()
+            }
+        }
+        .minimumScaleFactor(0.7)
+        .lineLimit(1)
     }
 }

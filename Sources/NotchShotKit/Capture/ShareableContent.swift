@@ -60,6 +60,34 @@ public struct ShareableSnapshot: Sendable {
     public func display(id: CGDirectDisplayID) -> DisplayInfo? {
         displays.first { $0.id == id }
     }
+
+    /// Converts one ScreenCaptureKit inventory. Synchronous, so it can run
+    /// inside whichever actor fetched `content` without sending it anywhere.
+    init(
+        content: SCShareableContent,
+        scales: [CGDirectDisplayID: CGFloat],
+        frontmostBundleID: String?
+    ) {
+        displays = content.displays.map { display in
+            DisplayInfo(
+                id: display.displayID,
+                frame: display.frame,
+                scale: scales[display.displayID] ?? 2
+            )
+        }
+        windows = content.windows.map { window in
+            WindowInfo(
+                id: window.windowID,
+                frame: window.frame,
+                title: window.title,
+                applicationName: window.owningApplication?.applicationName,
+                bundleIdentifier: window.owningApplication?.bundleIdentifier,
+                layer: window.windowLayer,
+                isOnScreen: window.isOnScreen,
+                isActive: window.owningApplication?.bundleIdentifier == frontmostBundleID
+            )
+        }
+    }
 }
 
 /// Fetches and caches `SCShareableContent`.
@@ -89,46 +117,24 @@ public actor ShareableContentProvider {
         }
 
         let content = try await fetchRawShareableContent()
-
-        let scales = await MainActor.run { () -> [CGDirectDisplayID: CGFloat] in
-            var map: [CGDirectDisplayID: CGFloat] = [:]
-            for screen in NSScreen.screens {
-                if let id = ScreenLookup.displayID(for: screen) {
-                    map[id] = screen.backingScaleFactor
-                }
-            }
-            return map
+        let (scales, frontmostBundleID) = await MainActor.run {
+            (ScreenLookup.backingScales(), NSWorkspace.shared.frontmostApplication?.bundleIdentifier)
         }
-
-        let displays = content.displays.map { display in
-            DisplayInfo(
-                id: display.displayID,
-                frame: display.frame,
-                scale: scales[display.displayID] ?? 2
-            )
-        }
-
-        let frontmostBundleID = await MainActor.run {
-            NSWorkspace.shared.frontmostApplication?.bundleIdentifier
-        }
-
-        let windows = content.windows.map { window in
-            WindowInfo(
-                id: window.windowID,
-                frame: window.frame,
-                title: window.title,
-                applicationName: window.owningApplication?.applicationName,
-                bundleIdentifier: window.owningApplication?.bundleIdentifier,
-                layer: window.windowLayer,
-                isOnScreen: window.isOnScreen,
-                isActive: window.owningApplication?.bundleIdentifier == frontmostBundleID
-            )
-        }
-
-        let snapshot = ShareableSnapshot(displays: displays, windows: windows)
+        let snapshot = ShareableSnapshot(
+            content: content,
+            scales: scales,
+            frontmostBundleID: frontmostBundleID
+        )
         cached = snapshot
         cachedAt = Date()
         return snapshot
+    }
+
+    /// Adopts an inventory fetched elsewhere (the selection prelude), so a
+    /// lookup right after it doesn't fetch the same thing again.
+    public func store(_ snapshot: ShareableSnapshot) {
+        cached = snapshot
+        cachedAt = Date()
     }
 
 }

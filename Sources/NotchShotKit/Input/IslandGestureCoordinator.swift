@@ -23,6 +23,8 @@ enum IslandHaptics {
         case dropTargetLocked
         /// A direct user action finished.
         case actionCompleted
+        /// The user clicked or held the island open.
+        case islandOpened
     }
 
     static func perform(_ moment: Moment) {
@@ -31,6 +33,7 @@ enum IslandHaptics {
         case .activitySnap: .alignment
         case .dropTargetLocked: .alignment
         case .actionCompleted: .levelChange
+        case .islandOpened: .generic
         }
         // A no-op on hardware without a Force Touch trackpad.
         NSHapticFeedbackManager.defaultPerformer.perform(pattern, performanceTime: .now)

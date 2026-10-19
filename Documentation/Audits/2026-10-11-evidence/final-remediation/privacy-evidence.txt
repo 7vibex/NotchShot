@@ -1,0 +1,58 @@
+Privacy monitor responsiveness repair — bounded evidence
+
+Candidate files:
+Sources/NotchShotKit/Context/PrivacyIndicatorMonitor.swift
+Sources/NotchShotKit/Context/PrivacyIndicatorWorker.swift
+Tests/NotchShotKitTests/PrivacyIndicatorWorkerTests.swift
+Original source preserved in before/PrivacyIndicatorMonitor.swift before edits.
+
+Contract/mechanism:
+Dedicated serial userInitiated dispatch queue owns registration, removal, process/device lists, running-input/camera queries, proc_pidpath and Bundle metadata.
+Live listener cancellation retains exactly the object/address/block/queue from its successful add.
+Listener closures capture worker weakly; publications capture monitor weakly.
+UI publications are submitted FIFO to main dispatch, with running/generation checks.
+Stop clears visible flags/clients synchronously; background lifecycle remains ordered.
+No polling, debounce, event coalescing, caching or feature removal.
+Original other-process running-input detection, per-device camera detection and first-seen client identity/order retained.
+
+Actual OS experiment (strongest measurement):
+macOS 26.5.2 (25F84), arm64; Apple Swift 6.3.3 compiler in Swift6 mode.
+Standalone original/current source probes compiled with swiftc -O -swift-version 6.
+NSApplication.shared initialized before timing in BOTH variants.
+Five alternating fresh processes, original first then updated, same local session.
+Snapshot retained one other microphone client throughout; no process names or identifiers logged.
+Baseline starts original monitor synchronously; result is immediately usable on main.
+Updated requests serial-worker start; completion is delivered to main dispatch FIFO and timed.
+Optimized raw log: privacy-os-appkit-optimized-probes.log
+Harnesses: PrivacyBaselineProbe.swift and PrivacyUpdatedProbe.swift
+Baseline main blocking start+snapshot: median 420.718ms, range 300.950–709.410ms.
+Updated main enqueue: median 0.0667ms, range 0.0513–0.2821ms.
+Updated OS snapshot: median 320.854ms, range 252.854–442.075ms, completion off-main in every run.
+Updated main usable completion: median 320.890ms, range 252.889–442.104ms.
+Full-work guard requested by parent (no >25% or20ms median increase) passes in this sample.
+Small sample/high OS variance: strongest conclusion is removal of synchronous UI-actor work, not robust total throughput/latency or call-FPS improvement.
+
+Other experiments:
+Initial utility-queue probe increased total OS snapshot duration (966–1958ms) despite freeing main. Rejected that QoS; userInitiated retains UI-facing responsiveness.
+Equivalent-AppKit debug probes also isolate main, with overlapping complete-work ranges (baseline286–459ms/current293–519ms). Optimized cohort above is final evidence.
+
+Focused test proof: PASS 5/5 (privacy-tests-final.log; swift test --skip-build --filter PrivacyIndicatorWorkerTests, after clean shared test compilation by PDF worker).
+Blocked backend query + still-blocked semaphore assertion and main heartbeat;
+immediate stop and stop/restart stale publication rejection;
+three running events FIFO true/false/true, client dedup/order;
+stale list and running callbacks cannot query after restart;
+idempotent start/stop; successful registrations cancelled exactly once through rebuild/stop/deinit;
+weak-monitor deinit; camera state despite failed listener registration;
+live actual-OS initial snapshot off-main.
+Initial shared test compile aborted due unrelated AppDelegate.swift midbuild modification.
+Subsequent shared baseline compile found Swift6 noasync checks in privacy assertions; moved checks into synchronous main-actor helper without weakening assertions.
+Neither failed compile is behavioral test evidence.
+
+Final test suite duration224ms; controlled blocked-query heartbeat test1ms; actual OS initial snapshot221.446ms offmain with one microphone client.
+Candidate frozen after final tests. No release/fullsuite build performed by privacy worker.
+
+Test harness followup after root full suite:
+Root full run993tests/164suites had one failure: test elapsed<2s included unrelated MainActor contention (6.578s). Original full-tests.log preserved and SHA256 verified; separate copy full-tests-before-contention-harness.log retained.
+Changed ONLY PrivacyIndicatorWorkerTests.swift: removed wallclock guard; kept semaphore proof that query is still blocked when main runs; retained stop/restart, offmain, stale/FIFO/dedup/removal assertions; added explicit successful-release assertion with30s bounded fallback.
+Focused check swift test --filter PrivacyIndicatorWorkerTests PASS5/5, privacy-tests-contention-harness.log. Blocked-query causal test12ms (descriptive timing only, no elapsed assertion). Live OS completion1.775556s offmain, client count1 under this differently loaded debug test run; optimized standalone paired measurements above remain the actual comparison.
+No production-source edits or fullsuite rerun during this harness followup. Candidate frozen after focused check.

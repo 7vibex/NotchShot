@@ -33,6 +33,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValid
     private var inspectorWindows: [ObjectIdentifier: NSWindow] = [:]
     private var capturePreviewWindows: [UUID: NSWindow] = [:]
     private var documentSummaryWindows: [ObjectIdentifier: NSWindow] = [:]
+    private var appUninstallWindows: [ObjectIdentifier: NSWindow] = [:]
     private let automationRateLimiter = URLCommandRateLimiter()
     private var isFinalizingForTermination = false
 
@@ -46,6 +47,11 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValid
         NotchShotAppShortcuts.updateAppShortcutParameters()
 
         NSApp.setActivationPolicy(Preferences.shared.showsDockIcon ? .regular : .accessory)
+        // Status-item menus only receive key equivalents while open. Auxiliary
+        // windows also need an application menu for Settings and safe Quit.
+        NSApp.mainMenu = AppCommandMenu.make(
+            target: self, settings: #selector(showSettingsFromMenu), quit: #selector(quit)
+        )
         NSApp.servicesProvider = self
         // Services are normally rebuilt at login. Refreshing the public
         // Services registry on launch makes a newly installed or updated
@@ -58,6 +64,9 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValid
         controller.onHoverChange = { [weak self] displayID in
             self?.coordinator.setHovering(displayID != nil)
         }
+        controller.onLongPress = { [weak self] _ in
+            self?.coordinator.openCaptureMenuFromLongPress()
+        }
         controller.onTriggerClick = { [weak self, weak controller] _ in
             guard let self else { return }
             if case .island(let descriptor) = coordinator.activity {
@@ -65,6 +74,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValid
                     coordinator.collapseIsland()
                 } else {
                     coordinator.expandIslandPrimary()
+                    coordinator.noteIslandOpenedByPointer()
                 }
             } else if coordinator.activity == .media {
                 coordinator.setPeeking(true)
@@ -75,6 +85,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValid
                 coordinator.dismissSystemNotification()
             } else {
                 coordinator.toggleExpanded()
+                if coordinator.activity.isExpanded { coordinator.noteIslandOpenedByPointer() }
             }
         }
         windowController = controller
@@ -113,6 +124,9 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValid
         }
         coordinator.onOpenDocumentSummary = { [weak self] session in
             self?.showDocumentSummary(session)
+        }
+        coordinator.onOpenAppUninstall = { [weak self] session in
+            self?.showAppUninstall(session)
         }
 
         controller.start()
@@ -166,6 +180,9 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValid
         SystemOSDSuppressor.shared.stop()
         coordinator.dictation.cancel()
         coordinator.context.stop()
+        // Software dimming is undone by the window server on exit anyway;
+        // restoring first avoids a flash of the dimmed table on relaunch.
+        coordinator.displayBrightness.stop()
         HotKeyController.shared.stop()
         // A copied capture is offered to the pasteboard as a promise, and a
         // promise dies with the process that made it. Redeem it while there is
@@ -226,9 +243,12 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValid
                 // finalization cannot produce a valid destination.
                 Log.recording.error("Could not finalize recording before quit: \(error.localizedDescription)")
             }
-            await coordinator.media.stopAndWait()
             let shouldTerminate = resolveHistoryPersistenceBeforeTermination()
-            if !shouldTerminate {
+            if shouldTerminate {
+                // Keep media and its observers alive when the user cancels
+                // quitting after a history-save failure.
+                await coordinator.media.stopAndWait()
+            } else {
                 for window in editorWindows.values {
                     window.makeKeyAndOrderFront(nil)
                 }
@@ -989,6 +1009,29 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValid
             self?.documentSummaryWindows.removeValue(forKey: key)
         }
         documentSummaryWindows[key] = window
+        bringToFront(window)
+    }
+
+    private func showAppUninstall(_ session: AppUninstallSession) {
+        let key = ObjectIdentifier(session)
+        let windowBox = WindowBox()
+        let view = AppUninstallView(session: session) {
+            windowBox.window?.performClose(nil)
+        }
+        let window = makeWindow(
+            title: session.title,
+            content: view,
+            size: CGSize(width: 560, height: 480)
+        )
+        windowBox.window = window
+        attachCloseHandler(
+            to: window,
+            // Closing mid-removal would hide a half-finished operation.
+            shouldClose: { [weak session] in session?.stage != .removing }
+        ) { [weak self] in
+            self?.appUninstallWindows.removeValue(forKey: key)
+        }
+        appUninstallWindows[key] = window
         bringToFront(window)
     }
 

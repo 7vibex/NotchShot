@@ -564,6 +564,16 @@ public final class SystemLevelMonitor {
     }
 
     private func adjustBrightness(increasing: Bool, fine: Bool) -> Bool {
+        // A key pressed with the pointer on an external monitor is meant for
+        // that monitor, as on a Mac with an Apple display.
+        if ExtrasPreferences.shared.controlsExternalDisplays,
+           let target = DisplayBrightnessController.displayUnderPointer(),
+           CGDisplayIsBuiltin(target) == 0,
+           let level = DisplayBrightnessController.shared.step(target, increasing: increasing, fine: fine) {
+            brightnessIntent.noteKeyEvent(at: ProcessInfo.processInfo.systemUptime)
+            publish(SystemLevel(kind: .brightness, value: level, isMuted: false, displayID: target))
+            return true
+        }
         guard Preferences.shared.mirrorsBrightnessChanges,
               let reading = BrightnessReader.shared.reading() else { return false }
         let target = SystemMediaKeyAction.adjustedLevel(
@@ -813,6 +823,11 @@ final class BrightnessReader: @unchecked Sendable {
             }
         }
         return nil
+    }
+
+    /// 0…1 for one display, or nil when macOS can't dim it itself.
+    func level(displayID: CGDirectDisplayID) -> Double? {
+        brightness(displayID: displayID)
     }
 
     /// 0…1 for one display, or nil if its private compatibility shim is absent.

@@ -17,10 +17,26 @@ enum PowerModePresentationPolicy {
         snapshot.kind == .power && snapshot.title == lowBatteryTitle
     }
 
+    /// The reading as a fraction, from the "64%" metric the monitor writes.
+    static func level(from snapshot: ContextSnapshot) -> Double? {
+        guard snapshot.kind == .power,
+              let metric = snapshot.metric,
+              let percent = Int(metric.trimmingCharacters(in: CharacterSet(charactersIn: "% ")))
+        else { return nil }
+        return Double(min(max(percent, 0), 100)) / 100
+    }
+
+    /// Whether the card is about being on the adapter rather than the battery.
+    static func isOnPower(_ snapshot: ContextSnapshot) -> Bool {
+        snapshot.kind == .power && (snapshot.title == "Charging" || snapshot.title == "Charged")
+    }
+
     static func statusDescription(isLowPowerModeEnabled: Bool) -> String {
         isLowPowerModeEnabled
             ? "Low Power Mode is on"
-            : "Open Battery Settings to enable Low Power Mode"
+            // The Settings button sits beside this line, so it says why rather
+            // than repeating where.
+            : "Turn on Low Power Mode to last longer"
     }
 
     static func settingsAccessibilityLabel(isLowPowerModeEnabled: Bool) -> String {

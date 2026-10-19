@@ -1,0 +1,3 @@
+NotchShot signed runtime self-test
+Screen Recording preflight: granted
+SELF-TEST FAILED: The macOS capture service returned no displays. Wake every display; if they are already awake, log out or restart the Mac, then reopen NotchShot.

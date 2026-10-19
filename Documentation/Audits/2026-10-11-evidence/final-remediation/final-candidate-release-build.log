@@ -1,0 +1,19 @@
+[0/1] Planning build
+Building for production...
+[0/4] Write sources
+[1/4] Write swift-version--58304C5D6DBC2206.txt
+[3/5] Compiling NotchShotAIReporterSupport ActivityHeartbeat.swift
+[4/6] Compiling NotchShotKit AnnotationDocumentController.swift
+/Users/vibex/Documents/NOTCH/Sources/NotchShotKit/Context/PrivacyIndicatorWorker.swift:164:20: warning: 'init(cString:)' is deprecated: Use String(decoding: array, as: UTF8.self) instead, after truncating the null termination. [#DeprecatedDeclaration]
+162 |         var buffer = [CChar](repeating: 0, count: Int(MAXPATHLEN) * 4)
+163 |         guard proc_pidpath(pid, &buffer, UInt32(buffer.count)) > 0 else { return nil }
+164 |         let path = String(cString: buffer)
+    |                    `- warning: 'init(cString:)' is deprecated: Use String(decoding: array, as: UTF8.self) instead, after truncating the null termination. [#DeprecatedDeclaration]
+165 |         guard let range = path.range(of: ".app/") else { return nil }
+166 |         let bundleURL = URL(fileURLWithPath: String(path[..<range.lowerBound]) + ".app")
+
+[#DeprecatedDeclaration]: <https://docs.swift.org/compiler/documentation/diagnostics/deprecated-declaration>
+[5/7] Compiling NotchShot BundledSelfTest.swift
+[5/7] Write Objects.LinkFileList
+[6/7] Linking NotchShot
+Build of product 'NotchShot' complete! (1722.27s)

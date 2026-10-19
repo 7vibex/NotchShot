@@ -4,11 +4,14 @@ import Observation
 public enum TransferService: String, Sendable, Equatable {
     case localSend
     case airDrop
+    /// A browser download, read from the progress the browser publishes.
+    case download
 
     public var title: String {
         switch self {
         case .localSend: "LocalSend"
         case .airDrop: "AirDrop"
+        case .download: "Download"
         }
     }
 }
@@ -74,7 +77,15 @@ public struct TransferActivitySnapshot: Sendable, Equatable, Identifiable {
     }
 
     public var title: String {
-        switch state {
+        if service == .download {
+            return switch state {
+            case .preparing, .transferring: "Downloading"
+            case .completed: "Downloaded"
+            case .failed: "Download failed"
+            case .cancelled: "Download stopped"
+            }
+        }
+        return switch state {
         case .preparing: "Preparing \(fileCountDescription)"
         case .transferring: direction == .outgoing ? "Sending \(fileCountDescription)" : "Receiving \(fileCountDescription)"
         case .completed: service == .airDrop ? "Shared with AirDrop" : "Sent \(fileCountDescription)"

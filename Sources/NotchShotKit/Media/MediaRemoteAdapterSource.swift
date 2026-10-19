@@ -310,6 +310,11 @@ public actor MediaRemoteAdapterSource: MediaSource {
                 let output = Pipe()
                 process.standardOutput = output
                 process.standardError = FileHandle.nullDevice
+                // `waitUntilExit` spins this thread's run loop and can miss
+                // the exit on a dispatch worker, parking it forever. The
+                // handler is installed before launch, so it cannot be missed.
+                let exited = DispatchSemaphore(value: 0)
+                process.terminationHandler = { _ in exited.signal() }
 
                 do {
                     try process.run()
@@ -317,7 +322,7 @@ public actor MediaRemoteAdapterSource: MediaSource {
                         processID: process.processIdentifier
                     ) else {
                         process.terminate()
-                        process.waitUntilExit()
+                        exited.wait()
                         continuation.resume(returning: nil)
                         return
                     }
@@ -395,7 +400,7 @@ public actor MediaRemoteAdapterSource: MediaSource {
                         }
                     }
 
-                    process.waitUntilExit()
+                    exited.wait()
                     // A helper can exit successfully after forking. Never let
                     // descendants escape merely because their parent returned.
                     if processGroupExists(process.processIdentifier) {
@@ -606,10 +611,10 @@ enum AdapterPayload {
 
     private static func number(_ payload: [String: Any], _ keys: String...) -> Double? {
         for key in keys {
-            if let value = payload[key] as? Double, value.isFinite, value >= 0 { return value }
-            if let value = payload[key] as? Int, value >= 0 { return Double(value) }
+            if let value = payload[key] as? Double, let time = MediaTimePolicy.normalized(value) { return time }
+            if let value = payload[key] as? Int, let time = MediaTimePolicy.normalized(Double(value)) { return time }
             if let value = payload[key] as? String,
-               let parsed = Double(value), parsed.isFinite, parsed >= 0 { return parsed }
+               let parsed = Double(value), let time = MediaTimePolicy.normalized(parsed) { return time }
         }
         return nil
     }

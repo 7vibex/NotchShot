@@ -1,0 +1,4 @@
+pair=1 exit=0 mode=standard layout_ms=11073.524333 width=980.0 height=732.0 min_width=900.0 min_height=620.0
+pair=1 exit=0 mode=container layout_ms=5338.896209 width=980.0 height=700.0 min_width=900.0 min_height=620.0
+pair=2 exit=0 mode=container layout_ms=7010.382917 width=980.0 height=700.0 min_width=900.0 min_height=620.0
+pair=2 exit=-15 

@@ -99,7 +99,7 @@
 	<key>NSSpeechRecognitionUsageDescription</key>
 	<string>NotchShot performs speech recognition entirely on-device. A one-time language download may be required. Dictation audio is not saved and no transcript is stored by default; optional recording captions are created locally from a recording you make.</string>
 	<key>NSAppleEventsUsageDescription</key>
-	<string>NotchShot reads playback details from and sends playback controls to Music or Spotify when you enable the Apple Events fallback.</string>
+	<string>NotchShot reads playback details from and sends playback controls to Music or Spotify when you enable the Apple Events fallback, and selects the Terminal or iTerm2 tab an AI agent runs in when you jump to it from the notch.</string>
 	<key>NSCalendarsFullAccessUsageDescription</key>
 	<string>NotchShot reads upcoming events only when you enable Calendar Glance, and writes an event only after you preview it and press Add.</string>
 	<key>NSCalendarsWriteOnlyAccessUsageDescription</key>

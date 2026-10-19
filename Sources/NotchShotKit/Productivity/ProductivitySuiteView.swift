@@ -22,6 +22,10 @@ public struct ProductivitySuiteView: View {
             Group {
                 switch router.selectedTool {
                 case .notifications: ProductivityNotificationCenterView(coordinator: coordinator)
+                case .today: TodayToolView(coordinator: coordinator)
+                case .shortcuts: ShortcutsToolView()
+                case .apps: RunningAppsToolView()
+                case .reviews: ReviewQueueToolView()
                 case .notes: NotesToolView()
                 case .schedule: ScheduleToolView(coordinator: coordinator)
                 case .lyrics: LyricsToolView(coordinator: coordinator)
@@ -32,6 +36,7 @@ public struct ProductivitySuiteView: View {
                 case .localSend: LocalSendToolView()
                 case .windowSnap: WindowSnapToolView(coordinator: coordinator)
                 case .camera: CameraToolView()
+                case .displays: DisplaysToolView(controller: coordinator.displayBrightness)
                 }
             }
             .navigationTitle(router.selectedTool.title)
@@ -52,10 +57,12 @@ private struct NotesToolView: View {
                     Text("Local Notes").font(.headline)
                     Spacer()
                     Button {
-                        selectedID = store.create().id
+                        let note = store.create()
+                        if store.notes.contains(where: { $0.id == note.id }) { selectedID = note.id }
                     } label: {
                         Label("New Note", systemImage: "plus")
                     }
+                    .disabled(store.isWriteLocked)
                 }
                 if store.notes.isEmpty {
                     ContentUnavailableView(
@@ -266,6 +273,7 @@ private struct LyricsToolView: View {
                     .accessibilityLabel("Lyrics for current track")
                 HStack {
                     Button("Save Local Lyrics") { save() }
+                        .disabled(store.isWriteLocked)
                     Button("Import Text File…") { importLyrics() }
                     Spacer()
                 }
@@ -288,7 +296,7 @@ private struct LyricsToolView: View {
 
     private func load() {
         text = trackKey.map(store.lyrics(for:)) ?? ""
-        message = nil
+        message = store.lastError
     }
 
     private func save() {
@@ -736,6 +744,64 @@ private struct WindowSnapToolView: View {
         } catch {
             message = error.localizedDescription
             coordinator.present(error: error)
+        }
+    }
+}
+
+private struct DisplaysToolView: View {
+    @Bindable var controller: DisplayBrightnessController
+    @Bindable private var extras = ExtrasPreferences.shared
+
+    var body: some View {
+        Form {
+            Section("Brightness") {
+                if controller.displays.isEmpty {
+                    Text(controller.isRunning ? "Looking for displays…" : "Turn on display control below to adjust external monitors.")
+                        .foregroundStyle(.secondary)
+                }
+                ForEach(controller.displays) { display in
+                    VStack(alignment: .leading, spacing: 6) {
+                        HStack {
+                            Label(display.name, systemImage: display.isBuiltIn ? "laptopcomputer" : "display")
+                            Spacer()
+                            Text(display.method.title)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        HStack(spacing: 8) {
+                            Image(systemName: "sun.min").foregroundStyle(.secondary)
+                            Slider(
+                                value: Binding(
+                                    get: { display.level },
+                                    set: { controller.setLevel($0, for: display.id) }
+                                ),
+                                in: 0 ... 1
+                            )
+                            .accessibilityLabel("\(display.name) brightness")
+                            Image(systemName: "sun.max").foregroundStyle(.secondary)
+                            Text("\(Int((display.level * 100).rounded()))%")
+                                .font(.caption.monospacedDigit())
+                                .frame(width: 38, alignment: .trailing)
+                        }
+                    }
+                    .padding(.vertical, 2)
+                }
+            }
+            Section {
+                Toggle("Brightness keys control external displays", isOn: $extras.controlsExternalDisplays)
+                    .onChange(of: extras.controlsExternalDisplays) { _, isOn in
+                        isOn ? controller.start() : controller.stop()
+                    }
+                Button("Look for Displays Again") { controller.refresh() }
+                    .disabled(!controller.isRunning || controller.isRefreshing)
+                Text("Hardware changes the monitor's own backlight over DDC. Software dims the picture, for monitors that don't accept DDC, and is undone when NotchShot quits.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .notchShotFormStyle()
+        .onAppear {
+            if extras.controlsExternalDisplays { controller.start() }
         }
     }
 }

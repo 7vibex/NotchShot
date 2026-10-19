@@ -110,6 +110,29 @@ public enum IslandActivityAdapters {
         )
     }
 
+    // MARK: Call
+
+    /// A call in progress, from the app holding the microphone. NotchShot
+    /// can't hang up or mute another app's call, so the only actions are
+    /// opening the app and hiding the activity.
+    public static func call(bundleIdentifier: String, appName: String, startedAt: Date) -> IslandActivity {
+        IslandActivity(
+            id: IslandActivityID(kind: .call, key: bundleIdentifier),
+            priority: .normal,
+            // Above media and timers: a live call is what the user is doing.
+            relevance: 0.95,
+            lifecycle: .active,
+            progress: .none,
+            startedAt: startedAt,
+            actions: [.dismiss],
+            title: appName,
+            subtitle: "On a call",
+            stateLabel: "On a call",
+            symbolName: "phone.fill",
+            accentHex: "#30D158"
+        )
+    }
+
     // MARK: Timer
 
     /// `expiresAt` comes from the published timer card, which stamps the
@@ -239,9 +262,18 @@ public enum IslandActivityAdapters {
         let linger = transfer.state == .completed
             ? TransferActivityStore.completedLinger
             : TransferActivityStore.failedLinger
+        let symbolName: String = switch transfer.service {
+        case .airDrop: "airplayaudio"
+        case .download: "arrow.down.circle.fill"
+        case .localSend: "arrow.up.circle.fill"
+        }
         let stateLabel: String = switch transfer.state {
         case .preparing: "Preparing"
-        case .transferring: transfer.service == .airDrop ? "Sharing" : "Sending"
+        case .transferring: switch transfer.service {
+            case .airDrop: "Sharing"
+            case .download: "Downloading"
+            case .localSend: "Sending"
+            }
         case .completed: "Done"
         case .failed: "Failed"
         case .cancelled: "Cancelled"
@@ -261,7 +293,7 @@ public enum IslandActivityAdapters {
             subtitle: transfer.peerName,
             stateLabel: stateLabel,
             metric: progress.fraction.map { "\(Int(($0 * 100).rounded(.down)))%" },
-            symbolName: transfer.service == .airDrop ? "airplayaudio" : "arrow.up.circle.fill",
+            symbolName: symbolName,
             accentHex: "#0A84FF"
         )
     }
@@ -355,5 +387,48 @@ public enum IslandActivityAdapters {
             symbolName: ContextKind.calendar.symbolName,
             accentHex: snapshot.accentHex
         )
+    }
+}
+
+/// Which microphone users count as a call.
+///
+/// A fixed list of calling apps rather than "anything using the mic": a
+/// dictation tool, a voice memo, or a browser tab running speech input would
+/// otherwise show up as a phone call. Browser-based meetings are left out for
+/// the same reason.
+public enum CallActivityPolicy {
+    public static let callingApps: Set<String> = [
+        "com.apple.FaceTime",
+        "us.zoom.xos",
+        "com.microsoft.teams2",
+        "com.microsoft.teams",
+        "com.hnc.Discord",
+        "com.tinyspeck.slackmacgap",
+        "net.whatsapp.WhatsApp",
+        "desktop.WhatsApp",
+        "ru.keepcoder.Telegram",
+        "org.telegram.desktop",
+        "org.whispersystems.signal-desktop",
+        "com.skype.skype",
+        "Cisco-Systems.Spark",
+        "com.facebook.archon.developerID",
+    ]
+
+    public static func isCall(bundleIdentifier: String) -> Bool {
+        callingApps.contains(bundleIdentifier)
+    }
+
+    /// What people call the app, where its bundle name says otherwise
+    /// ("zoom.us", "Microsoft Teams (work or school)", "Webex").
+    public static func displayName(bundleIdentifier: String, fallback: String) -> String {
+        switch bundleIdentifier {
+        case "us.zoom.xos": "Zoom"
+        case "com.microsoft.teams2", "com.microsoft.teams": "Teams"
+        case "Cisco-Systems.Spark": "Webex"
+        case "com.facebook.archon.developerID": "Messenger"
+        case "org.whispersystems.signal-desktop": "Signal"
+        case "com.tinyspeck.slackmacgap": "Slack"
+        default: fallback
+        }
     }
 }

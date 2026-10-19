@@ -56,17 +56,51 @@ struct ProductivityNotificationTests {
         #expect(source.openAccessibilityLabel == "Open A localized app name")
     }
 
+    @Test("A burst stacks one row per sender, newest first, with a count per thread")
+    func systemBannerStacking() throws {
+        var queue = SystemNotificationQueue()
+        func banner(_ index: Int, _ source: String, _ sender: String, _ body: String) -> SystemNotificationSnapshot {
+            SystemNotificationSnapshot(
+                id: UUID(uuidString: String(format: "00000000-0000-0000-0000-%012d", index + 1))!,
+                sourceName: source,
+                title: sender,
+                body: body,
+                receivedAt: Date(timeIntervalSince1970: TimeInterval(index))
+            )
+        }
+        queue.enqueue(banner(0, "Messages", "Mia", "Dinner at 8?"))
+        queue.enqueue(banner(1, "WhatsApp", "Sam", "Look at the notch"))
+        queue.enqueue(banner(2, "WhatsApp", "Sam", "Seriously"))
+        queue.enqueue(banner(3, "Telegram", "Lena", "Standup moved"))
+        queue.enqueue(banner(4, "Mail", "Billing", "Receipt"))
+
+        let stack = try #require(queue.presented(rowLimit: 3))
+        #expect(stack.rows.map(\.title) == ["Billing", "Lena", "Sam"])
+        #expect(stack.rows.map(\.groupCount) == [1, 1, 2])
+        // The newest message of a thread is the one the row shows.
+        #expect(stack.rows[2].body == "Seriously")
+        #expect(stack.overflowCount == 1)
+
+        queue.removeGroup(stack.rows[2].groupKey)
+        let after = try #require(queue.presented(rowLimit: 3))
+        #expect(after.rows.map(\.title) == ["Billing", "Lena", "Mia"])
+        #expect(after.overflowCount == 0)
+
+        #expect(SystemNotificationSourcePresentation(sourceName: "Telegram").kind.isConversation)
+        #expect(!SystemNotificationSourcePresentation(sourceName: "Mail").kind.isConversation)
+    }
+
     @Test("Notification age stays compact and clamps future timestamps")
     func compactNotificationAge() {
         let start = Date(timeIntervalSince1970: 1_000)
         #expect(SystemNotificationTimePolicy.compactElapsed(
             receivedAt: start,
             now: start.addingTimeInterval(-10)
-        ) == "0s")
+        ) == "now")
         #expect(SystemNotificationTimePolicy.compactElapsed(
             receivedAt: start,
             now: start.addingTimeInterval(59)
-        ) == "59s")
+        ) == "now")
         #expect(SystemNotificationTimePolicy.compactElapsed(
             receivedAt: start,
             now: start.addingTimeInterval(60)
@@ -87,7 +121,7 @@ struct ProductivityNotificationTests {
                 body: "Yea !!",
                 receivedAt: Date()
             ),
-            onOpenSource: {},
+            onOpenSource: { _ in },
             onDismiss: {}
         )
         .frame(width: 410, height: 78)

@@ -7,7 +7,34 @@ import Testing
 struct FileDropActionTests {
     @Test("The tray keeps a stable left-to-right action order")
     func actionOrder() {
-        #expect(FileDropAction.allCases == [.shelf, .airDrop, .share, .localSend, .compress])
+        #expect(FileDropContext.files.actions == [.shelf, .airDrop, .share, .localSend, .compress])
+        #expect(FileDropContext.archives.actions == [.shelf, .airDrop, .share, .localSend, .extract])
+        #expect(FileDropContext.apps.actions == [.uninstall, .resetApp])
+    }
+
+    @Test("What is dragged decides the destinations")
+    func contextClassification() {
+        let app = URL(fileURLWithPath: "/Applications/Example.app")
+        let zip = URL(fileURLWithPath: "/tmp/Photos.zip")
+        let tarball = URL(fileURLWithPath: "/tmp/src.tar.gz")
+        let text = URL(fileURLWithPath: "/tmp/Notes.txt")
+        #expect(FileDropContext.classify([app]) == .apps)
+        #expect(FileDropContext.classify([zip, tarball]) == .archives)
+        #expect(FileDropContext.classify([zip, text]) == .files)
+        #expect(FileDropContext.classify([app, text]) == .files)
+        #expect(FileDropContext.classify([]) == .files)
+        #expect(FileDropContext.apps.defaultAction == .uninstall)
+    }
+
+    @Test("App drags split the tray in two")
+    func appSelection() {
+        let actions = FileDropContext.apps.actions
+        #expect(FileDropActionSelection.action(atX: 249, width: 500, actions: actions) == .uninstall)
+        #expect(FileDropActionSelection.action(atX: 250, width: 500, actions: actions) == .resetApp)
+        #expect(FileDropActionSelection.adjacent(to: .uninstall, delta: 1, actions: actions) == .resetApp)
+        #expect(FileDropActionSelection.adjacent(to: .resetApp, delta: 1, actions: actions) == .resetApp)
+        // An action from another context snaps to this context's first.
+        #expect(FileDropActionSelection.adjacent(to: .shelf, delta: 1, actions: actions) == .uninstall)
     }
 
     @Test("Each fifth of the tray selects its visible destination")

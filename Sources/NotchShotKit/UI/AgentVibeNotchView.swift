@@ -6,8 +6,10 @@ import SwiftUI
 enum AgentVibePresentation {
     static func statusText(
         for activity: AIActivitySnapshot,
-        claudeSession: ClaudeCodeSession? = nil
+        claudeSession: ClaudeCodeSession? = nil,
+        interaction: AgentInteraction? = nil
     ) -> String {
+        if let interaction { return interaction.isQuestion ? "Asked a question" : "Waiting for approval" }
         if claudeSession?.permission != nil { return "Waiting for approval" }
         return switch activity.state {
         case .working: "Processing"
@@ -19,13 +21,17 @@ enum AgentVibePresentation {
 
     static func sorted(
         _ activities: [AIActivitySnapshot],
-        claudeSessions: [ClaudeCodeSession] = []
+        claudeSessions: [ClaudeCodeSession] = [],
+        interactions: [AgentInteraction] = []
     ) -> [AIActivitySnapshot] {
-        activities.sorted { lhs, rhs in
+        let asking = Set(interactions.map(\.activityKey))
+        return activities.sorted { lhs, rhs in
             let lhsSession = claudeSessions.first { $0.id == lhs.id && lhs.source == .claude }
             let rhsSession = claudeSessions.first { $0.id == rhs.id && rhs.source == .claude }
             let lhsNeedsAttention = lhs.state.isAttention || lhsSession?.permission != nil
+                || asking.contains(lhs.displayIdentifier)
             let rhsNeedsAttention = rhs.state.isAttention || rhsSession?.permission != nil
+                || asking.contains(rhs.displayIdentifier)
             if lhsNeedsAttention != rhsNeedsAttention {
                 return lhsNeedsAttention
             }
@@ -50,6 +56,33 @@ enum AgentVibePresentation {
     static func liveCountText(_ count: Int) -> String {
         count == 1 ? "1 live activity" : String(count) + " live activities"
     }
+
+    /// Runs waiting on the user: open questions and approvals, counted once
+    /// per run.
+    static func attentionCount(
+        interactions: [AgentInteraction],
+        claudeSessions: [ClaudeCodeSession]
+    ) -> Int {
+        var keys = Set(interactions.map(\.activityKey))
+        for session in claudeSessions where session.permission != nil {
+            keys.insert(AISource.claude.rawValue + ":" + session.id)
+        }
+        return keys.count
+    }
+
+    /// The header's one line of state: who needs the user first, else how
+    /// many are working.
+    static func summaryText(
+        live: [AIActivitySnapshot],
+        interactions: [AgentInteraction],
+        claudeSessions: [ClaudeCodeSession]
+    ) -> String {
+        let asking = attentionCount(interactions: interactions, claudeSessions: claudeSessions)
+        if asking > 0 { return asking == 1 ? "1 needs you" : "\(asking) need you" }
+        let working = live.filter { $0.state == .working }.count
+        if working > 0 { return "\(working) working" }
+        return live.count == 1 ? "1 run" : "\(live.count) runs"
+    }
 }
 
 /// The provider mark used by the shared surface. Claude keeps the Vibe crab;
@@ -68,23 +101,36 @@ struct AgentVibeIdentity: View {
     }
 }
 
-/// Shared expanded Vibe surface for all generic AI activity providers. A
-/// Claude session may additionally expose the already-supported local
-/// transcript and permission bridge; Codex, Cursor, and Terminal stay within
-/// the actions their reporter actually supports.
+/// Shared expanded Vibe surface for all generic AI activity providers. It
+/// reads like the island's notification stack: one row per run, the agent's
+/// mark on the left, what it is doing in the island's title and body type,
+/// the time on the right, and hairlines between rows. No cards or outlines.
+/// Controls sit under the pointer; an agent asking for something gets its
+/// answer controls inline under its row.
 struct AgentVibeActivitySurface: View {
     var activities: [AIActivitySnapshot]
     var recent: [AIActivitySnapshot]
     var subtitle: String?
     var claudeSessions: [ClaudeCodeSession] = []
-    /// The island draws its own header (with the travelling agent glyph)
-    /// above this list.
+    /// The island draws its own header beside the camera above this list.
     var showsHeader = true
     var onApprovePermission: (String) -> Void
     var onDenyPermission: (String) -> Void
     var onDismiss: (AIActivitySnapshot) -> Void
     var onClearHistory: () -> Void
+    /// Pending approvals and questions from every source. A row with one
+    /// draws the shared answer controls in place of the Claude-only buttons.
+    var interactions: [AgentInteraction] = []
+    var onRespond: (AgentInteraction, AgentInteractionResponse) -> Void = { _, _ in }
+    /// Takes the user to the exact place the agent runs: its terminal tab,
+    /// or its run in Crewline. Without one, the agent's app is opened.
+    var onJump: ((AIActivitySnapshot) -> Void)?
+    /// Context window use per Claude session id, from the status line.
+    var contextBySession: [String: Double] = [:]
+    /// Pinned under the list (plan limits).
+    var accessory: AnyView?
 
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var selectedClaudeSession: ClaudeCodeSession?
 
     private var liveActivities: [AIActivitySnapshot] {
@@ -93,7 +139,7 @@ struct AgentVibeActivitySurface: View {
         for session in claudeSessions where !existingIDs.contains("claude:\(session.id)") {
             merged.append(session.aiActivity)
         }
-        return AgentVibePresentation.sorted(merged, claudeSessions: claudeSessions)
+        return AgentVibePresentation.sorted(merged, claudeSessions: claudeSessions, interactions: interactions)
     }
 
     private var recentActivities: [AIActivitySnapshot] {
@@ -106,95 +152,114 @@ struct AgentVibeActivitySurface: View {
             ClaudeConversationPanel(session: selectedClaudeSession) {
                 self.selectedClaudeSession = nil
             }
-        } else if liveActivities.isEmpty && recentActivities.isEmpty {
-            emptyState
         } else {
-            VStack(alignment: .leading, spacing: NotchIsland.Spacing.element) {
-                if showsHeader {
+            VStack(alignment: .leading, spacing: 0) {
+                if showsHeader, !liveActivities.isEmpty {
                     header
                 }
-
-                ScrollView(.vertical) {
-                    LazyVStack(alignment: .leading, spacing: NotchIsland.Spacing.tight) {
-                        ForEach(liveActivities, id: \.displayIdentifier) { activity in
-                            AgentVibeActivityRow(
-                                activity: activity,
-                                claudeSession: claudeSession(for: activity),
-                                onOpenConversation: { session in
-                                    selectedClaudeSession = session
-                                },
-                                onApprove: { onApprovePermission(activity.id) },
-                                onDeny: { onDenyPermission(activity.id) },
-                                onOpenAgent: { AgentIconCatalog.activate(activity.source) },
-                                onDismiss: { onDismiss(activity) }
-                            )
-                        }
-
-                        if !recentActivities.isEmpty {
-                            historyHeader
-                            ForEach(recentActivities, id: \.displayIdentifier) { activity in
-                                AgentVibeRecentRow(
-                                    activity: activity,
-                                    onOpenAgent: { AgentIconCatalog.activate(activity.source) },
-                                    onDismiss: { onDismiss(activity) }
-                                )
-                            }
-                        }
-                    }
-                    .padding(.trailing, NotchIsland.Spacing.tight)
+                if liveActivities.isEmpty && recentActivities.isEmpty {
+                    emptyState
+                } else {
+                    list
                 }
-                .scrollIndicators(.visible)
+                if let accessory {
+                    Rectangle()
+                        .fill(Color.islandInk(0.10))
+                        .frame(height: 1)
+                    accessory
+                        .padding(.top, NotchIsland.Spacing.snug)
+                }
             }
-            .padding(.horizontal, NotchIsland.Spacing.group)
-            .padding(.vertical, NotchIsland.Spacing.element)
+            .padding(.horizontal, NotchAlertStyle.horizontalInset - 4)
+            .padding(.bottom, NotchIsland.Spacing.element)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+            .animation(NotchMotion.selection(reduceMotion: reduceMotion), value: liveActivities.map(\.displayIdentifier))
+            .animation(NotchMotion.selection(reduceMotion: reduceMotion), value: interactions.map(\.id))
             .accessibilityElement(children: .contain)
             .accessibilityLabel("AI agent activity")
             .accessibilityValue(accessibilityValue)
         }
     }
 
-    private var header: some View {
-        HStack(spacing: NotchIsland.Spacing.snug) {
-            AgentVibeIdentity(source: liveActivities.first?.source ?? .terminal, size: 20)
+    private var list: some View {
+        ScrollView(.vertical) {
+            LazyVStack(alignment: .leading, spacing: 0) {
+                ForEach(Array(liveActivities.enumerated()), id: \.element.displayIdentifier) { index, activity in
+                    if index > 0 { AgentRowSeparator() }
+                    let interaction = interaction(for: activity)
+                    AgentVibeActivityRow(
+                        activity: activity,
+                        claudeSession: claudeSession(for: activity),
+                        interaction: interaction,
+                        contextPercent: activity.source == .claude ? contextBySession[activity.id] : nil,
+                        onOpenConversation: { session in
+                            selectedClaudeSession = session
+                        },
+                        onApprove: { onApprovePermission(activity.id) },
+                        onDeny: { onDenyPermission(activity.id) },
+                        onRespond: { response in
+                            if let interaction { onRespond(interaction, response) }
+                        },
+                        canOpenAgent: onJump != nil
+                            || AgentIconCatalog.applicationURL(for: activity.source) != nil,
+                        onOpenAgent: {
+                            if let onJump { onJump(activity) } else { AgentIconCatalog.activate(activity.source) }
+                        },
+                        onDismiss: { onDismiss(activity) }
+                    )
+                    .transition(.asymmetric(
+                        insertion: .move(edge: .top).combined(with: .opacity),
+                        removal: .opacity
+                    ))
+                }
 
-            VStack(alignment: .leading, spacing: 1) {
-                Text(AgentVibePresentation.headerTitle(for: liveActivities))
-                    .font(.system(size: 12, weight: .bold))
-                    .foregroundStyle(Color.islandInk(NotchIsland.Ink.primary))
-                Text(subtitle ?? AgentVibePresentation.liveCountText(liveActivities.count))
-                    .font(.system(size: 8.5, weight: .medium, design: .rounded))
-                    .foregroundStyle(Color.islandInk(NotchIsland.Ink.tertiary))
-                    .lineLimit(1)
+                if !recentActivities.isEmpty {
+                    historyHeader
+                    ForEach(recentActivities, id: \.displayIdentifier) { activity in
+                        AgentVibeRecentRow(
+                            activity: activity,
+                            onOpenAgent: { AgentIconCatalog.activate(activity.source) },
+                            onDismiss: { onDismiss(activity) }
+                        )
+                    }
+                }
             }
-
-            Spacer(minLength: NotchIsland.Spacing.tight)
-
-            Text("\(liveActivities.count)")
-                .font(.system(size: 10, weight: .bold, design: .rounded))
-                .foregroundStyle(headerTint)
-                .padding(.horizontal, 7)
-                .padding(.vertical, 4)
-                .background(headerTint.opacity(0.14), in: Capsule(style: .continuous))
-                .accessibilityLabel(AgentVibePresentation.liveCountText(liveActivities.count))
         }
+        .scrollIndicators(.automatic)
     }
 
-    private var headerTint: Color {
-        guard let first = liveActivities.first else { return .secondary }
-        let accent = Color(nsColor: NotchShotColorPolicy.readableAccentOnBlack(
-            NSColor(hex: first.source.accentHex) ?? .systemGreen
-        ))
-        return first.state.tint(sourceAccent: accent)
+    /// Only drawn where the island has no camera-band header of its own.
+    private var header: some View {
+        HStack(spacing: 6) {
+            AgentVibeIdentity(source: liveActivities.first?.source ?? .terminal, size: 15)
+            Text(AgentVibePresentation.headerTitle(for: liveActivities))
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(Color.islandInk(NotchIsland.Ink.secondary))
+                .lineLimit(1)
+            Spacer(minLength: NotchIsland.Spacing.element)
+            Text(subtitle ?? AgentVibePresentation.summaryText(
+                live: liveActivities,
+                interactions: interactions,
+                claudeSessions: claudeSessions
+            ))
+            .font(NotchAlertStyle.meta)
+            .foregroundStyle(attentionCount > 0 ? Color.orange : Color.islandInk(NotchIsland.Ink.tertiary))
+            .lineLimit(1)
+        }
+        .frame(height: 28)
+    }
+
+    private var attentionCount: Int {
+        AgentVibePresentation.attentionCount(interactions: interactions, claudeSessions: claudeSessions)
     }
 
     private var emptyState: some View {
         VStack(spacing: NotchIsland.Spacing.tight) {
-            AgentVibeIdentity(source: .terminal, size: 24)
-            Text("No agent activity")
-                .font(.system(size: 11, weight: .semibold))
+            Text("No agents running")
+                .font(NotchAlertStyle.title)
                 .foregroundStyle(Color.islandInk(NotchIsland.Ink.secondary))
-            Text("Connect Codex, Cursor, Claude, or a terminal reporter in Settings.")
-                .font(.system(size: 9))
+            Text("Claude Code, Codex and Crewline runs show up here.")
+                .font(NotchAlertStyle.body)
                 .foregroundStyle(Color.islandInk(NotchIsland.Ink.tertiary))
                 .multilineTextAlignment(.center)
         }
@@ -204,22 +269,21 @@ struct AgentVibeActivitySurface: View {
 
     private var historyHeader: some View {
         HStack(spacing: NotchIsland.Spacing.snug) {
-            Text("Recent")
-                .font(.system(size: 10, weight: .semibold))
+            Text("Earlier")
+                .font(NotchAlertStyle.meta)
                 .foregroundStyle(Color.islandInk(NotchIsland.Ink.tertiary))
-
-            Rectangle()
-                .fill(Color.islandInk(NotchIsland.Ink.hairline))
-                .frame(height: 1)
-
-            Button("Clear", action: onClearHistory)
-                .buttonStyle(NotchPressButtonStyle())
-                .font(.system(size: 10, weight: .semibold))
-                .foregroundStyle(Color.islandInk(NotchIsland.Ink.secondary))
-                .frame(minHeight: NotchIsland.Hit.control)
-                .accessibilityLabel("Clear recent activities")
+            Spacer(minLength: 0)
+            Button(action: onClearHistory) {
+                Text("Clear")
+                    .font(NotchAlertStyle.meta)
+                    .foregroundStyle(Color.islandInk(NotchIsland.Ink.secondary))
+                    .frame(minWidth: NotchIsland.Hit.control, minHeight: 28)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(NotchPressButtonStyle())
+            .accessibilityLabel("Clear earlier agent activity")
         }
-        .padding(.top, NotchIsland.Spacing.tight)
+        .padding(.top, liveActivities.isEmpty ? 0 : NotchIsland.Spacing.element)
     }
 
     private func claudeSession(for activity: AIActivitySnapshot) -> ClaudeCodeSession? {
@@ -227,269 +291,302 @@ struct AgentVibeActivitySurface: View {
         return claudeSessions.first { $0.id == activity.id }
     }
 
+    /// The oldest open request for this run: answer them in the order asked.
+    private func interaction(for activity: AIActivitySnapshot) -> AgentInteraction? {
+        interactions
+            .filter { $0.activityKey == activity.displayIdentifier }
+            .min { $0.receivedAt < $1.receivedAt }
+    }
+
     private var accessibilityValue: String {
         liveActivities.map {
             let session = claudeSession(for: $0)
-            return "\($0.source.title), \($0.title), \(AgentVibePresentation.statusText(for: $0, claudeSession: session))"
+            return "\($0.source.title), \($0.title), \(AgentVibePresentation.statusText(for: $0, claudeSession: session, interaction: interaction(for: $0)))"
         }.joined(separator: ". ")
     }
 }
 
+/// The notification stack's divider: a hairline starting at the text column.
+private struct AgentRowSeparator: View {
+    var body: some View {
+        Rectangle()
+            .fill(Color.islandInk(0.10))
+            .frame(height: 1)
+            .padding(.leading, AgentVibeActivityRow.markSize + NotchAlertStyle.leadingGap)
+    }
+}
+
 private struct AgentVibeActivityRow: View {
+    static let markSize: CGFloat = 34
+
     let activity: AIActivitySnapshot
     let claudeSession: ClaudeCodeSession?
+    let interaction: AgentInteraction?
+    let contextPercent: Double?
     let onOpenConversation: (ClaudeCodeSession) -> Void
     let onApprove: () -> Void
     let onDeny: () -> Void
+    let onRespond: (AgentInteractionResponse) -> Void
+    /// False only when there is nowhere to go: no jump handler and the
+    /// agent's app is not installed.
+    let canOpenAgent: Bool
     let onOpenAgent: () -> Void
     let onDismiss: () -> Void
 
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @State private var isHovered = false
 
-    private var accent: Color {
-        Color(nsColor: NotchShotColorPolicy.readableAccentOnBlack(
-            NSColor(hex: activity.source.accentHex) ?? .systemGreen
-        ))
+    /// Whether the row still draws the legacy Claude Allow/Deny buttons:
+    /// only when no shared answer controls stand in for them.
+    private var showsLegacyPermissionButtons: Bool {
+        interaction == nil && claudeSession?.permission != nil
     }
 
-    private var stateTint: Color { activity.state.tint(sourceAccent: accent) }
-
-    private var statusText: String {
-        AgentVibePresentation.statusText(for: activity, claudeSession: claudeSession)
-    }
-
-    private var canOpenConversation: Bool { claudeSession != nil }
+    private var isAsking: Bool { interaction != nil || claudeSession?.permission != nil }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: NotchIsland.Spacing.snug) {
-            HStack(alignment: .top, spacing: NotchIsland.Spacing.snug) {
-                agentButton
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(alignment: .center, spacing: NotchAlertStyle.leadingGap) {
+                mark
 
-                VStack(alignment: .leading, spacing: NotchIsland.Spacing.tight) {
-                    HStack(spacing: NotchIsland.Spacing.tight) {
-                        Text(activity.source.title)
-                            .font(.system(size: 10.5, weight: .bold))
-                            .foregroundStyle(Color.islandInk(NotchIsland.Ink.primary))
-                            .fixedSize()
-
-                        Circle()
-                            .fill(stateTint)
-                            .frame(width: 4, height: 4)
-                            .accessibilityHidden(true)
-
-                        Text(statusText)
-                            .font(.system(size: 9, weight: .semibold))
-                            .foregroundStyle(stateTint)
-                            .lineLimit(1)
-                    }
-
+                VStack(alignment: .leading, spacing: 2) {
                     Text(activity.title)
-                        .font(.system(size: 10.5, weight: .semibold))
+                        .font(NotchAlertStyle.title)
                         .foregroundStyle(Color.islandInk(NotchIsland.Ink.primary))
-                        .lineLimit(2)
-
-                    if let detail = detailText {
-                        Text(detail)
-                            .font(.system(size: 9))
-                            .foregroundStyle(claudeSession?.permission == nil
-                                ? Color.islandInk(NotchIsland.Ink.secondary)
-                                : .orange)
-                            .lineLimit(2)
-                    }
-
-                    if let workspace = activity.workspace, !workspace.isEmpty {
-                        Label(AgentWorkspaceFormatter.display(workspace), systemImage: "folder")
-                            .font(.system(size: 8, weight: .medium, design: .rounded))
-                            .foregroundStyle(Color.islandInk(NotchIsland.Ink.tertiary))
-                            .lineLimit(1)
-                            .truncationMode(.head)
+                        .lineLimit(1)
+                    Text(bodyText)
+                        .font(NotchAlertStyle.body)
+                        .foregroundStyle(bodyColor)
+                        .lineLimit(isAsking ? 2 : 1)
+                        .truncationMode(.tail)
+                    if let progress = activity.progress, !isAsking, !activity.state.isTerminal {
+                        progressBar(progress)
+                            .padding(.top, 4)
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
 
-                actions
+                trailing
             }
+            .padding(.vertical, NotchIsland.Spacing.row)
 
-            if !activity.steps.isEmpty {
-                AgentStepList(activity: activity, tint: stateTint)
-                    .padding(.leading, NotchIsland.Spacing.group)
+            if let interaction {
+                AgentInteractionCard(interaction: interaction, onRespond: onRespond)
+                    .padding(.leading, Self.markSize + NotchAlertStyle.leadingGap)
+                    .padding(.bottom, NotchIsland.Spacing.group)
+                    .transition(.opacity.combined(with: .move(edge: .top)))
+            } else if showsLegacyPermissionButtons {
+                HStack(spacing: NotchIsland.Spacing.element) {
+                    Spacer(minLength: 0)
+                    AgentCapsuleButton(title: "Deny", isPrimary: false, action: onDeny)
+                        .accessibilityLabel("Deny Claude Code permission")
+                    AgentCapsuleButton(title: "Allow", isPrimary: true, action: onApprove)
+                        .accessibilityLabel("Allow Claude Code permission")
+                }
+                .padding(.leading, Self.markSize + NotchAlertStyle.leadingGap)
+                .padding(.bottom, NotchIsland.Spacing.group)
             }
-
-            progressRail
         }
-        .padding(.horizontal, NotchIsland.Spacing.element)
-        .padding(.vertical, NotchIsland.Spacing.snug)
-        .background {
-            RoundedRectangle(cornerRadius: NotchIsland.Radius.control, style: .continuous)
-                .fill(Color.black.opacity(reduceTransparency ? 0.84 : (isHovered ? 0.42 : 0.30)))
-        }
-        .overlay {
-            RoundedRectangle(cornerRadius: NotchIsland.Radius.control, style: .continuous)
-                .stroke(
-                    activity.state.isAttention ? stateTint.opacity(0.42) : Color.islandInk(NotchIsland.Ink.hairline),
-                    lineWidth: NotchIsland.Stroke.hairline
-                )
-        }
-        .shadow(color: stateTint.opacity(reduceTransparency ? 0 : 0.10), radius: 10, y: 5)
+        .contentShape(Rectangle())
         .onHover { isHovered = $0 }
-        .animation(NotchShotMotion.interaction(reduceMotion: reduceMotion), value: isHovered)
+        .animation(.easeOut(duration: 0.15), value: isHovered)
         .accessibilityElement(children: .contain)
-        .accessibilityLabel("\(activity.source.title) activity \(activity.title)")
-        .accessibilityValue(statusText)
+        .accessibilityLabel("\(activity.source.title), \(activity.title)")
+        .accessibilityValue(AgentVibePresentation.statusText(
+            for: activity,
+            claudeSession: claudeSession,
+            interaction: interaction
+        ))
     }
 
-    private var detailText: String? {
-        if let permission = claudeSession?.permission {
-            return "\(permission.toolName) needs approval"
-        }
-        if let detail = activity.detail, !detail.isEmpty { return detail }
-        if let step = activity.steps.first(where: { $0.state == .working }) {
-            return step.label
-        }
-        return nil
-    }
+    // MARK: Mark
 
-    private var agentButton: some View {
+    /// The agent's mark, which is also the way to its terminal or run. A
+    /// small dot on its corner carries the state, the way an app badge does.
+    private var mark: some View {
         Button(action: onOpenAgent) {
-            AgentVibeIdentity(source: activity.source, size: 20)
-                .frame(width: NotchIsland.Hit.control, height: NotchIsland.Hit.control)
+            AgentVibeIdentity(source: activity.source, size: 26)
+                .frame(width: Self.markSize, height: Self.markSize)
+                .overlay(alignment: .bottomTrailing) { stateBadge }
                 .contentShape(Rectangle())
         }
         .buttonStyle(NotchPressButtonStyle())
-        .disabled(AgentIconCatalog.applicationURL(for: activity.source) == nil)
-        .opacity(AgentIconCatalog.applicationURL(for: activity.source) == nil
-            ? NotchIconButton.disabledOpacity
-            : 1)
-        .help("Open \(activity.source.title)")
-        .accessibilityLabel("Open \(activity.source.title)")
+        .disabled(!canOpenAgent)
+        .help(jumpHelp)
+        .accessibilityLabel(jumpHelp)
     }
 
     @ViewBuilder
-    private var actions: some View {
-        HStack(spacing: NotchIsland.Spacing.tight) {
-            if let claudeSession, canOpenConversation {
-                Button {
-                    onOpenConversation(claudeSession)
-                } label: {
-                    Image(systemName: "bubble.left")
-                        .font(.system(size: 10, weight: .semibold))
-                        .frame(width: 18, height: 18)
-                }
-                .buttonStyle(NotchPressButtonStyle())
-                .frame(width: NotchIsland.Hit.control, height: NotchIsland.Hit.control)
-                .accessibilityLabel("Open Claude Code conversation")
-            }
-
-            if claudeSession?.permission != nil {
-                Button("Deny", action: onDeny)
-                    .buttonStyle(NotchPressButtonStyle())
-                    .font(.system(size: 8.5, weight: .semibold))
-                    .foregroundStyle(Color.islandInk(NotchIsland.Ink.secondary))
-                    .frame(minWidth: 42, minHeight: NotchIsland.Hit.control)
-                    .background(Color.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
-                    .accessibilityLabel("Deny Claude Code permission")
-
-                Button("Allow", action: onApprove)
-                    .buttonStyle(NotchPressButtonStyle())
-                    .font(.system(size: 8.5, weight: .bold))
-                    .foregroundStyle(.black)
-                    .frame(minWidth: 46, minHeight: NotchIsland.Hit.control)
-                    .background(.orange, in: RoundedRectangle(cornerRadius: 8))
-                    .accessibilityLabel("Allow Claude Code permission")
-            }
-
-            Button(action: onDismiss) {
-                Image(systemName: "archivebox")
-                    .font(.system(size: 9, weight: .semibold))
-                    .frame(width: 18, height: 18)
-            }
-            .buttonStyle(NotchPressButtonStyle())
-            .frame(width: NotchIsland.Hit.control, height: NotchIsland.Hit.control)
-            .foregroundStyle(Color.islandInk(NotchIsland.Ink.tertiary))
-            .accessibilityLabel("Dismiss \(activity.source.title) activity")
+    private var stateBadge: some View {
+        let ring = Circle().stroke(Color.black, lineWidth: 2.5)
+        if isAsking || activity.state == .waiting {
+            Circle().fill(Color.orange).frame(width: 9, height: 9).overlay(ring)
+                .accessibilityHidden(true)
+        } else if activity.state == .failed {
+            Circle().fill(Color(red: 1, green: 0.36, blue: 0.33)).frame(width: 9, height: 9).overlay(ring)
+                .accessibilityHidden(true)
+        } else if activity.state == .working {
+            // White, not the provider colour: Claude's coral would read as
+            // the orange that means "needs you".
+            LayerPulsingDot(diameter: 9, color: .white, pulseOpacity: 0.3, outlineColor: .black, outlineWidth: 2.5)
+                .frame(width: 9, height: 9)
+                .accessibilityHidden(true)
         }
     }
 
-    @ViewBuilder
-    private var progressRail: some View {
-        if let progress = activity.progress {
-            GeometryReader { proxy in
-                ZStack(alignment: .leading) {
-                    Capsule(style: .continuous)
-                        .fill(Color.islandInk(NotchIsland.Ink.hairline))
-                    Capsule(style: .continuous)
-                        .fill(stateTint)
-                        .frame(width: proxy.size.width * min(max(progress, 0), 1))
+    private var jumpHelp: String {
+        switch activity.source {
+        case .claude where claudeSession?.tty != nil || claudeSession?.pid != nil: "Go to this session's terminal"
+        case .crewline: "Open this run in Crewline"
+        default: "Open \(activity.source.title)"
+        }
+    }
+
+    // MARK: Text
+
+    private var bodyText: String {
+        if let interaction {
+            switch interaction.kind {
+            case .approval(let request): return "Wants to use " + request.tool
+            case .question(let form):
+                if let prompt = form.questions.first?.prompt, !prompt.isEmpty { return prompt }
+                return "Has a question"
+            }
+        }
+        if let permission = claudeSession?.permission {
+            return "Wants to use " + permission.toolName
+        }
+        switch activity.state {
+        case .working:
+            if let detail = activity.detail, !detail.isEmpty { return detail }
+            if let step = activity.steps.first(where: { $0.state == .working }) { return step.label }
+            return "Working"
+        case .waiting:
+            return activity.detail.flatMap { $0.isEmpty ? nil : $0 } ?? "Your turn"
+        case .finished:
+            return "Done"
+        case .failed:
+            return activity.detail.flatMap { $0.isEmpty ? nil : $0 } ?? "Stopped with an error"
+        }
+    }
+
+    private var bodyColor: Color {
+        if activity.state == .failed, !isAsking { return Color(red: 1, green: 0.45, blue: 0.42) }
+        return Color.islandInk(0.82)
+    }
+
+    private func progressBar(_ value: Double) -> some View {
+        GeometryReader { proxy in
+            ZStack(alignment: .leading) {
+                Capsule().fill(Color.islandInk(NotchIsland.Ink.hairline * 1.4))
+                Capsule()
+                    .fill(Color.islandInk(0.82))
+                    .frame(width: max(3, proxy.size.width * min(max(value, 0), 1)))
+            }
+        }
+        .frame(height: 3)
+        .frame(maxWidth: 160)
+        .accessibilityElement()
+        .accessibilityLabel("Progress")
+        .accessibilityValue("\(Int((min(max(value, 0), 1) * 100).rounded())) percent")
+    }
+
+    // MARK: Trailing
+
+    /// Agent, context and time at rest; the row's two controls under the
+    /// pointer, in the same place, so a resting list reads as work rather
+    /// than a column of buttons.
+    private var trailing: some View {
+        ZStack(alignment: .trailing) {
+            VStack(alignment: .trailing, spacing: 2) {
+                TimelineView(.periodic(from: activity.updatedAt, by: 30)) { context in
+                    Text(SystemNotificationTimePolicy.compactElapsed(
+                        receivedAt: activity.startedAt ?? activity.updatedAt,
+                        now: context.date
+                    ))
+                    .font(NotchAlertStyle.meta)
+                    .monospacedDigit()
+                    .foregroundStyle(Color.islandInk(NotchIsland.Ink.tertiary))
+                }
+                if let secondaryMeta {
+                    Text(secondaryMeta)
+                        .font(NotchAlertStyle.meta)
+                        .monospacedDigit()
+                        .foregroundStyle(contextTint)
+                        .lineLimit(1)
                 }
             }
-            .frame(height: 3)
-            .accessibilityElement()
-            .accessibilityLabel("Reported progress")
-            .accessibilityValue("\(Int((min(max(progress, 0), 1) * 100).rounded())) percent")
+            .opacity(isHovered ? 0 : 1)
+
+            HStack(spacing: 2) {
+                if let claudeSession {
+                    IslandBandButton(systemName: "text.bubble", label: "Show conversation") {
+                        onOpenConversation(claudeSession)
+                    }
+                }
+                IslandBandButton(systemName: "xmark", label: "Hide \(activity.source.title) activity", action: onDismiss)
+            }
+            .opacity(isHovered ? 1 : 0)
+            .allowsHitTesting(isHovered)
         }
+        .frame(minWidth: 52, alignment: .trailing)
+    }
+
+    /// "54% context" for Claude, else the agent's name when a source hosts
+    /// several.
+    private var secondaryMeta: String? {
+        if let contextPercent { return "\(Int(contextPercent.rounded()))% context" }
+        return activity.agentLabel
+    }
+
+    private var contextTint: Color {
+        guard let contextPercent else { return Color.islandInk(NotchIsland.Ink.tertiary) }
+        return AgentUsageMeterView.tint(for: contextPercent, resting: Color.islandInk(NotchIsland.Ink.tertiary))
     }
 }
 
+/// A finished run that is still worth a glance: one quiet line.
 private struct AgentVibeRecentRow: View {
     let activity: AIActivitySnapshot
     let onOpenAgent: () -> Void
     let onDismiss: () -> Void
 
-    private var accent: Color {
-        Color(nsColor: NotchShotColorPolicy.readableAccentOnBlack(
-            NSColor(hex: activity.source.accentHex) ?? .systemGreen
-        ))
-    }
+    @State private var isHovered = false
 
     var body: some View {
-        HStack(spacing: NotchIsland.Spacing.snug) {
+        HStack(spacing: NotchAlertStyle.leadingGap) {
             Button(action: onOpenAgent) {
-                AgentVibeIdentity(source: activity.source, size: 18)
-                    .frame(width: NotchIsland.Hit.control, height: NotchIsland.Hit.control)
+                AgentVibeIdentity(source: activity.source, size: 16)
+                    .frame(width: AgentVibeActivityRow.markSize, height: 26)
+                    .contentShape(Rectangle())
             }
             .buttonStyle(NotchPressButtonStyle())
             .disabled(AgentIconCatalog.applicationURL(for: activity.source) == nil)
             .accessibilityLabel("Open \(activity.source.title)")
 
-            Text(activity.source.title)
-                .font(.system(size: 10.5, weight: .semibold))
-                .foregroundStyle(Color.islandInk(NotchIsland.Ink.primary))
-                .fixedSize()
-
-            AgentStatePill(
-                state: activity.state,
-                tint: activity.state.tint(sourceAccent: accent),
-                isDimmed: true
-            )
-
             Text(activity.title)
-                .font(.system(size: 10.5))
+                .font(NotchAlertStyle.body)
                 .foregroundStyle(Color.islandInk(NotchIsland.Ink.secondary))
                 .lineLimit(1)
+                .frame(maxWidth: .infinity, alignment: .leading)
 
-            Spacer(minLength: NotchIsland.Spacing.tight)
-
-            Button(action: onDismiss) {
-                Image(systemName: "xmark")
-                    .font(.system(size: 9, weight: .bold))
-                    .frame(width: 18, height: 18)
+            ZStack(alignment: .trailing) {
+                Text(activity.state == .failed ? "Failed" : "Done")
+                    .font(NotchAlertStyle.meta)
+                    .foregroundStyle(activity.state == .failed
+                        ? Color(red: 1, green: 0.45, blue: 0.42)
+                        : Color.islandInk(NotchIsland.Ink.tertiary))
+                    .opacity(isHovered ? 0 : 1)
+                IslandBandButton(systemName: "xmark", label: "Remove \(activity.title)", action: onDismiss)
+                    .opacity(isHovered ? 1 : 0)
+                    .allowsHitTesting(isHovered)
             }
-            .buttonStyle(NotchPressButtonStyle())
-            .frame(width: NotchIsland.Hit.control, height: NotchIsland.Hit.control)
-            .accessibilityLabel("Dismiss \(activity.source.title) activity")
         }
-        .padding(.leading, NotchIsland.Spacing.tight)
-        .padding(.trailing, NotchIsland.Spacing.element)
-        .background {
-            RoundedRectangle(cornerRadius: NotchIsland.Radius.card, style: .continuous)
-                .fill(Color.black.opacity(NotchIsland.Ink.recessed))
-        }
-        .overlay {
-            RoundedRectangle(cornerRadius: NotchIsland.Radius.card, style: .continuous)
-                .stroke(Color.islandInk(NotchIsland.Ink.hairline), lineWidth: NotchIsland.Stroke.hairline)
-        }
+        .frame(minHeight: 30)
+        .contentShape(Rectangle())
+        .onHover { isHovered = $0 }
+        .animation(.easeOut(duration: 0.15), value: isHovered)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("\(activity.source.title), \(activity.title)")
     }
 }
 
@@ -573,41 +670,114 @@ struct AgentVibeCompactStrip: View {
     }
 }
 
+/// The hover peek for agent activity. It used to be a 430 pt bar holding a
+/// 22 pt icon and a lone green activity count at the far edge, so the one
+/// thing worth knowing — is it still working, how far along — was missing.
+/// Now the icon wears the progress ring and a state dot, the state is named,
+/// and the count only appears when there is more than one run.
 struct AgentVibePeekHeader: View {
     let activity: AIActivitySnapshot
     let activityCount: Int
     let onOpen: () -> Void
 
+    private var tint: Color {
+        activity.state.tint(sourceAccent: Color(nsColor: NotchShotColorPolicy.readableAccentOnBlack(
+            NSColor(hex: activity.source.accentHex) ?? .systemGreen
+        )))
+    }
+
     var body: some View {
         Button(action: onOpen) {
-            HStack(spacing: NotchIsland.Spacing.element) {
-                AgentVibeIdentity(source: activity.source, size: 22)
+            HStack(spacing: 12) {
+                AgentVibeStatusMark(activity: activity, tint: tint, size: 32)
 
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(activity.source.title)
-                        .font(.system(size: 11.5, weight: .bold))
+                    HStack(alignment: .firstTextBaseline, spacing: 6) {
+                        Text(activity.source.title)
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundStyle(Color.islandInk(NotchIsland.Ink.primary))
+                            .fixedSize()
+                        Text(AgentVibePresentation.statusText(for: activity))
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundStyle(tint)
+                            .lineLimit(1)
+                    }
                     Text(activity.title)
-                        .font(.system(size: 9.5))
-                        .foregroundStyle(.white.opacity(0.64))
+                        .font(.system(size: 11))
+                        .foregroundStyle(Color.islandInk(NotchIsland.Ink.secondary))
                         .lineLimit(1)
+                        .truncationMode(.tail)
                 }
+                .frame(maxWidth: .infinity, alignment: .leading)
 
-                Spacer(minLength: 0)
-
-                Text("\(activityCount)")
-                    .font(.system(size: 11, weight: .bold, design: .rounded))
-                    .foregroundStyle(Color(nsColor: NotchShotColorPolicy.readableAccentOnBlack(
-                        NSColor(hex: activity.source.accentHex) ?? .systemGreen
-                    )))
+                VStack(alignment: .trailing, spacing: 2) {
+                    if let progress = activity.progress {
+                        Text("\(Int((min(max(progress, 0), 1) * 100).rounded()))%")
+                            .font(.system(size: 13, weight: .semibold, design: .rounded))
+                            .monospacedDigit()
+                            .foregroundStyle(Color.islandInk(NotchIsland.Ink.primary))
+                    }
+                    if activityCount > 1 {
+                        Text("+\(activityCount - 1) more")
+                            .font(.system(size: 10, weight: .medium))
+                            .foregroundStyle(Color.islandInk(NotchIsland.Ink.tertiary))
+                            .fixedSize()
+                    }
+                }
             }
-            .foregroundStyle(.white)
-            .padding(.horizontal, NotchIsland.Spacing.group)
+            .padding(.horizontal, 18)
             .frame(minHeight: 44)
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .accessibilityElement(children: .combine)
         .accessibilityLabel(activity.source.title)
-        .accessibilityValue("\(activity.title), \(activityCount) activities")
+        .accessibilityValue("\(AgentVibePresentation.statusText(for: activity)), \(activity.title), \(activityCount) activities")
         .accessibilityHint("Opens AI agent activity")
+    }
+}
+
+/// The agent's mark inside a ring: a determinate arc when the run reports
+/// progress, otherwise a faint track, plus a state dot on the rim that pulses
+/// while the agent works.
+struct AgentVibeStatusMark: View {
+    let activity: AIActivitySnapshot
+    let tint: Color
+    let size: CGFloat
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    private var ringWidth: CGFloat { max(2, size / 14) }
+    private var shouldPulse: Bool { activity.state == .working && !reduceMotion }
+
+    var body: some View {
+        ZStack {
+            Circle().stroke(tint.opacity(0.22), lineWidth: ringWidth)
+            if let progress = activity.progress {
+                Circle()
+                    .trim(from: 0, to: min(max(progress, 0), 1))
+                    .stroke(tint, style: StrokeStyle(lineWidth: ringWidth, lineCap: .round))
+                    .rotationEffect(.degrees(-90))
+                    .animation(NotchMotion.liveValue(reduceMotion: reduceMotion), value: progress)
+            }
+            AgentVibeIdentity(source: activity.source, size: size - ringWidth * 2 - 8)
+        }
+        .frame(width: size, height: size)
+        .overlay(alignment: .bottomTrailing) {
+            // A layer animation: a SwiftUI `repeatForever` opacity redrew the
+            // whole notch every frame for as long as the agent worked.
+            LayerPulsingDot(
+                diameter: size * 0.28,
+                color: tint,
+                pulseOpacity: 0.4,
+                halfPeriod: 0.85,
+                pulses: shouldPulse,
+                outlineColor: .black,
+                outlineWidth: 2
+            )
+            .frame(width: size * 0.28, height: size * 0.28)
+            .offset(x: 1, y: 1)
+        }
+        .accessibilityHidden(true)
     }
 }

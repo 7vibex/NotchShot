@@ -190,7 +190,8 @@ extension AppCoordinator {
             hasStack: stack.isCollecting || !stack.isEmpty,
             hasMediaContent: media.snapshot.hasContent,
             hasLockedActivityContent: notifications.lockScreenItem() != nil
-                || context.timer.current != nil,
+                || context.timer.current != nil
+                || (!media.isSessionActive && LockedChargingPolicy.reading() != nil),
             mediaPanelRowCount: mediaPanelRowCount
         )
     }
@@ -208,11 +209,9 @@ extension AppCoordinator {
         systemNotifications.refreshPermission()
     }
 
+    /// Clears the whole stack: the rows are one glance, dismissed together.
     public func dismissSystemNotification() {
-        systemNotificationTask?.cancel()
-        systemNotificationTask = nil
-        systemNotificationTaskID = nil
-        promoteNextSystemNotification()
+        clearSystemNotifications()
         refreshActivity()
     }
 
@@ -223,14 +222,32 @@ extension AppCoordinator {
     public func openSystemNotificationSource(_ snapshot: SystemNotificationSnapshot) {
         let source = SystemNotificationSourcePresentation(sourceName: snapshot.sourceName)
         guard SystemNotificationSourceCatalog.activate(source) else { return }
-        dismissSystemNotification()
+        systemNotificationQueue.removeGroup(snapshot.groupKey)
+        arbiter.systemNotification = systemNotificationQueue.presented()
+        refreshActivity()
+    }
+
+    /// Opens the banner's own reply field. When the banner has already
+    /// gone, falls back to opening the app, which is where the reply would
+    /// have to happen anyway.
+    public func replyToSystemNotification(_ snapshot: SystemNotificationSnapshot) {
+        Task { [weak self] in
+            guard let self else { return }
+            if await self.systemNotifications.performReply(for: snapshot) {
+                self.systemNotificationQueue.removeGroup(snapshot.groupKey)
+                self.arbiter.systemNotification = self.systemNotificationQueue.presented()
+                self.refreshActivity()
+            } else {
+                self.openSystemNotificationSource(snapshot)
+            }
+        }
     }
 
     func receiveSystemNotification(_ snapshot: SystemNotificationSnapshot) {
         guard Preferences.shared.mirrorsSystemNotificationBanners,
               media.isSessionActive else { return }
         guard systemNotificationQueue.enqueue(snapshot) else { return }
-        arbiter.systemNotification = systemNotificationQueue.current
+        arbiter.systemNotification = systemNotificationQueue.presented()
         refreshActivity()
     }
 
@@ -241,26 +258,23 @@ extension AppCoordinator {
             systemNotificationTaskID = nil
             return
         }
+        // Keyed on the newest banner, so each arrival restarts the clock and
+        // a busy thread stays up while it is still moving.
         guard systemNotificationTaskID != snapshot.id else { return }
 
         systemNotificationTask?.cancel()
         systemNotificationTaskID = snapshot.id
+        // A little longer for each extra row there is to read.
+        let visible = Double(snapshot.rows.count - 1) * 2 + 6
         systemNotificationTask = Task { [weak self] in
-            try? await Task.sleep(for: .seconds(6))
+            try? await Task.sleep(for: .seconds(visible))
             guard !Task.isCancelled else { return }
             await MainActor.run {
                 guard let self, self.arbiter.systemNotification?.id == snapshot.id else { return }
-                self.systemNotificationTask = nil
-                self.systemNotificationTaskID = nil
-                self.promoteNextSystemNotification()
+                self.clearSystemNotifications()
                 self.refreshActivity()
             }
         }
-    }
-
-    func promoteNextSystemNotification() {
-        systemNotificationQueue.advance()
-        arbiter.systemNotification = systemNotificationQueue.current
     }
 
     func clearSystemNotifications() {
@@ -332,6 +346,23 @@ extension AppCoordinator {
         } else {
             windowController?.resignFocus()
         }
+    }
+
+    /// Press and hold: open the capture menu whatever the island is showing.
+    /// The menu outranks media and activities, so this is the quick way to a
+    /// capture while music or an agent occupies the notch.
+    public func openCaptureMenuFromLongPress() {
+        setPeeking(false)
+        arbiter.userExpanded = true
+        refreshActivity()
+        windowController?.focusActivePanel()
+        IslandHaptics.perform(.islandOpened)
+    }
+
+    /// The pointer opened the island. Keyboard shortcuts don't call this: a
+    /// trackpad tap with no finger on the trackpad would feel random.
+    public func noteIslandOpenedByPointer() {
+        IslandHaptics.perform(.islandOpened)
     }
 
     public func collapse() {

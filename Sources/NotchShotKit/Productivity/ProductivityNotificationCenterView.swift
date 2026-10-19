@@ -285,6 +285,9 @@ struct NotchActivityCardStack: View {
                         subtitle: "NotchShot notifications appear here"
                     )
                 }
+                if isLocked, let power = LockedChargingPolicy.reading() {
+                    chargingCard(power)
+                }
                 if let timer = coordinator.context.timer.current {
                     focusCard(timer)
                 } else if showsPlaceholders {
@@ -316,11 +319,12 @@ struct NotchActivityCardStack: View {
                 artwork(size: 64)
                 VStack(alignment: .leading, spacing: 4) {
                     Text(snapshot.title ?? "Nothing playing")
-                        .font(.system(size: 15, weight: .semibold, design: .rounded))
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(Color.islandInk(NotchIsland.Ink.primary))
                         .lineLimit(2)
                     Text(snapshot.artist ?? snapshot.applicationName ?? "Start Music or Spotify")
-                        .font(.caption)
-                        .foregroundStyle(.white.opacity(0.62))
+                        .font(NotchAlertStyle.body)
+                        .foregroundStyle(Color.islandInk(NotchIsland.Ink.secondary))
                         .lineLimit(1)
                 }
                 Spacer(minLength: 4)
@@ -329,11 +333,20 @@ struct NotchActivityCardStack: View {
 
             HStack(spacing: 8) {
                 Text(formatTime(snapshot.interpolatedPosition(at: now)))
-                ProgressView(value: progress(snapshot, now: now)).tint(.white)
+                GeometryReader { geometry in
+                    ZStack(alignment: .leading) {
+                        Capsule().fill(Color.islandInk(0.18))
+                        Capsule()
+                            .fill(.white)
+                            .frame(width: geometry.size.width * progress(snapshot, now: now))
+                    }
+                }
+                .frame(height: 4)
                 Text(formatTime(snapshot.duration))
             }
-            .font(.system(size: 10, weight: .medium, design: .rounded))
-            .foregroundStyle(.white.opacity(0.58))
+            .font(.system(size: 10, weight: .medium))
+            .monospacedDigit()
+            .foregroundStyle(Color.islandInk(NotchIsland.Ink.tertiary))
 
             HStack(spacing: 18) {
                 mediaControl("backward.fill", label: "Previous") { coordinator.media.send(.previousTrack) }
@@ -352,89 +365,110 @@ struct NotchActivityCardStack: View {
         .notchShotActivityGlassSurface(cornerRadius: 22, reduceTransparency: reduceTransparency)
     }
 
+    // The three small cards use the notch alerts' row: a bare mark, a
+    // 13 pt title with its metadata on the baseline, one grey line, and
+    // controls at the trailing edge. They used to set their own type in the
+    // rounded face, repeat "ACTIVE" in purple capitals on every alert, and put
+    // each icon in a glass chip that read as a button even on the Lock Screen,
+    // where nothing is clickable.
     private func notificationCard(_ item: ProductivityNotificationItem) -> some View {
-        HStack(spacing: 12) {
-            activityIcon(
-                item.priority == .high ? "exclamationmark" : "bell.fill",
-                tint: item.priority == .high ? .orange : .purple
+        let isHigh = item.priority == .high
+        return NotchAlertRow(
+            title: item.title,
+            meta: isHigh ? "High priority" : nil,
+            metaColor: .orange,
+            subtitle: item.body.isEmpty ? "NotchShot alert" : item.body
+        ) {
+            NotchAlertStyle.symbol(
+                isHigh ? "exclamationmark.circle.fill" : "bell.fill",
+                color: isHigh ? .orange : .accentColor
             )
-            VStack(alignment: .leading, spacing: 2) {
-                Text(item.title)
-                    .font(.system(size: 13, weight: .semibold, design: .rounded))
-                    .lineLimit(1)
-                Text(item.body.isEmpty ? "NotchShot alert" : item.body)
-                    .font(.caption)
-                    .foregroundStyle(.white.opacity(0.62))
-                    .lineLimit(1)
-            }
-            Spacer(minLength: 8)
-            Text(item.priority == .high ? "HIGH" : "ACTIVE")
-                .font(.system(size: 10, weight: .bold, design: .rounded))
-                .foregroundStyle(item.priority == .high ? .orange : .purple)
+        } trailing: {
             if !isLocked {
-                Button {
+                NotchAlertIconButton(systemName: "checkmark", label: "Mark \(item.title) done") {
                     ProductivityNotificationCenter.shared.complete(item)
-                } label: {
-                    Image(systemName: "checkmark")
                 }
-                .buttonStyle(.plain)
-                .accessibilityLabel("Mark \(item.title) done")
+                .padding(.trailing, -8)
             }
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 14)
-        .notchShotActivityGlassSurface(cornerRadius: 18, reduceTransparency: reduceTransparency)
+        .cardPadding()
+        .notchShotActivityGlassSurface(cornerRadius: 20, reduceTransparency: reduceTransparency)
+    }
+
+    /// Plugged in at the Lock Screen: the level as the phone's charging
+    /// card draws it, a green battery and the percentage.
+    private func chargingCard(_ power: PowerSourceReading) -> some View {
+        let full = power.percentage >= 100 || !power.isCharging
+        return NotchAlertRow(
+            title: full ? "Charged" : "Charging",
+            subtitle: full ? "Connected to power" : "Plugged in"
+        ) {
+            Image(systemName: "bolt.fill")
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(IslandSystemColor.green)
+                .frame(width: 26)
+                .accessibilityHidden(true)
+        } trailing: {
+            HStack(spacing: 8) {
+                Text("\(power.percentage)%")
+                    .font(.system(size: 22, weight: .semibold))
+                    .monospacedDigit()
+                    .foregroundStyle(Color.islandInk(NotchIsland.Ink.primary))
+                IslandBatteryGlyph(level: Double(power.percentage) / 100, tint: IslandSystemColor.green, width: 30)
+            }
+        }
+        .cardPadding()
+        .notchShotActivityGlassSurface(cornerRadius: 20, reduceTransparency: reduceTransparency)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(full ? "Charged" : "Charging"), \(power.percentage) percent")
     }
 
     private func focusCard(_ timer: FocusTimerSnapshot) -> some View {
-        HStack(spacing: 12) {
-            if isLocked {
-                activityIcon(timer.state == .running ? "pause.fill" : "play.fill", tint: .orange)
-            } else {
-                Button {
-                    timer.state == .running ? coordinator.pauseFocusTimer() : coordinator.resumeFocusTimer()
-                } label: {
-                    activityIcon(timer.state == .running ? "pause.fill" : "play.fill", tint: .orange)
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel(timer.state == .running ? "Pause focus timer" : "Resume focus timer")
-            }
-            if !isLocked {
-                Button {
-                    coordinator.cancelFocusTimer()
-                } label: {
-                    activityIcon("xmark", tint: .white.opacity(0.72))
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("Cancel focus timer")
-            }
-            Spacer()
-            Text(timer.label)
-                .font(.system(size: 12, weight: .semibold, design: .rounded))
-                .foregroundStyle(.orange)
-            Text(FocusTimerPolicy.formatted(timer.remaining))
-                .font(.system(size: 25, weight: .semibold, design: .rounded))
-                .monospacedDigit()
-                .foregroundStyle(.orange)
+        let isRunning = timer.state == .running
+        let status = switch timer.state {
+        case .running: "Focusing"
+        case .paused: "Paused"
+        case .completed: "Done"
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 14)
-        .notchShotActivityGlassSurface(cornerRadius: 18, reduceTransparency: reduceTransparency)
+        return NotchAlertRow(title: timer.label, subtitle: status) {
+            FocusProgressMark(
+                fraction: timer.duration > 0 ? min(max(timer.elapsed / timer.duration, 0), 1) : 0,
+                isRunning: isRunning
+            )
+        } trailing: {
+            HStack(spacing: 0) {
+                Text(FocusTimerPolicy.formatted(timer.remaining))
+                    .font(.system(size: 22, weight: .semibold))
+                    .monospacedDigit()
+                    .foregroundStyle(Color.islandInk(isRunning ? NotchIsland.Ink.primary : NotchIsland.Ink.secondary))
+                    .contentTransition(.numericText(countsDown: true))
+                    .padding(.trailing, isLocked ? 0 : 4)
+                if !isLocked {
+                    NotchAlertIconButton(
+                        systemName: isRunning ? "pause.fill" : "play.fill",
+                        label: isRunning ? "Pause focus timer" : "Resume focus timer",
+                        emphasized: true
+                    ) {
+                        isRunning ? coordinator.pauseFocusTimer() : coordinator.resumeFocusTimer()
+                    }
+                    NotchAlertIconButton(systemName: "xmark", label: "Cancel focus timer") {
+                        coordinator.cancelFocusTimer()
+                    }
+                    .padding(.trailing, -8)
+                }
+            }
+        }
+        .cardPadding()
+        .notchShotActivityGlassSurface(cornerRadius: 20, reduceTransparency: reduceTransparency)
     }
 
     private func emptyCard(symbol: String, title: String, subtitle: String) -> some View {
-        HStack(spacing: 12) {
-            activityIcon(symbol, tint: .white.opacity(0.55))
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title).font(.callout.weight(.medium))
-                Text(subtitle).font(.caption).foregroundStyle(.white.opacity(0.48))
-            }
-            Spacer()
+        NotchAlertRow(title: title, subtitle: subtitle) {
+            NotchAlertStyle.symbol(symbol, color: Color.islandInk(NotchIsland.Ink.tertiary), size: 20)
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 14)
+        .cardPadding()
         .opacity(0.72)
-        .notchShotActivityGlassSurface(cornerRadius: 18, reduceTransparency: reduceTransparency)
+        .notchShotActivityGlassSurface(cornerRadius: 20, reduceTransparency: reduceTransparency)
     }
 
     @ViewBuilder
@@ -470,19 +504,6 @@ struct NotchActivityCardStack: View {
         .accessibilityHidden(true)
     }
 
-    private func activityIcon(_ symbol: String, tint: Color) -> some View {
-        Image(systemName: symbol)
-            .font(.system(size: 13, weight: .bold))
-            .foregroundStyle(tint)
-            .frame(width: 34, height: 34)
-            .notchControlSurface(
-                in: Circle(),
-                reduceTransparency: reduceTransparency,
-                tint: tint,
-                interactive: !isLocked
-            )
-    }
-
     private func progress(_ snapshot: MediaSnapshot, now: Date) -> Double {
         guard let duration = snapshot.duration, duration > 0,
               let position = snapshot.interpolatedPosition(at: now) else { return 0 }
@@ -516,5 +537,33 @@ private struct MiniPlaybackWave: View {
             .frame(width: 28, height: 24)
         }
         .accessibilityLabel(isPlaying ? "Playing" : "Paused")
+    }
+}
+
+private extension View {
+    func cardPadding() -> some View {
+        padding(.leading, 14)
+            .padding(.trailing, 12)
+            .padding(.vertical, 12)
+    }
+}
+
+/// The focus card's mark: a ring that fills as the session runs.
+private struct FocusProgressMark: View {
+    var fraction: Double
+    var isRunning: Bool
+
+    var body: some View {
+        ZStack {
+            Circle().stroke(Color.orange.opacity(0.22), lineWidth: 3)
+            Circle()
+                .trim(from: 0, to: fraction)
+                .stroke(Color.orange, style: StrokeStyle(lineWidth: 3, lineCap: .round))
+                .rotationEffect(.degrees(-90))
+            Image(systemName: isRunning ? "timer" : "pause.fill")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(.orange)
+        }
+        .padding(2)
     }
 }

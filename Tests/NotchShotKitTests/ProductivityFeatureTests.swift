@@ -44,6 +44,26 @@ struct ProductivityFeatureTests {
         #expect(FocusTimerPolicy.context(from: completed).mayInterruptMedia)
     }
 
+    /// The ticker once wrote `current?.elapsed` while reading `current` in the
+    /// same statement, which Swift's exclusivity check aborts on. Letting a
+    /// real tick fire is the only way to exercise that path.
+    @Test("A running focus timer ticks without an access conflict")
+    @MainActor
+    func focusTimerTicks() async throws {
+        let timer = FocusTimerCoordinator()
+        timer.start(duration: 60, label: "Tick")
+        // A loaded main actor can delay the one-second tick well past its
+        // schedule, so wait for the tick itself rather than a fixed interval.
+        let deadline = ContinuousClock.now + .seconds(30)
+        while (timer.current?.elapsed ?? 0) <= 0.5, ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(100))
+        }
+        let elapsed = try #require(timer.current?.elapsed)
+        #expect(elapsed > 0.5)
+        #expect(timer.current?.state == .running)
+        timer.cancel()
+    }
+
     @Test("Live transcript replaces volatile words and preserves finalized phrases")
     func liveTranscriptAccumulator() {
         var transcript = LiveTranscriptAccumulator()

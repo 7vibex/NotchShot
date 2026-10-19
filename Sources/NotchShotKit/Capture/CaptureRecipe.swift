@@ -190,6 +190,17 @@ public final class CaptureRecipeStore {
 }
 
 public enum CaptureRecipeRenderer {
+    /// Captures mutable preferences at the caller and performs bitmap work on
+    /// a serial worker, keeping notch input and animation free to run.
+    public static func prepare(
+        _ image: CapturedImage,
+        recipe: CaptureRecipe,
+        format: ImageFormat,
+        quality: Double
+    ) async throws -> CapturedImage {
+        try await CaptureRecipeWorker.shared.prepare(image, recipe: recipe, format: format, quality: quality)
+    }
+
     public static func render(_ image: CapturedImage, recipe: CaptureRecipe) throws -> CapturedImage {
         guard recipe.id != "standard" else { return image }
 
@@ -221,5 +232,30 @@ public enum CaptureRecipeRenderer {
             scale: image.scale,
             sourceRect: image.sourceRect
         )
+    }
+}
+
+/// One recipe allocation/encode at a time; canceled queued captures stop
+/// before allocating canvases. Only immutable images and value settings cross.
+actor CaptureRecipeWorker {
+    static let shared = CaptureRecipeWorker()
+
+    func prepare(_ input: CapturedImage, recipe: CaptureRecipe, format: ImageFormat, quality: Double) throws -> CapturedImage {
+        try autoreleasepool {
+            try Task.checkCancellation()
+            var output = try CaptureRecipeRenderer.render(input, recipe: recipe)
+            try Task.checkCancellation()
+            if let limit = recipe.targetMaximumBytes, limit > 0 {
+                output = CapturedImage(
+                    cgImage: try SmartExportService.renderToFit(
+                        output.cgImage, maximumBytes: limit, format: format,
+                        quality: quality, dpiScale: output.scale
+                    ),
+                    scale: output.scale, sourceRect: output.sourceRect
+                )
+            }
+            try Task.checkCancellation()
+            return output
+        }
     }
 }

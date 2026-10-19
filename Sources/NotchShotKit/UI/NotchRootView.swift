@@ -17,9 +17,10 @@ public struct NotchRootView: View {
     @Environment(\.colorSchemeContrast) private var colorSchemeContrast
 
     @State private var isTargetedForDrop = false
-    @State private var isRecordingPulsing = false
+    @State private var islandPress = IslandPressState()
     @State private var selectedFileDropAction: FileDropAction = .shelf
     @State private var fileDropItemCount = 0
+    @State private var fileDropContext: FileDropContext = .files
     @State private var usesManualFileDropSelection = false
     @State private var fileDropPull: CGFloat = 0
 
@@ -29,7 +30,8 @@ public struct NotchRootView: View {
     }
 
     private var isActiveDisplay: Bool {
-        coordinator.windowController?.activeDisplayID == context.displayID
+        coordinator.rendersAsActiveDisplay
+            || coordinator.windowController?.activeDisplayID == context.displayID
     }
 
     private var isLockedSession: Bool { !coordinator.media.isSessionActive }
@@ -40,7 +42,8 @@ public struct NotchRootView: View {
             hasMediaContent: coordinator.media.snapshot.hasContent,
             activityStackOptedIn: Preferences.shared.showsActivityStackWhileLocked,
             hasActivityContent: notificationStore.lockScreenItem() != nil
-                || coordinator.context.timer.current != nil,
+                || coordinator.context.timer.current != nil
+                || LockedChargingPolicy.reading() != nil,
             isPrimaryDisplay: context.isPrimary
         )
     }
@@ -55,7 +58,8 @@ public struct NotchRootView: View {
                 hasMediaContent: coordinator.media.snapshot.hasContent,
                 activityStackOptedIn: Preferences.shared.showsActivityStackWhileLocked,
                 hasActivityContent: !notificationStore.activeItems.isEmpty
-                    || coordinator.context.timer.current != nil,
+                    || coordinator.context.timer.current != nil
+                    || LockedChargingPolicy.reading() != nil,
                 isPrimaryDisplay: context.isPrimary
             )
         }
@@ -97,8 +101,30 @@ public struct NotchRootView: View {
             resultCount: coordinator.shelfItems.count,
             hasStack: coordinator.stack.isCollecting || !coordinator.stack.isEmpty,
             mediaPanelRows: coordinator.mediaPanelRowCount,
-            shelfStyle: Preferences.shared.shelfPresentationStyle
+            shelfStyle: Preferences.shared.shelfPresentationStyle,
+            privacyIndicators: showsPrivacyIndicators,
+            isScrollingCapture: coordinator.isScrollingCaptureActive
         )
+    }
+
+    /// The camera band the open island's cards put their header in.
+    private var cameraBand: IslandCameraBand {
+        context.metrics.hasPhysicalNotch
+            ? IslandCameraBand(
+                notchWidth: context.metrics.notchSize.width,
+                height: context.metrics.notchSize.height
+            )
+            : .floating
+    }
+
+    /// Mic or camera dots beside the camera. Physical notches only: a floating
+    /// island on an external display sits away from the menu bar, where
+    /// macOS's own indicator already is.
+    private var showsPrivacyIndicators: Bool {
+        !isLockedSession
+            && context.metrics.hasPhysicalNotch
+            && Preferences.shared.showsPrivacyIndicators
+            && PrivacyIndicatorMonitor.shared.isActive
     }
 
     /// When capture, recording, a result, or an error outranks systemLevel in
@@ -137,6 +163,7 @@ public struct NotchRootView: View {
             contentTopInset: base.contentTopInset,
             topInset: base.topInset
         )
+        .wrappingCamera(base.wrapsCamera)
     }
 
     /// Vertical band the appended level strip occupies: its own 46pt plus the
@@ -165,9 +192,44 @@ public struct NotchRootView: View {
                 .frame(height: layout.topInset)
                 .accessibilityHidden(true)
             island
+            if let tab = visibleTab {
+                NotchTabBar(current: tab, coordinator: coordinator)
+                    .padding(.top, NotchTabBarGeometry.gap)
+                    // Glass at partial opacity reads as a grey smudge, so the
+                    // pill never lingers half-faded: it leaves before the shell
+                    // starts closing and arrives once the shell has mostly
+                    // opened, coming into focus like the island's content.
+                    .transition(reduceMotion ? .opacity : .asymmetric(
+                        insertion: .opacity
+                            .combined(with: .offset(y: -8))
+                            .combined(with: IslandMotion.blur(4))
+                            .animation(NotchMotion.content(reduceMotion: false).delay(0.12)),
+                        removal: .opacity
+                            .animation(.easeIn(duration: 0.1))
+                    ))
+            }
             Spacer(minLength: 0)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        // Shared elements draw above the clipped shell and its satellites, at
+        // whichever anchor currently claims them. Resolved here, in the
+        // panel's fixed frame, rather than on the island: the island's own
+        // frame springs while it opens, and anchors resolved against it made
+        // the cover's path the sum of two different springs.
+        .overlayPreferenceValue(IslandGlyphAnchorKey.self) { anchors in
+            if case .island(let descriptor) = effectiveActivity {
+                IslandSharedElementLayer(
+                    anchors: anchors,
+                    // Only the primary's icon travels (compact ↔ expanded);
+                    // satellites draw their own, so nothing flies across.
+                    activities: coordinator.islandPresentation.primary.map { [$0] } ?? [],
+                    level: descriptor.level,
+                    isTracking: coordinator.islandGesture.isTracking,
+                    coordinator: coordinator
+                )
+            }
+        }
+        .animation(shapeAnimation, value: visibleTab)
         // Hover is *not* handled here. SwiftUI's onHover fires for the whole
         // panel — which is far larger than the island — and fighting the window
         // controller's own hit test made the notch open on its own. The
@@ -175,6 +237,16 @@ public struct NotchRootView: View {
         .onChange(of: isTargetedForDrop) { _, targeted in
             coordinator.setDraggingFiles(targeted)
         }
+    }
+
+    /// The page pill under the open notch. Must match the window
+    /// controller's `tabBarRect`, or the pill draws where clicks fall through.
+    private var visibleTab: NotchTab? {
+        guard Preferences.shared.showsNotchTabBar,
+              !isLockedSession,
+              NotchTabBarGeometry.topOffset(below: layout) != nil
+        else { return nil }
+        return NotchTab.current(for: effectiveActivity, in: Preferences.shared.notchTabs)
     }
 
     private var lockedActivityStack: some View {
@@ -208,54 +280,55 @@ public struct NotchRootView: View {
         )
     }
 
+    private var shellIsSeeThrough: Bool {
+        IslandGlassPolicy.isSeeThrough(
+            enabled: Preferences.shared.islandGlassEnabled,
+            isExpanded: effectiveActivity.isExpanded,
+            reduceTransparency: reduceTransparency,
+            increaseContrast: colorSchemeContrast == .increased
+        )
+    }
+
+    /// Whether the glass shell is on at all, independent of whether this
+    /// presentation is see-through. Constant while the island morphs, so the
+    /// view structure that depends on it never swaps mid-animation.
+    private var shellCanBeSeeThrough: Bool {
+        IslandGlassPolicy.usesGlass(
+            enabled: Preferences.shared.islandGlassEnabled,
+            reduceTransparency: reduceTransparency,
+            increaseContrast: colorSchemeContrast == .increased
+        )
+    }
+
     private var island: some View {
         ZStack(alignment: .top) {
-            shape
-                .fill(.black)
+            IslandShellFill(
+                shape: shape,
+                isExpanded: effectiveActivity.isExpanded,
+                solidBandHeight: context.metrics.hasPhysicalNotch ? context.metrics.notchSize.height : 0
+            )
                 .overlay {
                     if isTargetedForDrop {
-                        shape.stroke(Color.accentColor, lineWidth: 2)
-                    } else if isRecording {
-                        recordingKeyline
-                    } else {
+                        // Clipped to the shell below, so the visible half of a
+                        // 3 pt stroke reads as the old 1.5 pt border.
+                        MarchingDashStroke(shape: shape, color: .accentColor, lineWidth: 3, dash: [8, 6])
+                    } else if !isRecording {
                         mediaShellKeyline
                     }
                 }
-                // The shadow only appears once the island is bigger than the
-                // cutout, so a closed notch casts nothing onto the bezel.
-                .shadow(
-                    color: .black.opacity(effectiveActivity.isExpanded ? 0.45 : 0),
-                    radius: 22,
-                    y: 10
-                )
 
             dictationCameraCore
 
             styledContent
+                // Pinned to the shell's top centre at the shell's current
+                // size. The content inside keeps its own fixed size, so this
+                // frame tracking the spring re-places it rather than re-laying
+                // it out.
                 .frame(
-                    width: baseLayout.size.width,
-                    height: contentFrameHeight,
-                    // The island lays its own content out from the top. Centring
-                    // made outgoing expanded content slide down as the shell
-                    // shrank underneath it during a collapse.
-                    alignment: isShowingDictation || isShowingIsland ? .top : .center
-                )
-                .offset(y: contentTopOffset)
-                .frame(
-                    width: baseLayout.size.width,
-                    height: baseLayout.size.height,
+                    width: layout.size.width,
+                    height: layout.size.height,
                     alignment: .top
                 )
-                // The island's own clip is `NotchShape`, whose top fillets
-                // flare *outside* the island's rect to meet the bezel — so a
-                // shape clip alone still lets content paint into those wings,
-                // beside the camera. That is how the cover's accent glow ended
-                // up outside the island. The shell may draw in the flare; its
-                // contents may not.
-                .clipped()
-                // Content fades in a beat after the shape has started growing,
-                // so text never appears outside the island it belongs to.
-                .transition(contentTransition)
 
             if let level = overlaidSystemLevel {
                 VStack(spacing: 0) {
@@ -271,7 +344,37 @@ public struct NotchRootView: View {
             }
         }
         .clipShape(shape)
+        // The shadow lives outside the clip. Attached to the fill inside the
+        // ZStack, `clipShape` cut it away entirely and the expanded island never
+        // cast one. It only appears once the island is bigger than the cutout,
+        // so a closed notch casts nothing onto the bezel.
+        .background {
+            shape
+                .fill(.black)
+                .shadow(
+                    // Strength 0.5 is the original 0.45 opacity.
+                    color: .black.opacity(
+                        effectiveActivity.isExpanded ? Preferences.shared.islandShadowStrength * 0.9 : 0
+                    ),
+                    radius: 14 + 16 * Preferences.shared.islandShadowStrength,
+                    y: 10
+                )
+                .modifier(ShadowCarrierCutout(
+                    shape: shape,
+                    isAvailable: shellCanBeSeeThrough,
+                    cutsOut: shellIsSeeThrough
+                ))
+        }
         .frame(width: layout.size.width, height: layout.size.height)
+        // Held down, the compact island gives a little under the pointer, as
+        // the phone's does under a finger, and springs back on release. The
+        // scoped animation touches only this scale: a plain `.animation`
+        // here would also take over the open/close morph that a release
+        // starts in the same transaction.
+        .animation(reduceMotion ? nil : IslandMotion.press) { content in
+            content.scaleEffect(islandPress.isPressed && !reduceMotion ? IslandMotion.pressedScale : 1, anchor: .top)
+        }
+        .environment(islandPress)
         .overlay {
             if case .island(let descriptor) = effectiveActivity {
                 IslandSatelliteLayer(
@@ -279,20 +382,6 @@ public struct NotchRootView: View {
                     layout: layout,
                     coordinator: coordinator,
                     gesture: coordinator.islandGesture
-                )
-            }
-        }
-        // Shared elements draw above the clipped shell and its satellites, at
-        // whichever anchor currently claims them.
-        .overlayPreferenceValue(IslandGlyphAnchorKey.self) { anchors in
-            if case .island = effectiveActivity {
-                IslandSharedElementLayer(
-                    anchors: anchors,
-                    // Only the primary's icon travels (compact ↔ expanded);
-                    // satellites draw their own, so nothing flies across.
-                    activities: coordinator.islandPresentation.primary.map { [$0] } ?? [],
-                    isTracking: coordinator.islandGesture.isTracking,
-                    coordinator: coordinator
                 )
             }
         }
@@ -307,7 +396,7 @@ public struct NotchRootView: View {
             anchor: fileDropPull < 0 ? .trailing : .leading
         )
         .offset(x: reduceMotion || !isTargetedForDrop ? 0 : fileDropPull * 4)
-        .animation(reduceMotion ? nil : .interactiveSpring(response: 0.28, dampingFraction: 0.8), value: fileDropPull)
+        .animation(NotchMotion.drag(reduceMotion: reduceMotion), value: fileDropPull)
         .animation(shapeAnimation, value: layout.size)
         .animation(shapeAnimation, value: layout.satelliteDiameter)
         .animation(shapeAnimation, value: layout.clusterOffset)
@@ -322,6 +411,7 @@ public struct NotchRootView: View {
             delegate: NotchFileDropDelegate(
                 isTargeted: $isTargetedForDrop,
                 selectedAction: $selectedFileDropAction,
+                context: $fileDropContext,
                 itemCount: $fileDropItemCount,
                 usesManualSelection: $usesManualFileDropSelection,
                 pointerPull: $fileDropPull,
@@ -342,12 +432,20 @@ public struct NotchRootView: View {
         return false
     }
 
+    /// Views that lay out the band beside the camera themselves: dictation, and
+    /// the capture menu on a physical notch.
+    private var drawsInCameraBand: Bool {
+        if isShowingDictation { return true }
+        if baseLayout.wrapsCamera { return true }
+        return effectiveActivity == .expanded && context.metrics.hasPhysicalNotch
+    }
+
     private var contentTopOffset: CGFloat {
-        isShowingDictation ? 0 : baseLayout.contentTopInset
+        drawsInCameraBand ? 0 : baseLayout.contentTopInset
     }
 
     private var contentFrameHeight: CGFloat {
-        let available = isShowingDictation
+        let available = drawsInCameraBand
             ? baseLayout.size.height
             : baseLayout.size.height - baseLayout.contentTopInset
         // The island can only grow to `NotchLayout.maximumSize.height`, so on a
@@ -365,7 +463,7 @@ public struct NotchRootView: View {
     /// content treatments leaking into real hardware clearance.
     @ViewBuilder
     private var dictationCameraCore: some View {
-        if isShowingDictation, context.metrics.hasPhysicalNotch {
+        if drawsInCameraBand, context.metrics.hasPhysicalNotch {
             Rectangle()
                 .fill(.black)
                 .frame(
@@ -414,28 +512,6 @@ public struct NotchRootView: View {
         }
     }
 
-    /// A red edge while the screen is being recorded.
-    ///
-    /// This is the one status the island should be able to state without being
-    /// read — the same reason the shell's *media* keyline was taken out: colour
-    /// on the edge reads as a signal, so it should only ever mean something.
-    /// Here it means the display is being captured right now.
-    private var recordingKeyline: some View {
-        shape
-            .stroke(Color.red.opacity(isRecordingPulsing ? 0.95 : 0.5), lineWidth: 2)
-            .shadow(color: .red.opacity(isRecordingPulsing ? 0.35 : 0.12), radius: 10)
-            .animation(
-                reduceMotion
-                    ? nil
-                    : .easeInOut(duration: 1.1).repeatForever(autoreverses: true),
-                value: isRecordingPulsing
-            )
-            .allowsHitTesting(false)
-            .accessibilityHidden(true)
-            .onAppear { isRecordingPulsing = !reduceMotion }
-            .onDisappear { isRecordingPulsing = false }
-    }
-
     private var isShowingMedia: Bool {
         switch effectiveActivity {
         case .media: return true
@@ -448,44 +524,122 @@ public struct NotchRootView: View {
     /// adjacent effects merge cleanly without tinting readable content.
     private var styledContent: some View {
         GlassEffectContainer(spacing: 6) {
-            content
+            // Outgoing and incoming content overlap during a switch; both hang
+            // from the top, as they do in the shell.
+            ZStack(alignment: .top) {
+                // A transition only runs on insertion and removal. On the
+                // always-present container it never fired, so switching
+                // activity fell back to a plain simultaneous crossfade. Keying
+                // the content by its slot makes each switch a real
+                // remove-and-insert.
+                framedContent
+                    .id(contentSlot)
+                    .transition(contentTransition)
+            }
+        }
+    }
+
+    /// The content at the size of the shell it is going to. The frames sit
+    /// inside the slot's identity on purpose: a switch inserts the new
+    /// content already at its final size, and the outgoing content keeps the
+    /// size it had, so neither is laid out again on every frame of the
+    /// shell's spring. They used to sit outside it and spring with the shell,
+    /// which re-laid out every row of the menu or shelf at each intermediate
+    /// size — most of the main thread's work during an open or close.
+    /// Within one slot (the island's levels, a media peek) the frame still
+    /// animates, because that content choreographs its own resize.
+    private var framedContent: some View {
+        content
+            .environment(\.islandCameraBand, cameraBand)
+            .frame(
+                width: baseLayout.size.width,
+                height: contentFrameHeight,
+                // The island lays its own content out from the top. Centring
+                // made outgoing expanded content slide down as the shell
+                // shrank underneath it during a collapse.
+                alignment: drawsInCameraBand || isShowingIsland ? .top : .center
+            )
+            .offset(y: contentTopOffset)
+            .frame(
+                width: baseLayout.size.width,
+                height: baseLayout.size.height,
+                alignment: .top
+            )
+            // The island's own clip is `NotchShape`, whose top fillets
+            // flare *outside* the island's rect to meet the bezel — so a
+            // shape clip alone still lets content paint into those wings,
+            // beside the camera. That is how the cover's accent glow ended
+            // up outside the island. The shell may draw in the flare; its
+            // contents may not.
+            .clipped()
+    }
+
+    /// Coarser than `presentationIdentity`: that one changes with every volume
+    /// step and dictation sub-state, and re-inserting the content on each of
+    /// those would restart the transition dozens of times a second. The island
+    /// keeps one slot because it choreographs its own levels internally.
+    private var contentSlot: String {
+        switch effectiveActivity {
+        case .idle: "idle"
+        case .media: "media"
+        case .expanded: "expanded"
+        case .fileDrop: "fileDrop"
+        case .selecting: "selecting"
+        case .countdown: "countdown"
+        case .recording: "recording"
+        case .processing: "processing"
+        case .result: "result"
+        case .systemLevel(let level): "systemLevel(\(level.kind.rawValue))"
+        case .context(let snapshot): "context(\(snapshot.kind.rawValue))"
+        case .systemNotification(let snapshot): "systemNotification(\(snapshot.id))"
+        case .error: "error"
+        case .dictation: "dictation"
+        case .island: "island"
         }
     }
 
     /// Size changes get a spring with a little overshoot; content gets a
     /// shorter, softer curve so the two don't visibly fight.
     private var shapeAnimation: Animation? {
-        guard NotchShotMotion.allowsSpatialAnimation(reduceMotion: reduceMotion) else {
-            return nil
-        }
         // The multi-activity island settles without overshoot: with several
         // shapes and a travelling icon on screen, any bounce reads as jitter.
         if isShowingIsland {
-            return .spring(response: NotchIsland.Motion.shellResponse, dampingFraction: 1.0)
+            return NotchMotion.settle(reduceMotion: reduceMotion)
         }
-        return .spring(
-            response: NotchIsland.Motion.shellResponse,
-            dampingFraction: NotchIsland.Motion.shellDamping
-        )
+        // The animation is read in the new state, so a non-expanded activity
+        // means the shell is closing. Closing is quicker and doesn't overshoot
+        // (except in the bouncy style), so the black shape doesn't bounce back
+        // out past the cutout after the user has dismissed it.
+        return effectiveActivity.isExpanded
+            ? NotchMotion.expand(reduceMotion: reduceMotion)
+            : NotchMotion.collapse(reduceMotion: reduceMotion)
     }
 
     private var contentAnimation: Animation? {
-        reduceMotion
-            ? nil
-            : .spring(
-                response: NotchIsland.Motion.contentResponse,
-                dampingFraction: NotchIsland.Motion.contentDamping
-            )
+        reduceMotion ? nil : NotchMotion.content(reduceMotion: false)
     }
 
+    /// Incoming content arrives a beat after the shell starts growing, so text
+    /// never appears outside the island it belongs to; outgoing content is gone
+    /// quickly so the two never share the shell for long. The light blur on
+    /// arrival is what makes the swap read as the shape morphing rather than a
+    /// crossfade.
     private var contentTransition: AnyTransition {
         guard !reduceMotion else { return .opacity }
         return .asymmetric(
             insertion: .opacity
-                .combined(with: .scale(scale: 0.90, anchor: .top))
-                .combined(with: .offset(y: -8)),
+                .combined(with: .scale(scale: 0.92, anchor: .top))
+                .combined(with: .offset(y: -6))
+                .combined(with: .modifier(
+                    active: IslandContentBlur(radius: 6),
+                    identity: IslandContentBlur(radius: 0)
+                ))
+                .animation(NotchMotion.content(reduceMotion: false).delay(0.06)),
             removal: .opacity
                 .combined(with: .scale(scale: 0.96, anchor: .top))
+                // No blur on the way out: blurring outgoing text forced it onto
+                // the CPU for every frame of the close (see `IslandMotion.blur`).
+                .animation(NotchMotion.contentExit(reduceMotion: false))
         )
     }
 
@@ -501,10 +655,11 @@ public struct NotchRootView: View {
                 isFloating: !context.metrics.hasPhysicalNotch
             )
         case .expanded:
-            CaptureMenuContent(coordinator: coordinator)
+            CaptureMenuContent(coordinator: coordinator, metrics: context.metrics)
         case .fileDrop:
             FileDropActionTray(
                 itemCount: fileDropItemCount,
+                context: fileDropContext,
                 selectedAction: $selectedFileDropAction,
                 onManualSelection: { action in
                     selectedFileDropAction = action
@@ -544,7 +699,8 @@ public struct NotchRootView: View {
         case .systemNotification(let snapshot):
             SystemNotificationCard(
                 snapshot: snapshot,
-                onOpenSource: { coordinator.openSystemNotificationSource(snapshot) },
+                onOpenSource: { coordinator.openSystemNotificationSource($0) },
+                onReply: { coordinator.replyToSystemNotification($0) },
                 onDismiss: { coordinator.dismissSystemNotification() }
             )
         case .error(let message):
@@ -586,7 +742,9 @@ public struct NotchRootView: View {
                 : "\(level.kind.title) \(Int(level.value * 100)) percent"
         case .context(let snapshot): snapshot.title
         case .systemNotification(let snapshot):
-            "Notification from \(snapshot.sourceName): \(snapshot.title) \(snapshot.body)"
+            snapshot.rows
+                .map { "\($0.title), \($0.sourceName): \($0.body)" }
+                .joined(separator: ". ")
         case .error(let message): "Error: \(message)"
         case .dictation(let snap): dictationAccessibilityDescription(snap)
         case .island(let descriptor): islandAccessibilityDescription(descriptor)
@@ -648,52 +806,33 @@ public struct NotchRootView: View {
 
 // MARK: - Media
 
-struct PlaybackIndicator: View {
-    var isPlaying: Bool
-    var accentColor: Color = .white
-    var animates = true
-    /// The expanded player gives the meter more room than the compact strip;
-    /// scaling keeps one set of bar rhythms instead of a second hard-coded set.
-    var scale: CGFloat = 1
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var isBouncing = false
+/// Cuts the shell's own area out of the black shadow carrier, so a
+/// see-through shell shows what is behind it instead of the carrier.
+///
+/// The mask is an offscreen pass on every frame the shell's shape changes,
+/// which is every frame of every open and close. With glass off the shell
+/// is opaque and the cut-out removes nothing, so the pass is skipped.
+/// While glass is on it stays in place either way, so the cut-out fades on
+/// the shell's spring instead of swapping mid-animation.
+private struct ShadowCarrierCutout: ViewModifier {
+    var shape: NotchShape
+    var isAvailable: Bool
+    var cutsOut: Bool
 
-    /// Short height, tall height, and beat, per bar — a small, a medium and a
-    /// big one, each on a different clock.
-    private let bars: [(low: CGFloat, high: CGFloat, duration: Double)] = [
-        (3, 8, 0.42),
-        (4, 12, 0.55),
-        (3, 10, 0.34),
-    ]
-
-    var body: some View {
-        HStack(alignment: .center, spacing: 2) {
-            ForEach(bars.indices, id: \.self) { index in
-                let bar = bars[index]
-                Capsule()
-                    .fill(accentColor.opacity(isPlaying ? 0.95 : 0.4))
-                    .frame(width: 2 * scale, height: (isBouncing ? bar.high : bar.low) * scale)
-                    .animation(animation(bar.duration), value: isBouncing)
+    func body(content: Content) -> some View {
+        if isAvailable {
+            content.mask {
+                Rectangle()
+                    .padding(-80)
+                    .overlay {
+                        shape.fill(.black)
+                            .opacity(cutsOut ? 1 : 0)
+                            .blendMode(.destinationOut)
+                    }
+                    .compositingGroup()
             }
+        } else {
+            content
         }
-        .frame(height: 12 * scale, alignment: .center)
-        .onAppear { isBouncing = isPlaying && animates && !reduceMotion }
-        .onChange(of: isPlaying) { _, playing in
-            isBouncing = playing && animates && !reduceMotion
-        }
-        .onChange(of: animates) { _, shouldAnimate in
-            isBouncing = isPlaying && shouldAnimate && !reduceMotion
-        }
-        .onChange(of: reduceMotion) { _, reduced in
-            isBouncing = isPlaying && animates && !reduced
-        }
-        .accessibilityHidden(true)
-    }
-
-    /// Nil while paused, so the bars settle at their short height instead of
-    /// being left mid-bounce by a cancelled repeating animation.
-    private func animation(_ duration: Double) -> Animation? {
-        guard isPlaying, animates, !reduceMotion else { return .easeOut(duration: 0.18) }
-        return .easeInOut(duration: duration).repeatForever(autoreverses: true)
     }
 }

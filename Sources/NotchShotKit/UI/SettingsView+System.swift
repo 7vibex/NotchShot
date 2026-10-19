@@ -36,7 +36,26 @@ struct NotchSettings: View {
                     }
                 ))
                 .disabled(!preferences.notchEnabled || preferences.notchDisplayPlacement != .allDisplays)
-                Text("Built-in only keeps the notch off external monitors, even when one is set as the Main Display. It stays hidden while the MacBook lid is closed.")
+                Text("Built-in only hides the notch on external monitors and while the lid is closed.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Section("Hide in apps") {
+                if preferences.notchHiddenAppBundleIDs.isEmpty {
+                    Text("No apps yet.")
+                        .foregroundStyle(.secondary)
+                } else {
+                    ForEach(preferences.notchHiddenAppBundleIDs.sorted(), id: \.self) { bundleID in
+                        NotchHiddenAppRow(bundleID: bundleID) {
+                            preferences.notchHiddenAppBundleIDs.remove(bundleID)
+                            coordinator.windowController?.refreshFrontmostAppVisibility()
+                        }
+                    }
+                }
+                Button("Add App…") { addNotchHiddenApp() }
+                    .disabled(!preferences.notchEnabled)
+                Text("The notch hides while one of these apps is in front.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -52,7 +71,7 @@ struct NotchSettings: View {
                     set: { coordinator.setBrightnessMirroringEnabled($0) }
                 ))
                 .disabled(!preferences.systemLevelHUDEnabled)
-                Text("Only a recent brightness-key press arms the notch HUD. Automatic changes from the ambient-light sensor stay silent; Control Centre or third-party brightness changes may stay silent too because macOS does not publish their source.")
+                Text("Shown for brightness keys only; automatic and Control Center changes stay silent.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
@@ -61,7 +80,7 @@ struct NotchSettings: View {
                     set: { coordinator.setSystemOSDSuppressed($0) }
                 ))
                 .disabled(!preferences.systemLevelHUDEnabled)
-                Text("Experimental, direct-distribution only. On macOS 26.5 or later, Input Monitoring lets NotchShot handle only the volume, mute, and brightness keys before Control Center shows its duplicate banner. Older overlays use the signed recovery watchdog; VoiceOver always keeps Apple's native feedback.")
+                Text("Experimental. Needs Input Monitoring on macOS 26.5 and later. VoiceOver keeps Apple's overlay.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 if preferences.suppressesSystemOSD,
@@ -70,32 +89,27 @@ struct NotchSettings: View {
                     // Naming the real cause first. Sending someone to the Input
                     // Monitoring pane cannot help an ad-hoc build: the row they
                     // would switch on belongs to a different code hash.
-                    Text("The macOS overlay is back because this build is ad-hoc signed, so its Input Monitoring grant no longer applies. Rebuild NotchShot with a code-signing certificate.")
-                        .font(.caption)
-                        .foregroundStyle(.orange)
+                    SettingsWarningRow(message: "This build is ad-hoc signed, so its Input Monitoring grant doesn't apply. Rebuild with a signing certificate.")
                 } else if preferences.suppressesSystemOSD,
                    coordinator.osd.needsInputMonitoringPermission {
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text(coordinator.permissions.inputMonitoringGranted
-                             ? "Input Monitoring is granted, but the media-key listener is not active. Quit and reopen NotchShot."
-                             : "Input Monitoring is required. Allow NotchShot, then quit and reopen it.")
-                            .font(.caption)
-                            .foregroundStyle(.orange)
+                    SettingsWarningRow(
+                        message: coordinator.permissions.inputMonitoringGranted
+                            ? "Input Monitoring is granted but not active yet."
+                            : "Needs Input Monitoring."
+                    ) {
                         if coordinator.permissions.inputMonitoringGranted {
                             Button("Quit & Reopen") {
                                 coordinator.permissions.relaunchApplication()
                             }
                         } else {
-                            Button("Open Input Monitoring Settings") {
+                            Button("Open Settings…") {
                                 coordinator.permissions.openSettings(for: .inputMonitoring)
                             }
                         }
                     }
                 }
                 if !coordinator.osd.isCrashRecoveryAvailable {
-                    Text("Recovery helper missing — NotchShot will refuse to suppress the native overlay.")
-                        .font(.caption)
-                        .foregroundStyle(.orange)
+                    SettingsWarningRow(message: "The recovery helper is missing, so the macOS overlay can't be replaced. Reinstall NotchShot to restore it.")
                 }
             }
 
@@ -113,7 +127,7 @@ struct NotchSettings: View {
                     }
                 }
                 .disabled(!preferences.hoverPeekEnabled)
-                Text("Hovering only reveals a compact peek. The full interface always needs a click, a shortcut, or a drag.")
+                Text("Hover shows a compact peek; opening fully takes a click, shortcut, or drag.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -132,7 +146,7 @@ struct NotchSettings: View {
                     }
                 }
                 .disabled(!FloatingBasketPreferences.shared.isEnabled)
-                Text("Jiggle the mouse side-to-side while dragging files and the basket flies in wherever you are — just like Droppy. Drop files in to hold them, drag them out where needed. Auto-hides when empty.")
+                Text("Shake the pointer while dragging files to call up a basket that holds them. It hides when empty.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -149,6 +163,26 @@ struct NotchSettings: View {
             }
         }
         .settingsWorkbenchFormStyle()
+    }
+
+    private func addNotchHiddenApp() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = true
+        panel.allowedContentTypes = [.applicationBundle]
+        panel.directoryURL = URL(fileURLWithPath: "/Applications", isDirectory: true)
+        panel.prompt = "Hide Notch"
+        panel.message = "Choose apps that should hide the notch while they are in front."
+        guard panel.runModal() == .OK else { return }
+        for url in panel.urls {
+            guard let identifier = Bundle(url: url)?.bundleIdentifier,
+                  !identifier.isEmpty,
+                  identifier != Bundle.main.bundleIdentifier
+            else { continue }
+            preferences.notchHiddenAppBundleIDs.insert(identifier)
+        }
+        coordinator.windowController?.refreshFrontmostAppVisibility()
     }
 
     private func displayName(for context: NotchDisplayContext) -> String {
@@ -181,14 +215,12 @@ struct MediaSettings: View {
                         coordinator.windowController?.refreshLockedPresentation()
                     }
                 ))
-                Text("Separate privacy opt-in. Shows Focus state and the latest NotchShot-owned alert in a display-only card stack. Replies and controls remain disabled until unlock.")
+                Text("Display only: Focus state and NotchShot's latest alert. Controls stay off until you unlock.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 LabeledContent("Active source", value: coordinator.media.activeSource.displayName)
                 if let reason = coordinator.media.lastFailureReason {
-                    Text(reason)
-                        .font(.caption)
-                        .foregroundStyle(.orange)
+                    SettingsWarningRow(message: reason)
                 }
                 if coordinator.permissions.pendingRemediation == .automation {
                     Button("Open Automation Settings") {
@@ -208,7 +240,7 @@ struct MediaSettings: View {
                         coordinator.permissions.openSettings(for: .accessibility)
                     }
                 }
-                Text("Privacy opt-in. NotchShot reads only notification banners macOS visibly presents through Accessibility, keeps their text in memory, and never shows them while the Mac is locked. A recognized Messages or WhatsApp card can open that app to reply there; NotchShot cannot send the reply itself. Focus-suppressed notifications and hidden history are not available.")
+                Text("Reads only banners macOS shows on screen, keeps them in memory, and never shows them while locked.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -246,9 +278,7 @@ struct MediaSettings: View {
                 Text(MediaRemoteAdapterSource.licenseNotice)
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                Text("The selected executable runs with your macOS account's permissions. Choose only a copy you built yourself or obtained from a source you trust; NotchShot limits its runtime and output but cannot sandbox it.")
-                    .font(.caption)
-                    .foregroundStyle(.orange)
+                SettingsWarningRow(message: "The adapter runs with your account's permissions. Only choose a copy you built or trust.")
             }
 
             Section("Fallback") {
@@ -259,7 +289,22 @@ struct MediaSettings: View {
                         coordinator.media.restart()
                     }
                 ))
-                Text("Used only when the Now Playing bridge is unavailable. Needs Automation permission, can't see browser audio, and fetches the active Spotify track's artwork from its HTTPS CDN once per track.")
+                Text("Fallback when the Now Playing bridge is unavailable. Needs Automation; can't see browser audio.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Section("Lyrics") {
+                Toggle("Show lyrics in the player", isOn: Binding(
+                    get: { preferences.lyricsEnabled },
+                    set: { enabled in
+                        preferences.lyricsEnabled = enabled
+                        if !enabled, coordinator.mediaPanel == .lyrics {
+                            coordinator.setMediaPanel(.none)
+                        }
+                    }
+                ))
+                Text("Opening lyrics sends the song's title, artist, album and length to lrclib.net. Nothing else.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -400,7 +445,7 @@ struct PrivacySettings: View {
                     get: { preferences.indexesCapturesInSpotlight },
                     set: { coordinator.setCaptureSpotlightIndexEnabled($0) }
                 ))
-                Text("Off by default. When enabled, filenames, tags, collections, source app, and already-opted-in recognised text are indexed locally by macOS Spotlight.")
+                Text("Indexes filenames, tags and recognised text in Spotlight, on this Mac only.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
@@ -431,7 +476,7 @@ struct PrivacySettings: View {
                     get: { preferences.clipboardEnabled },
                     set: { coordinator.setClipboardEnabled($0) }
                 ))
-                Text("Off by default. NotchShot records nothing you copy until you switch this on, and switching it back off deletes what was already kept.")
+                Text("Nothing is kept until this is on. Turning it off deletes what was kept.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
@@ -451,6 +496,9 @@ struct PrivacySettings: View {
                 Text("Pinned items are cleared too. The current system clipboard is left untouched.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+
+                ClipboardImportRow(coordinator: coordinator)
+                    .disabled(!preferences.clipboardEnabled)
 
                 DisclosureGroup("Excluded apps (\(preferences.clipboardExcludedBundleIDs.count))") {
                     if preferences.clipboardExcludedBundleIDs.isEmpty {
@@ -476,7 +524,7 @@ struct PrivacySettings: View {
                     Button("Add App…") { addClipboardExclusion() }
                         .disabled(!preferences.clipboardEnabled)
                 }
-                Text("Clippings marked concealed or transient — what password managers set on a copied password — are never recorded, whatever app they came from. The excluded list adds whole apps on top of that.")
+                Text("Passwords marked concealed by their app are never kept. Excluded apps add to that.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
@@ -564,13 +612,11 @@ struct ShortcutSettings: View {
                         bindings = HotKeyController.shared.bindings
                     }
                 ))
-                Text("Experimental, direct-distribution only. Switches off only matching shortcuts that macOS currently owns, records each claim, and restores exactly those keys when this is off, on quit, or after a relaunch following a crash.")
+                Text("Experimental. Takes over matching macOS shortcuts and restores them on quit or when turned off.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 if !SystemScreenshotHotKeys.shared.isAvailable {
-                    Text("This version of macOS does not allow reassigning the system shortcuts.")
-                        .font(.caption)
-                        .foregroundStyle(.orange)
+                    SettingsWarningRow(message: "This version of macOS doesn't allow reassigning the system shortcuts.")
                 }
             }
 
@@ -668,5 +714,35 @@ private struct ShortcutRecorder: NSViewRepresentable {
                 self.monitor = nil
             }
         }
+    }
+}
+
+/// One "Hide in apps" entry: the app's own icon and name when it is installed,
+/// its bundle identifier when it is not.
+private struct NotchHiddenAppRow: View {
+    let bundleID: String
+    let onRemove: () -> Void
+
+    var body: some View {
+        let appURL = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID)
+        HStack(spacing: 8) {
+            if let appURL {
+                Image(nsImage: NSWorkspace.shared.icon(forFile: appURL.path))
+                    .resizable()
+                    .frame(width: 20, height: 20)
+                    .accessibilityHidden(true)
+                Text(FileManager.default.displayName(atPath: appURL.path)
+                    .replacingOccurrences(of: ".app", with: ""))
+            } else {
+                Text(bundleID)
+                    .font(.caption.monospaced())
+                    .foregroundStyle(.secondary)
+            }
+            Spacer(minLength: 8)
+            Button("Remove", action: onRemove)
+                .buttonStyle(.link)
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Hidden in \(appURL.map { FileManager.default.displayName(atPath: $0.path) } ?? bundleID)")
     }
 }

@@ -61,6 +61,7 @@ public enum SmartExportService {
         guard maximumBytes > 0 else { return image }
         var candidate = image
         for _ in 0 ..< 8 {
+            try Task.checkCancellation()
             let encoded = try ImageExport.encode(
                 candidate,
                 format: format,
@@ -76,6 +77,7 @@ public enum SmartExportService {
             )
             candidate = try render(candidate, to: size)
         }
+        try Task.checkCancellation()
         let finalBytes = try ImageExport.encode(
             candidate,
             format: format,
@@ -147,8 +149,14 @@ public enum SmartExportService {
     public static func render(_ image: CGImage, to size: CGSize) throws -> CGImage {
         let width = Int(size.width)
         let height = Int(size.height)
-        guard width > 0, height > 0,
-              width <= 16_384, height <= 16_384,
+        guard width > 0, height > 0 else {
+            throw NotchShotError.exportFailed("That export size is too large")
+        }
+        // Original-size exports already own a valid decoded bitmap, including
+        // long scrolling captures. Reuse it instead of allocating another
+        // canvas or applying the resampling canvas limit to existing pixels.
+        if width == image.width, height == image.height { return image }
+        guard width <= 16_384, height <= 16_384,
               width <= 100_000_000 / height,
               let context = CGContext(
                 data: nil,
@@ -218,8 +226,7 @@ public final class SmartExportSession {
         panel.message = "Exports a flattened image and removes the original file metadata. Only redactions already applied to this image are included."
         guard panel.runModal() == .OK, let url = panel.url else { return }
 
-        let quality = Preferences.shared.jpegQuality
-        let source = UncheckedImage(image: self.source)
+        let source = CapturedImage(cgImage: self.source, scale: asset.scale, sourceRect: .zero)
         let preset = self.preset
         // When nothing was resampled the original scale (and therefore its DPI)
         // must survive; a 1× capture was being relabelled as a 2× Retina file.
@@ -236,7 +243,6 @@ public final class SmartExportSession {
                 Self.renderAndWrite(
                     source: source,
                     plan: plan,
-                    quality: quality,
                     dpiScale: dpiScale,
                     to: url
                 )
@@ -263,20 +269,19 @@ public final class SmartExportSession {
 
     /// AppKit panels stay on the main actor; the render, encode, and possible
     /// extension fix-up run here so a large image cannot stall the UI.
-    private nonisolated static func renderAndWrite(
-        source: UncheckedImage,
+    nonisolated static func renderAndWrite(
+        source: CapturedImage,
         plan: SmartExportPlan,
-        quality: Double,
         dpiScale: CGFloat,
         to url: URL
     ) -> ExportOutcome {
         do {
-            let rendered = try SmartExportService.render(source.image, to: plan.pixelSize)
+            let rendered = try SmartExportService.render(source.cgImage, to: plan.pixelSize)
             let usedFormat = try ImageExport.write(
                 rendered,
                 to: url,
                 format: plan.format,
-                quality: quality,
+                quality: plan.quality,
                 dpiScale: dpiScale
             )
             var finalURL = url
@@ -311,13 +316,9 @@ public final class SmartExportSession {
         }
     }
 
-    private enum ExportOutcome: Sendable {
+    enum ExportOutcome: Sendable {
         case success(url: URL, pixelSize: CGSize)
         case failure(String)
-    }
-
-    private struct UncheckedImage: @unchecked Sendable {
-        let image: CGImage
     }
 
     public func shareExported() {

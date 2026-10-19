@@ -1,0 +1,240 @@
+{
+  "sweep.clipboard.hash 4096 bytes (1000x)": {
+    "before_ms": 10.237708,
+    "after_ms": 1.921875,
+    "reduction_percent": 81.22748763688122,
+    "fresh_processes_per_version": 5,
+    "before_run_medians_ms": [
+      11.820541,
+      10.599959,
+      10.04875,
+      10.237708,
+      10.139959000000001
+    ],
+    "after_run_medians_ms": [
+      1.921875,
+      1.9035,
+      2.036125,
+      2.1905,
+      1.774958
+    ]
+  },
+  "sweep.transcript 1500 timestamped messages": {
+    "before_ms": 103.792917,
+    "after_ms": 40.791042,
+    "reduction_percent": 60.69958993444611,
+    "fresh_processes_per_version": 5,
+    "before_run_medians_ms": [
+      103.792917,
+      165.105041,
+      98.66758300000001,
+      106.401458,
+      100.740208
+    ],
+    "after_run_medians_ms": [
+      40.791042,
+      41.543417,
+      40.305375,
+      45.212334,
+      40.582208
+    ]
+  },
+  "sweep.annotation hitTest 120 (1000x)": {
+    "before_ms": 3.719875,
+    "after_ms": 2.2549580000000002,
+    "reduction_percent": 39.38081252730266,
+    "fresh_processes_per_version": 5,
+    "before_run_medians_ms": [
+      3.424958,
+      4.085083,
+      3.719875,
+      3.333958,
+      3.925792
+    ],
+    "after_run_medians_ms": [
+      2.194375,
+      2.179458,
+      2.2549580000000002,
+      2.3549170000000004,
+      2.2832500000000002
+    ]
+  },
+  "sweep.annotation hitTest 1200 (1000x)": {
+    "before_ms": 23.335417,
+    "after_ms": 10.646417,
+    "reduction_percent": 54.376572743482576,
+    "fresh_processes_per_version": 5,
+    "before_run_medians_ms": [
+      24.802875,
+      25.355084,
+      22.706291,
+      23.335417,
+      23.296
+    ],
+    "after_run_medians_ms": [
+      10.646417,
+      10.363875,
+      13.215042,
+      11.534459,
+      10.476458
+    ]
+  },
+  "sweep.clipboard OCR budget 500 rows": {
+    "before_ms": 2.01575,
+    "after_ms": 0.030666000000000002,
+    "reduction_percent": 98.47868039191367,
+    "fresh_processes_per_version": 5,
+    "before_run_medians_ms": [
+      2.01575,
+      2.0462499999999997,
+      2.147666,
+      1.863625,
+      1.8821249999999998
+    ],
+    "after_run_medians_ms": [
+      0.030666000000000002,
+      0.030042000000000003,
+      0.044208000000000004,
+      0.0285,
+      0.031625
+    ]
+  },
+  "sweep.clipboard load 500 rows": {
+    "before_ms": 3.920458,
+    "after_ms": 2.034667,
+    "reduction_percent": 48.10129326726623,
+    "fresh_processes_per_version": 5,
+    "before_run_medians_ms": [
+      3.920458,
+      4.289083,
+      3.9290000000000003,
+      3.81425,
+      3.884667
+    ],
+    "after_run_medians_ms": [
+      1.9463329999999999,
+      2.034667,
+      8.757375,
+      2.0705419999999997,
+      2.000708
+    ]
+  },
+  "sweep.audio RMS 1ch interleaved (1000x)": {
+    "before_ms": 0.077958,
+    "after_ms": 0.07875,
+    "reduction_percent": -1.0159316555068127,
+    "fresh_processes_per_version": 5,
+    "before_run_medians_ms": [
+      0.077958,
+      0.08325,
+      0.076834,
+      0.077041,
+      0.079208
+    ],
+    "after_run_medians_ms": [
+      0.076834,
+      0.077167,
+      0.10166700000000001,
+      0.080667,
+      0.07875
+    ]
+  },
+  "sweep.audio RMS 2ch interleaved (1000x)": {
+    "before_ms": 0.105292,
+    "after_ms": 0.106958,
+    "reduction_percent": -1.5822664589902373,
+    "fresh_processes_per_version": 5,
+    "before_run_medians_ms": [
+      0.105292,
+      0.11333299999999999,
+      0.104542,
+      0.104625,
+      0.10612500000000001
+    ],
+    "after_run_medians_ms": [
+      0.104792,
+      0.106958,
+      0.138292,
+      0.108583,
+      0.104584
+    ]
+  },
+  "sweep.audio RMS 2ch planar (1000x)": {
+    "before_ms": 0.116792,
+    "after_ms": 0.117375,
+    "reduction_percent": -0.49917802589217264,
+    "fresh_processes_per_version": 5,
+    "before_run_medians_ms": [
+      0.116792,
+      0.12520799999999999,
+      0.11445799999999999,
+      0.11820900000000001,
+      0.11654199999999999
+    ],
+    "after_run_medians_ms": [
+      0.114708,
+      0.117375,
+      0.257167,
+      0.120583,
+      0.11491699999999999
+    ]
+  },
+  "sweep.audio RMS 6ch planar (1000x)": {
+    "before_ms": 0.276541,
+    "after_ms": 0.263542,
+    "reduction_percent": 4.70056881258113,
+    "fresh_processes_per_version": 5,
+    "before_run_medians_ms": [
+      0.261458,
+      0.281709,
+      0.26054099999999997,
+      0.28425,
+      0.276541
+    ],
+    "after_run_medians_ms": [
+      0.261459,
+      0.26316700000000004,
+      0.525208,
+      0.26525000000000004,
+      0.263542
+    ]
+  },
+  "stitch 8 frames 1200\u00d7900": {
+    "before_ms": 46.488458,
+    "after_ms": 21.822167,
+    "reduction_percent": 53.058957128670514,
+    "fresh_processes_per_version": 5,
+    "before_run_medians_ms": [
+      46.488458,
+      64.374875,
+      116.583875,
+      39.746542000000005,
+      29.252459
+    ],
+    "after_run_medians_ms": [
+      33.381667,
+      11.5,
+      29.086917,
+      21.822167,
+      10.753375
+    ],
+    "peak_rss_mib": {
+      "baseline": [
+        86.0625,
+        82.53125,
+        85.984375,
+        84.375,
+        85.953125
+      ],
+      "final": [
+        82.4375,
+        86.046875,
+        86.421875,
+        86.171875,
+        86.046875
+      ]
+    },
+    "median_peak_rss_before_mib": 85.953125,
+    "median_peak_rss_after_mib": 86.046875
+  }
+}

@@ -92,11 +92,12 @@ struct AnnotationUndoTransactionTests {
     }
 
     @Test("The editor reuses its base image until composition changes")
-    func basePreviewCaching() throws {
+    func basePreviewCaching() async throws {
         let controller = AnnotationDocumentController(
             source: TestImage.solid(width: 100, height: 80),
             document: AnnotationDocument(sourcePixelSize: CGSize(width: 100, height: 80))
         )
+        await controller.prepareBasePreview()
         let first = try #require(controller.basePreviewImage())
 
         controller.add(AnnotationElement(
@@ -108,6 +109,7 @@ struct AnnotationUndoTransactionTests {
         #expect(first === afterAnnotation)
 
         controller.rotateRight()
+        await controller.prepareBasePreview()
         let afterRotation = try #require(controller.basePreviewImage())
         #expect(first !== afterRotation)
     }

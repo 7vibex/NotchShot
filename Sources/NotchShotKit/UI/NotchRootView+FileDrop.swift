@@ -8,6 +8,7 @@ import UniformTypeIdentifiers
 struct NotchFileDropDelegate: DropDelegate {
     @Binding var isTargeted: Bool
     @Binding var selectedAction: FileDropAction
+    @Binding var context: FileDropContext
     @Binding var itemCount: Int
     @Binding var usesManualSelection: Bool
     /// -1…1 toward the pointer, for the shell's subtle stretch.
@@ -27,6 +28,8 @@ struct NotchFileDropDelegate: DropDelegate {
         isTargeted = true
         itemCount = providers.count
         usesManualSelection = false
+        context = FileDropContext.currentDrag()
+        selectedAction = context.defaultAction
         updateSelection(for: info)
     }
 
@@ -50,7 +53,7 @@ struct NotchFileDropDelegate: DropDelegate {
             return false
         }
         updateSelection(for: info)
-        let action = supportsActionSelection ? selectedAction : .shelf
+        let action = supportsActionSelection ? selectedAction : context.defaultAction
         reset()
         onPerform(providers, action)
         return true
@@ -63,8 +66,12 @@ struct NotchFileDropDelegate: DropDelegate {
     private func updateSelection(for info: DropInfo) {
         guard !usesManualSelection else { return }
         let action = supportsActionSelection
-            ? FileDropActionSelection.action(atX: info.location.x, width: layoutSize.width)
-            : .shelf
+            ? FileDropActionSelection.action(
+                atX: info.location.x,
+                width: layoutSize.width,
+                actions: context.actions
+            )
+            : context.defaultAction
         // The user is steering this drag: a new target locking in under the
         // pointer is direct feedback, not a background notification.
         if action != selectedAction, supportsActionSelection {
@@ -78,6 +85,7 @@ struct NotchFileDropDelegate: DropDelegate {
         isTargeted = false
         itemCount = 0
         selectedAction = .shelf
+        context = .files
         usesManualSelection = false
     }
 }
@@ -86,6 +94,7 @@ struct NotchFileDropDelegate: DropDelegate {
 /// pointer lifts and brightens, then owns the action when the user releases.
 struct FileDropActionTray: View {
     let itemCount: Int
+    let context: FileDropContext
     @Binding var selectedAction: FileDropAction
     let onManualSelection: (FileDropAction) -> Void
 
@@ -95,7 +104,7 @@ struct FileDropActionTray: View {
     var body: some View {
         VStack(spacing: NotchIsland.Spacing.element) {
             HStack(spacing: NotchIsland.Spacing.snug) {
-                Image(systemName: itemCount == 1 ? "doc.fill" : "doc.on.doc.fill")
+                Image(systemName: headerSymbol)
                     .font(.system(size: 11, weight: .semibold))
                     .foregroundStyle(.cyan)
 
@@ -111,7 +120,7 @@ struct FileDropActionTray: View {
             }
 
             HStack(spacing: NotchIsland.Spacing.element) {
-                ForEach(FileDropAction.allCases) { action in
+                ForEach(context.actions) { action in
                     actionTarget(action)
                 }
             }
@@ -127,12 +136,14 @@ struct FileDropActionTray: View {
             case .left:
                 onManualSelection(FileDropActionSelection.adjacent(
                     to: selectedAction,
-                    delta: -1
+                    delta: -1,
+                    actions: context.actions
                 ))
             case .right:
                 onManualSelection(FileDropActionSelection.adjacent(
                     to: selectedAction,
-                    delta: 1
+                    delta: 1,
+                    actions: context.actions
                 ))
             default:
                 break
@@ -145,18 +156,49 @@ struct FileDropActionTray: View {
         .accessibilityAdjustableAction { direction in
             onManualSelection(FileDropActionSelection.adjacent(
                 to: selectedAction,
-                delta: direction == .increment ? 1 : -1
+                delta: direction == .increment ? 1 : -1,
+                actions: context.actions
             ))
         }
-        .accessibilityAction(named: "Keep on Shelf") { onManualSelection(.shelf) }
-        .accessibilityAction(named: "Send with AirDrop") { onManualSelection(.airDrop) }
-        .accessibilityAction(named: "Open Share Menu") { onManualSelection(.share) }
-        .accessibilityAction(named: "Create ZIP Archive") { onManualSelection(.compress) }
+        .accessibilityActions {
+            ForEach(context.actions) { action in
+                Button(accessibilityName(for: action)) { onManualSelection(action) }
+            }
+        }
+    }
+
+    private func accessibilityName(for action: FileDropAction) -> String {
+        switch action {
+        case .shelf: "Keep on Shelf"
+        case .airDrop: "Send with AirDrop"
+        case .share: "Open Share Menu"
+        case .localSend: "Send with LocalSend"
+        case .compress: "Create ZIP Archive"
+        case .extract: "Extract Archive"
+        case .uninstall: "Uninstall App"
+        case .resetApp: "Reset App Data"
+        }
+    }
+
+    private var headerSymbol: String {
+        switch context {
+        case .apps: "square.grid.3x3.fill"
+        case .archives: "archivebox.fill"
+        case .files: itemCount == 1 ? "doc.fill" : "doc.on.doc.fill"
+        }
+    }
+
+    private var noun: (one: String, many: String) {
+        switch context {
+        case .apps: ("app", "apps")
+        case .archives: ("archive", "archives")
+        case .files: ("file", "files")
+        }
     }
 
     private var itemCountDescription: String {
         let count = max(itemCount, 1)
-        return String(count) + " " + (count == 1 ? "file" : "files") + " ready"
+        return String(count) + " " + (count == 1 ? noun.one : noun.many) + " ready"
     }
 
     /// A destination tile rather than a labelled circle.
@@ -220,7 +262,7 @@ struct FileDropActionTray: View {
         }
         .shadow(color: isSelected ? accent.opacity(0.34) : .clear, radius: 12, y: 4)
         .scaleEffect(isSelected && !reduceMotion ? 1.035 : 1)
-        .animation(reduceMotion ? nil : .snappy(duration: 0.18), value: isSelected)
+        .animation(NotchMotion.selection(reduceMotion: reduceMotion), value: isSelected)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(action.title + ", " + action.subtitle)
         .accessibilityAddTraits(isSelected ? [.isSelected] : [])
@@ -229,7 +271,7 @@ struct FileDropActionTray: View {
 
     private var itemCountChip: String {
         let count = max(itemCount, 1)
-        return count == 1 ? "1 file" : "\(count) files"
+        return count == 1 ? "1 \(noun.one)" : "\(count) \(noun.many)"
     }
 
     private func accent(for action: FileDropAction) -> Color {
@@ -239,6 +281,9 @@ struct FileDropActionTray: View {
         case .share: .purple
         case .localSend: .green
         case .compress: .orange
+        case .extract: .orange
+        case .uninstall: .red
+        case .resetApp: .yellow
         }
     }
 }

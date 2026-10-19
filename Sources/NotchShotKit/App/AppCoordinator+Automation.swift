@@ -169,6 +169,21 @@ extension AppCoordinator {
             return
         }
 
+        // Apps are folders and archives may be large, so these skip the
+        // regular-file checks that guard sharing.
+        switch action {
+        case .extract:
+            refreshActivity()
+            extractArchives(urls)
+            return
+        case .uninstall, .resetApp:
+            refreshActivity()
+            beginAppRemoval(urls, mode: action == .uninstall ? .uninstall : .reset)
+            return
+        default:
+            break
+        }
+
         guard let assets = validatedExternalAssets(for: urls) else {
             refreshActivity()
             present(error: NotchShotError.exportFailed(
@@ -189,6 +204,8 @@ extension AppCoordinator {
             openProductivity(tool: .localSend, localSendFiles: assets.map(\.url))
         case .compress:
             compress(assets)
+        case .extract, .uninstall, .resetApp:
+            break
         }
     }
 

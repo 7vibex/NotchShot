@@ -1,0 +1,63 @@
+Building for debugging...
+[0/19] Write sources
+[2/19] Write swift-version--58304C5D6DBC2206.txt
+[4/14] Compiling NotchShotKit PrivacyIndicatorWorker.swift
+/Users/vibex/Documents/NOTCH/Sources/NotchShotKit/Context/PrivacyIndicatorWorker.swift:164:20: warning: 'init(cString:)' is deprecated: Use String(decoding: array, as: UTF8.self) instead, after truncating the null termination. [#DeprecatedDeclaration]
+162 |         var buffer = [CChar](repeating: 0, count: Int(MAXPATHLEN) * 4)
+163 |         guard proc_pidpath(pid, &buffer, UInt32(buffer.count)) > 0 else { return nil }
+164 |         let path = String(cString: buffer)
+    |                    `- warning: 'init(cString:)' is deprecated: Use String(decoding: array, as: UTF8.self) instead, after truncating the null termination. [#DeprecatedDeclaration]
+165 |         guard let range = path.range(of: ".app/") else { return nil }
+166 |         let bundleURL = URL(fileURLWithPath: String(path[..<range.lowerBound]) + ".app")
+
+[#DeprecatedDeclaration]: <https://docs.swift.org/compiler/documentation/diagnostics/deprecated-declaration>
+[5/14] Compiling NotchShotKit MediaConversion.swift
+[6/16] Compiling NotchShotKit AppCoordinator.swift
+[7/16] Compiling NotchShotKit PrivacyIndicatorMonitor.swift
+[8/16] Emitting module NotchShotKit
+[8/20] Write Objects.LinkFileList
+[11/29] Emitting module NotchShotBench
+[11/29] Write Objects.LinkFileList
+[12/29] Linking notchshot-diagnostics
+[13/29] Applying notchshot-diagnostics
+[14/29] Linking NotchShot
+[15/29] Applying NotchShot
+[16/29] Linking NotchShotBench
+[17/29] Applying NotchShotBench
+[19/29] Compiling NotchShotKitTests ProductivityFeatureTests.swift
+[20/29] Compiling NotchShotKitTests PrivacyIndicatorWorkerTests.swift
+/Users/vibex/Documents/NOTCH/Tests/NotchShotKitTests/PrivacyIndicatorWorkerTests.swift:175:18: warning: weak variable 'weakMonitor' was never mutated; consider changing to 'let' constant [#WeakMutability]
+173 |         backend.failedProperty = .cameraRunning(40)
+174 |         var monitor: PrivacyIndicatorMonitor? = PrivacyIndicatorMonitor(backend: backend, queue: queue)
+175 |         weak var weakMonitor = monitor
+    |                  `- warning: weak variable 'weakMonitor' was never mutated; consider changing to 'let' constant [#WeakMutability]
+176 |         monitor?.start()
+177 |         await drain(queue)
+
+[#WeakMutability]: <https://docs.swift.org/compiler/documentation/diagnostics/weak-mutability>
+[21/29] Compiling NotchShotKitTests PDFConversionCancellationTests.swift
+[22/29] Compiling NotchShotKitTests ProcessAndConversionRegressionTests.swift
+[23/29] Compiling NotchShotKitTests PreferencesTests.swift
+[24/29] Compiling NotchShotKitTests NotchHoverZoneTests.swift
+[25/29] Compiling NotchShotKitTests PasteboardPromiseTests.swift
+[26/29] Compiling NotchShotKitTests NotchTabTests.swift
+[27/29] Emitting module NotchShotKitTests
+[27/29] Write Objects.LinkFileList
+[28/29] Linking NotchShotPackageTests
+Build complete! (75.00s)
+Test Suite 'Selected tests' started at 2026-10-11 21:29:48.733.
+Test Suite 'NotchShotPackageTests.xctest' started at 2026-10-11 21:29:48.791.
+Test Suite 'NotchShotPackageTests.xctest' passed at 2026-10-11 21:29:48.791.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.000) seconds
+Test Suite 'Selected tests' passed at 2026-10-11 21:29:48.791.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.058) seconds
+􀟈  Test run started.
+􀄵  Testing Library Version: 1902
+􀄵  Target Platform: arm64e-apple-macos14.0
+􀟈  Suite "PDF conversion cancellation" started.
+􀟈  Test "An unavailable second page fails and rolls back this attempt's first page" started.
+􀢄  Test "An unavailable second page fails and rolls back this attempt's first page" recorded an issue at PDFConversionCancellationTests.swift:61:15: Expectation failed: an error was expected but none was thrown and "[file:///var/folders/5q/5zgpxz0j15139j1bj7zvks2w0000gn/T/pdf-cancellation-C271A6D5-CC96-457E-8903-7A5DD75E8840/fixture-page1%202.png]" was returned
+􀢄  Test "An unavailable second page fails and rolls back this attempt's first page" recorded an issue at PDFConversionCancellationTests.swift:63:9: Expectation failed: Set(try FileManager.default.contentsOfDirectory(atPath: directory.path)) == ["fixture.pdf", "fixture-page1.png"]
+􀢄  Test "An unavailable second page fails and rolls back this attempt's first page" failed after 0.646 seconds with 2 issues.
+􀢄  Suite "PDF conversion cancellation" failed after 0.646 seconds with 2 issues.
+􀢄  Test run with 1 test in 1 suite failed after 0.647 seconds with 2 issues.

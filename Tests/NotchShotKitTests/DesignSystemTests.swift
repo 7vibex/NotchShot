@@ -31,8 +31,12 @@ struct DesignSystemTests {
         #expect(NotchIsland.Geometry.expandedCaptureWidth == 432)
         #expect(NotchIsland.Geometry.expandedCaptureHeight == 164)
         #expect(NotchIsland.Geometry.expandedCornerRadius >= 30)
-        #expect(NotchIsland.Motion.shellResponse > NotchIsland.Motion.contentResponse)
-        #expect(NotchIsland.Motion.shellDamping < NotchIsland.Motion.contentDamping)
+        for style in IslandAnimationStyle.allCases {
+            let tuning = NotchMotion.tuning(for: style)
+            #expect(tuning.expandResponse > tuning.contentResponse)
+            #expect(tuning.expandDamping <= tuning.contentDamping)
+            #expect(tuning.collapseResponse < tuning.expandResponse)
+        }
     }
 
     @Test("Liquid Glass APIs stay centralized in functional chrome")
@@ -116,12 +120,12 @@ struct DesignSystemTests {
             path: "Sources/NotchShotKit/UI/LockedNowPlayingCard.swift"
         )
         let lockedCard = try String(contentsOf: lockedCardURL, encoding: .utf8)
-        #expect(lockedCard.contains("Image(systemName: \"waveform\")"))
-        #expect(lockedCard.contains("transportSymbol(\"shuffle\""))
+        #expect(lockedCard.contains("transportSymbol(\"backward.fill\""))
+        #expect(!lockedCard.contains("transportSymbol(\"shuffle\""))
         #expect(!lockedCard.contains("transportSymbol(\"heart.fill\""))
         #expect(lockedCard.contains(".allowsHitTesting(false)"))
-        #expect(LockedNowPlayingLayout.artworkSize / LockedCardGeometry.preferredCardSize.width == 0.2)
-        #expect(LockedNowPlayingLayout.cornerRadius == 24)
+        #expect(LockedNowPlayingLayout.artworkSize / LockedCardGeometry.preferredCardSize.width == 0.15)
+        #expect(LockedNowPlayingLayout.cornerRadius == 22)
     }
 
     @Test("Locked playback uses real route identity and honest metadata fallbacks")

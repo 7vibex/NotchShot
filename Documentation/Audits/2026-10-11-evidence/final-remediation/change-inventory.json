@@ -1,0 +1,40 @@
+{
+  "changed_initial_inputs": [
+    "Sources/NotchShotBench/main.swift",
+    "Sources/NotchShotKit/UI/SettingsView+Sidebar.swift",
+    "Sources/NotchShotKit/UI/SettingsView+Capture.swift",
+    "Sources/NotchShotKit/Capture/CaptureRecipe.swift",
+    "Sources/NotchShotKit/Context/PrivacyIndicatorMonitor.swift",
+    "Sources/NotchShotKit/Context/AIHookInstaller.swift",
+    "Sources/NotchShotKit/Context/MeetingControls.swift",
+    "Sources/NotchShotKit/Context/ContextCoordinator.swift",
+    "Sources/NotchShotKit/Context/CalendarGlanceService.swift",
+    "Sources/NotchShotKit/Sharing/ShareLinkUploader.swift",
+    "Sources/NotchShotKit/App/AppDelegate.swift",
+    "Sources/NotchShotKit/App/AppCoordinator+Capture.swift",
+    "Sources/NotchShotKit/App/AppCoordinator+Shelf.swift",
+    "Sources/NotchShotKit/Annotation/AnnotationRenderer.swift",
+    "Sources/NotchShotKit/Files/MediaConversion.swift",
+    "Sources/NotchShotKit/Export/SmartExport.swift",
+    "Sources/NotchShotKit/Productivity/ExtrasServices.swift",
+    "Sources/NotchShotKit/Clipboard/ClipboardImport.swift",
+    "Sources/NotchShotKit/UI/Island/IslandCallViews.swift",
+    "Sources/NotchShotKit/UI/Island/IslandSystemIndicators.swift"
+  ],
+  "added_inputs": [
+    "Sources/NotchShotBench/RecipeResponsivenessBenchmarks.swift",
+    "Sources/NotchShotKit/App/AppCommandMenu.swift",
+    "Sources/NotchShotKit/Context/MeetingShortcutDispatcher.swift",
+    "Sources/NotchShotKit/Context/PrivacyIndicatorWorker.swift",
+    "Sources/NotchShotKit/UI/Island/IslandAppIconCache.swift",
+    "Tests/NotchShotKitTests/CallControlsAndMenuRegressionTests.swift",
+    "Tests/NotchShotKitTests/ContextTimingRegressionTests.swift",
+    "Tests/NotchShotKitTests/ExportSafetyRegressionTests.swift",
+    "Tests/NotchShotKitTests/IslandAppIconCacheTests.swift",
+    "Tests/NotchShotKitTests/PDFConversionCancellationTests.swift",
+    "Tests/NotchShotKitTests/PrivacyIndicatorWorkerTests.swift",
+    "Tests/NotchShotKitTests/ProcessAndConversionRegressionTests.swift",
+    "Tests/NotchShotKitTests/ResponsivenessRegressionTests.swift",
+    "Package.swift"
+  ]
+}

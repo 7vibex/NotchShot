@@ -11,10 +11,14 @@ public struct ClipboardView: View {
     @State private var query = ""
     @State private var kindFilter: ClipboardKind?
     @State private var sourceAppFilter: String?
+    @State private var tagFilter: String?
+    @State private var pinnedOnly = false
     @State private var selection: UUID?
     @State private var confirmClear = false
     @State private var renameEntry: ClipboardEntry?
     @State private var renameText = ""
+    @State private var tagEntry: ClipboardEntry?
+    @State private var tagText = ""
 
     public init(coordinator: AppCoordinator) {
         self.coordinator = coordinator
@@ -24,14 +28,22 @@ public struct ClipboardView: View {
         coordinator.clipboard.search(query).filter { entry in
             (kindFilter == nil || entry.kind == kindFilter)
                 && (sourceAppFilter == nil || entry.sourceApplicationName == sourceAppFilter)
+                && (tagFilter.map { (entry.tags ?? []).contains($0) } ?? true)
+                && (!pinnedOnly || entry.isPinned)
         }
+    }
+
+    private var tags: [String] { coordinator.clipboard.allTags }
+
+    private var hasActiveFilter: Bool {
+        sourceAppFilter != nil || tagFilter != nil || pinnedOnly
     }
 
     private var sourceApps: [String] { coordinator.clipboardSourceApps }
 
     public var body: some View {
         VStack(spacing: 0) {
-            if let recovery = coordinator.clipboard.loadRecoveryMessage {
+            if let recovery = coordinator.clipboard.recordingRejectionMessage ?? coordinator.clipboard.loadRecoveryMessage {
                 HStack(spacing: 8) {
                     Image(systemName: "exclamationmark.triangle.fill")
                         .foregroundStyle(.orange)
@@ -71,6 +83,25 @@ public struct ClipboardView: View {
         } message: {
             Text("The label is searchable and does not change what gets pasted. Leave it blank to use the content-derived title.")
         }
+        .alert("Tags", isPresented: Binding(
+            get: { tagEntry != nil },
+            set: { if !$0 { tagEntry = nil } }
+        )) {
+            TextField("work, ssh, invoice", text: $tagText)
+            Button("Save") {
+                if let tagEntry {
+                    coordinator.clipboard.setTags(tagText.components(separatedBy: ","), id: tagEntry.id)
+                }
+                self.tagEntry = nil
+            }
+            Button("Cancel", role: .cancel) { tagEntry = nil }
+        } message: {
+            Text("Separate tags with commas. Up to \(ClipboardStore.maximumTagCount). Tags are searchable and never change what gets pasted.")
+        }
+        .onChange(of: tags) { _, current in
+            // A tag can disappear when its last clipping is retagged or deleted.
+            if let tagFilter, !current.contains(tagFilter) { self.tagFilter = nil }
+        }
     }
 
     private var disabledState: some View {
@@ -109,8 +140,8 @@ public struct ClipboardView: View {
             .padding(.horizontal, 12)
             .padding(.vertical, 6)
 
-            if !sourceApps.isEmpty {
-                HStack(spacing: 8) {
+            HStack(spacing: 8) {
+                if !sourceApps.isEmpty {
                     Picker("App", selection: $sourceAppFilter) {
                         Text("All apps").tag(Optional<String>.none)
                         ForEach(sourceApps, id: \.self) { app in
@@ -118,23 +149,43 @@ public struct ClipboardView: View {
                         }
                     }
                     .pickerStyle(.menu)
-                    .frame(maxWidth: 180)
+                    .frame(maxWidth: 160)
                     .labelsHidden()
-
-                    if sourceAppFilter != nil {
-                        Button("Clear") { sourceAppFilter = nil }
-                            .font(.caption)
-                            .buttonStyle(.borderless)
-                    }
-                    Spacer()
-                    Text("\(entries.count) shown")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .monospacedDigit()
                 }
-                .padding(.horizontal, 12)
-                .padding(.bottom, 8)
+                if !tags.isEmpty {
+                    Picker("Tag", selection: $tagFilter) {
+                        Text("All tags").tag(Optional<String>.none)
+                        ForEach(tags, id: \.self) { tag in
+                            Text("#" + tag).tag(Optional(tag))
+                        }
+                    }
+                    .pickerStyle(.menu)
+                    .frame(maxWidth: 140)
+                    .labelsHidden()
+                }
+                Toggle(isOn: $pinnedOnly) {
+                    Label("Pinned", systemImage: pinnedOnly ? "pin.fill" : "pin")
+                }
+                .toggleStyle(.button)
+                .help("Show only pinned clippings")
+
+                if hasActiveFilter {
+                    Button("Clear") {
+                        sourceAppFilter = nil
+                        tagFilter = nil
+                        pinnedOnly = false
+                    }
+                    .font(.caption)
+                    .buttonStyle(.borderless)
+                }
+                Spacer()
+                Text("\(entries.count) shown")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .monospacedDigit()
             }
+            .padding(.horizontal, 12)
+            .padding(.bottom, 8)
 
             Group {
                 if entries.isEmpty {
@@ -181,6 +232,20 @@ public struct ClipboardView: View {
                             Button("Cancel", role: .cancel) {}
                         }
                     if let selection, let entry = coordinator.clipboard.entry(id: selection) {
+                        let transforms = ClipboardTransformCache.transforms(for: entry)
+                        if !transforms.isEmpty {
+                            Menu("Transform") {
+                                ForEach(transforms) { transform in
+                                    Button {
+                                        coordinator.copyClipboardTransform(transform, from: entry)
+                                    } label: {
+                                        Label("\(transform.title) — \(transform.preview)", systemImage: transform.symbolName)
+                                    }
+                                }
+                            }
+                            .fixedSize()
+                            .help("Copy this clipping as formatted JSON, a decoded token, a date and more")
+                        }
                         Button("Add to Shelf") { coordinator.pushClipboardEntryToShelf(entry) }
                             .help("Place this clipping on the notch shelf to drag it into another app")
                             .accessibilityLabel("Add clipping to shelf")
@@ -215,6 +280,10 @@ public struct ClipboardView: View {
             renameEntry = entry
             renameText = entry.label ?? ""
         }
+        Button("Tags…") {
+            tagEntry = entry
+            tagText = (entry.tags ?? []).joined(separator: ", ")
+        }
         if entry.kind == .image {
             if let text = entry.text, !text.isEmpty {
                 Button("Copy Recognized Text") {
@@ -239,6 +308,20 @@ public struct ClipboardView: View {
         }
         if entry.kind == .link, let text = entry.text, let url = URL(string: text) {
             Button("Open Link") { NSWorkspace.shared.open(url) }
+        }
+        let transforms = ClipboardTransformCache.transforms(for: entry)
+        if !transforms.isEmpty {
+            Divider()
+            ForEach(transforms) { transform in
+                Button {
+                    coordinator.copyClipboardTransform(transform, from: entry)
+                } label: {
+                    Label(transform.title, systemImage: transform.symbolName)
+                }
+            }
+        }
+        if entry.kind != .files {
+            Button("Send to Agent…") { coordinator.sendClipboardEntryToAgent(entry) }
         }
         Divider()
         Button("Delete", role: .destructive) {
@@ -282,6 +365,12 @@ private struct ClipboardRow: View {
                     if let name = entry.sourceApplicationName {
                         Text(name)
                     }
+                    ForEach(entry.tags ?? [], id: \.self) { tag in
+                        Text("#" + tag)
+                            .padding(.horizontal, 5)
+                            .padding(.vertical, 1)
+                            .background(.quaternary, in: Capsule())
+                    }
                 }
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -322,5 +411,24 @@ private struct ClipboardRow: View {
         thumbnail = SafeImageFile.cgImage(at: url, limits: .generated).map {
             NSImage(cgImage: $0, size: NSSize(width: $0.width, height: $0.height))
         }
+    }
+}
+
+/// Detection runs on every menu build; clippings don't change, so each one is
+/// examined once.
+@MainActor
+enum ClipboardTransformCache {
+    private static var cache: [String: [ClipboardTransform]] = [:]
+    private static var order: [String] = []
+
+    static func transforms(for entry: ClipboardEntry) -> [ClipboardTransform] {
+        guard let text = entry.text, entry.kind != .image, entry.kind != .files else { return [] }
+        let key = entry.contentHash + entry.kind.rawValue
+        if let cached = cache[key] { return cached }
+        let found = ClipboardSmartActions.transforms(for: text, kind: entry.kind)
+        cache[key] = found
+        order.append(key)
+        if order.count > 64 { cache[order.removeFirst()] = nil }
+        return found
     }
 }

@@ -119,6 +119,9 @@ public final class Preferences {
     public var freezeScreenDuringSelection = true { didSet { write(freezeScreenDuringSelection, .freezeScreen) } }
     public var showsMagnifier = true { didSet { write(showsMagnifier, .showsMagnifier) } }
     public var playsCaptureSound = true { didSet { write(playsCaptureSound, .capturesSound) } }
+    /// The captured pixels lift off the screen and fly up into the notch.
+    /// Skipped under Reduce Motion whatever this says.
+    public var swoopsCaptureIntoNotch = true { didSet { write(swoopsCaptureIntoNotch, .swoopsCapture) } }
     public var updateChannel: UpdateChannel = .stable { didSet { write(updateChannel.rawValue, .updateChannel) } }
     public var includesCursorInScreenshots = false { didSet { write(includesCursorInScreenshots, .includesCursor) } }
     /// Off by default: the notch is excluded from every capture. Turning this
@@ -196,6 +199,11 @@ public final class Preferences {
     public var mirrorsPassiveContextOnAllDisplays = true {
         didSet { write(mirrorsPassiveContextOnAllDisplays, .mirrorPassiveContext) }
     }
+    /// Apps that hide the notch while they are frontmost — games and video
+    /// players, typically, where anything drawn at the top edge is in the way.
+    public var notchHiddenAppBundleIDs: Set<String> = [] {
+        didSet { write(Array(notchHiddenAppBundleIDs).sorted(), .notchHiddenApps) }
+    }
     /// Hover reveals a compact peek; the full interface still needs a click.
     public var hoverPeekEnabled = true { didSet { write(hoverPeekEnabled, .hoverPeek) } }
     public var hoverPeekDelay: Double = 0.35 { didSet { write(hoverPeekDelay, .hoverPeekDelay) } }
@@ -228,6 +236,10 @@ public final class Preferences {
         didSet { write(mirrorsSystemNotificationBanners, .mirrorSystemNotifications) }
     }
     public var appleEventsFallbackEnabled = false { didSet { write(appleEventsFallbackEnabled, .appleEventsFallback) } }
+    /// Synced lyrics in the expanded player, looked up on lrclib.net. Off by
+    /// default: turning it on sends the playing track's title, artist, album
+    /// and length to that third-party service.
+    public var lyricsEnabled = false { didSet { write(lyricsEnabled, .mediaLyrics) } }
     /// Path to the user-installed mediaremote-adapter bundle, if present.
     public var mediaRemoteAdapterPath: String? { didSet { write(mediaRemoteAdapterPath, .adapterPath) } }
     public var mediaRemoteAdapterIdentity: ExternalFileIdentity? {
@@ -275,6 +287,10 @@ public final class Preferences {
     public var enabledAISources: Set<AISource> {
         Set(enabledAISourceRawValues.compactMap(AISource.init(rawValue:)))
     }
+    /// Watches the Crewline app over its local socket once NotchShot has been
+    /// paired with it. Separate from the hook sources above: Crewline is
+    /// connected, not reported.
+    public var crewlineEnabled = true { didSet { write(crewlineEnabled, .crewline) } }
 
     // MARK: Activity island
 
@@ -293,8 +309,21 @@ public final class Preferences {
         }
     }
     public var showsMediaActivity = true { didSet { write(showsMediaActivity, .islandMedia) } }
+    /// Playing music keeps the centre; agents wait in the left satellite.
+    public var keepsMediaCentered = true { didSet { write(keepsMediaCentered, .islandMediaCentered) } }
     public var showsAIIslandActivity = true { didSet { write(showsAIIslandActivity, .islandAI) } }
     public var showsTimerActivity = true { didSet { write(showsTimerActivity, .islandTimers) } }
+    /// A live call in FaceTime, Zoom, Teams, Discord and other calling apps,
+    /// detected from which app is recording from the microphone.
+    public var showsCallActivity = true { didSet { write(showsCallActivity, .islandCalls) } }
+    /// The Capture · Shelf · Now Playing pill under the open notch.
+    public var showsNotchTabBar = true { didSet { write(showsNotchTabBar, .notchTabBar) } }
+    /// What the pill's fourth slot holds, if anything.
+    public var notchTabLastSlot: NotchTabLastSlot = .agents {
+        didSet { write(notchTabLastSlot.rawValue, .notchTabLastSlot) }
+    }
+    /// The pill's tabs, in order, under the current last-slot choice.
+    public var notchTabs: [NotchTab] { NotchTab.visible(lastSlot: notchTabLastSlot) }
     public var showsTransferActivity = true { didSet { write(showsTransferActivity, .islandTransfers) } }
     /// Ambient activities such as an upcoming calendar event.
     public var showsPassiveActivities = true { didSet { write(showsPassiveActivities, .islandPassive) } }
@@ -304,6 +333,39 @@ public final class Preferences {
     public var swipesBetweenActivities = true { didSet { write(swipesBetweenActivities, .islandSwipe) } }
     /// Haptics for direct gestures only; never for background events.
     public var islandHapticsEnabled = true { didSet { write(islandHapticsEnabled, .islandHaptics) } }
+    /// How lively every island animation is. Mirrored into `NotchMotion` so
+    /// the curves can read it without observing preferences.
+    public var islandAnimationStyle: IslandAnimationStyle = .iPhone {
+        didSet {
+            NotchMotion.style = islandAnimationStyle
+            write(islandAnimationStyle.rawValue, .islandAnimationStyle)
+        }
+    }
+    /// 0 is no shadow under the open island, 1 the heaviest. 0.5 is the
+    /// original look.
+    public var islandShadowStrength: Double = 0.5 {
+        didSet {
+            let clamped = min(1, max(0, islandShadowStrength))
+            if clamped != islandShadowStrength { islandShadowStrength = clamped; return }
+            write(islandShadowStrength, .islandShadowStrength)
+        }
+    }
+    /// The open notch melts from black into Liquid Glass. Off keeps the
+    /// all-black shell, which matches the hardware cutout everywhere.
+    public var islandGlassEnabled = false { didSet { write(islandGlassEnabled, .islandGlass) } }
+    /// How far the glass reaches: 0 is a hint of glass at the bottom edge,
+    /// 1 starts right under the camera band and is the most see-through.
+    public var islandGlassLevel: Double = 0.5 {
+        didSet {
+            let clamped = min(1, max(0, islandGlassLevel))
+            if clamped != islandGlassLevel { islandGlassLevel = clamped; return }
+            write(islandGlassLevel, .islandGlassLevel)
+        }
+    }
+    /// Press and hold the closed island to open it, as on iPhone.
+    public var longPressExpandsIsland = true { didSet { write(longPressExpandsIsland, .islandLongPress) } }
+    /// A dot in the notch while any app is using the microphone or a camera.
+    public var showsPrivacyIndicators = true { didSet { write(showsPrivacyIndicators, .privacyIndicators) } }
     /// Low battery, connectivity and accessory cards may overlay an island
     /// that is showing media or other work.
     public var allowsAlertsOverActivities = true { didSet { write(allowsAlertsOverActivities, .islandAlerts) } }
@@ -467,7 +529,7 @@ public final class Preferences {
     private enum Key: String {
         case imageFormat, jpegQuality, filenameTemplate, copyToClipboard, saveToDisk
         case showsShelf, shelfDuration, shelfPresentationStyle, shelfQuickActions
-        case freezeScreen, showsMagnifier, capturesSound, includesCursor, includesNotchInCaptures
+        case freezeScreen, showsMagnifier, capturesSound, swoopsCapture, includesCursor, includesNotchInCaptures
         case outputFolderBookmark
         case recordingTargetMode, recordingResolution, recordingFrameRate
         case recordsSystemAudio, recordsMicrophone, preferredMicrophone
@@ -481,17 +543,20 @@ public final class Preferences {
         case dictationCustomWords, dictationReplacements, dictationMicrophone
         case historyRetentionDays, historyEnabled, indexesCaptureText, indexesCapturesInSpotlight
         case clipboardEnabled, clipboardRetentionDays, clipboardClearsOnQuit, clipboardExcluded
+        case notchHiddenApps
         case notchEnabled, notchDisplayPlacement, islandOnExternal, mirrorPassiveContext, hoverPeek, hoverPeekDelay, systemLevelHUD
         case mirrorsBrightness, suppressesSystemOSD, usesSystemShortcuts
         case mediaEnabled, activityStackWhileLocked, mirrorSystemNotifications
-        case appleEventsFallback, adapterPath, adapterIdentity
+        case appleEventsFallback, adapterPath, adapterIdentity, mediaLyrics
         case calendarGlance, selectedCalendars, hiddenTitleCalendars, calendarTitles, calendarOverMedia
         case customCalendarSelection
         case powerStatus, audioRouteStatus, networkStatus
-        case aiActivity, aiActivityOverMedia, enabledAISources
-        case multipleActivities, maximumVisibleActivities, islandMedia, islandAI, islandTimers
+        case aiActivity, aiActivityOverMedia, enabledAISources, crewline
+        case multipleActivities, maximumVisibleActivities, islandMedia, islandMediaCentered, islandAI, islandTimers, islandCalls, notchTabBar, notchTabLastSlot
         case islandTransfers, islandPassive, externalActivities, islandSwipe, islandHaptics
         case islandAlerts, islandTransferAlerts, islandFocus
+        case islandGlass, islandGlassLevel
+        case islandAnimationStyle, islandShadowStrength, islandLongPress, privacyIndicators
         case backgroundPreset, annotationColor, annotationLineWidth
         case launchAtLogin, showsDockIcon, firstRun, pendingFirstCaptureIntent, updateChannel
         case recoveredLegacySystemOSD, adapterCheckBuild
@@ -533,6 +598,7 @@ public final class Preferences {
         freezeScreenDuringSelection = bool(.freezeScreen, true)
         showsMagnifier = bool(.showsMagnifier, true)
         playsCaptureSound = bool(.capturesSound, true)
+        swoopsCaptureIntoNotch = bool(.swoopsCapture, true)
         includesCursorInScreenshots = bool(.includesCursor, false)
         includesNotchInCaptures = bool(.includesNotchInCaptures, false)
         updateChannel = string(.updateChannel).flatMap(UpdateChannel.init) ?? .stable
@@ -605,6 +671,7 @@ public final class Preferences {
             notchDisplayPlacement = .builtInDisplayOnly
         }
         mirrorsPassiveContextOnAllDisplays = bool(.mirrorPassiveContext, true)
+        notchHiddenAppBundleIDs = Set(defaults.stringArray(forKey: "notchshot.\(Key.notchHiddenApps.rawValue)") ?? [])
         hoverPeekEnabled = bool(.hoverPeek, true)
         hoverPeekDelay = double(.hoverPeekDelay, 0.35)
         systemLevelHUDEnabled = bool(.systemLevelHUD, true)
@@ -631,6 +698,7 @@ public final class Preferences {
         showsActivityStackWhileLocked = bool(.activityStackWhileLocked, false)
         mirrorsSystemNotificationBanners = bool(.mirrorSystemNotifications, false)
         appleEventsFallbackEnabled = bool(.appleEventsFallback, false)
+        lyricsEnabled = bool(.mediaLyrics, false)
         mediaRemoteAdapterPath = string(.adapterPath)
         mediaRemoteAdapterIdentity = defaults.data(
             forKey: "notchshot.\(Key.adapterIdentity.rawValue)"
@@ -659,16 +727,28 @@ public final class Preferences {
         enabledAISourceRawValues = defaults.stringArray(
             forKey: "notchshot.\(Key.enabledAISources.rawValue)"
         ) ?? AISource.allCases.map(\.rawValue)
+        crewlineEnabled = bool(.crewline, true)
         multipleActivitiesEnabled = bool(.multipleActivities, true)
         maximumVisibleActivities = min(3, max(1, int(.maximumVisibleActivities, 3)))
         showsMediaActivity = bool(.islandMedia, true)
+        keepsMediaCentered = bool(.islandMediaCentered, true)
         showsAIIslandActivity = bool(.islandAI, true)
         showsTimerActivity = bool(.islandTimers, true)
+        showsCallActivity = bool(.islandCalls, true)
+        showsNotchTabBar = bool(.notchTabBar, true)
+        notchTabLastSlot = string(.notchTabLastSlot).flatMap(NotchTabLastSlot.init) ?? .agents
         showsTransferActivity = bool(.islandTransfers, true)
         showsPassiveActivities = bool(.islandPassive, true)
         externalActivitiesEnabled = bool(.externalActivities, true)
         swipesBetweenActivities = bool(.islandSwipe, true)
         islandHapticsEnabled = bool(.islandHaptics, true)
+        islandAnimationStyle = string(.islandAnimationStyle).flatMap(IslandAnimationStyle.init) ?? .iPhone
+        NotchMotion.style = islandAnimationStyle
+        islandShadowStrength = double(.islandShadowStrength, 0.5)
+        islandGlassEnabled = bool(.islandGlass, false)
+        islandGlassLevel = double(.islandGlassLevel, 0.5)
+        longPressExpandsIsland = bool(.islandLongPress, true)
+        showsPrivacyIndicators = bool(.privacyIndicators, true)
         allowsAlertsOverActivities = bool(.islandAlerts, true)
         showsTransferCompletionAlerts = bool(.islandTransferAlerts, true)
         showsFocusEvents = bool(.islandFocus, false)

@@ -1,0 +1,36 @@
+[0/1] Planning build
+Building for debugging...
+[0/19] Write sources
+[2/19] Write swift-version--58304C5D6DBC2206.txt
+[4/13] Compiling NotchShotKit SettingsView+Capture.swift
+[5/13] Emitting module NotchShotKit
+[5/16] Write Objects.LinkFileList
+[9/18] Compiling NotchShotKitTests PDFConversionCancellationTests.swift
+[9/18] Linking notchshot-diagnostics
+[10/18] Linking NotchShot
+[11/18] Linking NotchShotBench
+[12/18] Applying notchshot-diagnostics
+[13/18] Applying NotchShot
+[14/18] Applying NotchShotBench
+[16/18] Emitting module NotchShotKitTests
+[16/18] Write Objects.LinkFileList
+[17/18] Linking NotchShotPackageTests
+Build complete! (9.85s)
+Test Suite 'Selected tests' started at 2026-10-11 21:19:13.656.
+Test Suite 'NotchShotPackageTests.xctest' started at 2026-10-11 21:19:13.662.
+Test Suite 'NotchShotPackageTests.xctest' passed at 2026-10-11 21:19:13.662.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.000) seconds
+Test Suite 'Selected tests' passed at 2026-10-11 21:19:13.662.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.006) seconds
+􀟈  Test run started.
+􀄵  Testing Library Version: 1902
+􀄵  Target Platform: arm64e-apple-macos14.0
+􀟈  Suite "PDF conversion cancellation" started.
+􀟈  Test "PDF conversion retains page limit, ordering and two-times raster dimensions" started.
+􀟈  Test "A canceled public PDF conversion writes no pages and preserves existing files" started.
+􀢄  Test "A canceled public PDF conversion writes no pages and preserves existing files" recorded an issue at PDFConversionCancellationTests.swift:20:15: Expectation failed: an error was expected but none was thrown and "[file:///var/folders/5q/5zgpxz0j15139j1bj7zvks2w0000gn/T/pdf-cancellation-E7F21896-8A38-4992-BF8C-85274629B74F/fixture-page1%202.png, file:///var/folders/5q/5zgpxz0j15139j1bj7zvks2w0000gn/T/pdf-cancellation-E7F21896-8A38-4992-BF8C-85274629B74F/fixture-page2.png]" was returned
+􀢄  Test "A canceled public PDF conversion writes no pages and preserves existing files" recorded an issue at PDFConversionCancellationTests.swift:22:9: Expectation failed: Set(try FileManager.default.contentsOfDirectory(atPath: directory.path)) == ["fixture.pdf", "fixture-page1.png"]
+􀢄  Test "A canceled public PDF conversion writes no pages and preserves existing files" failed after 0.059 seconds with 2 issues.
+􁁛  Test "PDF conversion retains page limit, ordering and two-times raster dimensions" passed after 0.079 seconds.
+􀢄  Suite "PDF conversion cancellation" failed after 0.079 seconds with 2 issues.
+􀢄  Test run with 2 tests in 1 suite failed after 0.079 seconds with 2 issues.

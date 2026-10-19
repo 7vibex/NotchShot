@@ -1,0 +1,204 @@
+--- baseline/Sources/NotchShotKit/Annotation/AnnotationModel.swift
++++ Sources/NotchShotKit/Annotation/AnnotationModel.swift
+@@ -283,7 +283,19 @@
+ 
+     /// Topmost element under a point, for selection.
+     public func element(at point: CGPoint) -> AnnotationElement? {
+-        sortedElements.reversed().first { $0.contains(point) }
++        var topmostIndex: Int?
++        var topmostOrder = Int.min
++        // Stable ascending sorting followed by reversal makes the last input
++        // element win a tie. Walk in that order without allocating or sorting.
++        for index in elements.indices.reversed() {
++            let order = elements[index].order
++            if topmostIndex != nil, order <= topmostOrder { continue }
++            if elements[index].contains(point) {
++                topmostIndex = index
++                topmostOrder = order
++            }
++        }
++        return topmostIndex.map { elements[$0] }
+     }
+ 
+     public var hasRedactions: Bool {
+--- baseline/Sources/NotchShotKit/Capture/ScrollingStitcher.swift
++++ Sources/NotchShotKit/Capture/ScrollingStitcher.swift
+@@ -113,6 +113,21 @@
+         settings: StitchSettings = StitchSettings(),
+         limits: StitchLimits = StitchLimits(),
+         progress: (@Sendable (Double) -> Void)? = nil
++    ) throws -> StitchOutput {
++        // Image decoding and composition create framework temporaries. Drain
++        // them at this job's boundary while the returned image stays retained.
++        try autoreleasepool {
++            try stitchFrames(frames: frames, axis: axis, settings: settings,
++                limits: limits, progress: progress)
++        }
++    }
++
++    private static func stitchFrames(
++        frames: [CGImage],
++        axis: ScrollingAxis,
++        settings: StitchSettings,
++        limits: StitchLimits,
++        progress: (@Sendable (Double) -> Void)?
+     ) throws -> StitchOutput {
+         try Task.checkCancellation()
+         try validate(settings: settings, limits: limits)
+@@ -657,19 +672,35 @@
+         // converting an unbounded Double straight to Int would trap.
+         let budget: Int? = earlyExit.isFinite ? Int(min(max(earlyExit, 0), 255)) : nil
+ 
+-        for row in 0 ..< templateHeight {
+-            let lhs = (templateTop + row) * width
+-            let rhs = (position + row) * width
+-            for column in 0 ..< width {
+-                total += abs(Int(pixels[lhs + column]) - Int(other.pixels[rhs + column]))
+-            }
+-            counted += width
+-            // Check every few rows so the early exit costs almost nothing.
+-            if let budget, row % 8 == 7, total / counted > budget {
+-                return .greatestFiniteMagnitude
+-            }
+-        }
+-
+-        return counted == 0 ? .greatestFiniteMagnitude : Double(total) / Double(counted)
++        return pixels.withUnsafeBufferPointer { left in
++            other.pixels.withUnsafeBufferPointer { right in
++                for row in 0 ..< templateHeight {
++                    let lhs = (templateTop + row) * width
++                    let rhs = (position + row) * width
++                    var column = 0
++                    while column + 16 <= width {
++                        let a = UnsafeRawPointer(left.baseAddress! + lhs + column)
++                            .loadUnaligned(as: SIMD16<UInt8>.self)
++                        let b = UnsafeRawPointer(right.baseAddress! + rhs + column)
++                            .loadUnaligned(as: SIMD16<UInt8>.self)
++                        let delta = pointwiseMax(a, b) &- pointwiseMin(a, b)
++                        // Widen before reduction: sixteen 255-byte differences
++                        // fit in UInt16, and the integer total stays exact.
++                        total += Int(SIMD16<UInt16>(truncatingIfNeeded: delta).wrappedSum())
++                        column += 16
++                    }
++                    while column < width {
++                        total += abs(Int(left[lhs + column]) - Int(right[rhs + column]))
++                        column += 1
++                    }
++                    counted += width
++                    // Preserve the original row checkpoints and integer budget.
++                    if let budget, row % 8 == 7, total / counted > budget {
++                        return .greatestFiniteMagnitude
++                    }
++                }
++                return counted == 0 ? .greatestFiniteMagnitude : Double(total) / Double(counted)
++            }
++        }
+     }
+ }
+--- baseline/Sources/NotchShotKit/Clipboard/ClipboardEntry.swift
++++ Sources/NotchShotKit/Clipboard/ClipboardEntry.swift
+@@ -154,10 +154,15 @@
+ 
+     /// Stable identity for deduplication.
+     public static func hash(for data: some DataProtocol) -> String {
+-        SHA256.hash(data: data)
+-            .prefix(16)
+-            .map { String(format: "%02x", $0) }
+-            .joined()
++        let digest = SHA256.hash(data: data)
++        let digits = Array("0123456789abcdef".utf8)
++        var bytes: [UInt8] = []
++        bytes.reserveCapacity(32)
++        for byte in digest.prefix(16) {
++            bytes.append(digits[Int(byte >> 4)])
++            bytes.append(digits[Int(byte & 0x0f)])
++        }
++        return String(decoding: bytes, as: UTF8.self)
+     }
+ 
+     public static func hash(forText text: String) -> String {
+--- baseline/Sources/NotchShotKit/Clipboard/ClipboardStore.swift
++++ Sources/NotchShotKit/Clipboard/ClipboardStore.swift
+@@ -413,7 +413,8 @@
+         // example, control characters become `\u0000`). Budget the encoded
+         // document, not only an estimate, or a store that looks like 6 MB here
+         // can exceed the loader's 8 MB contract on disk.
+-        while Self.encodedStoreBytes(entries) > Self.storeByteBudget {
++        while !Self.isStoreGuaranteedWithinByteBudget(entries)
++            && Self.encodedStoreBytes(entries) > Self.storeByteBudget {
+             let unpinnedText = entries.indices.filter {
+                 !entries[$0].isPinned && (entries[$0].text?.utf8.count ?? 0) > 4_096
+             }
+@@ -463,6 +464,40 @@
+         let encoder = JSONEncoder()
+         encoder.dateEncodingStrategy = .iso8601
+         return (try? encoder.encode(entries).count) ?? Int.max
++    }
++
++    /// A strict upper bound, not the optimistic retention estimate above.
++    /// JSON uses at most six bytes per UTF-8 input byte (a control character's
++    /// escape). Fixed fields include every Codable key, punctuation, UUID,
++    /// date, boolean and two full-width integers with ample room to spare.
++    /// Uncertain or large inputs still use the exact encoder and old policy.
++    nonisolated static func isStoreGuaranteedWithinByteBudget(_ entries: [ClipboardEntry]) -> Bool {
++        var remaining = storeByteBudget - 2 // Array brackets.
++        func account(_ value: String?) -> Bool {
++            guard let value else { return true }
++            let count = value.utf8.count
++            guard remaining >= 3, count <= (remaining - 3) / 6 else { return false }
++            remaining -= 3 + count * 6 // Quotes and a possible comma.
++            return true
++        }
++        for entry in entries {
++            guard remaining >= 1_024,
++                  entry.createdAt >= .distantPast, entry.createdAt <= .distantFuture else { return false }
++            remaining -= 1_024
++            guard account(entry.label), account(entry.text), account(entry.imageFilename),
++                  account(entry.sourceApplicationName), account(entry.sourceApplicationBundleID),
++                  account(entry.contentHash) else { return false }
++            for tag in entry.tags ?? [] {
++                guard account(tag) else { return false }
++            }
++            for path in entry.filePaths {
++                guard account(path) else { return false }
++            }
++            let identityCount = entry.fileIdentities?.count ?? 0
++            guard identityCount <= remaining / 512 else { return false }
++            remaining -= identityCount * 512
++        }
++        return true
+     }
+ 
+     // MARK: Storage
+--- baseline/Sources/NotchShotKit/Context/ClaudeConversationReader.swift
++++ Sources/NotchShotKit/Context/ClaudeConversationReader.swift
+@@ -64,6 +64,9 @@
+               let content = String(data: data, encoding: .utf8) else { return [] }
+ 
+         var parsed: [ClaudeTranscriptMessage] = []
++        // Keep formatter state local to this read: repeated timestamps share
++        // its parser setup, while concurrent reads never share mutable state.
++        let dateFormatter = ISO8601DateFormatter()
+         for (lineIndex, line) in content.split(separator: "\n", omittingEmptySubsequences: true).enumerated() {
+             guard let lineData = line.data(using: .utf8),
+                   let object = try? JSONSerialization.jsonObject(with: lineData) as? [String: Any],
+@@ -81,7 +84,7 @@
+                 role: extracted.role,
+                 text: extracted.text,
+                 toolName: extracted.toolName,
+-                timestamp: date(from: object["timestamp"] as? String)
++                timestamp: date(from: object["timestamp"] as? String, formatter: dateFormatter)
+             ))
+             if parsed.count > maximumMessages {
+                 parsed.removeFirst(parsed.count - maximumMessages)
+@@ -207,9 +210,8 @@
+         return bounded(trimmed.replacingOccurrences(of: "\0", with: ""), maximum: maximumMessageCharacters) ?? ""
+     }
+ 
+-    private static func date(from value: String?) -> Date {
++    private static func date(from value: String?, formatter: ISO8601DateFormatter) -> Date {
+         guard let value else { return Date() }
+-        let formatter = ISO8601DateFormatter()
+         return formatter.date(from: value) ?? Date()
+     }
+ 

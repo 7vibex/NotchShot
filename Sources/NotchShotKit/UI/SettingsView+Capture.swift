@@ -31,6 +31,7 @@ struct GeneralSettings: View {
                     }
                 ))
                 Toggle("Play a sound when capturing", isOn: $preferences.playsCaptureSound)
+                Toggle("Fly captures into the notch", isOn: $preferences.swoopsCaptureIntoNotch)
             }
 
             Section("Storage") {
@@ -53,14 +54,14 @@ struct GeneralSettings: View {
                         Text(channel.title).tag(channel)
                     }
                 }
-                Text("Automatic update checks are enabled for signed public builds. Beta includes the stable channel and may be less reliable.")
+                Text("Beta includes stable releases and may be less reliable.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
 
             Section("About") {
                 LabeledContent("Version", value: "\(Bundle.main.shortVersion) (\(Bundle.main.buildVersion))")
-                Text("Everything NotchShot captures stays on this Mac. There is no account, no backend, and no telemetry.")
+                Text("Captures are stored locally. Optional sharing can send files to other devices or your configured S3 provider. NotchShot has no account or telemetry.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -130,7 +131,7 @@ struct CaptureSettings: View {
 
             Section("Notch") {
                 Toggle("Show the notch in screenshots and recordings", isOn: $preferences.includesNotchInCaptures)
-                Text("Off by default. When on, the notch and its controls appear in every screen capture and recording, including NotchShot's own — useful for demos and product screenshots.")
+                Text("Shows the notch in your captures and recordings, for demos and product shots.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -156,7 +157,7 @@ struct CaptureSettings: View {
                         }
                     }
                 }
-                Text("These six actions stay visible on every result. Actions that do not apply to the selected file are replaced temporarily; everything else remains under More.")
+                Text("Shown on every result. The rest are under More.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -284,7 +285,7 @@ struct DictationSettings: View {
         Form {
             Section("Notch Dictation") {
                 Toggle("Enable Notch Dictation", isOn: $preferences.dictationEnabled)
-                Text("Speech recognition runs locally. A one-time language/model download may be required. Dictation audio is not saved.")
+                Text("Runs on this Mac. Audio is never saved.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -295,7 +296,7 @@ struct DictationSettings: View {
                         Text(mode.title).tag(mode)
                     }
                 }
-                Text("The Toggle Dictation shortcut follows this trigger mode: press once to start/stop, or hold it to talk. Both modes use a macOS global hot key and need no Accessibility or Input Monitoring permission.")
+                Text("Press once to start and stop, or hold to talk. No extra permissions needed.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 // HotKey assignment is in Shortcuts tab – link there
@@ -351,7 +352,7 @@ struct DictationSettings: View {
                 }
                 Toggle("Remove filler words", isOn: $preferences.dictationRemovesFillerWords)
                 Toggle("Spoken formatting commands", isOn: $preferences.dictationSpokenFormattingEnabled)
-                Text("Accessibility is used to insert text into another application. The app never inserts into secure/password fields.")
+                Text("Needs Accessibility to type into other apps. Never types into password fields.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

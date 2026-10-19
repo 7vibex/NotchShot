@@ -1,0 +1,23 @@
+Building for debugging...
+[0/16] Write swift-version--58304C5D6DBC2206.txt
+Build complete! (0.10s)
+Test Suite 'Selected tests' started at 2026-10-11 21:20:04.472.
+Test Suite 'NotchShotPackageTests.xctest' started at 2026-10-11 21:20:04.477.
+Test Suite 'NotchShotPackageTests.xctest' passed at 2026-10-11 21:20:04.477.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.000) seconds
+Test Suite 'Selected tests' passed at 2026-10-11 21:20:04.477.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.005) seconds
+􀟈  Test run started.
+􀄵  Testing Library Version: 1902
+􀄵  Target Platform: arm64e-apple-macos14.0
+􀟈  Suite "GIF conversion progress" started.
+􀟈  Test "A stalled or failed encoder exits without silently skipping frames" started.
+􁁛  Test "A stalled or failed encoder exits without silently skipping frames" passed after 0.001 seconds.
+􀟈  Test "The encoded movie keeps the final frame's delay" started.
+􁁛  Test "The encoded movie keeps the final frame's delay" passed after 0.268 seconds.
+􀟈  Test "Failure and cancellation preserve pre-existing destinations" started.
+􁁛  Test "Failure and cancellation preserve pre-existing destinations" passed after 0.034 seconds.
+􀟈  Test "Cancellation of the public converter reaches its detached writer" started.
+􁁛  Test "Cancellation of the public converter reaches its detached writer" passed after 0.001 seconds.
+􁁛  Suite "GIF conversion progress" passed after 0.307 seconds.
+􁁛  Test run with 4 tests in 1 suite passed after 0.307 seconds.

@@ -1,0 +1,69 @@
+==> Building (release)
+[0/1] Planning build
+Building for production...
+[0/2] Write swift-version--58304C5D6DBC2206.txt
+[2/4] Compiling NotchShot BundledSelfTest.swift
+[2/4] Write Objects.LinkFileList
+[3/4] Linking NotchShot
+Build of product 'NotchShot' complete! (3.93s)
+Building for production...
+[0/2] Write swift-version--58304C5D6DBC2206.txt
+Build of product 'NotchShotOSDRecovery' complete! (0.11s)
+Building for production...
+[0/2] Write swift-version--58304C5D6DBC2206.txt
+Build of product 'NotchShotAdapterRunner' complete! (0.11s)
+Building for production...
+[0/2] Write swift-version--58304C5D6DBC2206.txt
+Build of product 'NotchShotAIReporter' complete! (0.15s)
+Building for production...
+[0/2] Write swift-version--58304C5D6DBC2206.txt
+Build of product 'notchshot-cli' complete! (0.12s)
+==> Assembling bundle
+==> Extracting App Intents metadata
+2026-10-13 17:01:28.551 appintentsmetadataprocessor[97443:10726232] Starting appintentsmetadataprocessor export
+2026-10-13 17:01:28.570 appintentsmetadataprocessor[97443:10726232] Writing Metadata.appintents
+2026-10-13 17:01:28.570 appintentsmetadataprocessor[97443:10726232] Metadata root: /Users/vibex/Documents/NOTCH/dist/.NotchShot.app.staging/Contents/Resources/Metadata.appintents
+==> Signing with identity: FCB1F84EC272464F32F1F439E16BE4A2824D0E7A
+/Users/vibex/Documents/NOTCH/dist/.NotchShot.app.staging/Contents/Frameworks/Sparkle.framework/Versions/B/XPCServices/Installer.xpc: replacing existing signature
+/Users/vibex/Documents/NOTCH/dist/.NotchShot.app.staging/Contents/Frameworks/Sparkle.framework/Versions/B/XPCServices/Downloader.xpc: replacing existing signature
+/Users/vibex/Documents/NOTCH/dist/.NotchShot.app.staging/Contents/Frameworks/Sparkle.framework/Versions/B/Autoupdate: replacing existing signature
+/Users/vibex/Documents/NOTCH/dist/.NotchShot.app.staging/Contents/Frameworks/Sparkle.framework/Versions/B/Updater.app: replacing existing signature
+/Users/vibex/Documents/NOTCH/dist/.NotchShot.app.staging/Contents/Frameworks/Sparkle.framework: replacing existing signature
+/Users/vibex/Documents/NOTCH/dist/.NotchShot.app.staging/Contents/MacOS/NotchShotOSDRecovery: replacing existing signature
+/Users/vibex/Documents/NOTCH/dist/.NotchShot.app.staging/Contents/MacOS/NotchShotAdapterRunner: replacing existing signature
+/Users/vibex/Documents/NOTCH/dist/.NotchShot.app.staging/Contents/MacOS/notchshot-ai: replacing existing signature
+/Users/vibex/Documents/NOTCH/dist/.NotchShot.app.staging/Contents/MacOS/notchshot-cli: replacing existing signature
+/Users/vibex/Documents/NOTCH/dist/.NotchShot.app.staging: replacing existing signature
+==> Verifying
+--prepared:/Users/vibex/Documents/NOTCH/dist/.NotchShot.app.staging/Contents/MacOS/notchshot-cli
+--validated:/Users/vibex/Documents/NOTCH/dist/.NotchShot.app.staging/Contents/MacOS/notchshot-cli
+--prepared:/Users/vibex/Documents/NOTCH/dist/.NotchShot.app.staging/Contents/MacOS/NotchShotOSDRecovery
+--validated:/Users/vibex/Documents/NOTCH/dist/.NotchShot.app.staging/Contents/MacOS/NotchShotOSDRecovery
+--prepared:/Users/vibex/Documents/NOTCH/dist/.NotchShot.app.staging/Contents/MacOS/notchshot-ai
+--validated:/Users/vibex/Documents/NOTCH/dist/.NotchShot.app.staging/Contents/MacOS/notchshot-ai
+--prepared:/Users/vibex/Documents/NOTCH/dist/.NotchShot.app.staging/Contents/MacOS/NotchShotAdapterRunner
+--validated:/Users/vibex/Documents/NOTCH/dist/.NotchShot.app.staging/Contents/MacOS/NotchShotAdapterRunner
+--prepared:/Users/vibex/Documents/NOTCH/dist/.NotchShot.app.staging/Contents/Frameworks/Sparkle.framework/Versions/Current/.
+--prepared:/Users/vibex/Documents/NOTCH/dist/.NotchShot.app.staging/Contents/Frameworks/Sparkle.framework/Versions/Current/Updater.app
+--validated:/Users/vibex/Documents/NOTCH/dist/.NotchShot.app.staging/Contents/Frameworks/Sparkle.framework/Versions/Current/Updater.app
+--prepared:/Users/vibex/Documents/NOTCH/dist/.NotchShot.app.staging/Contents/Frameworks/Sparkle.framework/Versions/Current/Autoupdate
+--validated:/Users/vibex/Documents/NOTCH/dist/.NotchShot.app.staging/Contents/Frameworks/Sparkle.framework/Versions/Current/Autoupdate
+--prepared:/Users/vibex/Documents/NOTCH/dist/.NotchShot.app.staging/Contents/Frameworks/Sparkle.framework/Versions/Current/XPCServices/Installer.xpc
+--validated:/Users/vibex/Documents/NOTCH/dist/.NotchShot.app.staging/Contents/Frameworks/Sparkle.framework/Versions/Current/XPCServices/Installer.xpc
+--prepared:/Users/vibex/Documents/NOTCH/dist/.NotchShot.app.staging/Contents/Frameworks/Sparkle.framework/Versions/Current/XPCServices/Downloader.xpc
+--validated:/Users/vibex/Documents/NOTCH/dist/.NotchShot.app.staging/Contents/Frameworks/Sparkle.framework/Versions/Current/XPCServices/Downloader.xpc
+--validated:/Users/vibex/Documents/NOTCH/dist/.NotchShot.app.staging/Contents/Frameworks/Sparkle.framework/Versions/Current/.
+/Users/vibex/Documents/NOTCH/dist/.NotchShot.app.staging: valid on disk
+/Users/vibex/Documents/NOTCH/dist/.NotchShot.app.staging: satisfies its Designated Requirement
+
+Built: /Users/vibex/Documents/NOTCH/dist/NotchShot.app
+
+Next steps:
+  open /Users/vibex/Documents/NOTCH/dist/NotchShot.app
+
+Signed as: FCB1F84EC272464F32F1F439E16BE4A2824D0E7A
+
+The first capture asks for Screen Recording. Allow it, then QUIT AND
+REOPEN NotchShot — macOS only applies a new capture grant to freshly
+launched processes. Because this build is signed with a real
+certificate, you only have to do this once; later rebuilds keep it.

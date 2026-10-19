@@ -10,8 +10,11 @@ public final class ContextCoordinator {
     public let calendar = CalendarGlanceService.shared
     public let ai = AIActivityMonitor.shared
     public let claude = ClaudeCodeSessionMonitor.shared
+    public let crewline = CrewlineMonitor.shared
+    public let claudeUsage = ClaudeUsageMonitor.shared
     public let timer = FocusTimerCoordinator.shared
     public let voiceNotes = VoiceNoteCoordinator.shared
+    public let privacy = PrivacyIndicatorMonitor.shared
     public var onSnapshotChange: ((ContextSnapshot?) -> Void)?
 
     private let power = PowerSourceMonitor()
@@ -20,11 +23,21 @@ public final class ContextCoordinator {
     private var calendarSnapshot: ContextSnapshot?
     private var aiSnapshot: ContextSnapshot?
     private var claudeSnapshot: ContextSnapshot?
+    private var crewlineActivities: [AIActivitySnapshot] = []
     private var timerSnapshot: ContextSnapshot?
     private var voiceNoteSnapshot: ContextSnapshot?
-    private var expiryTask: Task<Void, Never>?
+    private var cancelExpiry: (() -> Void)?
+    private var expiryGeneration = 0
 
-    public init() {}
+    private let timing: ContextTiming
+
+    public convenience init() { self.init(timing: ContextTiming()) }
+
+    init(timing: ContextTiming) { self.timing = timing }
+
+    private func isExpired(_ snapshot: ContextSnapshot) -> Bool {
+        snapshot.expiresAt.map { $0 <= timing.now() } ?? false
+    }
 
     public func start() {
         power.onTransition = { [weak self] snapshot in self?.present(snapshot) }
@@ -33,26 +46,32 @@ public final class ContextCoordinator {
         calendar.onSnapshotChange = { [weak self] snapshot in self?.updateCalendar(snapshot) }
         ai.onSnapshotChange = { [weak self] snapshot in self?.updateAI(snapshot) }
         claude.onSnapshotChange = { [weak self] snapshot in self?.updateClaude(snapshot) }
+        crewline.onChange = { [weak self] in self?.updateCrewline() }
         timer.onSnapshotChange = { [weak self] snapshot in self?.updateTimer(snapshot) }
         voiceNotes.onSnapshotChange = { [weak self] snapshot in self?.updateVoiceNote(snapshot) }
         refreshPreferences()
     }
 
     public func stop() {
-        expiryTask?.cancel()
-        expiryTask = nil
+        cancelScheduledExpiry()
         power.stop()
         audio.stop()
         network.stop()
+        privacy.stop()
         calendar.stop()
         ai.stop()
         claude.stop()
+        claudeUsage.stop()
+        crewline.stop()
         voiceNotes.finalizeForTermination()
         calendarSnapshot = nil
         aiSnapshot = nil
         claudeSnapshot = nil
+        crewlineActivities = []
         timerSnapshot = nil
         voiceNoteSnapshot = nil
+        // Stopping producers can publish nil and restore another source.
+        cancelScheduledExpiry()
         snapshot = nil
         onSnapshotChange?(nil)
     }
@@ -61,32 +80,44 @@ public final class ContextCoordinator {
         if Preferences.shared.powerStatusEnabled { power.start() } else { power.stop() }
         if Preferences.shared.audioRouteStatusEnabled { audio.start() } else { audio.stop() }
         if Preferences.shared.networkStatusEnabled { network.start() } else { network.stop() }
+        // The same listener feeds the indicator dots and the call activity.
+        let preferences = Preferences.shared
+        if preferences.showsPrivacyIndicators || preferences.showsCallActivity {
+            privacy.start()
+        } else {
+            privacy.stop()
+        }
         if Preferences.shared.calendarGlanceEnabled { calendar.start() } else { calendar.stop() }
         if Preferences.shared.aiActivityEnabled {
             ai.setEnabledSources(Preferences.shared.enabledAISources)
             ai.start(mayInterruptMedia: Preferences.shared.showsAIActivityOverMedia)
             if Preferences.shared.enabledAISources.contains(.claude) {
                 claude.start(mayInterruptMedia: Preferences.shared.showsAIActivityOverMedia)
+                claudeUsage.start()
             } else {
                 claude.stop()
+                claudeUsage.stop()
+            }
+            if Preferences.shared.crewlineEnabled {
+                crewline.start()
+            } else {
+                crewline.stop()
             }
         } else {
             ai.stop()
             claude.stop()
+            claudeUsage.stop()
+            crewline.stop()
         }
     }
 
     public func present(_ newSnapshot: ContextSnapshot) {
-        guard !newSnapshot.isExpired else { return }
-        expiryTask?.cancel()
+        guard !isExpired(newSnapshot) else { return }
+        cancelScheduledExpiry()
+        let generation = expiryGeneration
         snapshot = newSnapshot
         onSnapshotChange?(newSnapshot)
-        guard let expiresAt = newSnapshot.expiresAt else { return }
-        expiryTask = Task { [weak self] in
-            try? await Task.sleep(for: .seconds(max(0, expiresAt.timeIntervalSinceNow)))
-            guard !Task.isCancelled else { return }
-            self?.restorePersistentSnapshot()
-        }
+        armExpiry(for: newSnapshot, generation: generation)
     }
 
     public func updateCalendar(_ calendar: ContextSnapshot?) {
@@ -95,7 +126,7 @@ public final class ContextCoordinator {
             updated?.presentation = .expanded
         }
         calendarSnapshot = updated
-        guard snapshot == nil || snapshot?.kind == .calendar || snapshot?.isExpired == true else { return }
+        guard snapshot == nil || snapshot?.kind == .calendar || snapshot.map({ isExpired($0) }) == true else { return }
         restorePersistentSnapshot()
     }
 
@@ -108,7 +139,21 @@ public final class ContextCoordinator {
         guard snapshot == nil
                 || snapshot?.kind == .ai
                 || snapshot?.kind == .calendar
-                || snapshot?.isExpired == true
+                || snapshot.map({ isExpired($0) }) == true
+        else { return }
+        restorePersistentSnapshot()
+    }
+
+    /// Crewline publishes whole-workspace changes; the island only needs to
+    /// hear about them when the visible run list actually moved.
+    public func updateCrewline() {
+        let activities = crewline.activities
+        guard activities != crewlineActivities else { return }
+        crewlineActivities = activities
+        guard snapshot == nil
+                || snapshot?.kind == .ai
+                || snapshot?.kind == .calendar
+                || snapshot.map({ isExpired($0) }) == true
         else { return }
         restorePersistentSnapshot()
     }
@@ -118,7 +163,7 @@ public final class ContextCoordinator {
         guard snapshot == nil
                 || snapshot?.kind == .ai
                 || snapshot?.kind == .calendar
-                || snapshot?.isExpired == true
+                || snapshot.map({ isExpired($0) }) == true
         else { return }
         restorePersistentSnapshot()
     }
@@ -133,7 +178,7 @@ public final class ContextCoordinator {
                 || snapshot?.kind == .timer
                 || snapshot?.kind == .ai
                 || snapshot?.kind == .calendar
-                || snapshot?.isExpired == true
+                || snapshot.map({ isExpired($0) }) == true
         else { return }
         restorePersistentSnapshot()
     }
@@ -159,10 +204,10 @@ public final class ContextCoordinator {
     /// Every agent record the island should know about: generic reporter
     /// records plus the live Claude sessions, without duplicates.
     public var islandAIActivities: [AIActivitySnapshot] {
-        guard claude.isRunning else { return aiSnapshot?.aiActivities ?? [] }
+        guard claude.isRunning else { return (aiSnapshot?.aiActivities ?? []) + crewlineActivities }
         let generic = aiSnapshot?.aiActivities.filter { $0.source != .claude } ?? []
         let direct = claude.sessions.map(\.aiActivity)
-        return generic + direct
+        return generic + direct + crewlineActivities
     }
 
     /// Finished agent records for the expanded card's Recent list.
@@ -182,45 +227,62 @@ public final class ContextCoordinator {
     /// Closes a transient card early instead of waiting out its expiry, for
     /// the cards that carry their own dismiss control.
     public func dismissTransient() {
-        expiryTask?.cancel()
         restorePersistentSnapshot()
     }
 
     private func restorePersistentSnapshot() {
-        expiryTask = nil
+        cancelScheduledExpiry()
+        let generation = expiryGeneration
         let restored: ContextSnapshot?
-        if let voiceNoteSnapshot, !voiceNoteSnapshot.isExpired {
+        if let voiceNoteSnapshot, !isExpired(voiceNoteSnapshot) {
             restored = voiceNoteSnapshot
-        } else if let timerSnapshot, !timerSnapshot.isExpired {
+        } else if let timerSnapshot, !isExpired(timerSnapshot) {
             restored = timerSnapshot
-        } else if let aiSnapshot = effectiveAISnapshot(), !aiSnapshot.isExpired {
+        } else if let aiSnapshot = effectiveAISnapshot(), !isExpired(aiSnapshot) {
             restored = aiSnapshot
-        } else if let calendarSnapshot, !calendarSnapshot.isExpired {
+        } else if let calendarSnapshot, !isExpired(calendarSnapshot) {
             restored = calendarSnapshot
         } else {
             restored = nil
         }
         snapshot = restored
         onSnapshotChange?(restored)
+        armExpiry(for: restored, generation: generation)
+    }
+
+    private func cancelScheduledExpiry() {
+        cancelExpiry?()
+        cancelExpiry = nil
+        expiryGeneration += 1
+    }
+
+    private func armExpiry(for snapshot: ContextSnapshot?, generation: Int) {
+        guard generation == expiryGeneration, let deadline = snapshot?.expiresAt else { return }
+        cancelExpiry = timing.schedule(deadline) { [weak self] in
+            guard let self, self.expiryGeneration == generation else { return }
+            self.restorePersistentSnapshot()
+        }
     }
 
     /// The generic reporter still supplies Codex, Cursor, Terminal, and older
     /// Claude records. Once the live Claude socket is running, its session list
     /// is authoritative for Claude so a hook event cannot appear twice.
     private func effectiveAISnapshot() -> ContextSnapshot? {
-        guard claude.isRunning else { return aiSnapshot }
+        guard claude.isRunning || !crewlineActivities.isEmpty else { return aiSnapshot }
 
-        let generic = aiSnapshot?.aiActivities.filter { $0.source != .claude } ?? []
+        let generic = claude.isRunning
+            ? aiSnapshot?.aiActivities.filter { $0.source != .claude } ?? []
+            : aiSnapshot?.aiActivities ?? []
         let direct = claudeSnapshot?.aiActivities ?? []
         var merged = AIActivityPolicy.contextSnapshot(
-            from: generic + direct,
+            from: generic + direct + crewlineActivities,
             mayInterruptMedia: claudeSnapshot?.mayInterruptMedia
                 ?? aiSnapshot?.mayInterruptMedia
                 ?? false
         )
         merged?.aiRecentActivities = Array(
             (aiSnapshot?.aiRecentActivities ?? [])
-                .filter { $0.source != .claude }
+                .filter { !claude.isRunning || $0.source != .claude }
                 .prefix(5)
         )
         if snapshot?.kind == .ai, snapshot?.presentation == .expanded {

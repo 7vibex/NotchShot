@@ -68,6 +68,8 @@ public struct SettingsView: View {
             }
             .navigationTitle(selection?.title ?? "Settings")
         }
+        .onAppear(perform: applyRequestedSection)
+        .onChange(of: coordinator.requestedSettingsSection) { _, _ in applyRequestedSection() }
         .tint(SettingsWorkbenchStyle.accent)
         .frame(
             minWidth: SettingsWindowMetrics.minimumWidth,
@@ -75,6 +77,16 @@ public struct SettingsView: View {
             minHeight: SettingsWindowMetrics.minimumHeight,
             idealHeight: SettingsWindowMetrics.defaultSize.height
         )
+    }
+
+    /// Jumps to the pane an action asked for, e.g. Sharing after a share
+    /// link was requested before storage was set up.
+    private func applyRequestedSection() {
+        guard let raw = coordinator.requestedSettingsSection,
+              let section = SettingsSection(rawValue: raw) else { return }
+        searchText = ""
+        selection = section
+        coordinator.requestedSettingsSection = nil
     }
 
     @ViewBuilder
@@ -102,6 +114,10 @@ public struct SettingsView: View {
             PrivacySettings(coordinator: coordinator, preferences: preferences)
         case .shortcuts:
             ShortcutSettings()
+        case .sharing:
+            ShareLinkSettings()
+        case .extras:
+            ExtrasSettings(coordinator: coordinator)
         }
     }
 
@@ -137,6 +153,8 @@ enum SettingsSection: String, CaseIterable, Identifiable {
     case context
     case privacy
     case shortcuts
+    case sharing
+    case extras
 
     var id: String { rawValue }
 
@@ -153,6 +171,8 @@ enum SettingsSection: String, CaseIterable, Identifiable {
         case .context: "Context Modules"
         case .privacy: "Privacy"
         case .shortcuts: "Shortcuts & Automation"
+        case .sharing: "Share Links"
+        case .extras: "Notch Extras"
         }
     }
 
@@ -169,6 +189,8 @@ enum SettingsSection: String, CaseIterable, Identifiable {
         case .context: "Context"
         case .privacy: "Privacy"
         case .shortcuts: "Hotkeys"
+        case .sharing: "Sharing"
+        case .extras: "Extras"
         }
     }
 
@@ -185,6 +207,8 @@ enum SettingsSection: String, CaseIterable, Identifiable {
         case .context: "rectangle.topthird.inset.filled"
         case .privacy: "hand.raised"
         case .shortcuts: "command"
+        case .sharing: "link"
+        case .extras: "sparkles"
         }
     }
 
@@ -201,6 +225,8 @@ enum SettingsSection: String, CaseIterable, Identifiable {
         case .context: .teal
         case .privacy: .green
         case .shortcuts: .gray
+        case .sharing: .cyan
+        case .extras: .yellow
         }
     }
 
@@ -217,9 +243,9 @@ enum SettingsSection: String, CaseIterable, Identifiable {
         case .dictation:
             ["voice", "speech", "transcription", "push to talk", "language", "insert", "filler words"]
         case .appearance:
-            ["notch", "display", "hover", "brightness", "volume", "hud", "basket", "jiggle", "liquid glass"]
+            ["notch", "display", "hover", "brightness", "volume", "hud", "basket", "jiggle", "liquid glass", "hide in apps", "games", "fullscreen"]
         case .activities:
-            ["dynamic island", "multiple activities", "satellite", "swipe", "trackpad", "haptic", "focus", "transfer", "localsend", "airdrop", "live activity", "cli", "external", "alerts"]
+            ["dynamic island", "multiple activities", "satellite", "swipe", "trackpad", "haptic", "focus", "transfer", "localsend", "airdrop", "live activity", "cli", "external", "alerts", "glass", "liquid glass", "transparency", "see-through"]
         case .integrations:
             ["music", "spotify", "now playing", "airplay", "audio route", "adapter", "automation", "notification center", "lock screen", "activity stack", "reply"]
         case .context:
@@ -228,6 +254,10 @@ enum SettingsSection: String, CaseIterable, Identifiable {
             ["permissions", "clipboard", "history", "ocr", "screen recording", "microphone", "accessibility", "retention"]
         case .shortcuts:
             ["hotkey", "keyboard", "automation", "url", "finder services", "alfred", "raycast"]
+        case .sharing:
+            ["upload", "link", "s3", "r2", "cloudflare", "backblaze", "bucket", "url", "cloud"]
+        case .extras:
+            ["shortcuts", "app switcher", "running apps", "meeting", "mute", "camera", "zoom", "teams", "day progress", "workday", "eye break", "screen time", "wellbeing", "github", "pull request", "review", "lock screen", "charging", "idle", "gif", "animation", "reply"]
         }
     }
 }
@@ -287,5 +317,36 @@ public enum SettingsSearchPolicy {
                 .lowercased()
             return terms.allSatisfy(haystack.contains)
         }
+    }
+}
+
+/// A problem the user should act on, as System Settings draws one: a filled
+/// warning glyph, the message in primary text, and the fix beside it. Plain
+/// orange caption text read as decoration and was easy to scroll past.
+struct SettingsWarningRow<Action: View>: View {
+    var message: String
+    @ViewBuilder var action: () -> Action
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .symbolRenderingMode(.multicolor)
+                .foregroundStyle(.orange)
+                .accessibilityHidden(true)
+            Text(message)
+                .font(.callout)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            action()
+        }
+        .padding(.vertical, 2)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Warning: \(message)")
+    }
+}
+
+extension SettingsWarningRow where Action == EmptyView {
+    init(message: String) {
+        self.init(message: message) { EmptyView() }
     }
 }

@@ -92,6 +92,7 @@ private enum Reporter {
       notchshot-ai hook --source claude [--event Stop]     # reads hook JSON on stdin
       notchshot-ai run --title "Build" -- swift build      # wraps any command
       notchshot-ai clear --source cursor [--id session-id]
+      notchshot-ai statusline [--then "your-command"]  # Claude Code statusLine
       notchshot-ai path
 
     update options:
@@ -103,7 +104,8 @@ private enum Reporter {
 
     Hook mode intentionally extracts only lifecycle labels, prompt titles, tool
     names, and a workspace name. The Claude bridge also supports local permission
-    decisions; it does not copy tool inputs, outputs, or hidden reasoning.
+    decisions and answering AskUserQuestion; apart from that tool's question and
+    option labels, it does not copy tool inputs, outputs, or hidden reasoning.
     """
 
     static var directory: URL {
@@ -132,6 +134,8 @@ private enum Reporter {
             print(response ?? "{}")
         case "clear":
             try clear(Options(arguments.dropFirst()))
+        case "statusline":
+            print(statusLine(try Options(arguments.dropFirst())))
         case "run":
             try runCommand(Array(arguments.dropFirst()))
         default:
@@ -245,8 +249,71 @@ private enum Reporter {
             tool: tool,
             workspacePath: workspacePath,
             notificationType: firstString(in: json, keys: ["notification_type", "notificationType"]),
-            message: firstString(in: json, keys: ["message", "error", "reason"])
+            message: firstString(in: json, keys: ["message", "error", "reason"]),
+            toolInput: json["tool_input"]
         )
+    }
+
+    /// Claude Code's `statusLine` command. Records plan limits and context use
+    /// for the notch's usage rings, then prints the line Claude shows under
+    /// its prompt: the user's own command's output when `--then` names one,
+    /// otherwise a short summary. It never fails loudly; a status line that
+    /// errors would replace the user's prompt line with noise.
+    private static func statusLine(_ options: Options) -> String {
+        let input = boundedInput()
+        let json = (try? JSONSerialization.jsonObject(with: input)) as? [String: Any] ?? [:]
+        let snapshot = ClaudeStatusLine.snapshot(from: json)
+        if let snapshot { try? writeStatus(snapshot) }
+
+        if let command = options.value("then"), !command.isEmpty {
+            return chainedStatusLine(command: command, input: input)
+        }
+        return snapshot.map(ClaudeStatusLine.defaultLine) ?? ""
+    }
+
+    private static func writeStatus(_ snapshot: ClaudeStatusSnapshot) throws {
+        try ensureDirectory()
+        let folder = ClaudeStatusLine.directory(base: directory)
+        try FileManager.default.createDirectory(
+            at: folder,
+            withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700]
+        )
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        let data = try encoder.encode(snapshot)
+        let destination = folder.appendingPathComponent("\(snapshot.sessionID).json")
+        let temporary = folder.appendingPathComponent(".\(snapshot.sessionID).\(UUID().uuidString).tmp")
+        try data.write(to: temporary, options: .atomic)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: temporary.path)
+        if FileManager.default.fileExists(atPath: destination.path) {
+            _ = try FileManager.default.replaceItemAt(destination, withItemAt: temporary)
+        } else {
+            try FileManager.default.moveItem(at: temporary, to: destination)
+        }
+    }
+
+    /// Runs the user's previous status line command with the same input and
+    /// returns its output, bounded in size and time.
+    private static func chainedStatusLine(command: String, input: Data) -> String {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/sh")
+        process.arguments = ["-c", command]
+        let stdin = Pipe()
+        let stdout = Pipe()
+        process.standardInput = stdin
+        process.standardOutput = stdout
+        process.standardError = FileHandle.nullDevice
+        do { try process.run() } catch { return "" }
+        stdin.fileHandleForWriting.write(input)
+        try? stdin.fileHandleForWriting.close()
+
+        let deadline = Date().addingTimeInterval(5)
+        while process.isRunning, Date() < deadline { usleep(20_000) }
+        if process.isRunning { process.terminate() }
+        let data = (try? stdout.fileHandleForReading.read(upToCount: 16 * 1_024)) ?? nil
+        return data.flatMap { String(data: $0, encoding: .utf8) }?
+            .trimmingCharacters(in: .newlines) ?? ""
     }
 
     private static func runCommand(_ arguments: [String]) throws {
@@ -420,8 +487,16 @@ private enum Reporter {
         tool: String?,
         workspacePath: String?,
         notificationType: String?,
-        message: String?
+        message: String?,
+        toolInput: Any? = nil
     ) -> String? {
+        let normalizedEvent = event.lowercased().filter(\.isLetter)
+        // Only a question that is about to be asked is worth holding Claude
+        // for; any other tool's input never leaves this process.
+        let questions = normalizedEvent == "pretooluse" && ClaudeQuestionBridge.isQuestionTool(tool)
+            ? ClaudeQuestionBridge.socketQuestions(fromToolInput: toolInput)
+            : nil
+
         var payload: [String: Any] = [
             "session_id": identifier,
             "hook_event_name": event,
@@ -442,25 +517,34 @@ private enum Reporter {
         if let message = boundedOptional(message.map(CommandSecretRedactor.redactText), maximum: 180) {
             payload["message"] = message
         }
+        if let questions {
+            payload["question_form"] = questions
+            payload["status"] = ClaudeQuestionBridge.waitingStatus
+        }
 
         guard let data = try? JSONSerialization.data(withJSONObject: payload),
               let fileDescriptor = connectToClaudeSocket() else { return nil }
         defer { close(fileDescriptor) }
         guard writeAll(data + Data([10]), to: fileDescriptor) else { return nil }
 
-        let expectsResponse = event.lowercased().filter(\.isLetter).contains("permissionrequest")
+        let expectsPermission = normalizedEvent.contains("permissionrequest")
             && bridgeStatus(for: event) == "waiting_for_approval"
-        guard expectsResponse else { return nil }
+        guard expectsPermission || questions != nil else { return nil }
 
         var descriptor = pollfd()
         descriptor.fd = fileDescriptor
         descriptor.events = Int16(POLLIN)
-        guard Darwin.poll(&descriptor, 1, 300_000) > 0 else { return nil }
+        let timeout = questions != nil ? ClaudeQuestionBridge.answerTimeoutMilliseconds : 300_000
+        guard Darwin.poll(&descriptor, 1, timeout) > 0 else { return nil }
 
         var responseBytes = [UInt8](repeating: 0, count: 4_096)
         let count = Darwin.read(fileDescriptor, &responseBytes, responseBytes.count)
         guard count > 0 else { return nil }
-        return permissionHookOutput(from: Data(responseBytes.prefix(count)))
+        let reply = Data(responseBytes.prefix(count))
+        if questions != nil {
+            return ClaudeQuestionBridge.hookOutput(reply: reply, toolInput: toolInput)
+        }
+        return permissionHookOutput(from: reply)
     }
 
     private static func bridgeStatus(for event: String) -> String {

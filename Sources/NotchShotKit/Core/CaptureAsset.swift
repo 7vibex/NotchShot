@@ -216,6 +216,10 @@ public enum ShareAction: String, Sendable, CaseIterable, Identifiable {
     case compress
     case airDrop
     case localSend
+    case shareLink
+    /// Hands the capture to a coding agent: queued as the next turn of a
+    /// Crewline run, or copied for a Claude Code session's terminal.
+    case sendToAgent
     case reveal
     case delete
 
@@ -235,7 +239,7 @@ public enum ShareAction: String, Sendable, CaseIterable, Identifiable {
     public static let customizableShelfCases: [ShareAction] = [
         .copy, .open, .save, .share, .annotate, .trim, .privacyReview,
         .removeBackground, .ocr, .pin, .inspect, .optimize, .convert,
-        .quickLook, .compress, .airDrop, .localSend, .reveal,
+        .quickLook, .compress, .airDrop, .localSend, .shareLink, .sendToAgent, .reveal,
     ]
 
     public static let defaultShelfQuickActions: [ShareAction] = [
@@ -281,6 +285,8 @@ public enum ShareAction: String, Sendable, CaseIterable, Identifiable {
         case .compress: "Create ZIP…"
         case .airDrop: "AirDrop…"
         case .localSend: "LocalSend…"
+        case .shareLink: "Copy Share Link"
+        case .sendToAgent: "Send to Agent…"
         case .reveal: "Reveal in Finder"
         case .delete: "Delete"
         }
@@ -315,6 +321,8 @@ public enum ShareAction: String, Sendable, CaseIterable, Identifiable {
         case .compress: "doc.zipper"
         case .airDrop: "dot.radiowaves.right"
         case .localSend: "paperplane"
+        case .shareLink: "link"
+        case .sendToAgent: "paperplane"
         case .reveal: "folder"
         case .delete: "trash"
         }
@@ -323,7 +331,9 @@ public enum ShareAction: String, Sendable, CaseIterable, Identifiable {
     public func isAvailable(for asset: CaptureAsset) -> Bool {
         switch self {
         case .trim: asset.kind == .recording
-        case .annotate, .privacyReview, .removeBackground, .ocr, .pin, .inspect, .optimize, .convert:
+        case .convert:
+            asset.kind.isImage || !MediaConversion.targets(for: asset.url).isEmpty
+        case .annotate, .privacyReview, .removeBackground, .ocr, .pin, .inspect, .optimize:
             asset.kind.isImage
         // A file dragged in from Finder is the user's document sitting where
         // they put it. Renaming or moving it from the shelf would edit their

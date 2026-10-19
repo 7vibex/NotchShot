@@ -63,7 +63,7 @@ struct SettingsSidebarIdentity: View {
                 Text(UserIdentity.fullName)
                     .font(.system(size: 13, weight: .semibold))
                     .lineLimit(1)
-                Text("Apple Account")
+                Text("Local user")
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
             }

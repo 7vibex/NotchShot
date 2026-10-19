@@ -3,6 +3,21 @@ import Combine
 import Observation
 import SwiftUI
 
+/// Whether the frontmost app is one the user asked the notch to stay out of.
+enum NotchAppVisibilityPolicy {
+    static func hidesNotch(
+        frontmostBundleID: String?,
+        hiddenBundleIDs: Set<String>,
+        ownBundleID: String? = Bundle.main.bundleIdentifier
+    ) -> Bool {
+        guard let frontmostBundleID, !frontmostBundleID.isEmpty else { return false }
+        // NotchShot itself comes forward for captures, Settings and the editor;
+        // hiding there would take the notch away exactly when it is being used.
+        if frontmostBundleID == ownBundleID { return false }
+        return hiddenBundleIDs.contains(frontmostBundleID)
+    }
+}
+
 enum LockedMediaPresentationPolicy {
     enum Content: Equatable {
         case none
@@ -158,6 +173,8 @@ public final class NotchWindowController {
     /// whether that panel is currently swallowing mouse events.
     private var isPointerOverIsland = false
     private var isSessionActive = true
+    /// True while a frontmost app is on the user's "Hide in apps" list.
+    private var isHiddenForFrontmostApp = false
     /// Unlike a workspace resign (which also covers Fast User Switching), this
     /// is true only after loginwindow publishes its secure-lock signal.
     private var isScreenLocked = false
@@ -172,6 +189,9 @@ public final class NotchWindowController {
     /// pixels for SwiftUI to hit-test, so AppKit must bridge this deliberate
     /// action into the coordinator.
     public var onTriggerClick: ((CGDirectDisplayID) -> Void)?
+    /// Press and hold on the closed island. Only offered while the island is
+    /// not already open, so it never competes with a scrubber or slider drag.
+    public var onLongPress: ((CGDirectDisplayID) -> Void)?
     /// Lets the coordinator fail open whenever no notch panel can render the
     /// custom replacement for a suppressed system OSD.
     public var onPanelAvailabilityChange: ((Bool) -> Void)?
@@ -201,6 +221,23 @@ public final class NotchWindowController {
     public var hasRenderablePanel: Bool { !entries.isEmpty }
 
     private var currentActivity: NotchActivity = .idle
+    /// An in-progress press on the closed island that may become a long press.
+    private var pendingPress: PendingPress?
+    /// Set once a long press has fired, until its mouse-up has been swallowed.
+    private var longPressFired = false
+
+    private struct PendingPress {
+        var displayID: CGDirectDisplayID
+        var origin: CGPoint
+        /// A cutout click held back until mouse-up, so a hold doesn't also
+        /// count as a click.
+        var deferredTriggerClick: Bool
+        var timer: Timer
+    }
+
+    static let longPressDuration: TimeInterval = 0.45
+    /// Movement past this cancels the hold, so a drag never turns into one.
+    static let longPressSlop: CGFloat = 5
     private var isPeeking = false
     private var resultCount = 0
     private var hasStack = false
@@ -316,6 +353,19 @@ public final class NotchWindowController {
             MainActor.assumeIsolated { self?.setScreenLocked(false) }
         })
 
+        workspaceObservers.append(workspace.addObserver(
+            forName: NSWorkspace.didActivateApplicationNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] notification in
+            let app = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication
+            let bundleID = app?.bundleIdentifier
+            MainActor.assumeIsolated { self?.updateFrontmostAppVisibility(frontmostBundleID: bundleID) }
+        })
+        updateFrontmostAppVisibility(
+            frontmostBundleID: NSWorkspace.shared.frontmostApplication?.bundleIdentifier
+        )
+
         let distributed = DistributedNotificationCenter.default()
         for name in [ScreenLockSignal.lockedNotification, ScreenLockSignal.unlockedNotification] {
             distributedObservers.append(distributed.addObserver(
@@ -332,6 +382,32 @@ public final class NotchWindowController {
                 }
             })
         }
+    }
+
+    /// Re-reads the "Hide in apps" list after Settings changes it.
+    public func refreshFrontmostAppVisibility() {
+        updateFrontmostAppVisibility(
+            frontmostBundleID: NSWorkspace.shared.frontmostApplication?.bundleIdentifier
+        )
+    }
+
+    private func updateFrontmostAppVisibility(frontmostBundleID: String?) {
+        let hidden = NotchAppVisibilityPolicy.hidesNotch(
+            frontmostBundleID: frontmostBundleID,
+            hiddenBundleIDs: Preferences.shared.notchHiddenAppBundleIDs
+        )
+        guard hidden != isHiddenForFrontmostApp else { return }
+        isHiddenForFrontmostApp = hidden
+        Log.window.notice("Notch \(hidden ? "hidden for" : "restored after") frontmost app")
+        if hidden {
+            // Same reset as a resigned session: a hover left over from before
+            // the app came forward must not reopen the notch on return.
+            hoveredDisplayID = nil
+            isPointerOverIsland = false
+            isPeeking = false
+            onHoverChange?(nil)
+        }
+        applyLayout()
     }
 
     private func setScreenLocked(_ locked: Bool) {
@@ -456,6 +532,13 @@ public final class NotchWindowController {
                 let panel = NotchPanel(contentRect: panelFrame(for: metrics))
                 panel.canBecomeVisibleWithoutLogin = allowsLockedPresentation
                 let hosting = NSHostingView(rootView: makeContent(context))
+                // The panel has a fixed size and the hosting view simply fills
+                // it, so the view's own sizes mean nothing here. With the
+                // default options SwiftUI re-measured the whole notch for its
+                // minimum, ideal and maximum size after every update, to keep
+                // the window's content-size limits current — on every frame of
+                // every open, close and ambient loop.
+                hosting.sizingOptions = []
                 hosting.translatesAutoresizingMaskIntoConstraints = true
                 hosting.autoresizingMask = [.width, .height]
                 hosting.frame = CGRect(origin: .zero, size: panel.frame.size)
@@ -570,8 +653,17 @@ public final class NotchWindowController {
             isPeeking: isPeeking && context.displayID == activeDisplayID,
             resultCount: resultCount,
             hasStack: hasStack,
-            mediaPanelRows: mediaPanelRowCount
+            mediaPanelRows: mediaPanelRowCount,
+            privacyIndicators: showsPrivacyIndicators(on: context)
         )
+    }
+
+    /// Must match `NotchRootView.showsPrivacyIndicators`, or the dots' strip
+    /// is drawn but clicks there fall through to the menu bar.
+    private func showsPrivacyIndicators(on context: NotchDisplayContext) -> Bool {
+        context.metrics.hasPhysicalNotch
+            && Preferences.shared.showsPrivacyIndicators
+            && PrivacyIndicatorMonitor.shared.isActive
     }
 
     /// Updates click-through regions. Deliberately does **not** re-evaluate
@@ -630,7 +722,22 @@ public final class NotchWindowController {
     /// zone so the closed notch is always clickable.
     private func interactiveRect(for context: NotchDisplayContext) -> CGRect {
         let island = currentLayout(for: context).islandRect(in: context.metrics)
-        return island.union(triggerZone(for: context))
+        let base = island.union(triggerZone(for: context))
+        return tabBarRect(for: context).map(base.union) ?? base
+    }
+
+    /// The page pill hanging under an open island, when it is showing. Must
+    /// match `NotchRootView.visibleTab`.
+    private func tabBarRect(for context: NotchDisplayContext) -> CGRect? {
+        guard Preferences.shared.showsNotchTabBar,
+              LockedMediaPresentationPolicy.acceptsInput(sessionIsActive: isSessionActive),
+              NotchTab.current(for: effectiveActivity(for: context), in: Preferences.shared.notchTabs) != nil
+        else { return nil }
+        return NotchTabBarGeometry.rect(
+            below: currentLayout(for: context),
+            in: context.metrics,
+            tabCount: Preferences.shared.notchTabs.count
+        )
     }
 
     /// The zone that *starts* a hover: the closed notch, plus whatever the notch
@@ -685,7 +792,8 @@ public final class NotchWindowController {
                 metrics: context.metrics,
                 isPeeking: false,
                 resultCount: resultCount,
-                hasStack: hasStack
+                hasStack: hasStack,
+                privacyIndicators: showsPrivacyIndicators(on: context)
             ),
             activity
         )
@@ -730,51 +838,139 @@ public final class NotchWindowController {
     /// little slack. Wider than the trigger zone on purpose: easy to keep, and
     /// deliberate to start.
     private func keepAliveZone(for context: NotchDisplayContext) -> CGRect {
-        currentLayout(for: context)
+        let island = currentLayout(for: context)
             .islandRect(in: context.metrics)
             .insetBy(dx: -8, dy: -8)
             .union(triggerZone(for: context))
+        // The gap down to the pill is inside the island's slack, so the
+        // pointer can travel to a tab without the notch closing under it.
+        return tabBarRect(for: context).map { island.union($0.insetBy(dx: -8, dy: -8)) } ?? island
     }
 
     private func installMouseMonitors() {
         let matching: NSEvent.EventTypeMask = [
-            .mouseMoved, .leftMouseDown, .leftMouseDragged, .rightMouseDragged, .mouseExited,
+            .mouseMoved, .leftMouseDown, .leftMouseDragged, .leftMouseUp, .rightMouseDragged, .mouseExited,
         ]
         if let global = NSEvent.addGlobalMonitorForEvents(matching: matching, handler: { [weak self] event in
-            MainActor.assumeIsolated { self?.handleMouseEvent(event, at: NSEvent.mouseLocation) }
+            MainActor.assumeIsolated { _ = self?.handleMouseEvent(event, at: NSEvent.mouseLocation) }
         }) {
             mouseMonitors.append(global)
         }
         // The global monitor stops firing once one of our panels is key, so a
         // local monitor keeps hover accurate while the user is in the notch.
+        // It is also the one place that can swallow the mouse-up ending a long
+        // press, so the button under the pointer doesn't fire as well.
         if let local = NSEvent.addLocalMonitorForEvents(matching: matching, handler: { [weak self] event in
-            MainActor.assumeIsolated { self?.handleMouseEvent(event, at: NSEvent.mouseLocation) }
-            return event
+            let consumed = MainActor.assumeIsolated {
+                self?.handleMouseEvent(event, at: NSEvent.mouseLocation) ?? false
+            }
+            return consumed ? nil : event
         }) {
             mouseMonitors.append(local)
         }
     }
 
-    private func handleMouseEvent(_ event: NSEvent, at screenPoint: CGPoint) {
-        guard LockedMediaPresentationPolicy.acceptsInput(sessionIsActive: isSessionActive) else { return }
+    /// Returns true when the event was consumed (only ever the mouse-up that
+    /// ends a long press).
+    private func handleMouseEvent(_ event: NSEvent, at screenPoint: CGPoint) -> Bool {
+        guard LockedMediaPresentationPolicy.acceptsInput(sessionIsActive: isSessionActive),
+              !isHiddenForFrontmostApp
+        else { return false }
         updateHover(at: screenPoint)
-        guard event.type == .leftMouseDown else { return }
+
+        switch event.type {
+        case .leftMouseDragged:
+            if let press = pendingPress,
+               hypot(screenPoint.x - press.origin.x, screenPoint.y - press.origin.y) > Self.longPressSlop {
+                cancelPendingPress(deliverDeferredClick: false)
+            }
+            return false
+        case .leftMouseUp:
+            if longPressFired {
+                longPressFired = false
+                return true
+            }
+            cancelPendingPress(deliverDeferredClick: true)
+            return false
+        case .leftMouseDown:
+            break
+        default:
+            return false
+        }
+
         let acceptsTriggerClick: Bool = switch currentActivity {
         case .idle, .media, .context: true
         case .island(let descriptor): !descriptor.isExpanded
         default: false
         }
-        guard !isPeeking, acceptsTriggerClick else { return }
+        guard !isPeeking, acceptsTriggerClick else { return false }
+
         // Normal visible pixels are handled by SwiftUI. Bridging those here as
         // well would deliver one click twice and toggle the notch open and then
         // immediately closed. Only the physical camera cutout has no view that
         // can receive the click, so only that exact region needs AppKit help.
-        for (displayID, entry) in entries where Self.shouldBridgeTriggerClick(
-            at: screenPoint,
-            metrics: entry.context.metrics
-        ) {
-            onTriggerClick?(displayID)
-            return
+        let cutoutDisplay = entries.first { displayID, entry in
+            Self.shouldBridgeTriggerClick(at: screenPoint, metrics: entry.context.metrics)
+        }?.key
+
+        if Preferences.shared.longPressExpandsIsland, onLongPress != nil,
+           let displayID = cutoutDisplay ?? islandDisplay(containing: screenPoint) {
+            beginPendingPress(
+                displayID: displayID,
+                at: screenPoint,
+                deferredTriggerClick: cutoutDisplay != nil
+            )
+            return false
+        }
+
+        if let cutoutDisplay {
+            onTriggerClick?(cutoutDisplay)
+        }
+        return false
+    }
+
+    private func islandDisplay(containing screenPoint: CGPoint) -> CGDirectDisplayID? {
+        entries.first { _, entry in
+            currentLayout(for: entry.context)
+                .islandRect(in: entry.context.metrics)
+                .contains(screenPoint)
+        }?.key
+    }
+
+    private func beginPendingPress(
+        displayID: CGDirectDisplayID,
+        at point: CGPoint,
+        deferredTriggerClick: Bool
+    ) {
+        cancelPendingPress(deliverDeferredClick: false)
+        longPressFired = false
+        let timer = Timer.scheduledTimer(withTimeInterval: Self.longPressDuration, repeats: false) { [weak self] _ in
+            MainActor.assumeIsolated { self?.firePendingPress() }
+        }
+        pendingPress = PendingPress(
+            displayID: displayID,
+            origin: point,
+            deferredTriggerClick: deferredTriggerClick,
+            timer: timer
+        )
+    }
+
+    private func firePendingPress() {
+        guard let press = pendingPress else { return }
+        pendingPress = nil
+        // The mouse-up that ends this hold is swallowed when it reaches the
+        // local monitor. When the press went to another app (the cutout), the
+        // global monitor sees it instead and only clears the flag.
+        longPressFired = true
+        onLongPress?(press.displayID)
+    }
+
+    private func cancelPendingPress(deliverDeferredClick: Bool) {
+        guard let press = pendingPress else { return }
+        press.timer.invalidate()
+        pendingPress = nil
+        if deliverDeferredClick, press.deferredTriggerClick {
+            onTriggerClick?(press.displayID)
         }
     }
 
@@ -945,10 +1141,15 @@ public final class NotchWindowController {
         entries[displayID]?.context.metrics
     }
 
+    /// Whether the notch panels are pulled for the frontmost app, so nothing
+    /// should be animated toward them.
+    public var isHiddenForCurrentApp: Bool { isHiddenForFrontmostApp }
+
     /// Makes the panel on the active display key so it can take keyboard input
     /// (shelf navigation, text annotation). Never activates the app.
     public func focusActivePanel() {
-        guard let displayID = activeDisplayID, let entry = entries[displayID] else { return }
+        guard !isHiddenForFrontmostApp,
+              let displayID = activeDisplayID, let entry = entries[displayID] else { return }
         entry.panel.makeKeyAndOrderFront(nil)
     }
 
@@ -1084,6 +1285,12 @@ public final class NotchWindowController {
         to panel: NotchPanel,
         context: NotchDisplayContext
     ) {
+        // Only an unlocked session can be "in" an app; the Lock Screen card
+        // keeps its own rules.
+        if isSessionActive, isHiddenForFrontmostApp {
+            panel.orderOut(nil)
+            return
+        }
         if LockedMediaPresentationPolicy.shouldShowPanel(
             sessionIsActive: isSessionActive,
             screenIsLocked: isScreenLocked,

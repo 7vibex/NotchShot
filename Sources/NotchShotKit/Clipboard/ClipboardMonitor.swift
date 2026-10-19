@@ -270,7 +270,8 @@ public final class ClipboardMonitor {
             forClasses: [NSURL.self],
             options: [.urlReadingFileURLsOnly: true]
         ) as? [URL], !urls.isEmpty {
-            let limited = Array(urls.prefix(64).map(\.standardizedFileURL))
+            guard store.acceptsFileCount(urls.count) else { return nil }
+            let limited = urls.map(\.standardizedFileURL)
             let identities = limited.compactMap {
                 SafeAssetFile.fileSystemIdentity(
                     at: $0,
@@ -385,6 +386,9 @@ public final class ClipboardMonitor {
     }
 
     nonisolated static func validatedFileURLs(for entry: ClipboardEntry) throws -> [URL] {
+        guard entry.filePaths.count <= ClipboardStore.maximumFileCount else {
+            throw NotchShotError.exportFailed("This clipping exceeds the 64-file limit. Copy its files again in smaller groups; no partial list was copied.")
+        }
         guard entry.kind == .files,
               !entry.filePaths.isEmpty,
               let identities = entry.fileIdentities,

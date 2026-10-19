@@ -29,6 +29,29 @@ struct IslandAdapterTests {
         #expect(paused.lifecycle == .paused)
     }
 
+    @Test("A call is keyed by its app, outranks media, and can only be hidden")
+    func call() {
+        let call = IslandActivityAdapters.call(bundleIdentifier: "us.zoom.xos", appName: "zoom.us", startedAt: Self.t0)
+        let again = IslandActivityAdapters.call(bundleIdentifier: "us.zoom.xos", appName: "zoom.us", startedAt: Self.t0.addingTimeInterval(5))
+        let media = IslandActivityAdapters.media(MediaSnapshot(source: .mediaRemote, title: "Song", isPlaying: true), startedAt: Self.t0)
+        #expect(call.id == again.id)
+        #expect(call.id.kind == .call)
+        #expect(call.actions == [.dismiss])
+        #expect(call.startedAt == Self.t0)
+        #expect(call.relevance > (media?.relevance ?? 1))
+    }
+
+    @Test("Only known calling apps count as calls; browsers and dictation do not")
+    func callPolicy() {
+        #expect(CallActivityPolicy.isCall(bundleIdentifier: "com.apple.FaceTime"))
+        #expect(CallActivityPolicy.isCall(bundleIdentifier: "com.microsoft.teams2"))
+        #expect(!CallActivityPolicy.isCall(bundleIdentifier: "com.google.Chrome"))
+        #expect(!CallActivityPolicy.isCall(bundleIdentifier: "com.apple.VoiceMemos"))
+        #expect(!CallActivityPolicy.isCall(bundleIdentifier: ""))
+        #expect(CallActivityPolicy.displayName(bundleIdentifier: "us.zoom.xos", fallback: "zoom.us") == "Zoom")
+        #expect(CallActivityPolicy.displayName(bundleIdentifier: "com.apple.FaceTime", fallback: "FaceTime") == "FaceTime")
+    }
+
     @Test("Timer ticks keep identity; progress is the real elapsed fraction")
     func timer() {
         var timer = FocusTimerSnapshot(label: "Focus", state: .running, duration: 45 * 60, elapsed: 30, startedAt: Self.t0)
@@ -139,9 +162,23 @@ struct IslandLayoutTests {
 
     @Test("Expanded content is laid out below the camera band")
     func expandedBelowCamera() {
-        let expanded = layout(IslandLayoutDescriptor(primaryID: Self.timer, level: .expanded))
+        let expanded = layout(IslandLayoutDescriptor(primaryID: Self.agents, level: .expanded))
         #expect(expanded.contentTopInset == Self.notched.notchSize.height)
         #expect(expanded.size.height <= NotchLayout.maximumSize.height)
+    }
+
+    @Test("An open timer or call wraps the camera instead of hanging below it")
+    func singleRowExpandedWrapsCamera() {
+        for id in [Self.timer, IslandActivityID(kind: .call, key: "com.apple.FaceTime")] {
+            let expanded = layout(IslandLayoutDescriptor(primaryID: id, level: .expanded))
+            // One row in the camera's band, as the phone lays these out: no
+            // empty black "forehead" above the content.
+            #expect(expanded.contentTopInset == 0, "\(id.kind)")
+            #expect(expanded.size.height < 2 * Self.notched.notchSize.height + 8, "\(id.kind)")
+            // Wide enough that each side of the camera holds its group.
+            #expect(expanded.size.width > Self.notched.notchSize.width + 2 * 150, "\(id.kind)")
+            #expect(expanded.cornerRadius == expanded.size.height / 2, "\(id.kind)")
+        }
     }
 
     @Test("Satellites extend the hit region but not the hover trigger")
@@ -428,10 +465,38 @@ struct IslandClusterCentringTests {
             : IslandLayoutDescriptor(primaryID: Self.media, trailingID: Self.build)
         let layout = layout(descriptor, Self.external)
         let primary = layout.primaryRect(in: Self.external)
-        let span = layout.satelliteSpacing + layout.satelliteDiameter
+        // A lone satellite is a pill carrying its value, not a bare circle.
+        #expect(layout.satelliteValueWidth == NotchLayout.satelliteValueSlot)
+        let span = layout.satelliteSpacing + layout.satelliteWidth
         let groupMinX = leading ? primary.minX - span : primary.minX
         let groupMaxX = leading ? primary.maxX : primary.maxX + span
         #expect(abs((groupMinX + groupMaxX) / 2 - Self.external.screenFrame.midX) < 0.5)
+    }
+
+    @Test("Two satellites, or a lone music satellite, stay icon-only circles")
+    func circlesWithoutValue() {
+        let two = layout(
+            IslandLayoutDescriptor(primaryID: Self.build, leadingID: Self.media, trailingID: IslandActivityID(kind: .timer, key: "t")),
+            Self.external
+        )
+        #expect(two.satelliteValueWidth == 0)
+        let music = layout(IslandLayoutDescriptor(primaryID: Self.build, trailingID: Self.media), Self.external)
+        #expect(music.satelliteValueWidth == 0)
+    }
+
+    @Test("Mic and camera dots widen only the idle notch, symmetrically")
+    func privacyWings() {
+        let idle = NotchLayout.layout(for: .idle, metrics: Self.notched, isPeeking: false, resultCount: 0)
+        let dotted = NotchLayout.layout(
+            for: .idle, metrics: Self.notched, isPeeking: false, resultCount: 0, privacyIndicators: true
+        )
+        #expect(dotted.size.width == idle.size.width + 2 * NotchLayout.privacyIndicatorWing)
+        #expect(dotted.size.height == idle.size.height)
+        let expanded = NotchLayout.layout(for: .expanded, metrics: Self.notched, isPeeking: false, resultCount: 0)
+        let expandedDotted = NotchLayout.layout(
+            for: .expanded, metrics: Self.notched, isPeeking: false, resultCount: 0, privacyIndicators: true
+        )
+        #expect(expanded == expandedDotted)
     }
 
     @Test("A physical notch never shifts off the camera")

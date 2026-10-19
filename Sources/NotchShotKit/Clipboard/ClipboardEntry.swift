@@ -44,6 +44,9 @@ public struct ClipboardEntry: Codable, Sendable, Identifiable, Equatable {
     /// Optional user-authored label for finding a clipping by its purpose
     /// rather than by a fragment of its potentially sensitive contents.
     public var label: String?
+    /// Short user-chosen tags ("invoice", "ssh"). Optional so stores written
+    /// before tags existed still decode.
+    public var tags: [String]?
     /// The text, the URL, or the hex colour. Images gain text only after the
     /// user explicitly asks NotchShot to index that clipping with local OCR.
     public var text: String?
@@ -67,6 +70,7 @@ public struct ClipboardEntry: Codable, Sendable, Identifiable, Equatable {
         id: UUID = UUID(),
         kind: ClipboardKind,
         label: String? = nil,
+        tags: [String]? = nil,
         text: String? = nil,
         filePaths: [String] = [],
         fileIdentities: [ExternalFileIdentity]? = nil,
@@ -82,6 +86,7 @@ public struct ClipboardEntry: Codable, Sendable, Identifiable, Equatable {
         self.id = id
         self.kind = kind
         self.label = label
+        self.tags = tags
         self.text = text
         self.filePaths = filePaths
         self.fileIdentities = fileIdentities
@@ -140,6 +145,7 @@ public struct ClipboardEntry: Codable, Sendable, Identifiable, Equatable {
     public func matches(_ query: HistoryQuery) -> Bool {
         guard !query.isEmpty else { return true }
         return query.appears(in: label)
+            || (tags ?? []).contains { query.appears(in: $0) }
             || query.appears(in: text)
             || query.appears(in: sourceApplicationName)
             || query.appears(in: kind.displayName)
@@ -148,10 +154,15 @@ public struct ClipboardEntry: Codable, Sendable, Identifiable, Equatable {
 
     /// Stable identity for deduplication.
     public static func hash(for data: some DataProtocol) -> String {
-        SHA256.hash(data: data)
-            .prefix(16)
-            .map { String(format: "%02x", $0) }
-            .joined()
+        let digest = SHA256.hash(data: data)
+        let digits = Array("0123456789abcdef".utf8)
+        var bytes: [UInt8] = []
+        bytes.reserveCapacity(32)
+        for byte in digest.prefix(16) {
+            bytes.append(digits[Int(byte >> 4)])
+            bytes.append(digits[Int(byte & 0x0f)])
+        }
+        return String(decoding: bytes, as: UTF8.self)
     }
 
     public static func hash(forText text: String) -> String {

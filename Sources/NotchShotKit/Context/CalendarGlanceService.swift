@@ -99,6 +99,31 @@ enum CalendarContextPolicy {
         )
     }
 
+    /// Only cached presentation boundaries need a wakeup. EventKit is queried
+    /// by refresh notifications, never by this countdown scheduler.
+    static func nextEvaluation(events: [CalendarEventSnapshot], now: Date) -> Date? {
+        let relevant = events.filter { $0.endDate > now }.sorted {
+            $0.startDate == $1.startDate ? $0.endDate < $1.endDate : $0.startDate < $1.startDate
+        }
+        guard let headline = relevant.first(where: { !$0.isAllDay }) ?? relevant.first else { return nil }
+        var boundaries = relevant.map(\.endDate)
+        for event in relevant where !event.isAllDay {
+            boundaries.append(event.startDate.addingTimeInterval(-600))
+            boundaries.append(event.startDate)
+            boundaries.append(event.startDate.addingTimeInterval(-86_400 + 0.001))
+        }
+        if !headline.isAllDay {
+            let remaining = (headline.startDate > now ? headline.startDate : headline.endDate)
+                .timeIntervalSince(now)
+            // durationDescription floors minutes. Evaluate just after its next
+            // minute boundary so the exact boundary cannot retain the old value.
+            if remaining >= 120, headline.startDate.timeIntervalSince(now) < 86_400 {
+                boundaries.append(now.addingTimeInterval(remaining.truncatingRemainder(dividingBy: 60) + 0.001))
+            }
+        }
+        return boundaries.filter { $0 > now }.min()
+    }
+
     /// The chronological agenda, guaranteed to contain the headline event even
     /// when enough all-day entries would otherwise crowd it past the limit.
     private static func agenda(
@@ -117,6 +142,21 @@ enum CalendarContextPolicy {
     }
 }
 
+/// Main-actor scheduling seam keeps timing tests independent of wall-clock waits.
+@MainActor
+struct ContextTiming {
+    var now: () -> Date = { Date() }
+    var schedule: (Date, @escaping @MainActor () -> Void) -> (() -> Void) = { deadline, action in
+        let task = Task { @MainActor in
+            do { try await Task.sleep(for: .seconds(max(0, deadline.timeIntervalSinceNow))) }
+            catch { return }
+            guard !Task.isCancelled else { return }
+            action()
+        }
+        return { task.cancel() }
+    }
+}
+
 @MainActor
 @Observable
 public final class CalendarGlanceService {
@@ -130,8 +170,19 @@ public final class CalendarGlanceService {
     private let store = EKEventStore()
     private var observers: [NSObjectProtocol] = []
     private var started = false
+    private var cancelReevaluation: (() -> Void)?
+    private var reevaluationGeneration = 0
 
-    public init() { refreshAccessState() }
+    private let timing: ContextTiming
+    private let mayInterruptMedia: () -> Bool
+
+    public convenience init() { self.init(timing: ContextTiming()) }
+
+    init(timing: ContextTiming, mayInterruptMedia: @escaping () -> Bool = { Preferences.shared.showsImminentEventsOverMedia }) {
+        self.timing = timing
+        self.mayInterruptMedia = mayInterruptMedia
+        refreshAccessState()
+    }
 
     public func start() {
         guard !started else {
@@ -145,6 +196,7 @@ public final class CalendarGlanceService {
     }
 
     public func stop() {
+        cancelScheduledReevaluation()
         for observer in observers {
             NotificationCenter.default.removeObserver(observer)
             NSWorkspace.shared.notificationCenter.removeObserver(observer)
@@ -173,11 +225,11 @@ public final class CalendarGlanceService {
     }
 
     public func refresh() {
+        cancelScheduledReevaluation()
         refreshAccessState()
         guard accessState == .granted else {
             calendars = []
-            events = []
-            onSnapshotChange?(nil)
+            replaceCachedEvents([])
             return
         }
         let eventCalendars = store.calendars(for: .event)
@@ -198,11 +250,10 @@ public final class CalendarGlanceService {
             current: Preferences.shared.selectedCalendarIdentifiers,
             hasCustomSelection: Preferences.shared.hasCustomCalendarSelection
         ) else {
-            events = []
-            onSnapshotChange?(nil)
+            replaceCachedEvents([])
             return
         }
-        let now = Date()
+        let now = timing.now()
         let end = Calendar.autoupdatingCurrent.date(byAdding: .day, value: 31, to: now)
             ?? now.addingTimeInterval(31 * 86_400)
         let predicate = store.predicateForEvents(withStart: now, end: end, calendars: selected)
@@ -223,10 +274,37 @@ public final class CalendarGlanceService {
             )
         }
         .sorted { lhs, rhs in lhs.startDate == rhs.startDate ? lhs.endDate < rhs.endDate : lhs.startDate < rhs.startDate }
+        replaceCachedEvents(events)
+    }
+
+    /// Re-presents queried data without performing another EventKit read.
+    func replaceCachedEvents(_ events: [CalendarEventSnapshot]) {
+        self.events = events
+        reevaluateCachedEvents()
+    }
+
+    private func cancelScheduledReevaluation() {
+        cancelReevaluation?()
+        cancelReevaluation = nil
+        reevaluationGeneration += 1
+    }
+
+    private func reevaluateCachedEvents() {
+        cancelScheduledReevaluation()
+        let generation = reevaluationGeneration
+        let now = timing.now()
         onSnapshotChange?(CalendarContextPolicy.snapshot(
             events: events,
-            mayInterruptMedia: Preferences.shared.showsImminentEventsOverMedia
+            now: now,
+            mayInterruptMedia: mayInterruptMedia()
         ))
+        guard generation == reevaluationGeneration,
+              let deadline = CalendarContextPolicy.nextEvaluation(events: events, now: now)
+        else { return }
+        cancelReevaluation = timing.schedule(deadline) { [weak self] in
+            guard let self, self.reevaluationGeneration == generation else { return }
+            self.reevaluateCachedEvents()
+        }
     }
 
     public func setCalendarSelected(_ identifier: String, selected: Bool) {

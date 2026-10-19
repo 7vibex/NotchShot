@@ -3,12 +3,15 @@ import CoreAudio
 import Observation
 import SwiftUI
 
+/// A small, quiet card, like the phone's Lock Screen player: artwork and
+/// names on one line, a hairline of progress, and the three transport glyphs
+/// centred beneath.
 enum LockedNowPlayingLayout {
-    static let cornerRadius: CGFloat = 24
-    static let artworkSize: CGFloat = 72
-    static let artworkCornerRadius: CGFloat = 16
-    static let titleSize: CGFloat = 15.5
-    static let artistSize: CGFloat = 12.5
+    static let cornerRadius: CGFloat = 22
+    static let artworkSize: CGFloat = 48
+    static let artworkCornerRadius: CGFloat = 11
+    static let titleSize: CGFloat = 14
+    static let artistSize: CGFloat = 12
 }
 
 /// The compact, display-only Now Playing surface drawn over loginwindow.
@@ -89,13 +92,14 @@ struct LockedNowPlayingPresentation: View {
             header
 
             progress
-                .padding(.top, 11)
+                .padding(.top, 10)
 
             transport
-                .padding(.top, 10)
+                .padding(.top, 2)
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 14)
+        .padding(.horizontal, 14)
+        .padding(.top, 14)
+        .padding(.bottom, 10)
         .frame(width: LockedCardGeometry.preferredCardSize.width, height: LockedCardGeometry.preferredCardSize.height)
         .notchShotLockedNowPlayingSurface(
             cornerRadius: LockedNowPlayingLayout.cornerRadius,
@@ -105,28 +109,30 @@ struct LockedNowPlayingPresentation: View {
     }
 
     private var header: some View {
-        HStack(spacing: 15) {
+        HStack(spacing: 12) {
             albumArtwork
 
-            VStack(alignment: .leading, spacing: 3) {
+            VStack(alignment: .leading, spacing: 2) {
                 Text(LockedNowPlayingPresentationPolicy.title(snapshot))
-                    .font(.system(size: LockedNowPlayingLayout.titleSize, weight: .bold, design: .rounded))
+                    .font(.system(size: LockedNowPlayingLayout.titleSize, weight: .semibold))
                     .foregroundStyle(.white)
                     .lineLimit(1)
-                    .minimumScaleFactor(0.78)
+                    .minimumScaleFactor(0.85)
 
                 Text(LockedNowPlayingPresentationPolicy.subtitle(snapshot))
-                    .font(.system(size: LockedNowPlayingLayout.artistSize, weight: .medium, design: .rounded))
-                    .foregroundStyle(.white.opacity(0.72))
+                    .font(.system(size: LockedNowPlayingLayout.artistSize, weight: .regular))
+                    .foregroundStyle(.white.opacity(0.62))
                     .lineLimit(1)
-                    .minimumScaleFactor(0.82)
+                    .minimumScaleFactor(0.85)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
 
-            Image(systemName: "waveform")
-                .font(.system(size: 25, weight: .semibold))
-                .foregroundStyle(.white.opacity(snapshot.isPlaying ? 0.94 : 0.58))
-                .frame(width: 30)
+            // Where the sound is going, as the phone shows it; it dims while
+            // paused so the card still reads as idle at a glance.
+            Image(systemName: LockedNowPlayingPresentationPolicy.routeSymbol(audioRoute))
+                .font(.system(size: 15, weight: .medium))
+                .foregroundStyle(.white.opacity(snapshot.isPlaying ? 0.82 : 0.5))
+                .frame(width: 24)
                 .accessibilityHidden(true)
         }
         .frame(maxWidth: .infinity)
@@ -144,7 +150,7 @@ struct LockedNowPlayingPresentation: View {
                     .fill(.white.opacity(0.10))
                     .overlay {
                         Image(systemName: "music.note")
-                            .font(.system(size: 21, weight: .medium))
+                            .font(.system(size: 17, weight: .medium))
                             .foregroundStyle(.white.opacity(0.72))
                     }
             }
@@ -162,9 +168,9 @@ struct LockedNowPlayingPresentation: View {
                 cornerRadius: LockedNowPlayingLayout.artworkCornerRadius,
                 style: .continuous
             )
-                .strokeBorder(.white.opacity(0.16), lineWidth: 0.75)
+                .strokeBorder(.white.opacity(0.12), lineWidth: 0.5)
         }
-        .shadow(color: .black.opacity(0.18), radius: 7, y: 3)
+        .shadow(color: .black.opacity(0.14), radius: 5, y: 2)
         .accessibilityHidden(true)
     }
 
@@ -175,34 +181,29 @@ struct LockedNowPlayingPresentation: View {
             GeometryReader { geometry in
                 ZStack(alignment: .leading) {
                     Capsule()
-                        .fill(.white.opacity(0.22))
-                        .frame(height: 3)
+                        .fill(.white.opacity(0.2))
+                        .frame(height: 2.5)
                     Capsule()
-                        .fill(.white.opacity(0.94))
-                        .frame(width: geometry.size.width * fraction, height: 3)
+                        .fill(.white.opacity(0.85))
+                        .frame(width: geometry.size.width * fraction, height: 2.5)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
-            .frame(height: 14)
+            .frame(height: 12)
 
             timeLabel(remaining, countdown: true)
         }
     }
 
     private var transport: some View {
-        HStack(spacing: 0) {
-            transportSymbol("shuffle", size: 16, opacity: 0.78)
-            Spacer()
-            transportSymbol("backward.fill", size: 24)
-            Spacer()
-            transportSymbol(snapshot.isPlaying ? "pause.fill" : "play.fill", size: 29)
-                .frame(width: 34)
-            Spacer()
-            transportSymbol("forward.fill", size: 24)
-            Spacer()
-            transportSymbol(LockedNowPlayingPresentationPolicy.routeSymbol(audioRoute), size: 18)
+        HStack(spacing: 30) {
+            transportSymbol("backward.fill", size: 17)
+            transportSymbol(snapshot.isPlaying ? "pause.fill" : "play.fill", size: 22)
+                .frame(width: 30)
+            transportSymbol("forward.fill", size: 17)
         }
-        .frame(height: 35)
+        .frame(maxWidth: .infinity)
+        .frame(height: 32)
         .accessibilityHidden(true)
     }
 
@@ -219,8 +220,8 @@ struct LockedNowPlayingPresentation: View {
 
     private func timeLabel(_ value: TimeInterval?, countdown: Bool = false) -> some View {
         Text((countdown && value != nil ? "-" : "") + Self.formatted(value))
-            .font(.system(size: 11, weight: .semibold, design: .rounded))
-            .foregroundStyle(.white.opacity(0.72))
+            .font(.system(size: 10, weight: .medium, design: .rounded))
+            .foregroundStyle(.white.opacity(0.55))
             .monospacedDigit()
             .frame(minWidth: 30)
     }
@@ -246,14 +247,7 @@ struct LockedNowPlayingPresentation: View {
     }
 
     private static func formatted(_ value: TimeInterval?) -> String {
-        guard let value, value.isFinite, value >= 0 else { return "--:--" }
-        let total = Int(value.rounded())
-        let hours = total / 3_600
-        let minutes = (total % 3_600) / 60
-        let seconds = total % 60
-        return hours > 0
-            ? String(format: "%d:%02d:%02d", hours, minutes, seconds)
-            : String(format: "%d:%02d", minutes, seconds)
+        MediaTimePolicy.formatted(value)
     }
 }
 

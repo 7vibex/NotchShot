@@ -1,0 +1,51 @@
+{
+  "duration_seconds": 12,
+  "running_cpu_sample_rows": 132,
+  "thread_samples": {
+    "main": 77,
+    "background": 55
+  },
+  "top_leaf_samples": [
+    [
+      "mach_msg2_trap",
+      13
+    ],
+    [
+      "__sysctl",
+      11
+    ],
+    [
+      "CFEqual",
+      4
+    ],
+    [
+      "_xzm_xzone_malloc_tiny",
+      4
+    ],
+    [
+      "__CF_IS_OBJC",
+      2
+    ],
+    [
+      "kevent_qos",
+      2
+    ],
+    [
+      "start_wqthread",
+      2
+    ],
+    [
+      "objc_msgSend",
+      2
+    ],
+    [
+      "__CFSearchStringROM",
+      2
+    ],
+    [
+      "-[__NSDictionaryM objectForKey:]",
+      2
+    ]
+  ],
+  "interpretation": "Post-launch localization only. Workload differs from original call/media trace; no before-after runtime or energy claim."
+}

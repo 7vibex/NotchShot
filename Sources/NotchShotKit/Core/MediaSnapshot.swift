@@ -26,6 +26,7 @@ public enum MediaPanelKind: Sendable, Equatable {
     case none
     case audioRoutes
     case playingNext
+    case lyrics
 }
 
 public struct MediaSnapshot: Sendable, Equatable {
@@ -72,8 +73,8 @@ public struct MediaSnapshot: Sendable, Equatable {
         self.artist = artist
         self.album = album
         self.artworkData = artworkData
-        self.duration = duration
-        self.position = position
+        self.duration = MediaTimePolicy.normalized(duration)
+        self.position = MediaTimePolicy.normalized(position)
         self.positionTimestamp = positionTimestamp
         self.isPlaying = isPlaying
         self.isExplicit = isExplicit
@@ -90,11 +91,12 @@ public struct MediaSnapshot: Sendable, Equatable {
 
     /// Position advanced to `date`, assuming uninterrupted playback.
     public func interpolatedPosition(at date: Date = Date()) -> TimeInterval? {
-        guard let position else { return nil }
+        guard let position = MediaTimePolicy.normalized(position) else { return nil }
         guard isPlaying, let positionTimestamp else { return position }
         let advanced = position + date.timeIntervalSince(positionTimestamp)
-        guard let duration else { return max(0, advanced) }
-        return min(max(0, advanced), duration)
+        guard let normalized = MediaTimePolicy.normalized(max(0, advanced)) else { return nil }
+        guard let duration = MediaTimePolicy.normalized(duration) else { return normalized }
+        return min(normalized, duration)
     }
 
     public var progress: Double {
@@ -159,4 +161,29 @@ public protocol MediaSource: Sendable {
     func updates() async -> AsyncStream<MediaSnapshot>
     func send(_ command: MediaCommand) async throws
     func stop() async
+}
+
+/// Incoming times must fit the whole-second representation used by UI and
+/// lyrics lookup. Keep valid fractional values; unknown values are omitted.
+enum MediaTimePolicy {
+    static func normalized(_ value: TimeInterval?) -> TimeInterval? {
+        guard let value, value.isFinite, value >= 0,
+              Int(exactly: value.rounded()) != nil else { return nil }
+        return value
+    }
+
+    static func wholeSeconds(_ value: TimeInterval?, rounding: FloatingPointRoundingRule = .toNearestOrAwayFromZero) -> Int? {
+        guard let value = normalized(value) else { return nil }
+        return Int(exactly: value.rounded(rounding))
+    }
+
+    static func formatted(_ value: TimeInterval?) -> String {
+        guard let total = wholeSeconds(value) else { return "--:--" }
+        let hours = total / 3_600
+        let minutes = (total % 3_600) / 60
+        let seconds = total % 60
+        return hours > 0
+            ? "\(hours):" + String(format: "%02d:%02d", minutes, seconds)
+            : String(format: "%d:%02d", minutes, seconds)
+    }
 }

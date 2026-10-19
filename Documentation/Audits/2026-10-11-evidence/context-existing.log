@@ -1,0 +1,121 @@
+[0/1] Planning build
+Test Suite 'Selected tests' started at 2026-10-11 17:57:45.342.
+Test Suite 'NotchShotPackageTests.xctest' started at 2026-10-11 17:57:45.348.
+Test Suite 'NotchShotPackageTests.xctest' passed at 2026-10-11 17:57:45.348.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.000) seconds
+Test Suite 'Selected tests' passed at 2026-10-11 17:57:45.348.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.006) seconds
+􀟈  Test run started.
+􀄵  Testing Library Version: 1902
+􀄵  Target Platform: arm64e-apple-macos14.0
+􀟈  Suite "Connectivity card" started.
+􀟈  Suite "Voice note recording filenames" started.
+􀟈  Suite "Island adapters" started.
+􀟈  Suite "Island arbiter integration" started.
+􀟈  Suite "Document summary advertised formats" started.
+􀟈  Suite "AI activity file ordering" started.
+􀟈  Test "Losing the connection states the fact and outranks a track change" started.
+􀟈  Test "A card from another module is never mistaken for this one" started.
+􀟈  Suite "Context modules" started.
+􀟈  Test "Regaining it names the link and does not interrupt" started.
+􀟈  Test "The alert reserves button height and the restored row does not" started.
+􀟈  Test "Two notes started in the same second get different files" started.
+􀟈  Test "Names stay sortable, readable, and safe as path components" started.
+􀟈  Test "A call is keyed by its app, outranks media, and can only be hidden" started.
+􀟈  Test "Only a change in reachability produces a card" started.
+􀟈  Test "The state the Mac was already in is never announced" started.
+􀟈  Test "Interrupting transient contexts overlay; persistent ones stay inside the island" started.
+􀟈  Test "Media keeps one identity across track changes" started.
+􀟈  Test "A level HUD with no island primary keeps its legacy card" started.
+􀟈  Test "Without the island, a recording resolves exactly as before" started.
+􀟈  Test "Capture selection and countdown still take over the island" started.
+􀟈  Test "Standard RTFD is not advertised, because it cannot be opened" started.
+􀟈  Test "Island presentation identity and interactivity" started.
+􀟈  Test "Non-file URLs and unknown extensions are refused" started.
+􀟈  Test "A card with controls never covers an island the user expanded" started.
+􀟈  Test "Only known calling apps count as calls; browsers and dictation do not" started.
+􀟈  Test "Agents fold into one activity; a waiting agent elevates it; progress is never invented" started.
+􀟈  Test "A transfer rate needs real samples spanning enough time" started.
+􀟈  Test "With the island owning ambient work, legacy media and persistent contexts stay silent" started.
+􀟈  Test "A recording is critical and pinned; pausing does not change its identity" started.
+􀟈  Test "Timer ticks keep identity; progress is the real elapsed fraction" started.
+􀟈  Test "A recording inside the island still outranks processing, results and the capture menu" started.
+􀟈  Test "A volume change overlays the island instead of replacing its primary" started.
+􀟈  Test "External urgency maps to priority without granting pinned status" started.
+􀟈  Test "Finished agents briefly succeed, then expire" started.
+􀟈  Test "AI activity uses only explicit bounded progress and drops stale records" started.
+􀟈  Test "Document validation rejects symlinks before reading source text" started.
+􀟈  Test "Transfers show only measured progress; AirDrop is indeterminate" started.
+􀟈  Test "Document fallback is bounded and generated summaries parse visibly" started.
+􀟈  Test "The advertised formats are all actually reachable" started.
+􀟈  Test "Calendar countdown remains correct across a daylight-saving boundary" started.
+􀟈  Test "Calendar policy handles empty, overlapping, expired, and imminent events" started.
+􀟈  Test "Deselecting every calendar means none, not all" started.
+􀟈  Test "Audio output selector symbols reflect Core Audio transport without inventing products" started.
+􀟈  Test "Expanded context reserves enough space without exceeding panel bounds" started.
+􀟈  Test "The newest sessions survive the 32-file budget" started.
+􀟈  Test "An all-day event never hides the next meeting or its imminent alert" started.
+􀟈  Test "The headline survives an agenda crowded with all-day events" started.
+􀟈  Test "Calendar timing never gives an all-day event a false countdown" started.
+􀟈  Test "Audio glance reports only reliable public external routes and never invents battery" started.
+􀟈  Test "Supported text document formats take an explicit local parser route" started.
+􀟈  Test "Power transitions distinguish charging, battery, low, charged, and non-battery sources" started.
+􀟈  Test "Audio output choices put the current route first and remove duplicate device IDs" started.
+􀟈  Test "A normal text PDF takes the direct PDFKit extraction route" started.
+􁁛  Test "Regaining it names the link and does not interrupt" passed after 0.001 seconds.
+􁁛  Test "Losing the connection states the fact and outranks a track change" passed after 0.001 seconds.
+􁁛  Test "A card from another module is never mistaken for this one" passed after 0.001 seconds.
+􀟈  Test "AI activity never invents a progress percentage" started.
+􁁛  Test "The alert reserves button height and the restored row does not" passed after 0.001 seconds.
+􁁛  Test "Only a change in reachability produces a card" passed after 0.001 seconds.
+􁁛  Test "The state the Mac was already in is never announced" passed after 0.001 seconds.
+􁁛  Test "A call is keyed by its app, outranks media, and can only be hidden" passed after 0.001 seconds.
+􁁛  Test "Media keeps one identity across track changes" passed after 0.001 seconds.
+􁁛  Test "Interrupting transient contexts overlay; persistent ones stay inside the island" passed after 0.001 seconds.
+􁁛  Test "Without the island, a recording resolves exactly as before" passed after 0.001 seconds.
+􁁛  Test "Capture selection and countdown still take over the island" passed after 0.001 seconds.
+􁁛  Test "Island presentation identity and interactivity" passed after 0.001 seconds.
+􁁛  Test "A level HUD with no island primary keeps its legacy card" passed after 0.001 seconds.
+􁁛  Test "A card with controls never covers an island the user expanded" passed after 0.001 seconds.
+􁁛  Test "Only known calling apps count as calls; browsers and dictation do not" passed after 0.001 seconds.
+􁁛  Test "A volume change overlays the island instead of replacing its primary" passed after 0.001 seconds.
+􁁛  Test "With the island owning ambient work, legacy media and persistent contexts stay silent" passed after 0.001 seconds.
+􁁛  Test "A transfer rate needs real samples spanning enough time" passed after 0.001 seconds.
+􁁛  Test "Agents fold into one activity; a waiting agent elevates it; progress is never invented" passed after 0.001 seconds.
+􁁛  Test "Finished agents briefly succeed, then expire" passed after 0.001 seconds.
+􁁛  Test "Timer ticks keep identity; progress is the real elapsed fraction" passed after 0.001 seconds.
+􁁛  Test "External urgency maps to priority without granting pinned status" passed after 0.001 seconds.
+􁁛  Test "A recording is critical and pinned; pausing does not change its identity" passed after 0.001 seconds.
+􁁛  Test "Transfers show only measured progress; AirDrop is indeterminate" passed after 0.001 seconds.
+􁁛  Test "Deselecting every calendar means none, not all" passed after 0.001 seconds.
+􁁛  Test "Calendar policy handles empty, overlapping, expired, and imminent events" passed after 0.001 seconds.
+􁁛  Test "Audio output selector symbols reflect Core Audio transport without inventing products" passed after 0.001 seconds.
+􁁛  Test "Expanded context reserves enough space without exceeding panel bounds" passed after 0.001 seconds.
+􁁛  Test "AI activity uses only explicit bounded progress and drops stale records" passed after 0.001 seconds.
+􁁛  Test "Calendar timing never gives an all-day event a false countdown" passed after 0.001 seconds.
+􁁛  Test "An all-day event never hides the next meeting or its imminent alert" passed after 0.001 seconds.
+􁁛  Test "Document fallback is bounded and generated summaries parse visibly" passed after 0.001 seconds.
+􁁛  Test "Audio glance reports only reliable public external routes and never invents battery" passed after 0.001 seconds.
+􁁛  Test "Power transitions distinguish charging, battery, low, charged, and non-battery sources" passed after 0.001 seconds.
+􁁛  Suite "Connectivity card" passed after 0.002 seconds.
+􁁛  Test "AI activity never invents a progress percentage" passed after 0.001 seconds.
+􁁛  Suite "Island adapters" passed after 0.002 seconds.
+􁁛  Test "Standard RTFD is not advertised, because it cannot be opened" passed after 0.002 seconds.
+􁁛  Test "Non-file URLs and unknown extensions are refused" passed after 0.002 seconds.
+􁁛  Test "Calendar countdown remains correct across a daylight-saving boundary" passed after 0.002 seconds.
+􁁛  Test "The headline survives an agenda crowded with all-day events" passed after 0.002 seconds.
+􁁛  Test "The advertised formats are all actually reachable" passed after 0.003 seconds.
+􁁛  Suite "Document summary advertised formats" passed after 0.004 seconds.
+􁁛  Test "A recording inside the island still outranks processing, results and the capture menu" passed after 0.003 seconds.
+􁁛  Test "Document validation rejects symlinks before reading source text" passed after 0.003 seconds.
+􁁛  Suite "Island arbiter integration" passed after 0.004 seconds.
+􁁛  Test "Audio output choices put the current route first and remove duplicate device IDs" passed after 0.004 seconds.
+􁁛  Test "A normal text PDF takes the direct PDFKit extraction route" passed after 0.117 seconds.
+􁁛  Test "Two notes started in the same second get different files" passed after 0.119 seconds.
+􁁛  Test "Names stay sortable, readable, and safe as path components" passed after 0.119 seconds.
+􁁛  Suite "Voice note recording filenames" passed after 0.119 seconds.
+􁁛  Test "The newest sessions survive the 32-file budget" passed after 0.127 seconds.
+􁁛  Suite "AI activity file ordering" passed after 0.127 seconds.
+􁁛  Test "Supported text document formats take an explicit local parser route" passed after 0.940 seconds.
+􁁛  Suite "Context modules" passed after 0.941 seconds.
+􁁛  Test run with 48 tests in 7 suites passed after 0.941 seconds.

@@ -6,9 +6,13 @@ public enum AISource: String, Sendable, Codable, CaseIterable, Equatable {
     case codex
     case cursor
     case terminal
+    /// Runs supervised by the Crewline workspace app, reached over its local
+    /// RPC socket rather than a hook reporter.
+    case crewline
 
     public var title: String {
         switch self {
+        case .crewline: "Crewline"
         case .claude: "Claude"
         case .codex: "Codex"
         case .cursor: "Cursor"
@@ -22,6 +26,7 @@ public enum AISource: String, Sendable, Codable, CaseIterable, Equatable {
         case .codex: "chevron.left.forwardslash.chevron.right"
         case .cursor: "cursorarrow.rays"
         case .terminal: "terminal.fill"
+        case .crewline: "point.3.connected.trianglepath.dotted"
         }
     }
 
@@ -31,6 +36,8 @@ public enum AISource: String, Sendable, Codable, CaseIterable, Equatable {
         case .codex: "#10A37F"
         case .cursor: "#8B7CFF"
         case .terminal: "#64D2FF"
+        // Crewline's dark-theme brand primary.
+        case .crewline: "#5B87F5"
         }
     }
 }
@@ -105,6 +112,9 @@ public struct AIActivitySnapshot: Sendable, Codable, Equatable, Identifiable {
     public var steps: [AIActivityStep]
     public var startedAt: Date?
     public var updatedAt: Date
+    /// The agent behind the run when the source hosts several (Crewline
+    /// runs Codex, Claude and others side by side).
+    public var agentLabel: String?
 
     public var displayIdentifier: String { source.rawValue + ":" + id }
 
@@ -118,7 +128,8 @@ public struct AIActivitySnapshot: Sendable, Codable, Equatable, Identifiable {
         workspace: String? = nil,
         steps: [AIActivityStep] = [],
         startedAt: Date? = nil,
-        updatedAt: Date = Date()
+        updatedAt: Date = Date(),
+        agentLabel: String? = nil
     ) {
         self.id = id
         self.source = source
@@ -130,6 +141,7 @@ public struct AIActivitySnapshot: Sendable, Codable, Equatable, Identifiable {
         self.steps = steps
         self.startedAt = startedAt
         self.updatedAt = updatedAt
+        self.agentLabel = agentLabel
     }
 
     public func elapsed(now: Date = Date()) -> TimeInterval {
@@ -168,7 +180,8 @@ public enum AIActivityPolicy {
                 )
             },
             startedAt: activity.startedAt,
-            updatedAt: activity.updatedAt
+            updatedAt: activity.updatedAt,
+            agentLabel: boundedOptional(activity.agentLabel, maximum: 40)
         )
     }
 
@@ -232,6 +245,32 @@ public enum AIActivityPolicy {
     private static func bounded(_ value: String, maximum: Int) -> String {
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
         return String(trimmed.prefix(maximum))
+    }
+}
+
+/// A bounded, newest-first history. Repeated terminal files must converge on
+/// the same result even when the poll reads more rows than history can retain.
+enum AIActivityHistoryPolicy {
+    static let maximumCount = 20
+
+    static func merging(
+        _ activities: [AIActivitySnapshot],
+        into history: [AIActivitySnapshot]
+    ) -> [AIActivitySnapshot] {
+        var latestByID: [String: AIActivitySnapshot] = [:]
+        for activity in history + activities.filter({ $0.state.isTerminal }) {
+            let id = activity.displayIdentifier
+            if let existing = latestByID[id], existing.updatedAt > activity.updatedAt {
+                continue
+            }
+            // An incoming correction at the same timestamp is still an update.
+            latestByID[id] = activity
+        }
+        return Array(latestByID.values.sorted { lhs, rhs in
+            if lhs.updatedAt != rhs.updatedAt { return lhs.updatedAt > rhs.updatedAt }
+            // Directory enumeration order must not churn equal-time rows.
+            return lhs.displayIdentifier < rhs.displayIdentifier
+        }.prefix(maximumCount))
     }
 }
 
@@ -335,23 +374,11 @@ public final class AIActivityMonitor {
 
     public func refresh(now: Date = Date()) {
         let activities = loadActivities().filter { enabledSources.contains($0.source) }
-        let newlyTerminal = activities.filter { $0.state.isTerminal }
-        var historyChanged = false
-        for activity in newlyTerminal.sorted(by: { $0.updatedAt > $1.updatedAt }) {
-            if let existing = recentActivities.first(where: {
-                $0.displayIdentifier == activity.displayIdentifier
-            }), existing == activity {
-                continue
-            }
-            recentActivities.removeAll { $0.displayIdentifier == activity.displayIdentifier }
-            recentActivities.insert(activity, at: 0)
-            historyChanged = true
+        let updatedHistory = AIActivityHistoryPolicy.merging(activities, into: recentActivities)
+        if updatedHistory != recentActivities {
+            recentActivities = updatedHistory
+            saveHistory()
         }
-        if recentActivities.count > 20 {
-            recentActivities = Array(recentActivities.prefix(20))
-            historyChanged = true
-        }
-        if historyChanged { saveHistory() }
         var context = AIActivityPolicy.contextSnapshot(
             from: activities,
             now: now,
