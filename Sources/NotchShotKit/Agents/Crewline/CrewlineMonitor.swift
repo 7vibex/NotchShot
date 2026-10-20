@@ -432,7 +432,7 @@ public final class CrewlineMonitor {
 
     /// Uploads files and queues them, with an optional note, as the next turn
     /// of a run. The run keeps its own permission mode.
-    public func sendFollowUp(runID: String, note: String, files: [URL]) async throws {
+    public func sendFollowUp(runID: String, note: String, files: [AgentAttachment]) async throws {
         guard let connection, let port = connectedPort,
               let credential = CrewlineCredentialStore.load()
         else { throw CrewlineConnectionError.notRunning }
@@ -445,8 +445,9 @@ public final class CrewlineMonitor {
             let attachment = try await CrewlineHTTP.upload(
                 port: port,
                 token: credential.token,
-                fileURL: file,
-                mimeType: Self.mimeType(for: file)
+                fileURL: file.url,
+                expectedIdentity: file.identity,
+                mimeType: Self.mimeType(for: file.url)
             )
             attachments.append(CrewlineSendableJSON(attachment as [String: Any]))
         }

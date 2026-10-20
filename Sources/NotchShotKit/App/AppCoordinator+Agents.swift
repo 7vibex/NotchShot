@@ -104,11 +104,11 @@ extension AppCoordinator {
     }
 
     public func sendToAgent(_ asset: CaptureAsset) {
-        guard SafeAssetFile.isCurrentAndSafe(asset) else {
+        guard let identity = SafeAssetFile.selectionIdentity(of: asset) else {
             present(error: NotchShotError.exportFailed("That file changed or is no longer safely readable"))
             return
         }
-        sendToAgent(.file(asset.url))
+        sendToAgent(.file(AgentAttachment(url: asset.url, identity: identity)))
     }
 
     /// Text clippings go as the message itself; image clippings as an
@@ -117,7 +117,11 @@ extension AppCoordinator {
         switch entry.kind {
         case .image:
             guard let url = entry.imageURL else { return }
-            sendToAgent(.file(url))
+            guard let identity = SafeAssetFile.identity(at: url, maximumBytes: SafeAssetFile.maximumOwnedBytes) else {
+                present(error: NotchShotError.exportFailed("That clipping's image is no longer safely readable"))
+                return
+            }
+            sendToAgent(.file(AgentAttachment(url: url, identity: identity)))
         case .text, .link, .color:
             guard let text = entry.text, !text.isEmpty else { return }
             sendToAgent(.text(text))
@@ -161,8 +165,19 @@ extension AppCoordinator {
         switch target {
         case .claude(let sessionID, _):
             switch payload {
-            case .file(let url):
-                ImageExport.copyToPasteboard(fileURL: url)
+            case .file(let attachment):
+                // Only a reference goes on the clipboard, so check that it
+                // still names the file chosen before the dialog.
+                guard SafeAssetFile.identity(
+                    at: attachment.url,
+                    maximumBytes: SafeAssetFile.maximumOwnedBytes
+                ) == attachment.identity else {
+                    present(error: NotchShotError.exportFailed(
+                        "That file changed after you chose it. Nothing was copied."
+                    ))
+                    return
+                }
+                ImageExport.copyToPasteboard(fileURL: attachment.url)
             case .text(let text):
                 let combined = message.isEmpty ? text : message + "\n\n" + text
                 clipboardMonitor.copyDerivedTextToPasteboard(combined)
@@ -187,8 +202,8 @@ extension AppCoordinator {
                 defer { self.endProcessing(processingLabel) }
                 do {
                     switch payload {
-                    case .file(let url):
-                        try await self.context.crewline.sendFollowUp(runID: runID, note: message, files: [url])
+                    case .file(let attachment):
+                        try await self.context.crewline.sendFollowUp(runID: runID, note: message, files: [attachment])
                     case .text(let text):
                         let combined = message.isEmpty ? text : message + "\n\n" + text
                         try await self.context.crewline.sendFollowUp(runID: runID, note: combined, files: [])
@@ -215,13 +230,20 @@ extension AppCoordinator {
     }
 }
 
+/// A file chosen for an agent, with the identity it had when chosen. It is
+/// read only after the send dialog closes, and only if it is still that file.
+public struct AgentAttachment: Equatable, Sendable {
+    public var url: URL
+    public var identity: ExternalFileIdentity
+}
+
 enum AgentSendPayload: Equatable {
-    case file(URL)
+    case file(AgentAttachment)
     case text(String)
 
     var alertTitle: String {
         switch self {
-        case .file(let url): "Send \(url.lastPathComponent) to an agent"
+        case .file(let attachment): "Send \(attachment.url.lastPathComponent) to an agent"
         case .text: "Send this clipping to an agent"
         }
     }

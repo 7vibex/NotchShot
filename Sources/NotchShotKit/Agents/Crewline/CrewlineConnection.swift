@@ -326,18 +326,39 @@ enum CrewlineHTTP {
         return PairedDevice(id: id, token: token, scopes: object["scopes"] as? [String] ?? [])
     }
 
+    /// Crewline's own `MAX_ATTACHMENT_BYTES`, from its contracts package. A
+    /// larger file is refused before any of it is read.
+    static let maximumAttachmentBytes: Int64 = 25 * 1_024 * 1_024
+
     /// Uploads one file into Crewline's attachment store and returns the
     /// attachment record, ready for `runs.queueFollowUp`.
+    ///
+    /// The file was chosen before the send dialog, so by now its path may
+    /// name something else. The body is read from a descriptor that must
+    /// still be the chosen file: a replacement, a link or an edit since is
+    /// refused rather than uploaded.
     static func upload(
         port: Int,
         token: String,
         fileURL: URL,
+        expectedIdentity: ExternalFileIdentity,
         mimeType: String,
         session: URLSession = .shared
     ) async throws -> [String: any Sendable] {
         guard let url = URL(string: "http://127.0.0.1:\(port)/attachments") else {
             throw CrewlineConnectionError.badResponse
         }
+        guard expectedIdentity.size <= maximumAttachmentBytes else {
+            throw CrewlineConnectionError.server(
+                code: "body_too_large",
+                message: "\(fileURL.lastPathComponent) is larger than 25 MB, the most Crewline takes."
+            )
+        }
+        let body = try SafeAssetFile.readData(
+            at: fileURL,
+            maximumBytes: maximumAttachmentBytes,
+            expectedIdentity: expectedIdentity
+        )
         var request = URLRequest(url: url, timeoutInterval: 60)
         request.httpMethod = "POST"
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
@@ -351,7 +372,7 @@ enum CrewlineHTTP {
             ) ?? "capture.png",
             forHTTPHeaderField: "x-crewline-file-name"
         )
-        let (data, response) = try await session.upload(for: request, fromFile: fileURL)
+        let (data, response) = try await session.upload(for: request, from: body)
         let status = (response as? HTTPURLResponse)?.statusCode ?? 0
         guard status == 200 || status == 201 else {
             if status == 401 || status == 403 { throw CrewlineConnectionError.unauthorized }

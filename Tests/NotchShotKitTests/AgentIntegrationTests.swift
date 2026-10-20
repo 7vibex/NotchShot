@@ -293,6 +293,174 @@ struct AgentIntegrationTests {
     }
 }
 
+/// Send to Agent checks a capture before its dialog and uploads it after, so
+/// the upload must send the file that was chosen or nothing.
+@Suite("Crewline attachments")
+struct CrewlineAttachmentTests {
+    @Test func chosenFileIsUploadedAsChosen() async throws {
+        let folder = try TemporaryFolder()
+        defer { folder.remove() }
+        let shot = try folder.write("SCREENSHOT", to: "shot.png")
+        let identity = try #require(SafeAssetFile.identity(at: shot, maximumBytes: 1_000))
+        let token = UUID().uuidString
+
+        let attachment = try await CrewlineHTTP.upload(
+            port: 1, token: token, fileURL: shot, expectedIdentity: identity,
+            mimeType: "image/png", session: CrewlineUploadStub.session()
+        )
+        #expect(attachment["path"] as? String == "/stored/shot.png")
+        #expect(CrewlineUploadStub.bodies(for: token) == [Data("SCREENSHOT".utf8)])
+    }
+
+    @Test func fileChangedWhileTheDialogWasOpenIsNotUploaded() async throws {
+        let folder = try TemporaryFolder()
+        defer { folder.remove() }
+        let secret = try folder.write("PRIVATE KEY", to: "secret.txt")
+        let replacements: [(String, (URL) throws -> Void)] = [
+            ("link", { url in
+                try FileManager.default.removeItem(at: url)
+                try FileManager.default.createSymbolicLink(at: url, withDestinationURL: secret)
+            }),
+            ("new file", { url in
+                try FileManager.default.removeItem(at: url)
+                try Data("PRIVATE KEY".utf8).write(to: url)
+            }),
+            ("edit in place", { url in
+                let handle = try FileHandle(forWritingTo: url)
+                try handle.write(contentsOf: Data("PRIVATEKEY".utf8))
+                try handle.close()
+                try FileManager.default.setAttributes(
+                    [.modificationDate: Date(timeIntervalSinceNow: 60)], ofItemAtPath: url.path)
+            }),
+        ]
+        for (name, replace) in replacements {
+            let shot = try folder.write("SCREENSHOT", to: "shot-\(UUID().uuidString).png")
+            let identity = try #require(SafeAssetFile.identity(at: shot, maximumBytes: 1_000))
+            try replace(shot)
+            let token = UUID().uuidString
+
+            await #expect(throws: NotchShotError.self, "\(name)") {
+                try await CrewlineHTTP.upload(
+                    port: 1, token: token, fileURL: shot, expectedIdentity: identity,
+                    mimeType: "image/png", session: CrewlineUploadStub.session()
+                )
+            }
+            #expect(CrewlineUploadStub.bodies(for: token).isEmpty, "\(name)")
+        }
+    }
+
+    @Test func fileOverCrewlinesLimitIsRefusedBeforeReading() async throws {
+        let folder = try TemporaryFolder()
+        defer { folder.remove() }
+        let recording = try folder.write("", to: "recording.mov")
+        let handle = try FileHandle(forWritingTo: recording)
+        try handle.truncate(atOffset: UInt64(CrewlineHTTP.maximumAttachmentBytes + 1))
+        try handle.close()
+        let identity = try #require(SafeAssetFile.identity(at: recording, maximumBytes: .max))
+        let token = UUID().uuidString
+
+        await #expect(throws: CrewlineConnectionError.server(
+            code: "body_too_large",
+            message: "recording.mov is larger than 25 MB, the most Crewline takes."
+        )) {
+            try await CrewlineHTTP.upload(
+                port: 1, token: token, fileURL: recording, expectedIdentity: identity,
+                mimeType: "video/quicktime", session: CrewlineUploadStub.session()
+            )
+        }
+        #expect(CrewlineUploadStub.bodies(for: token).isEmpty)
+    }
+
+    @Test func selectionPinsTheRecordedOrCurrentIdentity() throws {
+        let folder = try TemporaryFolder()
+        defer { folder.remove() }
+        let shot = try folder.write("SCREENSHOT", to: "shot.png")
+        let current = try #require(SafeAssetFile.identity(at: shot, maximumBytes: 1_000))
+
+        let recorded = CaptureAsset(url: shot, kind: .screenshot, pixelSize: CGSize(width: 1, height: 1))
+        #expect(SafeAssetFile.selectionIdentity(of: recorded) == current)
+        // A legacy owned capture never stored one; it is taken at selection.
+        let legacy = CaptureAsset(
+            url: shot, kind: .screenshot, pixelSize: CGSize(width: 1, height: 1),
+            captureMissingFileIdentities: false
+        )
+        #expect(legacy.externalFileIdentity == nil)
+        #expect(SafeAssetFile.selectionIdentity(of: legacy) == current)
+        // A Finder file without one cannot be vouched for.
+        let finderFile = CaptureAsset(
+            url: shot, kind: .document, pixelSize: .zero, ownership: .externalReference,
+            captureMissingFileIdentities: false
+        )
+        #expect(SafeAssetFile.selectionIdentity(of: finderFile) == nil)
+
+        try FileManager.default.removeItem(at: shot)
+        try Data("OTHER".utf8).write(to: shot)
+        #expect(SafeAssetFile.selectionIdentity(of: recorded) == nil)
+    }
+}
+
+private struct TemporaryFolder {
+    let url: URL
+
+    init() throws {
+        url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("notchshot-crewline-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+    }
+
+    func write(_ text: String, to name: String) throws -> URL {
+        let file = url.appendingPathComponent(name)
+        try Data(text.utf8).write(to: file)
+        return file
+    }
+
+    func remove() {
+        try? FileManager.default.removeItem(at: url)
+    }
+}
+
+/// Answers Crewline uploads in process and records each body by bearer
+/// token, so tests running in parallel never see each other's requests.
+private final class CrewlineUploadStub: URLProtocol {
+    private static let lock = NSLock()
+    nonisolated(unsafe) private static var received: [String: [Data]] = [:]
+
+    static func session() -> URLSession {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [CrewlineUploadStub.self]
+        return URLSession(configuration: configuration)
+    }
+
+    static func bodies(for token: String) -> [Data] {
+        lock.withLock { received["Bearer \(token)"] ?? [] }
+    }
+
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+    override func startLoading() {
+        var body = request.httpBody ?? Data()
+        if let stream = request.httpBodyStream {
+            stream.open()
+            var buffer = [UInt8](repeating: 0, count: 65_536)
+            while case let count = stream.read(&buffer, maxLength: buffer.count), count > 0 {
+                body.append(buffer, count: count)
+            }
+            stream.close()
+        }
+        let authorization = request.value(forHTTPHeaderField: "Authorization") ?? ""
+        Self.lock.withLock { Self.received[authorization, default: []].append(body) }
+        guard let url = request.url,
+              let response = HTTPURLResponse(url: url, statusCode: 201, httpVersion: nil, headerFields: nil)
+        else { return }
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: Data(#"{"path":"/stored/shot.png","name":"shot.png"}"#.utf8))
+        client?.urlProtocolDidFinishLoading(self)
+    }
+
+    override func stopLoading() {}
+}
+
 /// Music keeps the centre while agents wait in the left satellite.
 @Suite("Island media anchoring")
 struct IslandMediaAnchoringTests {

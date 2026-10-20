@@ -90,6 +90,16 @@ enum SafeAssetFile {
         return asset.ownership != .externalReference
     }
 
+    /// The identity a read after a wait (a dialog, a network round trip)
+    /// must still find: the recorded one, or for a legacy owned capture that
+    /// never stored one, the file's identity now. Nil when the file is no
+    /// longer current and safe.
+    static func selectionIdentity(of asset: CaptureAsset) -> ExternalFileIdentity? {
+        guard isCurrentAndSafe(asset) else { return nil }
+        return asset.externalFileIdentity
+            ?? identity(at: asset.url, maximumBytes: maximumOwnedBytes)
+    }
+
     /// Permissions for a copy the user will see and hand to someone else.
     ///
     /// `open` masks this with the process umask, so it lands at the same
