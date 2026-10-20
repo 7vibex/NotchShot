@@ -358,13 +358,9 @@ private enum Reporter {
             updatedAt: started
         ))
 
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-        process.arguments = command
-        process.currentDirectoryURL = URL(fileURLWithPath: workspace, isDirectory: true)
+        let outcome: ForegroundCommand.Outcome
         do {
-            try process.run()
-            process.waitUntilExit()
+            outcome = try ForegroundCommand.run(command, currentDirectory: workspace)
         } catch {
             try write(Activity(
                 id: identifier, source: source, state: .failed, title: title,
@@ -374,16 +370,22 @@ private enum Reporter {
             ))
             throw error
         }
-        let succeeded = process.terminationReason == .exit && process.terminationStatus == 0
+        let detail = switch outcome {
+        case .exited(0): "Command completed"
+        case .exited(let status): "Command exited with status \(status)"
+        case .signaled(SIGINT): "Command was interrupted"
+        case .signaled(let signal): "Command stopped by signal \(signal)"
+        }
+        let succeeded = outcome == .exited(0)
         try write(Activity(
             id: identifier, source: source, state: succeeded ? .finished : .failed,
             title: title,
-            detail: succeeded ? "Command completed" : "Command exited with status \(process.terminationStatus)",
+            detail: detail,
             progress: succeeded ? 1 : nil,
             workspace: URL(fileURLWithPath: workspace).lastPathComponent,
             steps: [], startedAt: started, updatedAt: Date()
         ))
-        if !succeeded { exit(process.terminationStatus == 0 ? EXIT_FAILURE : process.terminationStatus) }
+        if !succeeded { exit(outcome.shellStatus) }
     }
 
     private static func clear(_ options: Options) throws {

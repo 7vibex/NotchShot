@@ -202,15 +202,6 @@ private func run(_ arguments: ArraySlice<String>) throws -> Int32 {
     }
 
     report(.start, state: "Running")
-    let process = Process()
-    process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-    process.arguments = command
-    do {
-        try process.run()
-    } catch {
-        report(.fail, state: "Could not start")
-        throw error
-    }
     // A long-running command must not age out of the island while it is still
     // working. The heartbeat repeats the same fields as the start report — it
     // never invents progress or an ETA — and a missing app is ignored so the
@@ -222,12 +213,23 @@ private func run(_ arguments: ArraySlice<String>) throws -> Int32 {
         guard let message = try? heartbeatOptions.message(command: .update) else { return }
         try? Client.send(message)
     }
-    process.waitUntilExit()
+    let outcome: ForegroundCommand.Outcome
+    do {
+        outcome = try ForegroundCommand.run(command)
+    } catch {
+        heartbeat.stop()
+        report(.fail, state: "Could not start")
+        throw error
+    }
     heartbeat.stop()
-    let succeeded = process.terminationReason == .exit && process.terminationStatus == 0
     options.values["progress"] = nil
-    report(succeeded ? .finish : .fail, state: succeeded ? "Done" : "Exit \(process.terminationStatus)")
-    return succeeded ? 0 : (process.terminationStatus == 0 ? EXIT_FAILURE : process.terminationStatus)
+    switch outcome {
+    case .exited(0): report(.finish, state: "Done")
+    case .exited(let status): report(.fail, state: "Exit \(status)")
+    case .signaled(SIGINT): report(.fail, state: "Interrupted")
+    case .signaled(let signal): report(.fail, state: "Signal \(signal)")
+    }
+    return outcome.shellStatus
 }
 
 private func main() -> Int32 {
