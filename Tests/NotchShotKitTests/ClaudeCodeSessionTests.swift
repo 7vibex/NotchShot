@@ -124,4 +124,63 @@ struct ClaudeCodeSessionTests {
         let found = ClaudeConversationReader.sessionFileURL(for: session, homeDirectory: home)
         #expect(found?.standardizedFileURL == matching.standardizedFileURL)
     }
+
+    @Test("A transcript past the read cap shows its newest messages, not an empty view")
+    func longTranscriptShowsNewestWindow() throws {
+        let home = FileManager.default.temporaryDirectory
+            .appendingPathComponent("notchshot-claude-home-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: home) }
+        let project = home.appendingPathComponent(".claude/projects/-Users-example-app", isDirectory: true)
+        try FileManager.default.createDirectory(at: project, withIntermediateDirectories: true)
+
+        // Screenshots a tool read come back inline, so a few of them carry a
+        // transcript past the cap long before its conversation is long.
+        let screenshot = String(repeating: "A", count: ClaudeConversationReader.maximumFileBytes / 2)
+        var rows = [#"{"type":"user","uuid":"first","message":{"role":"user","content":"First prompt"}}"#]
+        for index in 0 ..< 3 {
+            rows.append(#"{"type":"user","uuid":"image-\#(index)","message":{"role":"user","content":[{"type":"tool_result","content":[{"type":"image","source":{"data":"\#(screenshot)"}}]}]}}"#)
+        }
+        rows.append(#"{"type":"user","uuid":"latest","message":{"role":"user","content":"Latest prompt"}}"#)
+        rows.append(#"{"type":"assistant","uuid":"reply","message":{"role":"assistant","content":[{"type":"text","text":"Latest reply"}]}}"#)
+        let transcript = project.appendingPathComponent("session-9.jsonl")
+        try Data((rows.joined(separator: "\n") + "\n").utf8).write(to: transcript)
+        let size = try #require(try transcript.resourceValues(forKeys: [.fileSizeKey]).fileSize)
+        #expect(size > ClaudeConversationReader.maximumFileBytes)
+
+        let messages = ClaudeConversationReader.messages(
+            for: ClaudeCodeSession(id: "session-9", cwd: "/Users/example/app"),
+            homeDirectory: home
+        )
+        // The window starts inside an image row, which is dropped whole; the
+        // first prompt is beyond the window.
+        #expect(messages.map(\.id) == ["latest", "reply"])
+        #expect(messages.map(\.text) == ["Latest prompt", "Latest reply"])
+    }
+
+    @Test("A transcript that is not a regular file is not read")
+    func transcriptMustBeRegularFile() throws {
+        let home = FileManager.default.temporaryDirectory
+            .appendingPathComponent("notchshot-claude-home-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: home) }
+        let project = home.appendingPathComponent(".claude/projects/-Users-example-app", isDirectory: true)
+        try FileManager.default.createDirectory(at: project, withIntermediateDirectories: true)
+        let elsewhere = home.appendingPathComponent("elsewhere.jsonl")
+        try Data(#"{"type":"user","uuid":"u1","message":{"role":"user","content":"Linked"}}"#.utf8).write(to: elsewhere)
+        try FileManager.default.createSymbolicLink(
+            at: project.appendingPathComponent("session-3.jsonl"),
+            withDestinationURL: elsewhere
+        )
+        try #require(mkfifo(project.appendingPathComponent("session-4.jsonl").path, 0o600) == 0)
+
+        let started = ContinuousClock.now
+        #expect(ClaudeConversationReader.messages(
+            for: ClaudeCodeSession(id: "session-3", cwd: ""),
+            homeDirectory: home
+        ).isEmpty)
+        #expect(ClaudeConversationReader.messages(
+            for: ClaudeCodeSession(id: "session-4", cwd: ""),
+            homeDirectory: home
+        ).isEmpty)
+        #expect(started.duration(to: .now) < .seconds(1))
+    }
 }

@@ -163,8 +163,11 @@ enum AppLeftoverScanner {
             entry.lowercased().contains(lowerIdentifier) ? .likely : nil
         }
         scan("LaunchAgents", "Login item") { entry in
+            // `<id>.plist` or `<id>.<helper>.plist`. A bare prefix would also
+            // claim another product's agent (`com.example.app2.…` for
+            // `com.example.app`), and every match here starts out selected.
             let lower = entry.lowercased()
-            return lower.hasPrefix(lowerIdentifier) && lower.hasSuffix(".plist") ? .exact : nil
+            return lower.hasPrefix(lowerIdentifier + ".") && lower.hasSuffix(".plist") ? .exact : nil
         }
         return found
     }

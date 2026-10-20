@@ -247,7 +247,12 @@ struct SystemUtilitiesTests {
             "Preferences": ["com.knollsoft.Rectangle.plist", "com.knollsoft.Hookshot.plist"],
             "Containers": ["com.knollsoft.Rectangle.widget", "com.other.app"],
             "Group Containers": ["ABCDE.com.knollsoft.Rectangle"],
-            "LaunchAgents": ["com.knollsoft.Rectangle.launcher.plist"],
+            "LaunchAgents": [
+                "com.knollsoft.Rectangle.launcher.plist",
+                "com.knollsoft.Rectangle.plist",
+                // Another product sharing the prefix.
+                "com.knollsoft.RectanglePro.helper.plist",
+            ],
         ]
         let found = AppLeftoverScanner.leftovers(for: app, library: library) { folder in
             listing[folder.path.replacingOccurrences(of: library.path + "/", with: "")] ?? []
@@ -257,6 +262,9 @@ struct SystemUtilitiesTests {
             "Rectangle", "com.knollsoft.Rectangle", "com.knollsoft.Rectangle.plist",
             "com.knollsoft.Rectangle.widget", "ABCDE.com.knollsoft.Rectangle",
             "com.knollsoft.Rectangle.launcher.plist",
+        ])
+        #expect(found.filter { $0.category == "Login item" }.map(\.url.lastPathComponent).sorted() == [
+            "com.knollsoft.Rectangle.launcher.plist", "com.knollsoft.Rectangle.plist",
         ])
         #expect(found.first { $0.url.lastPathComponent == "ABCDE.com.knollsoft.Rectangle" }?.confidence == .likely)
         #expect(found.first { $0.url.lastPathComponent == "Rectangle" }?.confidence == .likely)

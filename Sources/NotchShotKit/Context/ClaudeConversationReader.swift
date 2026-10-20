@@ -41,19 +41,35 @@ public enum ClaudeConversationReader {
         homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser
     ) -> [ClaudeTranscriptMessage] {
         guard let url = sessionFileURL(for: session, homeDirectory: homeDirectory),
-              let values = try? url.resourceValues(forKeys: [
-                  .isRegularFileKey,
-                  .isSymbolicLinkKey,
-                  .fileSizeKey,
-              ]),
-              values.isRegularFile == true,
-              values.isSymbolicLink != true,
-              (values.fileSize ?? maximumFileBytes + 1) <= maximumFileBytes,
-              let data = try? Data(contentsOf: url, options: [.mappedIfSafe])
+              let data = newestRows(of: url, maximumBytes: maximumFileBytes)
         else {
             return []
         }
         return messages(from: data)
+    }
+
+    /// The newest rows of a transcript, at most `maximumBytes` of them.
+    ///
+    /// Only the last window of messages is shown, and a session that reads a
+    /// few screenshots passes the cap long before its conversation is long, so
+    /// a large transcript is read from that far before its end instead of
+    /// refused whole. The first row is dropped there, since the window begins
+    /// inside it. The file is opened without following a link or waiting on a
+    /// FIFO, and must be a regular file.
+    static func newestRows(of url: URL, maximumBytes: Int) -> Data? {
+        let descriptor = open(url.path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK)
+        guard descriptor >= 0 else { return nil }
+        let handle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: true)
+        var information = stat()
+        guard fstat(descriptor, &information) == 0,
+              information.st_mode & S_IFMT == S_IFREG,
+              maximumBytes > 0 else { return nil }
+        let start = max(0, information.st_size - Int64(maximumBytes))
+        guard (try? handle.seek(toOffset: UInt64(start))) != nil,
+              let data = try? handle.read(upToCount: maximumBytes) ?? Data() else { return nil }
+        guard start > 0 else { return data }
+        guard let newline = data.firstIndex(of: 10) else { return Data() }
+        return Data(data[data.index(after: newline)...])
     }
 
     /// Exposed for deterministic tests and for callers that already have a

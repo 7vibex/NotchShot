@@ -280,6 +280,14 @@ struct AgentIntegrationTests {
         #expect(!AgentTerminalJumper.isSafeTTY("/dev/ttys004\" then do shell script \"x"))
         #expect(!AgentTerminalJumper.isSafeTTY("/etc/passwd"))
         #expect(AgentTerminalJumper.terminalScript(tty: "/dev/../x") == nil)
+        // A busy terminal must not hold the main actor for Apple events'
+        // default two minutes.
+        for script in [
+            AgentTerminalJumper.terminalScript(tty: "/dev/ttys004"),
+            AgentTerminalJumper.iTermScript(tty: "/dev/ttys004"),
+        ] {
+            #expect(script?.hasPrefix("with timeout of \(AgentTerminalJumper.scriptTimeoutSeconds) seconds") == true)
+        }
         #expect(AgentTerminalJumper.normalizedTTY("not a tty") == nil)
         #expect(AgentTerminalJumper.normalizedTTY(" ttys002\n") == "/dev/ttys002")
     }

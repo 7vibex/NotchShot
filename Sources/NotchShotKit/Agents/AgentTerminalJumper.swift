@@ -134,21 +134,29 @@ enum AgentTerminalJumper {
         tty.range(of: #"^/dev/ttys?[0-9a-z]{1,4}$"#, options: .regularExpression) != nil
     }
 
+    /// The scripts run on the main actor. Apple events wait two minutes for
+    /// a reply by default, so a terminal busy drawing a flood of output would
+    /// freeze the notch that long; past this bound the jump falls back to
+    /// bringing the app forward.
+    static let scriptTimeoutSeconds = 3
+
     static func terminalScript(tty: String) -> String? {
         guard isSafeTTY(tty) else { return nil }
         return """
-        tell application id "com.apple.Terminal"
-            repeat with w in windows
-                repeat with t in tabs of w
-                    if tty of t is "\(tty)" then
-                        set selected of t to true
-                        set index of w to 1
-                        activate
-                        return true
-                    end if
+        with timeout of \(scriptTimeoutSeconds) seconds
+            tell application id "com.apple.Terminal"
+                repeat with w in windows
+                    repeat with t in tabs of w
+                        if tty of t is "\(tty)" then
+                            set selected of t to true
+                            set index of w to 1
+                            activate
+                            return true
+                        end if
+                    end repeat
                 end repeat
-            end repeat
-        end tell
+            end tell
+        end timeout
         return false
         """
     }
@@ -156,21 +164,23 @@ enum AgentTerminalJumper {
     static func iTermScript(tty: String) -> String? {
         guard isSafeTTY(tty) else { return nil }
         return """
-        tell application id "com.googlecode.iterm2"
-            repeat with w in windows
-                repeat with t in tabs of w
-                    repeat with s in sessions of t
-                        if tty of s is "\(tty)" then
-                            select w
-                            select t
-                            select s
-                            activate
-                            return true
-                        end if
+        with timeout of \(scriptTimeoutSeconds) seconds
+            tell application id "com.googlecode.iterm2"
+                repeat with w in windows
+                    repeat with t in tabs of w
+                        repeat with s in sessions of t
+                            if tty of s is "\(tty)" then
+                                select w
+                                select t
+                                select s
+                                activate
+                                return true
+                            end if
+                        end repeat
                     end repeat
                 end repeat
-            end repeat
-        end tell
+            end tell
+        end timeout
         return false
         """
     }
