@@ -135,5 +135,56 @@ enum AIActivityBenchmarks {
         )
 
         try? FileManager.default.removeItem(at: directory)
+
+        // Scale. The hooks write one status file per session and nothing
+        // prunes them; 1,700+ were found on a real machine after a few weeks.
+        // Only the newest 32 are read, but every poll ranks them all.
+        let scaleDirectory = Fixtures.runDirectory.appendingPathComponent("ai-activity-scale", isDirectory: true)
+        try? FileManager.default.createDirectory(at: scaleDirectory, withIntermediateDirectories: true)
+        let scaleMonitor = AIActivityMonitor(
+            directory: scaleDirectory,
+            historyURL: scaleDirectory.appendingPathComponent("history.json"),
+            ownsURL: { _ in true }
+        )
+        let before = Baselines.AIActivityCachedLoaderBefore(directory: scaleDirectory, ownsURL: { _ in true })
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        var written = 0
+        for count in [500, 2_000] {
+            while written < count {
+                let snapshot = AIActivitySnapshot(
+                    id: "scale-\(written)",
+                    source: .claude,
+                    state: .finished,
+                    title: "Session \(written)",
+                    updatedAt: Date()
+                )
+                try? encoder.encode(snapshot).write(
+                    to: scaleDirectory.appendingPathComponent("claude-\(written).json"),
+                    options: .atomic
+                )
+                written += 1
+            }
+            // Same 32 files, in the same order, as the comparator-lookup
+            // version; both caches warm before timing.
+            let current = scaleMonitor.loadActivities()
+            let baseline = before.loadActivities()
+            precondition(current.count == 32, "the scale fixture should fill the 32-file budget")
+            precondition(
+                current.map(\.id) == baseline.map(\.id),
+                "ranking by a precomputed key changed which files were selected or their order"
+            )
+            Benchmark.measure("ai.activity refresh \(count) files unchanged [current]", iterations: 30, warmup: 3) {
+                Benchmark.blackHole(scaleMonitor.loadActivities())
+            }
+            precondition(
+                scaleMonitor.lastLoadStatistics.filesDecoded == 0,
+                "unchanged files were re-decoded at scale"
+            )
+            Benchmark.measure("ai.activity refresh \(count) files unchanged [comparator lookup]", iterations: 30, warmup: 3) {
+                Benchmark.blackHole(before.loadActivities())
+            }
+        }
+        try? FileManager.default.removeItem(at: scaleDirectory)
     }
 }

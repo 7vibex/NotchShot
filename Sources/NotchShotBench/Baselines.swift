@@ -273,6 +273,111 @@ enum Baselines {
         }.map { canonicalPath(URL(fileURLWithPath: $0)) })
     }
 
+    // MARK: The AI activity directory before the sort key was hoisted
+
+    /// The metadata-cached load as it was, with the modification date read
+    /// back out of each file's resource values inside the sort comparator —
+    /// once per comparison rather than once per file.
+    final class AIActivityCachedLoaderBefore {
+        private struct FileSignature: Equatable {
+            var size: Int
+            var modified: Date?
+            var identity: NSObject?
+
+            static func == (lhs: FileSignature, rhs: FileSignature) -> Bool {
+                guard lhs.size == rhs.size, lhs.modified == rhs.modified else { return false }
+                switch (lhs.identity, rhs.identity) {
+                case (nil, nil):
+                    return true
+                case let (left?, right?):
+                    return left === right || left.isEqual(right)
+                default:
+                    return false
+                }
+            }
+        }
+
+        private struct CachedActivity {
+            var signature: FileSignature
+            var activity: AIActivitySnapshot?
+        }
+
+        private var fileCache: [String: CachedActivity] = [:]
+        private let directory: URL
+        private let ownsURL: (URL) -> Bool
+
+        init(directory: URL, ownsURL: @escaping (URL) -> Bool) {
+            self.directory = directory
+            self.ownsURL = ownsURL
+        }
+
+        func loadActivities() -> [AIActivitySnapshot] {
+            let keys: Set<URLResourceKey> = [
+                .isRegularFileKey,
+                .isSymbolicLinkKey,
+                .fileSizeKey,
+                .contentModificationDateKey,
+                .fileResourceIdentifierKey,
+            ]
+            guard let urls = try? FileManager.default.contentsOfDirectory(
+                at: directory,
+                includingPropertiesForKeys: Array(keys),
+                options: [.skipsHiddenFiles]
+            ) else {
+                fileCache.removeAll()
+                return []
+            }
+
+            let candidates = urls.map { url -> (url: URL, values: URLResourceValues?) in
+                (url, try? url.resourceValues(forKeys: keys))
+            }
+            .sorted { lhs, rhs in
+                (lhs.values?.contentModificationDate ?? .distantPast)
+                    > (rhs.values?.contentModificationDate ?? .distantPast)
+            }
+            .prefix(32)
+
+            var result: [AIActivitySnapshot] = []
+            var livePaths = Set<String>()
+            livePaths.reserveCapacity(candidates.count)
+            for (url, values) in candidates {
+                let path = url.standardizedFileURL.path
+                livePaths.insert(path)
+                guard url.pathExtension.lowercased() == "json",
+                      ownsURL(url),
+                      let values,
+                      values.isRegularFile == true,
+                      values.isSymbolicLink != true,
+                      let size = values.fileSize,
+                      size >= 0,
+                      size <= AIActivityPolicy.maximumFileBytes else {
+                    fileCache[path] = nil
+                    continue
+                }
+                let signature = FileSignature(
+                    size: size,
+                    modified: values.contentModificationDate,
+                    identity: values.fileResourceIdentifier as? NSObject
+                )
+                if let cached = fileCache[path], cached.signature == signature {
+                    if let activity = cached.activity { result.append(activity) }
+                    continue
+                }
+                let decoder = JSONDecoder()
+                decoder.dateDecodingStrategy = .iso8601
+                let activity = (try? Data(contentsOf: url, options: [.mappedIfSafe]))
+                    .flatMap { try? decoder.decode(AIActivitySnapshot.self, from: $0) }
+                fileCache[path] = CachedActivity(signature: signature, activity: activity)
+                if let activity { result.append(activity) }
+            }
+
+            if !fileCache.isEmpty {
+                fileCache = fileCache.filter { livePaths.contains($0.key) }
+            }
+            return result
+        }
+    }
+
     // MARK: The AI activity directory before metadata caching
 
     /// The original load: enumerate, sort, then read and decode every selected

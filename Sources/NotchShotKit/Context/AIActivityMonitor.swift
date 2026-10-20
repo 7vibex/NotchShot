@@ -424,14 +424,19 @@ public final class AIActivityMonitor {
             return []
         }
 
-        let candidates = urls.map { url -> (url: URL, values: URLResourceValues?) in
-            (url, try? url.resourceValues(forKeys: keys))
-        }
-        .sorted { lhs, rhs in
-            (lhs.values?.contentModificationDate ?? .distantPast)
-                > (rhs.values?.contentModificationDate ?? .distantPast)
-        }
-        .prefix(32)
+        // The sort key is read once per file, and only it and an index move
+        // while sorting. Reading it back out of the resource values inside the
+        // comparator repeated a bridged lookup for every comparison, and
+        // sorting the values themselves moved a dictionary with every swap.
+        // Nothing prunes the hooks' status files: at the couple of thousand a
+        // heavy user collects, that was most of each one-second poll, on the
+        // main actor.
+        let entries = urls.map { url in (url: url, values: try? url.resourceValues(forKeys: keys)) }
+        let candidates = entries.indices
+            .map { (index: $0, modified: entries[$0].values?.contentModificationDate ?? .distantPast) }
+            .sorted { $0.modified > $1.modified }
+            .prefix(32)
+            .map { entries[$0.index] }
 
         var result: [AIActivitySnapshot] = []
         var livePaths = Set<String>()
