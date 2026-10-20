@@ -438,6 +438,7 @@ func runBenchmarks() async {
     AIActivityBenchmarks.run(enabled: enabled)
     EditorBenchmarks.run(enabled: enabled)
     PerformanceSweepBenchmarks.run(enabled: enabled)
+    TranscriptWindowBenchmarks.run(enabled: enabled)
     if enabled("recipe-responsiveness") {
         do { try await RecipeResponsivenessBenchmarks.run() }
         catch { fatalError("Recipe responsiveness benchmark failed: \(error)") }

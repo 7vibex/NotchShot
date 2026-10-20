@@ -1,0 +1,13 @@
+{
+  "workload": "NotchShotBenchTranscriptBaseline / NotchShotBenchTranscriptCandidate transcript-window; separate from timing campaign",
+  "tool": "/usr/bin/sample <owned-benchmark-pid> 2 1 -file <scratch-path>",
+  "scope": "local release synthetic process, active work sampled; no whole-app or user-journey percentage derived",
+  "baseline_observation": "Heavy retained stacks pass through ClaudeConversationReader.messages -> NSISO8601DateFormatter.dateFromString -> CFDateFormatterCreateDateFromString -> ICU parsing.",
+  "candidate_observation": "Substantial remaining stacks pass through ClaudeConversationReader.messages -> Collection.split; timestamp parsing is still present for the retained window.",
+  "comparison_limit": "Different completed work within two-second sampling windows; do not compare raw sample totals as duration or claim a profiler speedup.",
+  "instrument_attempt": {
+    "tool": "xctrace Time Profiler, launch mode, 20-second time limit",
+    "result": "Trace saved but exported time-profile table had zero sample rows; target terminated at time limit. Not used as profiling evidence; ordinary sample captures used instead."
+  },
+  "privacy": "Only named static frames and tool outcomes retained; raw traces, process metadata and device identifiers remain outside the repository."
+}

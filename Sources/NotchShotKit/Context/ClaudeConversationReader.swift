@@ -63,11 +63,14 @@ public enum ClaudeConversationReader {
         guard data.count <= maximumFileBytes,
               let content = String(data: data, encoding: .utf8) else { return [] }
 
-        var parsed: [ClaudeTranscriptMessage] = []
-        // Keep formatter state local to this read: repeated timestamps share
-        // its parser setup, while concurrent reads never share mutable state.
-        let dateFormatter = ISO8601DateFormatter()
-        for (lineIndex, line) in content.split(separator: "\n", omittingEmptySubsequences: true).enumerated() {
+        // Each JSONL row is independent and only the last visible window is
+        // returned. Walk backward so older discarded messages need no JSON,
+        // text or timestamp processing. Enumerate before reversing to retain
+        // the original fallback IDs, including ignored nonempty rows.
+        var newest: [(id: String, role: ClaudeTranscriptRole, text: String,
+            toolName: String?, timestamp: String?)] = []
+        newest.reserveCapacity(maximumMessages)
+        for (lineIndex, line) in content.split(separator: "\n", omittingEmptySubsequences: true).enumerated().reversed() {
             guard let lineData = line.data(using: .utf8),
                   let object = try? JSONSerialization.jsonObject(with: lineData) as? [String: Any],
                   let type = object["type"] as? String,
@@ -79,18 +82,28 @@ public enum ClaudeConversationReader {
 
             let id = (object["uuid"] as? String).flatMap(nonEmpty)
                 ?? "line-\(lineIndex)"
-            parsed.append(ClaudeTranscriptMessage(
+            newest.append((
                 id: id,
                 role: extracted.role,
                 text: extracted.text,
                 toolName: extracted.toolName,
-                timestamp: date(from: object["timestamp"] as? String, formatter: dateFormatter)
+                timestamp: object["timestamp"] as? String
             ))
-            if parsed.count > maximumMessages {
-                parsed.removeFirst(parsed.count - maximumMessages)
-            }
+            if newest.count == maximumMessages { break }
         }
-        return parsed
+        // Resolve dates in original order so missing/invalid timestamp
+        // fallbacks still advance through the visible conversation. Formatter
+        // state stays local to this read, including for concurrent callers.
+        let dateFormatter = ISO8601DateFormatter()
+        return newest.reversed().map { message in
+            ClaudeTranscriptMessage(
+                id: message.id,
+                role: message.role,
+                text: message.text,
+                toolName: message.toolName,
+                timestamp: date(from: message.timestamp, formatter: dateFormatter)
+            )
+        }
     }
 
     public static func sessionFileURL(

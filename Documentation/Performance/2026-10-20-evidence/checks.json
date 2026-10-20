@@ -1,0 +1,39 @@
+{
+  "baseline_focused": {
+    "command": "swift test --filter 'TranscriptWindowTests|ClaudeCodeSessionTests|PerformanceSweepTests'",
+    "result": "15 tests in 3 suites passed before production change"
+  },
+  "candidate_tests": {
+    "command": "swift test --skip PasteboardRaceTests",
+    "result": "1066 tests in 173 suites passed",
+    "skip_reason": "Existing PasteboardRaceTests.selfWrite writes the general user clipboard; left unexecuted to preserve user data."
+  },
+  "release_build": {
+    "command": "swift build -c release",
+    "result": "passed",
+    "warnings": "Existing String(cString:) deprecation warnings in PrivacyIndicatorWorker.swift and ExternalDisplayBrightness.swift"
+  },
+  "hygiene": {
+    "commands": [
+      "./Scripts/check_hygiene.sh",
+      "git diff --check"
+    ],
+    "result": "passed"
+  },
+  "independent_review": {
+    "scope": "frozen four-file reader/benchmark/test diff with source fingerprints recorded in measurements.json",
+    "result": "no actionable correctness or privacy findings; reviewer inspected primary test/build logs, did not independently rerun checks"
+  },
+  "not_executed": [
+    "GUI conversation readiness measurement",
+    "signed-app capture/recording self-test",
+    "cold launch, animation, energy or long-session retained-memory measurement"
+  ],
+  "existing_sweep": {
+    "command": ".build/release/NotchShotBench performance-sweep",
+    "valid_groups": 10,
+    "timed_failures": 0,
+    "warmup_failures": 0,
+    "journal_completed": true
+  }
+}
