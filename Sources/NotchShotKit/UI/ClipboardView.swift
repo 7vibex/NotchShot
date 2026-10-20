@@ -408,7 +408,13 @@ private struct ClipboardRow: View {
 
     private func loadThumbnail() async {
         guard entry.kind == .image, let url = entry.imageURL else { return }
-        thumbnail = SafeImageFile.cgImage(at: url, limits: .generated).map {
+        // Read and decoded off the main actor. The full-size clipping used to
+        // decode at the next commit on the main thread: 15–35 ms a row.
+        let image = await Task.detached(priority: .userInitiated) {
+            SafeImageFile.cgImage(at: url, limits: .generated, decodeImmediately: true)
+        }.value
+        guard !Task.isCancelled else { return }
+        thumbnail = image.map {
             NSImage(cgImage: $0, size: NSSize(width: $0.width, height: $0.height))
         }
     }
