@@ -32,10 +32,15 @@ enum SafeImageFile {
         ownership == .externalReference ? .external : .generated
     }
 
+    /// Pass `decodeImmediately` off the main actor for an image about to be
+    /// shown. Otherwise the pixels decode on first use, and for an image in a
+    /// view that is Core Animation's commit on the main thread: 34–47 ms for
+    /// a 3164 × 2136 capture, against about 3 ms once decoded.
     static func cgImage(
         at url: URL,
         limits: Limits,
-        expectedIdentity: ExternalFileIdentity? = nil
+        expectedIdentity: ExternalFileIdentity? = nil,
+        decodeImmediately: Bool = false
     ) -> CGImage? {
         guard let data = try? SafeAssetFile.readData(
             at: url,
@@ -57,13 +62,29 @@ enum SafeImageFile {
               width <= limits.maximumDimension,
               height <= limits.maximumDimension,
               width <= limits.maximumPixels / height,
-              let image = CGImageSourceCreateImageAtIndex(source, 0, options),
+              let image = decodeImmediately
+                  ? decodedImage(from: data)
+                  : CGImageSourceCreateImageAtIndex(source, 0, options),
               image.width == width,
               image.height == height else { return nil }
         return image
     }
 
-    static func cgImage(for asset: CaptureAsset) -> CGImage? {
+    /// Only for bytes `cgImage(at:)` has already accepted. A fresh source,
+    /// because ImageIO ignores `ShouldCacheImmediately` on one whose
+    /// properties were read first, and decodes at the first draw after all.
+    private static func decodedImage(from data: Data) -> CGImage? {
+        guard let source = CGImageSourceCreateWithData(
+            data as CFData,
+            [kCGImageSourceShouldCache: false] as CFDictionary
+        ) else { return nil }
+        return CGImageSourceCreateImageAtIndex(source, 0, [
+            kCGImageSourceShouldCache: true,
+            kCGImageSourceShouldCacheImmediately: true,
+        ] as CFDictionary)
+    }
+
+    static func cgImage(for asset: CaptureAsset, decodeImmediately: Bool = false) -> CGImage? {
         if asset.ownership == .externalReference,
            asset.externalFileIdentity == nil {
             return nil
@@ -72,7 +93,8 @@ enum SafeImageFile {
             at: asset.url,
             limits: limits(for: asset.ownership),
             expectedIdentity: asset.ownership == .externalReference
-                ? asset.externalFileIdentity : nil
+                ? asset.externalFileIdentity : nil,
+            decodeImmediately: decodeImmediately
         )
     }
 

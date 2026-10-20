@@ -1,4 +1,5 @@
 import AppKit
+import ImageIO
 import QuickLookThumbnailing
 import SwiftUI
 
@@ -196,7 +197,7 @@ private struct HistoryRow: View {
     }
 
     private func loadThumbnail() async {
-        if let url = entry.thumbnailURL, let image = NSImage(contentsOf: url) {
+        if let url = entry.thumbnailURL, let image = await Self.decodedThumbnail(at: url) {
             thumbnail = image
             return
         }
@@ -212,6 +213,23 @@ private struct HistoryRow: View {
         if let representation = try? await QLThumbnailGenerator.shared.generateBestRepresentation(for: request) {
             thumbnail = representation.nsImage
         }
+    }
+
+    /// Read and decoded off the main actor. `NSImage(contentsOf:)` here read
+    /// the file on it, and the decode then landed in the next commit there:
+    /// about 3 ms a row.
+    private static func decodedThumbnail(at url: URL) async -> NSImage? {
+        await Task.detached(priority: .userInitiated) { () -> CGImage? in
+            guard let data = try? Data(contentsOf: url),
+                  let source = CGImageSourceCreateWithData(
+                      data as CFData,
+                      [kCGImageSourceShouldCache: false] as CFDictionary
+                  ) else { return nil }
+            return CGImageSourceCreateImageAtIndex(source, 0, [
+                kCGImageSourceShouldCache: true,
+                kCGImageSourceShouldCacheImmediately: true,
+            ] as CFDictionary)
+        }.value.map { NSImage(cgImage: $0, size: NSSize(width: $0.width, height: $0.height)) }
     }
 }
 
@@ -322,7 +340,14 @@ private struct HistoryDetail: View {
             if entry.kind == .recording {
                 image = await VideoThumbnail.make(for: entry.fileURL)
             } else if entry.kind.isImage {
-                image = SafeImageFile.nsImage(for: entry.asset)
+                // The full-resolution read and decode used to run here on the
+                // main actor, freezing the window for each selection.
+                let asset = entry.asset
+                let decoded = await Task.detached(priority: .userInitiated) {
+                    SafeImageFile.cgImage(for: asset, decodeImmediately: true)
+                }.value
+                guard !Task.isCancelled else { return }
+                image = decoded.map { NSImage(cgImage: $0, size: NSSize(width: $0.width, height: $0.height)) }
             }
             finishedLoading = true
         }

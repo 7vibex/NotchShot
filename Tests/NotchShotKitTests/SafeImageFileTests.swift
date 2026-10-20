@@ -1,3 +1,4 @@
+import CoreGraphics
 import Foundation
 import Testing
 @testable import NotchShotKit
@@ -91,5 +92,82 @@ struct SafeImageFileTests {
         try FileManager.default.moveItem(at: replacement, to: fixture.image)
 
         #expect(SafeImageFile.cgImage(for: asset) == nil)
+    }
+
+    @Test("Decoding immediately yields the same pixels, translucent or opaque")
+    func decodeImmediatelyKeepsPixels() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("notchshot-immediate-decode-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        for translucent in [true, false] {
+            // Every column a different colour, every row a different alpha.
+            let drawn = TestImage.make(width: 64, height: 48) { context in
+                for x in 0 ..< 64 {
+                    for y in 0 ..< 48 {
+                        context.setFillColor(
+                            red: CGFloat(x) / 63,
+                            green: CGFloat(63 - x) / 63,
+                            blue: CGFloat(y) / 47,
+                            alpha: translucent ? CGFloat(y) / 47 : 1
+                        )
+                        context.fill(CGRect(x: x, y: y, width: 1, height: 1))
+                    }
+                }
+            }
+            let url = directory.appendingPathComponent("fixture-\(translucent).png")
+            _ = try ImageExport.write(drawn, to: url, format: .png, quality: 1, dpiScale: 1)
+
+            let lazy = try #require(SafeImageFile.cgImage(at: url, limits: .generated))
+            let decoded = try #require(SafeImageFile.cgImage(
+                at: url,
+                limits: .generated,
+                decodeImmediately: true
+            ))
+
+            #expect(decoded.width == lazy.width && decoded.height == lazy.height)
+            #expect(decoded.alphaInfo == lazy.alphaInfo)
+            #expect(Self.composited(decoded) == Self.composited(lazy))
+        }
+    }
+
+    @Test("Decoding immediately still enforces every limit")
+    func decodeImmediatelyEnforcesLimits() throws {
+        let fixture = try makeFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let byteCount = try fixture.image.resourceValues(forKeys: [.fileSizeKey]).fileSize!
+
+        for limits in [
+            SafeImageFile.Limits(maximumBytes: byteCount - 1, maximumDimension: 100, maximumPixels: 10_000),
+            SafeImageFile.Limits(maximumBytes: byteCount, maximumDimension: 3, maximumPixels: 10_000),
+            SafeImageFile.Limits(maximumBytes: byteCount, maximumDimension: 100, maximumPixels: 11),
+        ] {
+            #expect(SafeImageFile.cgImage(at: fixture.image, limits: limits, decodeImmediately: true) == nil)
+        }
+        let accepted = SafeImageFile.cgImage(
+            at: fixture.image,
+            limits: .init(maximumBytes: byteCount, maximumDimension: 4, maximumPixels: 12),
+            decodeImmediately: true
+        )
+        #expect(accepted?.width == 4)
+        #expect(accepted?.height == 3)
+    }
+
+    /// What either image looks like drawn over nothing: premultiplied sRGB.
+    private static func composited(_ image: CGImage) -> [UInt8] {
+        var bytes = [UInt8](repeating: 0, count: image.width * image.height * 4)
+        bytes.withUnsafeMutableBytes { buffer in
+            CGContext(
+                data: buffer.baseAddress,
+                width: image.width,
+                height: image.height,
+                bitsPerComponent: 8,
+                bytesPerRow: image.width * 4,
+                space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+            )?.draw(image, in: CGRect(x: 0, y: 0, width: image.width, height: image.height))
+        }
+        return bytes
     }
 }
