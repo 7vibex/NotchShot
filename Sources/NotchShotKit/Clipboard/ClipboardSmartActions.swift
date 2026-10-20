@@ -102,8 +102,13 @@ public enum ClipboardSmartActions {
 
     /// Re-spaces already valid JSON without parsing it into objects, so key
     /// order and number spellings survive exactly. `indent == nil` minifies.
+    ///
+    /// The walk is over Unicode scalars, as JSON's grammar is. Characters
+    /// group a combining mark with the quote before it, which hid where a
+    /// string began and let a bracket inside it close a container that never
+    /// opened, and a negative depth crashed the indent.
     static func reindentJSON(_ text: String, indent: String?) -> String {
-        var output = ""
+        var output = String.UnicodeScalarView()
         output.reserveCapacity(text.utf8.count)
         var depth = 0
         var inString = false
@@ -113,54 +118,55 @@ public enum ClipboardSmartActions {
         func newline() {
             guard let indent else { return }
             output.append("\n")
-            output.append(String(repeating: indent, count: depth))
+            for _ in 0 ..< max(depth, 0) { output.append(contentsOf: indent.unicodeScalars) }
         }
 
-        for character in text {
+        for scalar in text.unicodeScalars {
             if inString {
-                output.append(character)
+                output.append(scalar)
                 if escaped {
                     escaped = false
-                } else if character == "\\" {
+                } else if scalar == "\\" {
                     escaped = true
-                } else if character == "\"" {
+                } else if scalar == "\"" {
                     inString = false
                 }
                 continue
             }
-            if character.isWhitespace { continue }
+            // The only whitespace JSON allows between tokens.
+            if scalar == " " || scalar == "\t" || scalar == "\n" || scalar == "\r" { continue }
             if pendingOpen {
                 pendingOpen = false
-                if character == "}" || character == "]" {
+                if scalar == "}" || scalar == "]" {
                     // Empty containers stay on one line: {} and [].
                     depth -= 1
-                    output.append(character)
+                    output.append(scalar)
                     continue
                 }
                 newline()
             }
-            switch character {
+            switch scalar {
             case "\"":
                 inString = true
-                output.append(character)
+                output.append(scalar)
             case "{", "[":
-                output.append(character)
+                output.append(scalar)
                 depth += 1
                 pendingOpen = true
             case "}", "]":
                 depth -= 1
                 newline()
-                output.append(character)
+                output.append(scalar)
             case ",":
-                output.append(character)
+                output.append(scalar)
                 newline()
             case ":":
-                output.append(indent == nil ? ":" : ": ")
+                output.append(contentsOf: (indent == nil ? ":" : ": ").unicodeScalars)
             default:
-                output.append(character)
+                output.append(scalar)
             }
         }
-        return output
+        return String(output)
     }
 
     // MARK: Tokens and encodings

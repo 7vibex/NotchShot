@@ -382,6 +382,27 @@ struct ClipboardSmartActionTests {
         #expect(minify.output == #"{"b":1,"a":[1,2],"e":{},"s":"x, {y}: \"z\""}"#)
     }
 
+    @Test func jsonWithACombiningMarkAfterAQuoteFormatsWithoutCrashing() throws {
+        // U+0301 right after a quote joins it into one Character. Read by
+        // Character, the key's opening quote vanished, the brackets in the
+        // value closed containers that never opened, and the indent crashed.
+        let text = "{\"\u{301}a\":\"]]]\",\"b\":[1]}"
+        let transforms = ClipboardSmartActions.transforms(for: text, kind: .text)
+        let format = try #require(transforms.first { $0.kind == .formatJSON })
+        #expect(format.output == "{\n  \"\u{301}a\": \"]]]\",\n  \"b\": [\n    1\n  ]\n}")
+        #expect(transforms.first { $0.kind == .minifyJSON } == nil, "already minified")
+
+        func part(_ object: String) -> String {
+            Data(object.utf8).base64EncodedString()
+                .replacingOccurrences(of: "=", with: "")
+                .replacingOccurrences(of: "+", with: "-")
+                .replacingOccurrences(of: "/", with: "_")
+        }
+        let token = part(#"{"alg":"HS256"}"#) + "." + part("{\"\u{301}x\":\"]]\"}") + ".sig"
+        let jwt = try #require(ClipboardSmartActions.transforms(for: token, kind: .text).first { $0.kind == .decodeJWT })
+        #expect(jwt.output.hasSuffix("{\n  \"\u{301}x\": \"]]\"\n}"))
+    }
+
     @Test func invalidOrScalarJSONIsLeftAlone() {
         #expect(ClipboardSmartActions.transforms(for: "{not json", kind: .text).isEmpty)
         #expect(ClipboardSmartActions.transforms(for: "42", kind: .text).isEmpty)
