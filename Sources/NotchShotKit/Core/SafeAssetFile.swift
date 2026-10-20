@@ -2,14 +2,27 @@ import Darwin
 import Foundation
 
 /// Stable identity captured when a Finder file enters the shelf. Requiring the
-/// same device/inode/size/mtime later prevents a path swap from turning Save As
-/// or Bug Report into a copier for unrelated local content.
+/// same inode/size/mtime later prevents a path swap from turning Save As or
+/// Bug Report into a copier for unrelated local content.
 public struct ExternalFileIdentity: Codable, Sendable, Equatable {
     public var device: UInt64
     public var inode: UInt64
     public var size: Int64
     public var modifiedSeconds: Int64
     public var modifiedNanoseconds: Int64
+
+    /// Whether two identities name the same item. The device number is kept
+    /// for the record but not compared: APFS assigns `st_dev` when a volume
+    /// mounts, so every identity stored before a restart or a remount carried
+    /// a stale one, and the same untouched file read as "changed" forever.
+    /// Inode, size and the nanosecond modification time still pin the item,
+    /// and every check reaches it without following a final symbolic link.
+    public static func == (lhs: ExternalFileIdentity, rhs: ExternalFileIdentity) -> Bool {
+        lhs.inode == rhs.inode
+            && lhs.size == rhs.size
+            && lhs.modifiedSeconds == rhs.modifiedSeconds
+            && lhs.modifiedNanoseconds == rhs.modifiedNanoseconds
+    }
 }
 
 enum SafeAssetFile {

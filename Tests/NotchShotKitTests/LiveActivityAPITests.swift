@@ -248,30 +248,40 @@ struct LiveActivitySocketTests {
     }
 
     private static func send(_ payload: Data, to path: String) -> String? {
-        let descriptor = socket(AF_UNIX, SOCK_STREAM, 0)
-        guard descriptor >= 0 else { return nil }
-        defer { close(descriptor) }
-        var timeout = timeval(tv_sec: 2, tv_usec: 0)
-        setsockopt(descriptor, SOL_SOCKET, SO_RCVTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
-        var address = sockaddr_un()
-        address.sun_family = sa_family_t(AF_UNIX)
-        _ = path.withCString { source in
-            withUnsafeMutablePointer(to: &address.sun_path) {
-                strcpy(UnsafeMutableRawPointer($0).assumingMemoryBound(to: CChar.self), source)
+        // The file appears at bind, a moment before the server listens, and a
+        // connection in that gap is refused. Retry briefly, on a fresh socket
+        // each time: one whose connect failed is not reusable.
+        for _ in 0 ..< 200 {
+            let descriptor = socket(AF_UNIX, SOCK_STREAM, 0)
+            guard descriptor >= 0 else { return nil }
+            defer { close(descriptor) }
+            var timeout = timeval(tv_sec: 2, tv_usec: 0)
+            setsockopt(descriptor, SOL_SOCKET, SO_RCVTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
+            var address = sockaddr_un()
+            address.sun_family = sa_family_t(AF_UNIX)
+            _ = path.withCString { source in
+                withUnsafeMutablePointer(to: &address.sun_path) {
+                    strcpy(UnsafeMutableRawPointer($0).assumingMemoryBound(to: CChar.self), source)
+                }
             }
-        }
-        let connected = withUnsafePointer(to: &address) {
-            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
-                connect(descriptor, $0, socklen_t(MemoryLayout<sockaddr_un>.size))
+            let connected = withUnsafePointer(to: &address) {
+                $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                    connect(descriptor, $0, socklen_t(MemoryLayout<sockaddr_un>.size))
+                }
             }
+            guard connected == 0 else {
+                guard errno == ECONNREFUSED else { return nil }
+                usleep(10_000)
+                continue
+            }
+            _ = payload.withUnsafeBytes { write(descriptor, $0.baseAddress, $0.count) }
+            shutdown(descriptor, SHUT_WR)
+            var buffer = [UInt8](repeating: 0, count: 256)
+            let count = read(descriptor, &buffer, buffer.count)
+            guard count > 0 else { return nil }
+            return String(decoding: buffer.prefix(count), as: UTF8.self)
         }
-        guard connected == 0 else { return nil }
-        _ = payload.withUnsafeBytes { write(descriptor, $0.baseAddress, $0.count) }
-        shutdown(descriptor, SHUT_WR)
-        var buffer = [UInt8](repeating: 0, count: 256)
-        let count = read(descriptor, &buffer, buffer.count)
-        guard count > 0 else { return nil }
-        return String(decoding: buffer.prefix(count), as: UTF8.self)
+        return nil
     }
 
     private static func waitForSocket(_ path: String) async {
@@ -293,14 +303,16 @@ struct LiveActivitySocketTests {
         defer { server.stop() }
         await Self.waitForSocket(path)
 
-        var info = stat()
-        #expect(lstat(path, &info) == 0)
-        #expect(info.st_mode & 0o777 == 0o600, "owner-only socket")
-
         let message = try JSONEncoder().encode(LiveActivityMessage(command: .start, id: "build", title: "Build", icon: .build)) + Data([10])
         let reply = await Task.detached { Self.send(message, to: path) }.value
         #expect(reply?.contains("\"ok\":true") == true)
         #expect(received.value.map(\.id) == ["build"])
+
+        // The file appears at bind and is narrowed just before listen, so only
+        // an answered connection proves the narrowing has already happened.
+        var info = stat()
+        #expect(lstat(path, &info) == 0)
+        #expect(info.st_mode & 0o777 == 0o600, "owner-only socket")
     }
 
     @Test("Invalid input is rejected before the app ever sees it")

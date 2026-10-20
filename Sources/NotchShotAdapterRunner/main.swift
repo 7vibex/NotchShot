@@ -9,7 +9,11 @@ if getpgrp() != getpid() {
     guard setpgid(0, 0) == 0 else { exit(71) }
 }
 
-guard let expectedDevice = UInt64(CommandLine.arguments[1]),
+// The device number is checked for form only. APFS gives a volume a new
+// `st_dev` each time it mounts, so the one recorded at approval stops matching
+// after a restart; inode, size and modification time still pin the approved
+// file, as in the app's own check (`ExternalFileIdentity.==`).
+guard UInt64(CommandLine.arguments[1]) != nil,
       let expectedInode = UInt64(CommandLine.arguments[2]),
       let expectedSize = Int64(CommandLine.arguments[3]),
       let expectedModifiedSeconds = Int64(CommandLine.arguments[4]),
@@ -32,7 +36,6 @@ let target = CommandLine.arguments[6]
 var information = stat()
 guard lstat(target, &information) == 0,
       information.st_mode & S_IFMT == S_IFREG,
-      UInt64(information.st_dev) == expectedDevice,
       UInt64(information.st_ino) == expectedInode,
       information.st_size == expectedSize,
       Int64(information.st_mtimespec.tv_sec) == expectedModifiedSeconds,

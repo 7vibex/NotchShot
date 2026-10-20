@@ -199,7 +199,14 @@ private enum Reporter {
 
     private static func hook(_ options: Options) throws -> String? {
         let source = try parsedSource(options.required("source"))
-        let input = boundedInput()
+        // An event too large to read whole, usually a tool result with
+        // images, is skipped: what fits names no session, and the next event
+        // brings the notch up to date. With no answer, Claude Code carries on
+        // and asks in the terminal as it would without NotchShot.
+        guard case .complete(let input) = HookInput.read(
+            from: .standardInput,
+            maximumBytes: maximumHookInputBytes
+        ) else { return nil }
         let json = (try? JSONSerialization.jsonObject(with: input)) as? [String: Any] ?? [:]
         let event = bounded(
             options.value("event")
@@ -260,7 +267,12 @@ private enum Reporter {
     /// otherwise a short summary. It never fails loudly; a status line that
     /// errors would replace the user's prompt line with noise.
     private static func statusLine(_ options: Options) -> String {
-        let input = boundedInput()
+        let input: Data
+        if case .complete(let data) = HookInput.read(from: .standardInput, maximumBytes: maximumHookInputBytes) {
+            input = data
+        } else {
+            input = Data()
+        }
         let json = (try? JSONSerialization.jsonObject(with: input)) as? [String: Any] ?? [:]
         let snapshot = ClaudeStatusLine.snapshot(from: json)
         if let snapshot { try? writeStatus(snapshot) }
@@ -646,15 +658,6 @@ private enum Reporter {
     }
 
     private static let maximumHookInputBytes = 512 * 1_024
-
-    /// Hook stdin is bounded so a malformed or hostile runner cannot make the
-    /// short-lived reporter allocate without limit.
-    private static func boundedInput() -> Data {
-        guard let data = try? FileHandle.standardInput.read(upToCount: maximumHookInputBytes) else {
-            return Data()
-        }
-        return data
-    }
 
     private static func bounded(_ value: String, maximum: Int) -> String {
         String(value.trimmingCharacters(in: .whitespacesAndNewlines).prefix(maximum))

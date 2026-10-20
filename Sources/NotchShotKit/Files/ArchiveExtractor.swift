@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 
 /// Unpacks archives dropped on the notch, the way Archive Utility does: next
@@ -99,6 +100,9 @@ enum ArchiveExtractor {
                 stdout: output
             )
         }
+        if format != .zip {
+            try carryQuarantine(from: archive, into: staging, name: displayName, fileManager: fileManager)
+        }
 
         let items = try fileManager.contentsOfDirectory(at: staging, includingPropertiesForKeys: nil)
             .filter { !ignoredNames.contains($0.lastPathComponent) }
@@ -115,6 +119,58 @@ enum ArchiveExtractor {
             }
         }
         return Result(outputURL: output, itemCount: items.count)
+    }
+
+    /// Gatekeeper checks a downloaded app or script only while it carries its
+    /// download's quarantine. `ditto` gives the archive's quarantine to every
+    /// item it unpacks, as Archive Utility does; `bsdtar`, `gunzip` and
+    /// `bunzip2` give none, and `bsdtar` even restores a member's own stored
+    /// quarantine, which can claim the user already approved it. So every
+    /// unpacked item gets the archive's value, replacing whatever it had, and
+    /// an item that can't take it fails the extraction instead of arriving
+    /// unchecked.
+    private static func carryQuarantine(
+        from archive: URL,
+        into staging: URL,
+        name: String,
+        fileManager: FileManager
+    ) throws {
+        let attribute = "com.apple.quarantine"
+        let length = getxattr(archive.path, attribute, nil, 0, 0, 0)
+        guard length > 0 else { return }
+        var value = [UInt8](repeating: 0, count: length)
+        let failure = Failure.failed(name, "its files couldn't be marked as downloaded")
+        guard getxattr(archive.path, attribute, &value, length, 0, 0) == length else { throw failure }
+
+        // A read-only item refuses new attributes, and an unreadable folder
+        // hides what's inside, so the owner's access is widened for the walk
+        // and narrowed again once everything is marked.
+        var restoredModes: [(path: String, mode: mode_t)] = []
+        var pending = try fileManager.contentsOfDirectory(atPath: staging.path)
+            .map { staging.appendingPathComponent($0).path }
+        while let path = pending.popLast() {
+            var information = stat()
+            guard lstat(path, &information) == 0 else { throw failure }
+            let type = information.st_mode & S_IFMT
+            // A link runs nothing itself; what it points to inside the
+            // archive is marked on its own.
+            guard type != S_IFLNK else { continue }
+            let mode = information.st_mode & 0o7777
+            let needed = type == S_IFDIR ? S_IRWXU : S_IWUSR
+            if mode & needed != needed {
+                guard fchmodat(AT_FDCWD, path, mode | needed, AT_SYMLINK_NOFOLLOW) == 0 else { throw failure }
+                restoredModes.append((path, mode))
+            }
+            guard setxattr(path, attribute, value, length, 0, XATTR_NOFOLLOW) == 0 else { throw failure }
+            if type == S_IFDIR {
+                pending += try fileManager.contentsOfDirectory(atPath: path)
+                    .map { (path as NSString).appendingPathComponent($0) }
+            }
+        }
+        // Deepest first, so no folder closes before its contents are done.
+        for item in restoredModes.reversed() {
+            fchmodat(AT_FDCWD, item.path, item.mode, AT_SYMLINK_NOFOLLOW)
+        }
     }
 
     /// Finder metadata a ZIP made on a Mac carries along.

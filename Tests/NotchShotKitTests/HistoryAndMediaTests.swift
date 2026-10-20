@@ -961,6 +961,36 @@ struct AdapterCommandProcessTests {
         #expect(data == nil)
     }
 
+    @Test("An approval recorded before a restart still launches the same adapter")
+    func approvalSurvivesRemount() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("notchshot-adapter-remount-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        // A script, not a copy of /bin/echo: Apple's launch constraints kill
+        // a system binary run from anywhere but the system volume.
+        let executable = directory.appendingPathComponent("adapter")
+        try Data("#!/bin/sh\necho \"$1\"\n".utf8).write(to: executable)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o700],
+            ofItemAtPath: executable.path
+        )
+        var identity = try #require(SafeAssetFile.identity(
+            at: executable,
+            maximumBytes: SafeAssetFile.maximumExternalBytes
+        ))
+        // APFS hands a volume a new `st_dev` each time it mounts. Both the
+        // app and the runner it launches through must look past that.
+        identity.device &+= 1
+        let data = await MediaRemoteAdapterSource.runOnce(
+            executableURL: executable,
+            approvedIdentity: identity,
+            arguments: ["ready"]
+        )
+        #expect(data == Data("ready\n".utf8))
+    }
+
     @Test("A stubborn streaming adapter is killed before stop returns")
     func stubbornStreamingAdapterIsReaped() async throws {
         let directory = FileManager.default.temporaryDirectory

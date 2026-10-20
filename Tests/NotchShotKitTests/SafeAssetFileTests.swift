@@ -71,6 +71,58 @@ struct SafeAssetFileTests {
         }
     }
 
+    @Test("A file recorded before a restart is still the same file")
+    func deviceNumberChangeAfterRemount() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("notchshot-safe-remount-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let source = directory.appendingPathComponent("capture.png")
+        try Data("capture".utf8).write(to: source)
+        // APFS hands a volume a new `st_dev` each time it mounts, so an
+        // identity stored before a restart no longer matches the same,
+        // untouched file on that one field.
+        var recorded = try #require(SafeAssetFile.identity(
+            at: source,
+            maximumBytes: SafeAssetFile.maximumExternalBytes
+        ))
+        recorded.device &+= 1
+        let asset = CaptureAsset(
+            url: source,
+            kind: .screenshot,
+            pixelSize: .zero,
+            ownership: .externalReference,
+            externalFileIdentity: recorded
+        )
+
+        #expect(SafeAssetFile.isCurrentAndSafe(asset))
+        try SafeAssetFile.requireCurrentItem(
+            at: source,
+            expectedIdentity: recorded,
+            maximumBytes: SafeAssetFile.maximumExternalBytes
+        )
+        let copy = directory.appendingPathComponent("copy.png")
+        try SafeAssetFile.copy(asset, to: copy)
+        #expect(try Data(contentsOf: copy) == Data("capture".utf8))
+        #expect(try SafeAssetFile.readData(
+            at: source,
+            maximumBytes: 1_024,
+            expectedIdentity: recorded
+        ) == Data("capture".utf8))
+
+        // A replacement at the same path is still refused.
+        try FileManager.default.removeItem(at: source)
+        try Data("capture".utf8).write(to: source)
+        #expect(!SafeAssetFile.isCurrentAndSafe(asset))
+        #expect(throws: NotchShotError.self) {
+            try SafeAssetFile.requireCurrentItem(
+                at: source,
+                expectedIdentity: recorded,
+                maximumBytes: SafeAssetFile.maximumExternalBytes
+            )
+        }
+    }
+
     @Test("Symbolic links never receive a shelf file identity")
     func symbolicLinkRejected() throws {
         let directory = FileManager.default.temporaryDirectory

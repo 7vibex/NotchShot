@@ -172,6 +172,65 @@ struct SystemUtilitiesTests {
         #expect(try FileManager.default.contentsOfDirectory(atPath: folder.path) == ["broken.zip"])
     }
 
+    @Test("What a downloaded archive holds stays quarantined, as Archive Utility leaves it")
+    func extractedItemsKeepQuarantine() throws {
+        let folder = try temporaryFolder()
+        defer {
+            try? run("/bin/chmod", ["-R", "u+w", folder.path])
+            try? FileManager.default.removeItem(at: folder)
+        }
+        let source = folder.appendingPathComponent("Tool", isDirectory: true)
+        let bin = source.appendingPathComponent("bin", isDirectory: true)
+        try FileManager.default.createDirectory(at: bin, withIntermediateDirectories: true)
+        let script = bin.appendingPathComponent("run.command")
+        try Data("#!/bin/sh\n".utf8).write(to: script)
+        try FileManager.default.createSymbolicLink(
+            atPath: source.appendingPathComponent("link").path,
+            withDestinationPath: "bin/run.command"
+        )
+        // A member can store its own quarantine, one claiming it was approved.
+        let approved = source.appendingPathComponent("approved.command")
+        try Data("#!/bin/sh\n".utf8).write(to: approved)
+        try setQuarantine("00c1;6710e2c0;Safari;", on: approved)
+        // Read-only items refuse new attributes until made writable.
+        try FileManager.default.setAttributes([.posixPermissions: 0o555], ofItemAtPath: script.path)
+        try FileManager.default.setAttributes([.posixPermissions: 0o555], ofItemAtPath: bin.path)
+
+        let tarball = folder.appendingPathComponent("Tool.tar.gz")
+        try run("/usr/bin/tar", ["-c", "-z", "-f", tarball.path, "-C", folder.path, "Tool"])
+        let gzip = folder.appendingPathComponent("run.command.gz")
+        try run("/usr/bin/gzip", ["-c", script.path], stdout: gzip)
+        let local = folder.appendingPathComponent("local.tar")
+        try run("/usr/bin/tar", ["-c", "-f", local.path, "-C", bin.path, "run.command"])
+        let download = "0083;6710e2c0;Safari;11111111-2222-3333-4444-555555555555"
+        try setQuarantine(download, on: tarball)
+        try setQuarantine(download, on: gzip)
+
+        let tarOutput = try ArchiveExtractor.extract(tarball).outputURL
+        #expect(quarantine(of: tarOutput) == download)
+        var marked = 0
+        let walker = try #require(FileManager.default.enumerator(atPath: tarOutput.path))
+        for case let relative as String in walker {
+            let item = tarOutput.appendingPathComponent(relative)
+            guard try item.resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink != true else { continue }
+            #expect(quarantine(of: item) == download, "\(relative)")
+            marked += 1
+        }
+        #expect(marked == 3)
+        let permissions = { (url: URL) in
+            try FileManager.default.attributesOfItem(atPath: url.path)[.posixPermissions] as? Int
+        }
+        #expect(try permissions(tarOutput.appendingPathComponent("bin")) == 0o555)
+        #expect(try permissions(tarOutput.appendingPathComponent("bin/run.command")) == 0o555)
+
+        let gzipOutput = try ArchiveExtractor.extract(gzip).outputURL
+        #expect(quarantine(of: gzipOutput) == download)
+
+        // An archive made on this Mac carries no quarantine and gains none.
+        let localOutput = try ArchiveExtractor.extract(local).outputURL
+        #expect(quarantine(of: localOutput) == nil)
+    }
+
     // MARK: Uninstall
 
     @Test("Leftovers match the bundle identifier exactly and the name only when distinctive")
@@ -266,5 +325,18 @@ struct SystemUtilitiesTests {
         try process.run()
         process.waitUntilExit()
         #expect(process.terminationStatus == 0)
+    }
+
+    private func setQuarantine(_ value: String, on url: URL) throws {
+        let bytes = Array(value.utf8)
+        try #require(setxattr(url.path, "com.apple.quarantine", bytes, bytes.count, 0, XATTR_NOFOLLOW) == 0)
+    }
+
+    private func quarantine(of url: URL) -> String? {
+        let length = getxattr(url.path, "com.apple.quarantine", nil, 0, 0, XATTR_NOFOLLOW)
+        guard length > 0 else { return nil }
+        var bytes = [UInt8](repeating: 0, count: length)
+        guard getxattr(url.path, "com.apple.quarantine", &bytes, length, 0, XATTR_NOFOLLOW) == length else { return nil }
+        return String(decoding: bytes, as: UTF8.self)
     }
 }

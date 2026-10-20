@@ -344,23 +344,20 @@ private final class ClaudeCodeHookServer: @unchecked Sendable {
         source.setEventHandler { [weak self] in
             self?.acceptConnections()
         }
-        source.setCancelHandler { [weak self] in
-            guard let self, self.serverFileDescriptor >= 0 else { return }
-            close(self.serverFileDescriptor)
-            self.serverFileDescriptor = -1
+        // The source owns the descriptor: this is the only close, and it runs
+        // once no event handler can still be using it. It closes this
+        // generation's descriptor, never whatever the property holds by then.
+        source.setCancelHandler {
+            close(descriptor)
         }
         acceptSource = source
         source.resume()
     }
 
     private func stopOnQueue() {
-        acceptSource?.setCancelHandler {}
         acceptSource?.cancel()
         acceptSource = nil
-        if serverFileDescriptor >= 0 {
-            close(serverFileDescriptor)
-            serverFileDescriptor = -1
-        }
+        serverFileDescriptor = -1
         for fileDescriptor in Array(clients.keys) {
             closeClient(fileDescriptor)
         }
@@ -482,15 +479,15 @@ private final class ClaudeCodeHookServer: @unchecked Sendable {
         }
     }
 
+    /// Retires a client. Its source closes the descriptor in the cancel
+    /// handler, so nothing else ever does. A number no longer on the books was
+    /// already retired — a message handled at end of input arrives here twice
+    /// — and may by now belong to another file the app opened, so it is left
+    /// alone.
     private func closeClient(_ fileDescriptor: Int32) {
         pendingBySession = pendingBySession.filter { $0.value != fileDescriptor }
-        guard let client = clients.removeValue(forKey: fileDescriptor) else {
-            close(fileDescriptor)
-            return
-        }
-        client.source?.setCancelHandler {}
+        guard let client = clients.removeValue(forKey: fileDescriptor) else { return }
         client.source?.cancel()
-        close(fileDescriptor)
     }
 
     private func setNonBlocking(_ fileDescriptor: Int32) {

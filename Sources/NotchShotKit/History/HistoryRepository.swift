@@ -1163,19 +1163,14 @@ public final class HistoryRepository {
     /// `SafeAssetFile.requireCurrentItem`, adjusted for files that live inside
     /// NotchShot's own storage root. Everything that check refuses — a
     /// symbolic link, an oversized file, a directory where a file belongs, a
-    /// different inode, size or modification time — is still refused. Two
-    /// things are not:
-    ///
-    /// - The device number. APFS assigns `st_dev` when a volume mounts, so
-    ///   every row recorded before a restart carried a stale one and failed
-    ///   here forever. `AppPaths.owns` has already pinned the path to the
-    ///   storage root's volume with no symbolic link on the way, so the inode
-    ///   still names the same item.
-    /// - A missing identity on a legacy row, but only for a file the
-    ///   untracked-file sweep would delete anyway once the row is gone. Holding
-    ///   such a row protects nothing and retries on every launch. Projects and
-    ///   anything else the sweep leaves alone still fail closed, so an
-    ///   unredacted project never loses its owner.
+    /// different inode, size or modification time — is still refused. As
+    /// everywhere, a device number that changed with a remount is not a
+    /// change (see `ExternalFileIdentity.==`). One more thing is accepted:
+    /// a missing identity on a legacy row, but only for a file the
+    /// untracked-file sweep would delete anyway once the row is gone. Holding
+    /// such a row protects nothing and retries on every launch. Projects and
+    /// anything else the sweep leaves alone still fail closed, so an
+    /// unredacted project never loses its owner.
     private nonisolated static func requireRemovableManagedArtifact(
         _ artifact: ManagedArtifact,
         sweptWithoutOwner: Bool
@@ -1197,9 +1192,7 @@ public final class HistoryRepository {
             }
             return
         }
-        var remounted = expected
-        remounted.device = current.device
-        guard current == remounted else {
+        guard current == expected else {
             throw NotchShotError.exportFailed(
                 "That file changed after NotchShot recorded it. The replacement was left untouched."
             )
