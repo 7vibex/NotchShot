@@ -435,10 +435,13 @@ public struct FloatingBasketView: View {
         .animation(NotchMotion.selection(reduceMotion: reduceMotion), value: manager.activeColor)
         .onChange(of: manager.switchCount) { _, _ in flashSwitcher() }
         // Tab and Shift-Tab step through the baskets while the panel is key,
-        // like ⌘-Tab through apps; ⌘1…⌘5 jump straight to one.
+        // like ⌘-Tab through apps; ⌘1…⌘5 jump straight to one. With Full
+        // Keyboard Access on, Tab is how the user reaches the basket's own
+        // controls, so it keeps that job there.
         .focusable()
         .focusEffectDisabled()
         .onKeyPress(.tab, phases: .down) { press in
+            guard !NSApp.isFullKeyboardAccessEnabled else { return .ignored }
             manager.cycle(forward: !press.modifiers.contains(.shift))
             return .handled
         }
