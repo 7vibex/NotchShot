@@ -1,15 +1,16 @@
 import Foundation
 
-/// Liveness reporting for `notchshot-cli activity run`.
+/// Liveness reporting for `notchshot-cli activity run` and `notchshot-ai run`.
 ///
 /// The app drops an activity that has not been updated for its stale interval
-/// (15 minutes), which would make a long build or export disappear from the
-/// island while it is still running. The wrapped command belongs to the user:
+/// (15 minutes for a live activity, 30 for an AI activity file), which would
+/// make a long build or export disappear from the island while it is still
+/// running. The wrapped command belongs to the user:
 /// this type only fires a best-effort callback on its own queue while the
 /// child is alive, stops as soon as it is asked to, and never observes or
 /// changes the command's exit status.
 public final class ActivityHeartbeat: @unchecked Sendable {
-    /// Comfortably inside the app's 15-minute stale interval, and infrequent
+    /// Comfortably inside both stale intervals, and infrequent
     /// enough that a long job costs a handful of tiny socket writes.
     public static let defaultInterval: TimeInterval = 4 * 60
 

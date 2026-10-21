@@ -345,7 +345,7 @@ private enum Reporter {
         )
         let workspace = options.value("workspace") ?? FileManager.default.currentDirectoryPath
         let started = Date()
-        try write(Activity(
+        let running = Activity(
             id: identifier,
             source: source,
             state: .working,
@@ -356,12 +356,25 @@ private enum Reporter {
             steps: [],
             startedAt: started,
             updatedAt: started
-        ))
+        )
+        try write(running)
 
+        // The app drops a working activity after 30 minutes without an
+        // update, so a long command is rewritten unchanged but for its time.
+        // A failed write is ignored: the command is the user's, not ours. The
+        // heartbeat stops before the final report so it cannot overwrite it.
+        let heartbeat = ActivityHeartbeat()
+        heartbeat.start {
+            var refreshed = running
+            refreshed.updatedAt = Date()
+            try? write(refreshed)
+        }
         let outcome: ForegroundCommand.Outcome
         do {
             outcome = try ForegroundCommand.run(command, currentDirectory: workspace)
+            heartbeat.stop()
         } catch {
+            heartbeat.stop()
             try write(Activity(
                 id: identifier, source: source, state: .failed, title: title,
                 detail: error.localizedDescription, progress: nil,
