@@ -43,7 +43,7 @@ public enum MeetingControls {
         }
         return ControlPresentation(
             label: "Toggle system microphone mute",
-            help: "Changes the default microphone's mute setting for every app."
+            help: "Mutes the default microphone for every app until the call ends."
         )
     }
 
@@ -88,7 +88,10 @@ public enum MeetingControls {
     /// Whether the default input device is muted, or nil when it has no mute
     /// control (many USB microphones don't).
     public static func isSystemInputMuted() -> Bool? {
-        guard let device = defaultInputDevice() else { return nil }
+        defaultInputDevice().flatMap(isInputMuted)
+    }
+
+    static func isInputMuted(_ device: AudioDeviceID) -> Bool? {
         var value = UInt32(0)
         var size = UInt32(MemoryLayout<UInt32>.size)
         var address = muteAddress
@@ -100,6 +103,11 @@ public enum MeetingControls {
     @discardableResult
     public static func setSystemInputMuted(_ muted: Bool) -> Bool {
         guard let device = defaultInputDevice() else { return false }
+        return setInputMuted(muted, device: device)
+    }
+
+    @discardableResult
+    static func setInputMuted(_ muted: Bool, device: AudioDeviceID) -> Bool {
         var value: UInt32 = muted ? 1 : 0
         var address = muteAddress
         var settable = DarwinBoolean(false)
@@ -118,7 +126,7 @@ public enum MeetingControls {
         )
     }
 
-    private static func defaultInputDevice() -> AudioDeviceID? {
+    static func defaultInputDevice() -> AudioDeviceID? {
         var device = AudioDeviceID(0)
         var size = UInt32(MemoryLayout<AudioDeviceID>.size)
         var address = AudioObjectPropertyAddress(
@@ -128,5 +136,19 @@ public enum MeetingControls {
         )
         let status = AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &size, &device)
         return status == noErr && device != 0 ? device : nil
+    }
+}
+
+/// A system input mute NotchShot set from a call's controls. It silences
+/// every app, so it is undone once all the calls it was set for have ended;
+/// left in place, it would also silence the next call and dictation.
+struct SystemMuteHold: Equatable, Sendable {
+    var device: AudioDeviceID
+    var calls: Set<String>
+
+    /// What is left while some of the calls continue, or nil once none do.
+    func remaining(live: Set<String>) -> SystemMuteHold? {
+        let continuing = calls.intersection(live)
+        return continuing.isEmpty ? nil : SystemMuteHold(device: device, calls: continuing)
     }
 }

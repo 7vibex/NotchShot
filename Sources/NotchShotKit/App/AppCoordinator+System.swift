@@ -177,6 +177,7 @@ extension AppCoordinator {
     }
 
     func refreshActivity() {
+        releaseSystemMuteAfterCalls()
         refreshIsland()
         let resolved = arbiter.resolve()
         if resolved != activity {

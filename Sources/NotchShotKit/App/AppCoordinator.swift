@@ -111,6 +111,8 @@ public final class AppCoordinator {
     var meetingMutedApps: Set<String> = []
     var meetingCameraOffApps: Set<String> = []
     var systemInputMuted = MeetingControls.isSystemInputMuted() ?? false
+    /// The system mute NotchShot set for calls, undone when they end.
+    var systemMuteHold: SystemMuteHold?
     var accessibilityLevelTask: Task<Void, Never>?
     var peekTask: Task<Void, Never>?
     var recordingStartTask: Task<Void, Never>?

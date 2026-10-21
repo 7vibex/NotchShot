@@ -25,6 +25,17 @@ struct CallControlsAndMenuRegressionTests {
         #expect(browser.help.contains("every app"))
     }
 
+    @Test("A system mute set for calls is released only when all of them have ended")
+    func systemMuteHoldEndsWithItsCalls() {
+        let hold = SystemMuteHold(device: 42, calls: ["com.google.Chrome", "com.apple.Safari"])
+        // Unrelated calls neither keep it nor end it.
+        #expect(hold.remaining(live: ["com.google.Chrome", "us.zoom.xos"])
+            == SystemMuteHold(device: 42, calls: ["com.google.Chrome"]))
+        #expect(hold.remaining(live: ["com.apple.Safari"])?.calls == ["com.apple.Safari"])
+        #expect(hold.remaining(live: ["us.zoom.xos"]) == nil)
+        #expect(hold.remaining(live: []) == nil)
+    }
+
     @Test("The application menu dispatches Quit and Settings without an open status menu")
     func menuKeyEquivalents() throws {
         _ = NSApplication.shared
