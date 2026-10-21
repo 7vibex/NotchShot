@@ -200,7 +200,7 @@ struct RecordingContent: View {
                     } else {
                         RecordingDot()
                     }
-                    IslandNumericText(
+                    IslandClockText(
                         text: status.elapsedDescription,
                         font: .system(size: 17, weight: .semibold, design: .rounded),
                         color: timeColor

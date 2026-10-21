@@ -322,8 +322,8 @@ extension View {
     }
 }
 
-/// A changing number (timer, elapsed time, percentage, bytes) that rolls in
-/// place without animating anything around it.
+/// A changing discrete number (percentage, bytes, count) that rolls in place
+/// without animating anything around it. Running clocks use `IslandClockText`.
 struct IslandNumericText: View {
     var text: String
     var countsDown = false
@@ -339,6 +339,25 @@ struct IslandNumericText: View {
             .lineLimit(1)
             .contentTransition(reduceMotion ? .identity : .numericText(countsDown: countsDown))
             .animation(IslandMotion.liveValue(reduceMotion: reduceMotion), value: text)
+    }
+}
+
+/// A running clock (elapsed or remaining time) that changes every second, in
+/// place and without a transition, as the phone's own timers do. Rolling
+/// digits render on the CPU for most of a second per change, so a clock that
+/// rolled never stopped rendering: about 45% of a core during a call.
+struct IslandClockText: View {
+    var text: String
+    var font: Font
+    var color: Color = .white
+
+    var body: some View {
+        Text(text)
+            .font(font)
+            .monospacedDigit()
+            .foregroundStyle(color)
+            .lineLimit(1)
+            .contentTransition(.identity)
     }
 }
 

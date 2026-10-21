@@ -243,9 +243,8 @@ private struct IslandTimerExpanded: View {
                     .foregroundStyle(ink)
                     .lineLimit(1)
                     .minimumScaleFactor(0.8)
-                IslandNumericText(
+                IslandClockText(
                     text: timer.map { IslandClock.formatted($0.remaining, roundingUp: true) } ?? activity.metric ?? "",
-                    countsDown: true,
                     font: .system(size: 30, weight: .semibold, design: .rounded),
                     color: ink
                 )

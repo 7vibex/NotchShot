@@ -77,7 +77,7 @@ struct IslandCompactContent: View {
     @ViewBuilder
     private var leadingDetail: some View {
         if activity.kind == .recording, !isFloating {
-            IslandNumericText(
+            IslandClockText(
                 text: coordinator.recordingStatus.elapsedDescription,
                 font: .system(size: 11, weight: .semibold, design: .rounded),
                 color: .red
@@ -101,7 +101,7 @@ struct IslandCompactContent: View {
             )
         case .recording:
             if isFloating {
-                IslandNumericText(
+                IslandClockText(
                     text: coordinator.recordingStatus.elapsedDescription,
                     font: .system(size: 12, weight: .semibold, design: .rounded),
                     color: .red
@@ -111,15 +111,14 @@ struct IslandCompactContent: View {
                     .frame(width: 30, height: 14)
             }
         case .timer:
-            IslandNumericText(
+            IslandClockText(
                 text: coordinator.context.timer.current.map { IslandClock.formatted($0.remaining, roundingUp: true) }
                     ?? activity.metric ?? "",
-                countsDown: true,
                 font: .system(size: 12, weight: .semibold, design: .rounded),
                 color: accent
             )
         case .voiceNote:
-            IslandNumericText(
+            IslandClockText(
                 text: coordinator.context.voiceNotes.snapshot.map { IslandClock.formatted($0.elapsed) }
                     ?? activity.metric ?? "",
                 font: .system(size: 12, weight: .semibold, design: .rounded),
@@ -234,17 +233,16 @@ struct IslandSatelliteValue: View {
         Group {
             switch activity.kind {
             case .recording:
-                IslandNumericText(text: coordinator.recordingStatus.elapsedDescription, font: font, color: .red)
+                IslandClockText(text: coordinator.recordingStatus.elapsedDescription, font: font, color: .red)
             case .timer:
-                IslandNumericText(
+                IslandClockText(
                     text: coordinator.context.timer.current.map { IslandClock.formatted($0.remaining, roundingUp: true) }
                         ?? activity.metric ?? "",
-                    countsDown: true,
                     font: font,
                     color: accent
                 )
             case .voiceNote:
-                IslandNumericText(
+                IslandClockText(
                     text: coordinator.context.voiceNotes.snapshot.map { IslandClock.formatted($0.elapsed) }
                         ?? activity.metric ?? "",
                     font: font,

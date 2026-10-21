@@ -441,7 +441,7 @@ struct NotchActivityCardStack: View {
                     .font(.system(size: 22, weight: .semibold))
                     .monospacedDigit()
                     .foregroundStyle(Color.islandInk(isRunning ? NotchIsland.Ink.primary : NotchIsland.Ink.secondary))
-                    .contentTransition(.numericText(countsDown: true))
+                    .contentTransition(.identity)
                     .padding(.trailing, isLocked ? 0 : 4)
                 if !isLocked {
                     NotchAlertIconButton(

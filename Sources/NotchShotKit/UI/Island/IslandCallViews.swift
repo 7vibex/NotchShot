@@ -17,7 +17,7 @@ struct IslandCallElapsed: View {
 
     var body: some View {
         TimelineView(.periodic(from: startedAt, by: 1)) { context in
-            IslandNumericText(
+            IslandClockText(
                 text: IslandClock.formatted(context.date.timeIntervalSince(startedAt)),
                 font: font,
                 color: color
