@@ -123,6 +123,52 @@ struct SafeAssetFileTests {
         }
     }
 
+    @Test("Matching inode, size and time on another volume is a different file")
+    func otherVolumeIsRefused() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("notchshot-safe-volume-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let source = directory.appendingPathComponent("capture.png")
+        try Data("capture".utf8).write(to: source)
+        let current = try #require(SafeAssetFile.identity(
+            at: source,
+            maximumBytes: SafeAssetFile.maximumExternalBytes
+        ))
+        // The startup volume has a UUID, so the check below is not vacuous.
+        #expect(current.volume != nil)
+
+        // Recorded on a different volume, with a stale device number as after
+        // any restart: only the volume tells the two apart.
+        var elsewhere = current
+        elsewhere.device &+= 1
+        elsewhere.volume = UUID()
+        #expect(elsewhere != current)
+        #expect(throws: NotchShotError.self) {
+            try SafeAssetFile.requireCurrentItem(
+                at: source,
+                expectedIdentity: elsewhere,
+                maximumBytes: SafeAssetFile.maximumExternalBytes
+            )
+        }
+        #expect(throws: NotchShotError.self) {
+            try SafeAssetFile.readData(at: source, maximumBytes: 1_024, expectedIdentity: elsewhere)
+        }
+
+        // A row stored before volumes were kept decodes without one and
+        // still matches the untouched file.
+        let encoded = try JSONEncoder().encode(current)
+        var object = try #require(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+        object["volume"] = nil
+        let legacy = try JSONDecoder().decode(
+            ExternalFileIdentity.self,
+            from: JSONSerialization.data(withJSONObject: object)
+        )
+        #expect(legacy.volume == nil)
+        #expect(legacy == current)
+        #expect(try JSONDecoder().decode(ExternalFileIdentity.self, from: encoded).volume == current.volume)
+    }
+
     @Test("Symbolic links never receive a shelf file identity")
     func symbolicLinkRejected() throws {
         let directory = FileManager.default.temporaryDirectory

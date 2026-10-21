@@ -10,15 +10,22 @@ public struct ExternalFileIdentity: Codable, Sendable, Equatable {
     public var size: Int64
     public var modifiedSeconds: Int64
     public var modifiedNanoseconds: Int64
+    /// The volume's persistent UUID, when the file system has one. Nil in
+    /// identities recorded before it was kept.
+    public var volume: UUID? = nil
 
     /// Whether two identities name the same item. The device number is kept
     /// for the record but not compared: APFS assigns `st_dev` when a volume
     /// mounts, so every identity stored before a restart or a remount carried
     /// a stale one, and the same untouched file read as "changed" forever.
-    /// Inode, size and the nanosecond modification time still pin the item,
-    /// and every check reaches it without following a final symbolic link.
+    /// The volume UUID survives remounts, so when both sides have one it
+    /// stands in for the device: a file on another volume with a matching
+    /// inode, size and time is still a different file. Inode, size and the
+    /// nanosecond modification time pin the item, and every check reaches it
+    /// without following a final symbolic link.
     public static func == (lhs: ExternalFileIdentity, rhs: ExternalFileIdentity) -> Bool {
-        lhs.inode == rhs.inode
+        if let left = lhs.volume, let right = rhs.volume, left != right { return false }
+        return lhs.inode == rhs.inode
             && lhs.size == rhs.size
             && lhs.modifiedSeconds == rhs.modifiedSeconds
             && lhs.modifiedNanoseconds == rhs.modifiedNanoseconds
@@ -48,12 +55,15 @@ enum SafeAssetFile {
     ) -> ExternalFileIdentity? {
         guard url.isFileURL else { return nil }
         var information = stat()
-        guard lstat(url.standardizedFileURL.path, &information) == 0 else { return nil }
+        let path = url.standardizedFileURL.path
+        guard lstat(path, &information) == 0 else { return nil }
         let type = information.st_mode & S_IFMT
         guard type == S_IFREG || (allowsDirectory && type == S_IFDIR),
               information.st_size >= 0,
               type == S_IFDIR || information.st_size <= maximumBytes else { return nil }
-        return identity(from: information)
+        var volume = statfs()
+        let hasVolume = statfs(path, &volume) == 0
+        return identity(from: information, volume: hasVolume ? volume : nil)
     }
 
     static func requireCurrentItem(
@@ -187,7 +197,7 @@ enum SafeAssetFile {
               information.st_size <= maximumBytes else {
             throw NotchShotError.exportFailed("The source file is unsafe or too large")
         }
-        if let expectedIdentity, identity(from: information) != expectedIdentity {
+        if let expectedIdentity, identity(from: information, descriptor: sourceDescriptor) != expectedIdentity {
             throw NotchShotError.exportFailed(changedMessage)
         }
 
@@ -247,7 +257,7 @@ enum SafeAssetFile {
               information.st_size <= maximumBytes else {
             throw NotchShotError.exportFailed("The source file is unsafe or too large")
         }
-        if let expectedIdentity, identity(from: information) != expectedIdentity {
+        if let expectedIdentity, identity(from: information, descriptor: descriptor) != expectedIdentity {
             throw NotchShotError.exportFailed("The source file changed after it was selected")
         }
 
@@ -262,13 +272,59 @@ enum SafeAssetFile {
         return data
     }
 
-    private static func identity(from information: stat) -> ExternalFileIdentity {
+    private static func identity(from information: stat, descriptor: Int32) -> ExternalFileIdentity {
+        var volume = statfs()
+        let hasVolume = fstatfs(descriptor, &volume) == 0
+        return identity(from: information, volume: hasVolume ? volume : nil)
+    }
+
+    private static func identity(from information: stat, volume: statfs?) -> ExternalFileIdentity {
         ExternalFileIdentity(
             device: UInt64(information.st_dev),
             inode: UInt64(information.st_ino),
             size: information.st_size,
             modifiedSeconds: Int64(information.st_mtimespec.tv_sec),
-            modifiedNanoseconds: Int64(information.st_mtimespec.tv_nsec)
+            modifiedNanoseconds: Int64(information.st_mtimespec.tv_nsec),
+            volume: volume.flatMap { volumeUUIDs.uuid(device: information.st_dev, mount: $0) }
         )
+    }
+
+    private static let volumeUUIDs = VolumeUUIDCache()
+}
+
+/// Volume UUIDs by mount. A lookup costs about 20 µs and History checks
+/// hundreds of files in a row, so answers are kept for a few seconds; the
+/// short life bounds how long a volume remounted at the same place with the
+/// same device number could be mistaken for the one before it.
+private final class VolumeUUIDCache: @unchecked Sendable {
+    private struct Entry {
+        var uuid: UUID?
+        var expires: Date
+    }
+
+    private let lock = NSLock()
+    private var entries: [String: Entry] = [:]
+
+    func uuid(device: dev_t, mount volume: statfs) -> UUID? {
+        let mountPoint = withUnsafeBytes(of: volume.f_mntonname) { bytes in
+            String(decoding: bytes.prefix { $0 != 0 }, as: UTF8.self)
+        }
+        let key = "\(device) \(mountPoint)"
+        let now = Date()
+        lock.lock()
+        if let entry = entries[key], entry.expires > now {
+            lock.unlock()
+            return entry.uuid
+        }
+        lock.unlock()
+
+        let uuid = (try? URL(fileURLWithPath: mountPoint, isDirectory: true)
+            .resourceValues(forKeys: [.volumeUUIDStringKey]).volumeUUIDString)
+            .flatMap(UUID.init(uuidString:))
+        lock.lock()
+        if entries.count > 64 { entries.removeAll() }
+        entries[key] = Entry(uuid: uuid, expires: now.addingTimeInterval(5))
+        lock.unlock()
+        return uuid
     }
 }

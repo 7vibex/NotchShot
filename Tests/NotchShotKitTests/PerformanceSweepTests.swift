@@ -106,7 +106,7 @@ struct PerformanceSweepTests {
     @Test("Clipboard size fast path conservatively accounts for every serialized field")
     func clipboardSizeBound() {
         let identity = ExternalFileIdentity(device: .max, inode: .max, size: .max,
-            modifiedSeconds: .min, modifiedNanoseconds: .max)
+            modifiedSeconds: .min, modifiedNanoseconds: .max, volume: UUID())
         for text in ["", "ordinary text", String(repeating: "\0\"\\\n\t/", count: 200), "ș🐱e\u{301}"] {
             let row = ClipboardEntry(kind: .files, label: text, tags: [text, text], text: text,
                 filePaths: [text, text], fileIdentities: [identity, identity], imageFilename: text,
