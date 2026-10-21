@@ -102,10 +102,67 @@ struct LyricsTests {
         #expect(LyricsQuery(snapshot: snapshot) == nil)
     }
 
+    @Test("A small answer is read and decoded")
+    func smallAnswerIsDecoded() async throws {
+        let body = Data(#"{"syncedLyrics":"[00:01.00]Hello","duration":200}"#.utf8)
+        let service = LyricsService(session: LyricsResponseStub.session(body: body, finishes: true))
+        let query = try #require(LyricsQuery(snapshot: MediaSnapshot(
+            title: "Song", artist: "Artist", album: nil, duration: 200
+        )))
+        let result = await service.lyrics(for: query)
+        #expect(result.map(\.lines.count) == .success(1))
+    }
+
+    /// The old read buffered the whole body first, so a server that kept
+    /// sending held the lookup until the 12-second resource timeout.
+    @Test("An oversized answer is refused as it arrives")
+    func oversizedAnswerIsRefusedWhileStreaming() async throws {
+        let body = Data(repeating: UInt8(ascii: " "), count: LyricsService.maximumResponseBytes + 1)
+        let service = LyricsService(session: LyricsResponseStub.session(body: body, finishes: false))
+        let query = try #require(LyricsQuery(snapshot: MediaSnapshot(
+            title: "Song", artist: "Artist", album: nil, duration: 200
+        )))
+        let started = Date()
+        #expect(await service.lyrics(for: query) == .failure(.unavailable))
+        #expect(Date().timeIntervalSince(started) < 5)
+    }
+
     @Test("Lyrics are opt-in")
     @MainActor
     func lyricsAreOptIn() {
         let defaults = UserDefaults(suiteName: "notchshot.lyrics-tests.\(UUID().uuidString)")!
         #expect(Preferences(defaults: defaults).lyricsEnabled == false)
     }
+}
+
+/// Serves one canned body to every request. With `finishes` false the load
+/// never completes, like a server that keeps the connection open.
+private final class LyricsResponseStub: URLProtocol {
+    private static let lock = NSLock()
+    nonisolated(unsafe) private static var bodies: [String: (Data, Bool)] = [:]
+
+    static func session(body: Data, finishes: Bool) -> URLSession {
+        let key = UUID().uuidString
+        lock.withLock { bodies[key] = (body, finishes) }
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [LyricsResponseStub.self]
+        configuration.httpAdditionalHeaders = ["X-Stub": key]
+        return URLSession(configuration: configuration)
+    }
+
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+    override func startLoading() {
+        let key = request.value(forHTTPHeaderField: "X-Stub") ?? ""
+        guard let (body, finishes) = Self.lock.withLock({ Self.bodies[key] }),
+              let url = request.url,
+              let response = HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: nil)
+        else { return }
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: body)
+        if finishes { client?.urlProtocolDidFinishLoading(self) }
+    }
+
+    override func stopLoading() {}
 }

@@ -85,6 +85,8 @@ public actor LyricsService {
     /// (a live take, a radio edit) whose timestamps would drift.
     static let durationTolerance: TimeInterval = 3
     private static let cacheLimit = 40
+    /// Lyrics answers are a few kilobytes; anything near this is not one.
+    static let maximumResponseBytes = 2_000_000
 
     private let session: URLSession
     private var cache: [LyricsQuery: Result<Lyrics, LookupError>] = [:]
@@ -180,11 +182,20 @@ public actor LyricsService {
         components.queryItems = items
         guard let url = components.url else { return .failure(.unavailable) }
         do {
-            let (data, response) = try await session.data(from: url)
+            // Streamed so the bound holds while the body arrives, rather than
+            // after a large answer has been buffered whole.
+            let (bytes, response) = try await session.bytes(from: url)
+            defer { bytes.task.cancel() }
             guard let http = response as? HTTPURLResponse else { return .failure(.unavailable) }
             if http.statusCode == 404 { return .failure(.notFound) }
-            guard (200..<300).contains(http.statusCode), data.count < 2_000_000 else {
+            guard (200..<300).contains(http.statusCode),
+                  http.expectedContentLength < Int64(Self.maximumResponseBytes) else {
                 return .failure(.unavailable)
+            }
+            var data = Data()
+            for try await byte in bytes {
+                guard data.count < Self.maximumResponseBytes - 1 else { return .failure(.unavailable) }
+                data.append(byte)
             }
             return .success(try JSONDecoder().decode(T.self, from: data))
         } catch is DecodingError {
