@@ -511,7 +511,7 @@ private struct LocalSendToolView: View {
     @State private var host = ""
     @State private var port = "53317"
     @State private var usesHTTPS = true
-    @State private var selectedFiles: [URL] = []
+    @State private var selectedFiles: [LocalSendSelection] = []
     @State private var progress: LocalSendProgress?
     @State private var message: String?
     @State private var pendingFingerprint: String?
@@ -536,9 +536,9 @@ private struct LocalSendToolView: View {
 
             Section("Files") {
                 Button("Choose Files…", action: chooseFiles)
-                ForEach(selectedFiles, id: \.path) { url in
-                    LabeledContent(url.lastPathComponent) {
-                        Button("Remove") { selectedFiles.removeAll { $0 == url } }
+                ForEach(selectedFiles, id: \.url.path) { file in
+                    LabeledContent(file.url.lastPathComponent) {
+                        Button("Remove") { selectedFiles.removeAll { $0 == file } }
                     }
                 }
                 if selectedFiles.isEmpty {
@@ -611,11 +611,20 @@ private struct LocalSendToolView: View {
         panel.resolvesAliases = false
         guard panel.runModal() == .OK else { return }
         let urls = panel.urls
-        selectedFiles = Array(urls.prefix(100))
+        // Each file is pinned as it is chosen; a replacement made before Send
+        // is then refused rather than sent.
+        let chosen = Array(urls.prefix(100))
+        let accepted = chosen.compactMap(LocalSendSelection.init(url:))
+        selectedFiles = accepted
         pendingFingerprint = nil
-        message = urls.count > 100
-            ? "LocalSend sends the first 100 files per transfer."
-            : nil
+        if accepted.count < chosen.count {
+            let skipped = chosen.count - accepted.count
+            message = "Skipped \(skipped == 1 ? "1 item" : "\(skipped) items") that are not regular files under 5 GB."
+        } else {
+            message = urls.count > 100
+                ? "LocalSend sends the first 100 files per transfer."
+                : nil
+        }
     }
 
     private func send(trustedFingerprint: String?) {
@@ -634,9 +643,7 @@ private struct LocalSendToolView: View {
         message = nil
         progress = nil
         let files = selectedFiles
-        let totalBytes = files.reduce(Int64(0)) { total, url in
-            total + Int64((try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0)
-        }
+        let totalBytes = files.reduce(Int64(0)) { $0 + $1.identity.size }
         // The island's transfer activity reports the same measured progress
         // and cancels this exact task.
         let store = TransferActivityStore.shared

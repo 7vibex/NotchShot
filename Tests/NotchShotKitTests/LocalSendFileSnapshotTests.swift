@@ -2,10 +2,10 @@ import Foundation
 import Testing
 @testable import NotchShotKit
 
-/// LocalSend authorizes a file, waits on the network, and uploads later. These
-/// tests pin that the bytes uploaded are the bytes authorized: preparation
-/// copies the validated inode into a private snapshot, and the original
-/// pathname is never read again.
+/// LocalSend authorizes a file when it is chosen, waits on the user and the
+/// network, and uploads later. These tests pin that the bytes uploaded are the
+/// bytes chosen: preparation copies the pinned inode into a private snapshot,
+/// and the original pathname is never read again.
 @Suite("LocalSend transfer snapshots")
 struct LocalSendFileSnapshotTests {
     private func makeDirectory() throws -> URL {
@@ -25,7 +25,8 @@ struct LocalSendFileSnapshotTests {
         try Data("authorized bytes".utf8).write(to: source)
 
         let client = LocalSendClient()
-        let prepared = try await client.prepareFiles([source])
+        let selection = try #require(LocalSendSelection(url: source))
+        let prepared = try await client.prepareFiles([selection])
         defer { LocalSendClient.discardSnapshots(prepared) }
         let file = try #require(prepared.first)
 
@@ -67,8 +68,45 @@ struct LocalSendFileSnapshotTests {
         #expect(!FileManager.default.fileExists(atPath: snapshot.path))
     }
 
-    @Test("A symlink is refused before any snapshot exists")
-    func symlinkIsRefused() async throws {
+    @Test("A file replaced after it was chosen is refused, not sent")
+    func replacementAfterSelectionIsRefused() async throws {
+        let directory = try makeDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let source = directory.appendingPathComponent("chosen.bin")
+        try Data("chosen bytes".utf8).write(to: source)
+        let selection = try #require(LocalSendSelection(url: source))
+
+        // The swap happens while the device picker is open.
+        try Data("PRIVATE KEY".utf8).write(to: source, options: .atomic)
+
+        let client = LocalSendClient()
+        await #expect(throws: LocalSendError.self) {
+            _ = try await client.prepareFiles([selection])
+        }
+    }
+
+    @Test("A shelf file keeps the identity it had when it entered the shelf")
+    func shelfSelectionUsesRecordedIdentity() throws {
+        let directory = try makeDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let source = directory.appendingPathComponent("shelved.txt")
+        try Data("shelved".utf8).write(to: source)
+        let recorded = try #require(SafeAssetFile.identity(at: source, maximumBytes: 10_000))
+        let asset = CaptureAsset(
+            url: source,
+            kind: .text,
+            pixelSize: .zero,
+            ownership: .externalReference,
+            externalFileIdentity: recorded
+        )
+        #expect(LocalSendSelection(asset: asset)?.identity == recorded)
+
+        try Data("replaced on the shelf".utf8).write(to: source, options: .atomic)
+        #expect(LocalSendSelection(asset: asset) == nil)
+    }
+
+    @Test("A symlink cannot be chosen")
+    func symlinkIsRefused() throws {
         let directory = try makeDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
         let target = directory.appendingPathComponent("target.bin")
@@ -76,14 +114,11 @@ struct LocalSendFileSnapshotTests {
         let link = directory.appendingPathComponent("link.bin")
         try FileManager.default.createSymbolicLink(at: link, withDestinationURL: target)
 
-        let client = LocalSendClient()
-        await #expect(throws: LocalSendError.self) {
-            _ = try await client.prepareFiles([link])
-        }
+        #expect(LocalSendSelection(url: link) == nil)
     }
 
-    @Test("A file over the 5 GB transfer limit is refused")
-    func oversizedFileIsRefused() async throws {
+    @Test("A file over the 5 GB transfer limit cannot be chosen")
+    func oversizedFileIsRefused() throws {
         let directory = try makeDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
         let huge = directory.appendingPathComponent("huge.bin")
@@ -92,10 +127,7 @@ struct LocalSendFileSnapshotTests {
         try handle.truncate(atOffset: UInt64(LocalSendClient.maximumFileBytes) + 1)
         try handle.close()
 
-        let client = LocalSendClient()
-        await #expect(throws: LocalSendError.self) {
-            _ = try await client.prepareFiles([huge])
-        }
+        #expect(LocalSendSelection(url: huge) == nil)
     }
 
     @Test("Snapshots are removed on cleanup")
@@ -106,7 +138,9 @@ struct LocalSendFileSnapshotTests {
         try Data("bytes".utf8).write(to: source)
 
         let client = LocalSendClient()
-        let prepared = try await client.prepareFiles([source])
+        let prepared = try await client.prepareFiles([
+            try #require(LocalSendSelection(url: source)),
+        ])
         let snapshotDirectory = try #require(prepared.first).snapshotURL
             .deletingLastPathComponent()
         #expect(FileManager.default.fileExists(atPath: snapshotDirectory.path))
@@ -124,12 +158,17 @@ struct LocalSendFileSnapshotTests {
         let marker = "unique-\(UUID().uuidString).bin"
         let good = directory.appendingPathComponent(marker)
         try Data("good".utf8).write(to: good)
-        let link = directory.appendingPathComponent("link-\(UUID().uuidString).bin")
-        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: good)
+        let swapped = directory.appendingPathComponent("swapped-\(UUID().uuidString).bin")
+        try Data("before".utf8).write(to: swapped)
+        let selections = [
+            try #require(LocalSendSelection(url: good)),
+            try #require(LocalSendSelection(url: swapped)),
+        ]
+        try Data("after the selection".utf8).write(to: swapped, options: .atomic)
 
         let client = LocalSendClient()
         await #expect(throws: LocalSendError.self) {
-            _ = try await client.prepareFiles([good, link])
+            _ = try await client.prepareFiles(selections)
         }
 
         // No snapshot directory still holds the file that was prepared first.

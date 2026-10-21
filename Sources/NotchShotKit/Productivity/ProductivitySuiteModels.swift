@@ -73,9 +73,9 @@ public enum ProductivityTool: String, CaseIterable, Identifiable, Sendable {
 public final class ProductivityCenterRouter {
     public static let shared = ProductivityCenterRouter()
     public var selectedTool: ProductivityTool = .notes
-    public var pendingLocalSendFiles: [URL] = []
+    public var pendingLocalSendFiles: [LocalSendSelection] = []
 
-    public func route(to tool: ProductivityTool, localSendFiles: [URL] = []) {
+    public func route(to tool: ProductivityTool, localSendFiles: [LocalSendSelection] = []) {
         selectedTool = tool
         pendingLocalSendFiles = localSendFiles
     }

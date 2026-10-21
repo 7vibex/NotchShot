@@ -201,7 +201,11 @@ extension AppCoordinator {
         case .share:
             share(assets)
         case .localSend:
-            openProductivity(tool: .localSend, localSendFiles: assets.map(\.url))
+            // Pinned now, at the drop, not when Send is pressed later.
+            openProductivity(
+                tool: .localSend,
+                localSendFiles: assets.compactMap(LocalSendSelection.init(asset:))
+            )
         case .compress:
             compress(assets)
         case .extract, .uninstall, .resetApp:

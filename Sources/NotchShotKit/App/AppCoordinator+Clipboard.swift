@@ -275,7 +275,7 @@ extension AppCoordinator {
     public func openClipboard() { onOpenClipboard?() }
     public func openProductivity(
         tool: ProductivityTool = .notes,
-        localSendFiles: [URL] = []
+        localSendFiles: [LocalSendSelection] = []
     ) {
         ProductivityCenterRouter.shared.route(to: tool, localSendFiles: localSendFiles)
         onOpenProductivity?()

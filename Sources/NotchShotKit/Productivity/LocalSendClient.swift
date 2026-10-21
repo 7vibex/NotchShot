@@ -141,6 +141,38 @@ public struct LocalSendProgress: Equatable, Sendable {
     }
 }
 
+/// A file chosen for LocalSend, pinned to the identity it had when it was
+/// chosen. The device picker, the fingerprint prompt and the receiver's answer
+/// all come before the upload, so a pathname replaced in between is refused
+/// instead of sent.
+public struct LocalSendSelection: Equatable, Sendable {
+    public var url: URL
+    var identity: ExternalFileIdentity
+
+    /// Nil unless the item is a regular file within LocalSend's limit;
+    /// symbolic links are refused.
+    public init?(url: URL) {
+        let source = url.standardizedFileURL
+        guard let identity = SafeAssetFile.identity(
+            at: source,
+            maximumBytes: LocalSendClient.maximumFileBytes
+        ) else { return nil }
+        self.init(url: source, identity: identity)
+    }
+
+    /// A shelf item whose identity was recorded when it entered the shelf.
+    init?(asset: CaptureAsset) {
+        guard let identity = SafeAssetFile.selectionIdentity(of: asset),
+              identity.size <= LocalSendClient.maximumFileBytes else { return nil }
+        self.init(url: asset.url.standardizedFileURL, identity: identity)
+    }
+
+    init(url: URL, identity: ExternalFileIdentity) {
+        self.url = url
+        self.identity = identity
+    }
+}
+
 public actor LocalSendClient {
     public static let shared = LocalSendClient()
     public static let maximumFileBytes: Int64 = 5 * 1_024 * 1_024 * 1_024
@@ -200,11 +232,11 @@ public actor LocalSendClient {
 
     @discardableResult
     public func send(
-        files urls: [URL],
+        files selections: [LocalSendSelection],
         to peer: LocalSendPeer,
         progress: @escaping @Sendable (LocalSendProgress) async -> Void
     ) async throws -> Int {
-        let prepared = try prepareFiles(urls)
+        let prepared = try prepareFiles(selections)
         guard !prepared.isEmpty else { throw LocalSendError.noFilesAccepted }
         // The snapshots are private copies; they leave with this call on every
         // path — success, thrown error, or cancellation.
@@ -334,18 +366,18 @@ public actor LocalSendClient {
         return url
     }
 
-    /// Validates each source and copies it into a private transfer snapshot
-    /// before any network work begins.
+    /// Copies each selected file into a private transfer snapshot before any
+    /// network work begins.
     ///
-    /// The identity captured here is re-checked through an `O_NOFOLLOW`
-    /// descriptor during the copy, so replacing the pathname afterwards cannot
-    /// change the bytes that will be uploaded. The 5 GB per-file limit is
-    /// enforced on both the validation and the copy.
-    func prepareFiles(_ urls: [URL]) throws -> [PreparedFile] {
+    /// The identity pinned at selection is re-checked through an `O_NOFOLLOW`
+    /// descriptor during the copy, so a pathname replaced since then is
+    /// refused, and the bytes uploaded are the snapshot's. The 5 GB per-file
+    /// limit is enforced on both the selection and the copy.
+    func prepareFiles(_ selections: [LocalSendSelection]) throws -> [PreparedFile] {
         var prepared: [PreparedFile] = []
         do {
-            for url in urls.prefix(100) {
-                prepared.append(try prepareFile(url))
+            for selection in selections.prefix(100) {
+                prepared.append(try prepareFile(selection))
             }
         } catch {
             Self.discardSnapshots(prepared)
@@ -354,15 +386,8 @@ public actor LocalSendClient {
         return prepared
     }
 
-    private func prepareFile(_ url: URL) throws -> PreparedFile {
-        let source = url.standardizedFileURL
-        // `lstat`-based: regular file only, symlinks refused, size bounded.
-        guard let identity = SafeAssetFile.identity(
-            at: source,
-            maximumBytes: Self.maximumFileBytes
-        ) else {
-            throw LocalSendError.unsafeFile(source.lastPathComponent)
-        }
+    private func prepareFile(_ selection: LocalSendSelection) throws -> PreparedFile {
+        let source = selection.url.standardizedFileURL
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("notchshot-localsend-\(UUID().uuidString)", isDirectory: true)
         do {
@@ -373,7 +398,7 @@ public actor LocalSendClient {
             let snapshot = directory.appendingPathComponent(source.lastPathComponent)
             try SafeAssetFile.copyVerified(
                 from: source,
-                expectedIdentity: identity,
+                expectedIdentity: selection.identity,
                 maximumBytes: Self.maximumFileBytes,
                 to: snapshot
             )

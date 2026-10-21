@@ -237,13 +237,13 @@ extension AppCoordinator {
             sendViaAirDrop(item.asset)
 
         case .localSend:
-            guard SafeAssetFile.isCurrentAndSafe(item.asset) else {
+            guard let selection = LocalSendSelection(asset: item.asset) else {
                 present(error: NotchShotError.exportFailed(
                     "That file changed or is no longer safely readable"
                 ))
                 return
             }
-            openProductivity(tool: .localSend, localSendFiles: [item.asset.url])
+            openProductivity(tool: .localSend, localSendFiles: [selection])
 
         case .shareLink:
             uploadShareLink(for: item.asset)
