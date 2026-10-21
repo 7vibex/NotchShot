@@ -291,6 +291,22 @@ struct AgentIntegrationTests {
         #expect(AgentTerminalJumper.normalizedTTY("not a tty") == nil)
         #expect(AgentTerminalJumper.normalizedTTY(" ttys002\n") == "/dev/ttys002")
     }
+
+    /// tmux runs on the main actor; a wedged server must cost the budget,
+    /// not hang the notch.
+    @Test func tmuxCommandsGiveUpAtTheDeadline() {
+        let started = Date()
+        #expect(AgentTerminalJumper.run("/bin/sleep", ["10"], until: .now() + 0.3) == nil)
+        #expect(Date().timeIntervalSince(started) < 2)
+
+        #expect(AgentTerminalJumper.run("/bin/echo", ["pane"], until: .now() + 5) == "pane\n")
+        // More than a pipe buffer of output still completes.
+        let long = AgentTerminalJumper.run(
+            "/bin/sh", ["-c", "head -c 300000 /dev/zero | tr '\\0' x"], until: .now() + 5
+        )
+        #expect(long?.count == 300_000)
+        #expect(AgentTerminalJumper.run("/usr/bin/false", [], until: .now() + 5) == nil)
+    }
 }
 
 /// Send to Agent checks a capture before its dialog and uploads it after, so

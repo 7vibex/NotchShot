@@ -199,24 +199,30 @@ enum AgentTerminalJumper {
 
     // MARK: tmux
 
+    /// The whole tmux exchange runs on the main actor, so it shares one short
+    /// budget: a wedged tmux server costs the notch this long, not forever.
+    static let tmuxBudget: TimeInterval = 1.5
+
     /// Switches the attached tmux client to the pane on `tty`, then brings
     /// that client's terminal forward.
     @MainActor
     private static func selectTmuxPane(tty: String) -> Bool {
-        guard isSafeTTY(tty), let tmux = tmuxPath() else { return false }
-        let panes = run(tmux, ["list-panes", "-a", "-F", "#{pane_tty} #{session_name}:#{window_index}.#{pane_index}"])
+        guard isSafeTTY(tty), let tmuxPath = tmuxPath() else { return false }
+        let deadline = DispatchTime.now() + tmuxBudget
+        let tmux = { (arguments: [String]) in run(tmuxPath, arguments, until: deadline) }
+        let panes = tmux(["list-panes", "-a", "-F", "#{pane_tty} #{session_name}:#{window_index}.#{pane_index}"])
         guard let target = panes?
             .split(separator: "\n")
             .first(where: { $0.hasPrefix(tty + " ") })?
             .split(separator: " ", maxSplits: 1).last
             .map(String.init)
         else { return false }
-        _ = run(tmux, ["switch-client", "-t", target])
-        _ = run(tmux, ["select-window", "-t", target])
-        _ = run(tmux, ["select-pane", "-t", target])
+        _ = tmux(["switch-client", "-t", target])
+        _ = tmux(["select-window", "-t", target])
+        _ = tmux(["select-pane", "-t", target])
 
         // The most recently active client is the one the user looks at.
-        if let clientPID = run(tmux, ["list-clients", "-F", "#{client_activity} #{client_pid}"])?
+        if let clientPID = tmux(["list-clients", "-F", "#{client_activity} #{client_pid}"])?
             .split(separator: "\n")
             .sorted(by: >)
             .first?
@@ -236,17 +242,36 @@ enum AgentTerminalJumper {
             .first { FileManager.default.isExecutableFile(atPath: $0) }
     }
 
-    private static func run(_ executable: String, _ arguments: [String]) -> String? {
+    /// Runs a short command, or gives up at `deadline` and kills it. The
+    /// output is read on another queue so a full pipe cannot hold the wait.
+    static func run(_ executable: String, _ arguments: [String], until deadline: DispatchTime) -> String? {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: executable)
         process.arguments = arguments
         let output = Pipe()
         process.standardOutput = output
         process.standardError = FileHandle.nullDevice
+        process.standardInput = FileHandle.nullDevice
+        let exited = DispatchSemaphore(value: 0)
+        process.terminationHandler = { _ in exited.signal() }
         do { try process.run() } catch { return nil }
-        let data = output.fileHandleForReading.readDataToEndOfFile()
-        process.waitUntilExit()
-        guard process.terminationStatus == 0 else { return nil }
+
+        let reader = output.fileHandleForReading
+        let read = DispatchSemaphore(value: 0)
+        nonisolated(unsafe) var data = Data()
+        DispatchQueue.global(qos: .userInitiated).async {
+            data = reader.readDataToEndOfFile()
+            read.signal()
+        }
+        guard exited.wait(timeout: deadline) == .success else {
+            process.terminate()
+            if exited.wait(timeout: .now() + 0.2) != .success {
+                kill(process.processIdentifier, SIGKILL)
+            }
+            return nil
+        }
+        guard read.wait(timeout: deadline) == .success,
+              process.terminationStatus == 0 else { return nil }
         return String(data: data, encoding: .utf8)
     }
 }
