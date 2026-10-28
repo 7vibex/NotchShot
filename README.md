@@ -1,5 +1,9 @@
 # NotchShot
 
+<p align="center">
+  <img src="Resources/AppIcon.png" width="160" alt="NotchShot's coral capture buddy app icon">
+</p>
+
 [![CI](https://github.com/7vibex/NotchShot/actions/workflows/ci.yml/badge.svg)](https://github.com/7vibex/NotchShot/actions/workflows/ci.yml)
 
 [![NotchShot demo video — click to play](Screenshots/notch-demo-video-poster.png)](https://github.com/7vibex/NotchShot/releases/download/demo-assets/notchshot-balanced.mp4)

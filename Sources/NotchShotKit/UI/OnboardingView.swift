@@ -42,7 +42,14 @@ public struct OnboardingView: View {
     public var body: some View {
         VStack(alignment: .leading, spacing: 22) {
             VStack(alignment: .leading, spacing: 7) {
-                Label("Welcome to NotchShot", systemImage: "camera.viewfinder")
+                Label {
+                    Text("Welcome to NotchShot")
+                } icon: {
+                    NotchShotLogoShape()
+                        .fill(.primary, style: FillStyle(eoFill: true))
+                        .frame(width: 34, height: 30)
+                        .accessibilityHidden(true)
+                }
                     .font(.largeTitle.weight(.semibold))
                 Text("Capture, explain, and share from your Mac — with OCR and privacy checks performed locally.")
                     .font(.title3)
