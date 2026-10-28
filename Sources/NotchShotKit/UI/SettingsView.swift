@@ -233,7 +233,7 @@ enum SettingsSection: String, CaseIterable, Identifiable {
     var searchKeywords: [String] {
         switch self {
         case .general:
-            ["launch", "login", "dock", "storage", "folder", "updates", "version"]
+            ["launch", "login", "storage", "folder", "updates", "version"]
         case .capture:
             ["screenshot", "image", "export", "format", "jpeg", "heic", "shelf", "quick actions", "cursor"]
         case .presets:

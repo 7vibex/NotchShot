@@ -389,7 +389,6 @@ public final class Preferences {
     // MARK: App
 
     public var launchesAtLogin = false { didSet { write(launchesAtLogin, .launchAtLogin) } }
-    public var showsDockIcon = false { didSet { write(showsDockIcon, .showsDockIcon) } }
     public var hasCompletedFirstRun = false { didSet { write(hasCompletedFirstRun, .firstRun) } }
     /// A non-sensitive action token used only to resume the first capture after
     /// macOS requires a relaunch for Screen Recording permission.
@@ -558,7 +557,7 @@ public final class Preferences {
         case islandGlass, islandGlassLevel
         case islandAnimationStyle, islandShadowStrength, islandLongPress, privacyIndicators
         case backgroundPreset, annotationColor, annotationLineWidth
-        case launchAtLogin, showsDockIcon, firstRun, pendingFirstCaptureIntent, updateChannel
+        case launchAtLogin, firstRun, pendingFirstCaptureIntent, updateChannel
         case recoveredLegacySystemOSD, adapterCheckBuild
     }
 
@@ -758,7 +757,6 @@ public final class Preferences {
         annotationLineWidth = double(.annotationLineWidth, 4)
 
         launchesAtLogin = bool(.launchAtLogin, false)
-        showsDockIcon = bool(.showsDockIcon, false)
         hasCompletedFirstRun = bool(.firstRun, false)
         pendingFirstCaptureIntent = string(.pendingFirstCaptureIntent).flatMap(CaptureIntent.init)
         hasRecoveredLegacySystemOSD = bool(.recoveredLegacySystemOSD, false)

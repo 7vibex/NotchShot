@@ -66,7 +66,7 @@ public struct OnboardingView: View {
             }
 
             VStack(alignment: .leading, spacing: 10) {
-                Label("Use the notch, the menu-bar camera, or ⇧⌘4.", systemImage: "command")
+                Label("Use the notch, the NotchShot icon in the menu bar, or ⇧⌘4.", systemImage: "command")
                 Label(
                     "macOS asks for Screen Recording access when you take the first capture.",
                     systemImage: "lock.shield"

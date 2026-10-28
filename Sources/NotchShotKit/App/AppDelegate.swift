@@ -7,14 +7,12 @@ import SwiftUI
 /// Application lifecycle: brings up the notch panels, the menu-bar item, global
 /// shortcuts, and the auxiliary windows.
 @MainActor
-public final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
+public final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private let coordinator = AppCoordinator()
     private var windowController: NotchWindowController?
     private var statusItem: NSStatusItem?
-    /// Held rather than assigned to the status item: see `showStatusMenu`.
-    private var statusMenu: NSMenu?
-    private var statusPanel: NSPopover?
+    private var menuBarPanel: MenuBarPanelController?
     private var secureUpdates: SecureUpdateController?
 
     private var settingsWindow: NSWindow?
@@ -46,7 +44,9 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValid
         secureUpdates = SecureUpdateController.shared
         NotchShotAppShortcuts.updateAppShortcutParameters()
 
-        NSApp.setActivationPolicy(Preferences.shared.showsDockIcon ? .regular : .accessory)
+        // NotchShot lives in the menu bar and the notch, never the Dock.
+        // Info.plist already says so; this covers unbundled `swift run`.
+        NSApp.setActivationPolicy(.accessory)
         // Status-item menus only receive key equivalents while open. Auxiliary
         // windows also need an application menu for Settings and safe Quit.
         NSApp.mainMenu = AppCommandMenu.make(
@@ -321,9 +321,11 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValid
         return true
     }
 
+    /// Opening NotchShot again from Finder, Spotlight or Launchpad drops the
+    /// menu from the menu bar, the app's only front door.
     public func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows: Bool) -> Bool {
-        showSettings()
-        return true
+        menuBarPanel?.open()
+        return false
     }
 
     // MARK: Quick Look
@@ -480,181 +482,45 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValid
 
     private func installStatusItem() {
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        item.button?.image = NSImage(
-            systemSymbolName: "camera.viewfinder",
-            accessibilityDescription: "NotchShot"
-        )
-        item.button?.image?.isTemplate = true
-        // Left click opens the quick panel, right click the full menu. The menu
-        // is deliberately not assigned to `item.menu`: doing that makes AppKit
-        // swallow every click to show it, and the panel would never open.
-        item.button?.target = self
-        item.button?.action = #selector(statusItemClicked)
-        item.button?.sendAction(on: [.leftMouseUp, .rightMouseUp])
-        statusMenu = makeMenu()
+        // Keeps the place the user Command-drags it to.
+        item.autosaveName = "NotchShot"
+        guard let button = item.button else { return }
+        button.image = NotchShotLogo.menuBarImage()
+        button.target = self
+        button.action = #selector(statusItemClicked)
+        // Mouse-down, like the system's own menu extras. Either button opens
+        // the same menu; there is no second, longer one behind a right-click.
+        button.sendAction(on: [.leftMouseDown, .rightMouseDown])
         statusItem = item
+        menuBarPanel = MenuBarPanelController(button: button) { [weak self, coordinator] dismiss in
+            AnyView(MenuBarPanelView(
+                coordinator: coordinator,
+                onCheckForUpdates: self?.secureUpdates?.isConfigured == true
+                    ? { [weak self] in self?.secureUpdates?.checkForUpdates(nil) }
+                    : nil,
+                onSummarizeDocument: { [weak self] in self?.summarizeDocument() },
+                onDismiss: dismiss
+            ))
+        }
     }
 
     @objc private func statusItemClicked() {
-        let isRightClick = NSApp.currentEvent?.type == .rightMouseUp
-            || NSApp.currentEvent?.modifierFlags.contains(.control) == true
-        if isRightClick {
-            showStatusMenu()
-        } else {
-            toggleStatusPanel()
-        }
+        menuBarPanel?.toggle()
     }
 
-    private func showStatusMenu() {
-        guard let item = statusItem, let menu = statusMenu else { return }
-        item.menu = menu
-        item.button?.performClick(nil)
-        // Handing the menu back immediately would leave AppKit owning every
-        // future click, so the panel could never open again.
-        DispatchQueue.main.async { [weak item] in item?.menu = nil }
-    }
-
-    private func toggleStatusPanel() {
-        if let popover = statusPanel, popover.isShown {
-            popover.performClose(nil)
-            return
-        }
-        guard let button = statusItem?.button else { return }
-        let popover = statusPanel ?? makeStatusPanel()
-        statusPanel = popover
-        popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
-        // Without this the panel opens behind whatever app is frontmost, which
-        // for a menu-bar utility is always something else.
-        popover.contentViewController?.view.window?.makeKey()
-    }
-
-    private func makeStatusPanel() -> NSPopover {
-        let popover = NSPopover()
-        popover.behavior = .transient
-        popover.animates = true
-        popover.contentViewController = NSHostingController(
-            rootView: MenuBarPanelView(
-                coordinator: coordinator,
-                onDismiss: { [weak self] in self?.statusPanel?.performClose(nil) }
-            )
-        )
-        return popover
-    }
-
-    private func makeMenu() -> NSMenu {
-        let menu = NSMenu()
-
-        for intent in [CaptureIntent.area, .window, .display, .scrolling, .ocr, .previousArea] {
-            let item = NSMenuItem(
-                title: intent.title,
-                action: #selector(captureFromMenu(_:)),
-                keyEquivalent: ""
-            )
-            item.target = self
-            item.representedObject = intent.rawValue
-            item.image = NSImage(systemSymbolName: intent.symbolName, accessibilityDescription: nil)
-            menu.addItem(item)
-        }
-
-        menu.addItem(.separator())
-        add(menu, title: "Start Recording", action: #selector(startRecording))
-        add(menu, title: "Stop Recording", action: #selector(stopRecording))
-
-        menu.addItem(.separator())
-        add(menu, title: "Collect Captures in Stack", action: #selector(toggleStack))
-        add(menu, title: "Add Latest Capture to Stack", action: #selector(addToStack))
-        add(menu, title: "Clear Stack", action: #selector(clearStack))
-
-        menu.addItem(.separator())
-        add(menu, title: "Show Shelf", action: #selector(showShelfFromMenu))
-        add(menu, title: "History…", action: #selector(showHistoryFromMenu))
-        add(menu, title: "Clipboard History…", action: #selector(showClipboardFromMenu))
-        add(menu, title: "Productivity Center…", action: #selector(showProductivityFromMenu))
-        add(menu, title: "Summarize Document…", action: #selector(summarizeDocumentFromMenu))
-        add(menu, title: "Restore Last Capture", action: #selector(restoreLastCapture))
-        add(menu, title: "Unlock All Pinned Captures", action: #selector(unlockPins))
-        add(menu, title: "Close All Pinned Captures", action: #selector(closePins))
-
-        menu.addItem(.separator())
-        add(menu, title: "Settings…", action: #selector(showSettingsFromMenu), keyEquivalent: ",")
-        add(menu, title: "Check for Updates…", action: #selector(checkForUpdates))
-        add(menu, title: "Quit NotchShot", action: #selector(quit), keyEquivalent: "q")
-
-        return menu
-    }
-
-    private func add(_ menu: NSMenu, title: String, action: Selector, keyEquivalent: String = "") {
-        let item = NSMenuItem(title: title, action: action, keyEquivalent: keyEquivalent)
-        item.target = self
-        menu.addItem(item)
-    }
-
-    @objc private func captureFromMenu(_ sender: NSMenuItem) {
-        guard let raw = sender.representedObject as? String,
-              let intent = CaptureIntent(rawValue: raw) else { return }
-        coordinator.capture(intent)
-    }
-
-    @objc private func toggleStack() { coordinator.toggleStackCollecting() }
-    @objc private func addToStack() { coordinator.addLatestToStack() }
-    @objc private func clearStack() { coordinator.stack.clear() }
-    @objc private func startRecording() { coordinator.startRecording() }
-    @objc private func stopRecording() { coordinator.stopRecording() }
-    @objc private func restoreLastCapture() { coordinator.restoreLastDismissed() }
-    @objc private func unlockPins() { FloatingCaptureManager.shared.unlockAll() }
-    @objc private func closePins() { FloatingCaptureManager.shared.closeAll() }
     @objc private func showSettingsFromMenu() { showSettings() }
-    @objc private func showShelfFromMenu() {
-        coordinator.showShelf()
-    }
+    @objc private func quit() { NSApp.terminate(nil) }
 
-    /// Greys out the items that have nothing to act on.
-    ///
-    /// They used to stay enabled and quietly do nothing when there was no
-    /// capture parked — which is indistinguishable from a broken menu item.
-    public func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
-        switch menuItem.action {
-        case #selector(showShelfFromMenu):
-            return coordinator.canShowShelf
-        case #selector(restoreLastCapture):
-            return coordinator.canRestoreDismissed
-        case #selector(addToStack):
-            return coordinator.canShowShelf
-        case #selector(clearStack):
-            return !coordinator.stack.isEmpty
-        case #selector(stopRecording):
-            return coordinator.isRecordingActive
-        case #selector(captureFromMenu(_:)):
-            guard let raw = menuItem.representedObject as? String,
-                  let intent = CaptureIntent(rawValue: raw) else { return true }
-            return intent != .previousArea || coordinator.hasPreviousArea
-        default:
-            return true
-        }
-    }
-
-    @objc private func showHistoryFromMenu() { showHistory() }
-    @objc private func showClipboardFromMenu() { showClipboard() }
-    @objc private func showProductivityFromMenu() { showProductivity() }
-    @objc private func summarizeDocumentFromMenu() {
+    private func summarizeDocument() {
         let panel = NSOpenPanel()
         panel.canChooseFiles = true
         panel.canChooseDirectories = false
         panel.allowsMultipleSelection = false
         panel.message = "Choose a document to summarize locally on this Mac."
+        NSApp.activate(ignoringOtherApps: true)
         guard panel.runModal() == .OK, let url = panel.url else { return }
         coordinator.summarizeDocument(at: url)
     }
-    @objc private func checkForUpdates() {
-        guard secureUpdates?.isConfigured == true else {
-            coordinator.present(error: NotchShotError.exportFailed(
-                "This build has no signed update feed configured"
-            ))
-            return
-        }
-        secureUpdates?.checkForUpdates(nil)
-    }
-    @objc private func quit() { NSApp.terminate(nil) }
 
     // MARK: Windows
 

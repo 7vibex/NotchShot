@@ -304,7 +304,7 @@ extension View {
 
 /// Split out so each command owns its own hover state; a shared `@State` on the
 /// menu would light all three at once.
-private struct CaptureCommandLabel: View {
+struct CaptureCommandLabel: View {
     var title: String
     var systemImage: String
 
@@ -360,7 +360,7 @@ private struct CaptureIntentButton: View {
 /// One tile of the capture row. Record shares the shape and takes the
 /// system's recording red on its glyph only, so the row reads as four
 /// peers rather than three tiles and an alarm.
-private struct CaptureTileLabel: View {
+struct CaptureTileLabel: View {
     var title: String
     var systemImage: String
     var tint: Color = .white

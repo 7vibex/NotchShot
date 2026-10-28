@@ -23,13 +23,6 @@ struct GeneralSettings: View {
                 if let loginItemError {
                     InlineErrorMessage(message: loginItemError)
                 }
-                Toggle("Show icon in the Dock", isOn: Binding(
-                    get: { preferences.showsDockIcon },
-                    set: { newValue in
-                        preferences.showsDockIcon = newValue
-                        NSApp.setActivationPolicy(newValue ? .regular : .accessory)
-                    }
-                ))
                 Toggle("Play a sound when capturing", isOn: $preferences.playsCaptureSound)
                 Toggle("Fly captures into the notch", isOn: $preferences.swoopsCaptureIntoNotch)
             }

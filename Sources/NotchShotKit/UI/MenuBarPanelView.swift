@@ -1,145 +1,525 @@
 import AppKit
 import SwiftUI
 
-/// The panel behind the menu-bar icon.
+/// The glass menu that drops from the menu-bar mascot.
 ///
-/// A plain `NSMenu` listed the same actions, but a list of words in a system
-/// menu is not where anyone looks for "the thing that holds my screenshots".
-/// This is the Control Center shape instead: labelled tiles, live counts, and
-/// the shelf reachable in one click from the same strip as Wi-Fi and battery.
+/// It replaces both the plain popover and the twenty-item right-click menu
+/// that sat behind the old camera icon. What people reach for every day is on
+/// the surface — the four capture tiles the island uses, the places captures
+/// end up, and the three after-capture switches people actually flip. The
+/// rarely used commands are one level down under More, and everything else
+/// stays in Settings.
+///
+/// It is drawn like the island it controls: dark glass, white ink, the
+/// island's own tiles and capsules, hairlines instead of boxes.
 struct MenuBarPanelView: View {
     @Bindable var coordinator: AppCoordinator
+    /// Nil when this build has no signed update feed.
+    var onCheckForUpdates: (() -> Void)?
+    var onSummarizeDocument: () -> Void
+    /// Closes the panel immediately. Every action calls it *before* acting: a
+    /// capture that starts under its own menu photographs the menu.
     var onDismiss: () -> Void
 
-    private var shelfCount: Int { coordinator.shelfItems.count }
+    @Bindable private var preferences = Preferences.shared
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var hasAppeared = false
+
+    static let width: CGFloat = 320
+    /// Concentric with the 16 pt island tiles inside the 10 pt inset.
+    static let cornerRadius: CGFloat = 26
+    static let inset: CGFloat = 10
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
+        VStack(alignment: .leading, spacing: 0) {
+            header
             captureSection
-            Divider().opacity(0.4)
+            MenuBarHairline()
             librarySection
-            Divider().opacity(0.4)
-            footer
+            MenuBarHairline()
+            afterCaptureSection
+            MenuBarHairline()
+            appSection
         }
-        .padding(16)
-        .frame(width: 300)
+        .padding(Self.inset)
+        .frame(width: Self.width)
+        .background(MenuBarGlassBackground(cornerRadius: Self.cornerRadius))
+        .environment(\.colorScheme, .dark)
+        .tint(.accentColor)
+        // Drops out of the menu bar the way the island opens from the notch.
+        .scaleEffect(hasAppeared || reduceMotion ? 1 : 0.94, anchor: .top)
+        .offset(y: hasAppeared || reduceMotion ? 0 : -6)
+        .onAppear {
+            withAnimation(NotchMotion.content(reduceMotion: reduceMotion)) { hasAppeared = true }
+        }
     }
 
-    private var captureSection: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            sectionTitle("Capture")
-            HStack(spacing: 8) {
-                tile("Area", "selection.pin.in.out") {
-                    coordinator.capture(.area, timer: .none)
-                }
-                tile("Window", "macwindow") {
-                    coordinator.capture(.window, timer: .none)
-                }
-                tile("Screen", "display") {
-                    coordinator.capture(.display, timer: .none)
-                }
+    // MARK: Header
+
+    private var header: some View {
+        HStack(spacing: 8) {
+            NotchShotLogoShape()
+                .fill(Color.white, style: FillStyle(eoFill: true))
+                .frame(width: 22, height: 16)
+                .accessibilityHidden(true)
+            Text("NotchShot")
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(.white)
+            Spacer(minLength: 8)
+            if coordinator.isRecordingActive {
+                MenuBarStatusLabel(title: "Recording", tint: IslandSystemColor.red)
+            } else if coordinator.stack.isCollecting {
+                MenuBarStatusLabel(title: "Collecting", tint: .islandInk(NotchIsland.Ink.secondary))
             }
-            HStack(spacing: 8) {
-                tile("Text", "text.viewfinder") {
+        }
+        .padding(.horizontal, 6)
+        .frame(height: 34)
+        .padding(.bottom, 6)
+    }
+
+    // MARK: Capture
+
+    private var captureSection: some View {
+        VStack(spacing: 7) {
+            HStack(spacing: 7) {
+                captureTile(.area)
+                captureTile(.window)
+                captureTile(.display)
+                recordTile
+            }
+            HStack(spacing: 7) {
+                commandButton("Text", systemImage: "text.viewfinder", help: CaptureIntent.ocr.title) {
                     coordinator.capture(.ocr, timer: .none)
                 }
-                tile("Record", "record.circle", tint: .red) {
-                    coordinator.startRecording(mode: Preferences.shared.recordingTargetMode)
+                commandButton("Scrolling", systemImage: CaptureIntent.scrolling.symbolName, help: CaptureIntent.scrolling.title) {
+                    coordinator.capture(.scrolling, timer: .none)
                 }
-                tile("Voice", "waveform.and.mic") {
+                commandButton("Voice", systemImage: "waveform.and.mic", help: "Record a voice note") {
                     coordinator.startVoiceNote()
                 }
             }
         }
+        .padding(.bottom, 4)
     }
 
-    private var librarySection: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            sectionTitle("Library")
-            HStack(spacing: 8) {
-                // The count is the point: it says whether opening the shelf is
-                // worth a click before the click happens.
-                tile(
-                    shelfCount > 0 ? "Shelf · \(shelfCount)" : "Shelf",
-                    "tray.full",
-                    isEnabled: coordinator.canShowShelf
-                ) {
-                    coordinator.showShelf()
-                }
-                tile("History", "clock.arrow.circlepath") {
-                    onDismiss()
-                    coordinator.onOpenHistory?()
-                }
-                tile("Clipboard", "doc.on.clipboard") {
-                    onDismiss()
-                    coordinator.onOpenClipboard?()
-                }
-            }
+    private func captureTile(_ intent: CaptureIntent) -> some View {
+        Button {
+            onDismiss()
+            coordinator.capture(intent, timer: .none)
+        } label: {
+            CaptureTileLabel(title: intent.shortTitle, systemImage: intent.symbolName)
         }
+        .buttonStyle(NotchPressButtonStyle())
+        .help(intent.title)
+        .accessibilityLabel(intent.title)
     }
 
-    private var footer: some View {
-        HStack(spacing: 10) {
-            Button("Productivity Center") {
-                coordinator.openProductivity()
-                onDismiss()
-            }
-            .buttonStyle(.link)
-
-            Spacer(minLength: 8)
-
+    @ViewBuilder
+    private var recordTile: some View {
+        if coordinator.isRecordingActive {
             Button {
-                coordinator.onOpenSettings?()
                 onDismiss()
+                coordinator.stopRecording()
             } label: {
-                Image(systemName: "gearshape")
-                    .font(.system(size: 13, weight: .semibold))
+                CaptureTileLabel(title: "Stop", systemImage: "stop.circle.fill", tint: IslandSystemColor.red)
             }
-            .buttonStyle(.borderless)
-            .help("Settings")
-            .accessibilityLabel("Settings")
+            .buttonStyle(NotchPressButtonStyle())
+            .help("Stop recording")
+            .accessibilityLabel("Stop recording")
+        } else {
+            Button {
+                onDismiss()
+                coordinator.startRecording(mode: preferences.recordingTargetMode)
+            } label: {
+                CaptureTileLabel(title: "Record", systemImage: "record.circle", tint: IslandSystemColor.red)
+            }
+            .buttonStyle(NotchPressButtonStyle())
+            .help("Record the screen")
+            .accessibilityLabel("Record")
         }
-        .font(.system(size: 11))
     }
 
-    private func sectionTitle(_ text: String) -> some View {
-        Text(text.uppercased())
-            .font(.system(size: 9, weight: .bold, design: .rounded))
-            .foregroundStyle(.secondary)
-            .kerning(0.6)
-    }
-
-    private func tile(
+    private func commandButton(
         _ title: String,
-        _ symbol: String,
-        tint: Color = .accentColor,
-        isEnabled: Bool = true,
+        systemImage: String,
+        help: String,
         action: @escaping () -> Void
     ) -> some View {
         Button {
-            // The panel closes first: a capture that starts while its own
-            // popover is still on screen photographs the popover.
             onDismiss()
             action()
         } label: {
-            VStack(spacing: 5) {
-                Image(systemName: symbol)
-                    .font(.system(size: 16, weight: .medium))
-                    .foregroundStyle(isEnabled ? tint : Color.secondary)
-                Text(title)
-                    .font(.system(size: 10, weight: .medium))
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.8)
-            }
-            .frame(maxWidth: .infinity, minHeight: 54)
-            .background(.quaternary.opacity(0.5), in: RoundedRectangle(
-                cornerRadius: 10,
-                style: .continuous
-            ))
-            .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+            CaptureCommandLabel(title: title, systemImage: systemImage)
         }
-        .buttonStyle(.plain)
-        .disabled(!isEnabled)
+        .buttonStyle(NotchPressButtonStyle())
+        .help(help)
+    }
+
+    // MARK: Library
+
+    private var librarySection: some View {
+        VStack(spacing: 0) {
+            MenuBarRow(
+                title: "Shelf",
+                systemImage: "tray.full",
+                detail: coordinator.shelfItems.isEmpty ? "Empty" : "\(coordinator.shelfItems.count)"
+            ) {
+                onDismiss()
+                coordinator.showShelf()
+            }
+            .disabled(!coordinator.canShowShelf)
+
+            MenuBarRow(title: "History", systemImage: "clock.arrow.circlepath") {
+                onDismiss()
+                coordinator.onOpenHistory?()
+            }
+            MenuBarRow(title: "Clipboard", systemImage: "doc.on.clipboard") {
+                onDismiss()
+                coordinator.openClipboard()
+            }
+            MenuBarRow(title: "Productivity", systemImage: "square.grid.2x2") {
+                onDismiss()
+                coordinator.openProductivity()
+            }
+        }
+    }
+
+    // MARK: After capture
+
+    private var afterCaptureSection: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            MenuBarSectionTitle("After Capture")
+            MenuBarSwitchRow(
+                title: "Copy to Clipboard",
+                systemImage: "doc.on.doc",
+                isOn: $preferences.copyToClipboardAfterCapture
+            )
+            MenuBarSwitchRow(
+                title: "Save to \(preferences.outputFolder.lastPathComponent)",
+                systemImage: "folder",
+                isOn: $preferences.saveToDiskAfterCapture
+            )
+            MenuBarSwitchRow(
+                title: "Play Sound",
+                systemImage: "speaker.wave.2",
+                isOn: $preferences.playsCaptureSound
+            )
+        }
+    }
+
+    // MARK: App
+
+    private var appSection: some View {
+        VStack(spacing: 0) {
+            Menu {
+                moreMenuItems
+            } label: {
+                MenuBarRowLabel(title: "More", systemImage: "ellipsis.circle") {
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 10, weight: .bold))
+                        .foregroundStyle(Color.islandInk(NotchIsland.Ink.tertiary))
+                }
+            }
+            .menuStyle(.button)
+            .buttonStyle(MenuBarRowButtonStyle())
+            .menuIndicator(.hidden)
+
+            MenuBarRow(title: "Settings…", systemImage: "gearshape", shortcut: "⌘,") {
+                onDismiss()
+                coordinator.onOpenSettings?()
+            }
+            .keyboardShortcut(",", modifiers: .command)
+
+            MenuBarRow(title: "Quit NotchShot", systemImage: "power", shortcut: "⌘Q") {
+                onDismiss()
+                NSApp.terminate(nil)
+            }
+            .keyboardShortcut("q", modifiers: .command)
+        }
+    }
+
+    /// Commands too occasional for the surface, kept so nothing the old
+    /// right-click menu could do is lost.
+    @ViewBuilder
+    private var moreMenuItems: some View {
+        Section("Capture") {
+            Button {
+                onDismiss()
+                coordinator.capture(.previousArea, timer: .none)
+            } label: {
+                Label(CaptureIntent.previousArea.title, systemImage: CaptureIntent.previousArea.symbolName)
+            }
+            .disabled(!coordinator.hasPreviousArea)
+            Button {
+                onDismiss()
+                coordinator.restoreLastDismissed()
+            } label: {
+                Label("Restore Last Capture", systemImage: "arrow.uturn.backward")
+            }
+            .disabled(!coordinator.canRestoreDismissed)
+        }
+        Section("Stack") {
+            Toggle(isOn: Binding(
+                get: { coordinator.stack.isCollecting },
+                set: { _ in
+                    onDismiss()
+                    coordinator.toggleStackCollecting()
+                }
+            )) {
+                Label("Collect Captures in Stack", systemImage: "square.stack")
+            }
+            Button("Add Latest Capture to Stack") {
+                onDismiss()
+                coordinator.addLatestToStack()
+            }
+            .disabled(!coordinator.canShowShelf)
+            Button("Clear Stack") {
+                onDismiss()
+                coordinator.stack.clear()
+            }
+            .disabled(coordinator.stack.isEmpty)
+        }
+        Section("Pinned Captures") {
+            Button("Unlock All") {
+                onDismiss()
+                FloatingCaptureManager.shared.unlockAll()
+            }
+            Button("Close All") {
+                onDismiss()
+                FloatingCaptureManager.shared.closeAll()
+            }
+        }
+        Divider()
+        Button {
+            onDismiss()
+            onSummarizeDocument()
+        } label: {
+            Label("Summarize Document…", systemImage: "doc.text.magnifyingglass")
+        }
+        if let onCheckForUpdates {
+            Button {
+                onDismiss()
+                onCheckForUpdates()
+            } label: {
+                Label("Check for Updates…", systemImage: "arrow.triangle.2.circlepath")
+            }
+        }
+    }
+}
+
+// MARK: - Surface
+
+/// The island's black-into-glass, as a menu: native Liquid Glass darkened
+/// most at the top, where the panel meets the menu bar, so white ink reads
+/// over any window behind it. Reduce Transparency and Increase Contrast get a
+/// solid surface of the same shape.
+private struct MenuBarGlassBackground: View {
+    var cornerRadius: CGFloat
+
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+    @Environment(\.colorSchemeContrast) private var colorSchemeContrast
+
+    var body: some View {
+        let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+        if NotchShotDesignSystem.usesLiquidGlass(
+            reduceTransparency: reduceTransparency,
+            increaseContrast: colorSchemeContrast == .increased
+        ) {
+            ZStack {
+                Color.clear
+                    .glassEffect(.regular.tint(.black.opacity(0.2)), in: shape)
+                shape.fill(LinearGradient(
+                    colors: [.black.opacity(0.62), .black.opacity(0.42)],
+                    startPoint: .top,
+                    endPoint: .bottom
+                ))
+                shape.strokeBorder(
+                    LinearGradient(
+                        colors: [.white.opacity(0.2), .white.opacity(0.06)],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    ),
+                    lineWidth: 1
+                )
+            }
+        } else {
+            shape.fill(Color(white: 0.08))
+                .overlay(shape.strokeBorder(Color.islandInk(0.24), lineWidth: 1))
+        }
+    }
+}
+
+private struct MenuBarHairline: View {
+    var body: some View {
+        Rectangle()
+            .fill(Color.islandInk(NotchIsland.Ink.hairline))
+            .frame(height: 1)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 6)
+            .accessibilityHidden(true)
+    }
+}
+
+private struct MenuBarSectionTitle: View {
+    var title: String
+
+    init(_ title: String) { self.title = title }
+
+    var body: some View {
+        Text(title)
+            .font(.system(size: 11, weight: .semibold))
+            .foregroundStyle(Color.islandInk(NotchIsland.Ink.tertiary))
+            .padding(.horizontal, 10)
+            .padding(.top, 2)
+            .padding(.bottom, 4)
+            .accessibilityAddTraits(.isHeader)
+    }
+}
+
+private struct MenuBarStatusLabel: View {
+    var title: String
+    var tint: Color
+
+    var body: some View {
+        HStack(spacing: 5) {
+            Circle().fill(tint).frame(width: 6, height: 6)
+            Text(title)
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(tint)
+        }
+        .accessibilityElement(children: .combine)
+    }
+}
+
+// MARK: - Rows
+
+/// Icon, title, and an optional trailing detail or shortcut, the way a menu
+/// item reads, on the island's ink ladder.
+private struct MenuBarRowLabel<Trailing: View>: View {
+    var title: String
+    var systemImage: String
+    @ViewBuilder var trailing: () -> Trailing
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Image(systemName: systemImage)
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(Color.islandInk(NotchIsland.Ink.secondary))
+                .frame(width: 18)
+                .accessibilityHidden(true)
+            Text(title)
+                .font(.system(size: 13))
+                .foregroundStyle(.white)
+                .lineLimit(1)
+            Spacer(minLength: 8)
+            trailing()
+        }
+    }
+}
+
+private struct MenuBarRow: View {
+    var title: String
+    var systemImage: String
+    var detail: String?
+    var shortcut: String?
+    var action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            MenuBarRowLabel(title: title, systemImage: systemImage) {
+                if let detail {
+                    Text(detail)
+                        .font(.system(size: 12))
+                        .foregroundStyle(Color.islandInk(NotchIsland.Ink.tertiary))
+                } else if let shortcut {
+                    Text(shortcut)
+                        .font(.system(size: 12))
+                        .foregroundStyle(Color.islandInk(NotchIsland.Ink.tertiary))
+                        .accessibilityHidden(true)
+                }
+            }
+        }
+        .buttonStyle(MenuBarRowButtonStyle())
+        .accessibilityLabel(detail.map { "\(title), \($0)" } ?? title)
+    }
+}
+
+/// The row's highlight follows the pointer like a system menu's selection,
+/// as a rounded fill on the island's surface ladder.
+private struct MenuBarRowButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        MenuBarRowHighlight(isPressed: configuration.isPressed) {
+            configuration.label
+        }
+    }
+}
+
+private struct MenuBarRowHighlight<Content: View>: View {
+    var isPressed: Bool
+    @ViewBuilder var content: () -> Content
+
+    @Environment(\.isEnabled) private var isEnabled
+    @State private var isHovered = false
+
+    private var fill: Double {
+        guard isEnabled else { return 0 }
+        if isPressed { return NotchIsland.Surface.selected }
+        return isHovered ? NotchIsland.Surface.hover : 0
+    }
+
+    var body: some View {
+        let shape = RoundedRectangle(cornerRadius: NotchIsland.Radius.control, style: .continuous)
+        content()
+            .padding(.horizontal, 10)
+            .frame(maxWidth: .infinity, minHeight: 32, alignment: .leading)
+            .background(shape.fill(Color.islandInk(fill)))
+            .contentShape(shape)
+            .opacity(isEnabled ? 1 : 0.4)
+            .onHover { isHovered = $0 }
+    }
+}
+
+/// A setting that applies the moment it is flipped; the whole row is the
+/// hit target, not only the switch.
+private struct MenuBarSwitchRow: View {
+    var title: String
+    var systemImage: String
+    @Binding var isOn: Bool
+
+    var body: some View {
+        MenuBarRowHighlight(isPressed: false) {
+            MenuBarRowLabel(title: title, systemImage: systemImage) {
+                MenuBarSwitch(isOn: isOn)
+            }
+        }
+        .onTapGesture { isOn.toggle() }
+        .accessibilityElement(children: .ignore)
         .accessibilityLabel(title)
+        .accessibilityValue(isOn ? "On" : "Off")
+        .accessibilityAddTraits(.isToggle)
+        .accessibilityAction { isOn.toggle() }
+    }
+}
+
+/// Drawn rather than a system switch: an `NSSwitch` in a panel whose app is
+/// not active draws its inactive grey, and on and off then look alike. It
+/// takes no clicks of its own; the row toggles.
+private struct MenuBarSwitch: View {
+    var isOn: Bool
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        Capsule()
+            .fill(isOn ? Color.accentColor : Color.islandInk(NotchIsland.Ink.recessed))
+            .frame(width: 30, height: 18)
+            .overlay(alignment: isOn ? .trailing : .leading) {
+                Circle()
+                    .fill(.white)
+                    .shadow(color: .black.opacity(0.25), radius: 1, y: 0.5)
+                    .padding(2)
+            }
+            .animation(NotchShotMotion.selection(reduceMotion: reduceMotion), value: isOn)
+            .accessibilityHidden(true)
     }
 }
