@@ -271,9 +271,10 @@ extension AppCoordinator {
             let recipe = recipeOverride ?? CaptureRecipeStore.shared.activeRecipe
             let format = recipe.imageFormat ?? Preferences.shared.imageFormat
             let quality = Preferences.shared.jpegQuality
-            let prepared = try await CaptureRecipeRenderer.prepare(
+            let preparedExport = try await CaptureRecipeRenderer.prepareForExport(
                 image, recipe: recipe, format: format, quality: quality
             )
+            let prepared = preparedExport.image
             guard !Task.isCancelled, operationID.map(isCurrentCapture) ?? true else { return }
             let asset = try await persist(
                 prepared,
@@ -282,7 +283,8 @@ extension AppCoordinator {
                 recipe: recipe,
                 clipboardOnly: clipboardOnly,
                 encodingFormat: format,
-                encodingQuality: quality
+                encodingQuality: quality,
+                preparedExport: preparedExport
             )
             guard operationID.map(isCurrentCapture) ?? true else {
                 removeCancelledArtifactIfOwned(asset)
@@ -409,7 +411,8 @@ extension AppCoordinator {
         recipe: CaptureRecipe? = nil,
         clipboardOnly: Bool = false,
         encodingFormat: ImageFormat? = nil,
-        encodingQuality: Double? = nil
+        encodingQuality: Double? = nil,
+        preparedExport: PreparedCaptureExport? = nil
     ) async throws -> CaptureAsset {
         let preferences = Preferences.shared
         let recipe = recipe ?? CaptureRecipe.all[0]
@@ -455,12 +458,17 @@ extension AppCoordinator {
                 ownership = .managedTemporary
             }
         }
-        let written = try await ImageExport.write(
-            image,
-            to: url,
-            format: format,
-            quality: encodingQuality ?? preferences.jpegQuality
-        )
+        let written: ImageFormat
+        if let preparedExport {
+            written = try await preparedExport.write(to: url)
+        } else {
+            written = try await ImageExport.write(
+                image,
+                to: url,
+                format: format,
+                quality: encodingQuality ?? preferences.jpegQuality
+            )
+        }
 
         // If HEIC fell back to PNG the extension must follow, or Finder and
         // Preview will disagree about the file.

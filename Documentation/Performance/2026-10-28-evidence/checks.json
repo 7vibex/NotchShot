@@ -1,0 +1,62 @@
+{
+  "final_candidate": "capture-export-candidate-v2",
+  "release_benchmark_build": "passed: candidate-v2-build.log",
+  "final_app_link": "passed: candidate-v2-app-build.log",
+  "unit_tests": {
+    "status": "passed",
+    "tests": 1157,
+    "suites": 192,
+    "duration_seconds": 9.873,
+    "excluded": "PasteboardRaceTests writes to the system general clipboard; excluded to preserve user data",
+    "focused_export_tests": "5 tests / 1 suite, including PNG and JPEG parameter cases, passed before and within final full suite"
+  },
+  "benchmark_validation": {
+    "final_timed_outputs": 360,
+    "matching_output_fingerprints": true,
+    "completed_journals": 10,
+    "coverage_runs": 18,
+    "coverage_groups": 106,
+    "coverage_status": "all passed; v1 survey, unchanged component sources in v2"
+  },
+  "hygiene": "passed",
+  "diff_whitespace": "passed",
+  "independent_review": {
+    "mode": "read-only High review of v1 production path, then only the changed v2 condition and data flow",
+    "result": "no actionable findings",
+    "reviewer_executed_checks": false,
+    "scope": "Four production files; final production hashes match candidate-manifest-v2"
+  },
+  "runtime": {
+    "state": "screen_locked",
+    "console_screen_is_locked": true,
+    "baseline_initial": "passed: 640x400 screenshot and 1.73 second playable recording",
+    "candidate_after_packaging_repair": "preflight granted; ScreenCaptureKit returned no displays",
+    "installed_app_same_time_control": "preflight granted; ScreenCaptureKit returned no displays",
+    "proof": "Both binaries share the current host-state blocker; candidate live capture/recording success is unverified. No permission change, unlock, logout, restart or installed-app replacement was performed.",
+    "signed_copy_candidate": "v1, before the final retention narrowing"
+  },
+  "signature": {
+    "bundle_identifier": "com.notchshot.app",
+    "signature_verified": true,
+    "preserved_installed_signing_identity": true,
+    "main_binary_sha256": "3430a114a66aab6700c2e87f9f4ea082979110fb6d0cca6889ad5cfda044eaac",
+    "scope": "Local validation copy with new main executable. Existing bundled metadata/frameworks/helpers retained; not a standard release-package build. Installed app not replaced.",
+    "normal_app_framework_rpath_added": true,
+    "candidate": "v1 local validation copy; final v2 app link also passed"
+  },
+  "initial_tooling_failures": [
+    "Selected Xcode license gate; no license accepted or settings changed",
+    "CLT compiler lacked SwiftUI macro plugin; mixing Swift 6.4 plugin with CLT 6.3.3 failed the minimal probe",
+    "Explicit Swift 6.4 compiler/SDK/plugin route passed builds; testing additionally needed its matching TestingMacros plugin and framework paths",
+    "Local validation copy initially lacked app framework rpath; repaired using the same rpath as Scripts/build_app.sh, then strict signature verification passed"
+  ],
+  "invalid_fixture_run": "Original 88 KB resizing PNG ceiling failed the unchanged bounded fitter. No run_end; excluded. The accepted fixture uses 10% of source PNG bytes and completed before production changes.",
+  "unexecuted": [
+    "Live final candidate screenshot, recording and interactive frame pacing while locked",
+    "Actual cold launch through usable UI",
+    "Controlled energy/battery/thermal/GPU measurements",
+    "Long-session retained-memory/leak analysis and high-entropy/very-large capture cohorts",
+    "Real uploads, provider traffic, external-device transfers, multi-display and permission edge cases",
+    "True HEIC encoder failure (the fallback unit test supplies accepted PNG bytes) and mid-write cancellation UI scenarios"
+  ]
+}

@@ -59,6 +59,22 @@ public enum SmartExportService {
         dpiScale: CGFloat
     ) throws -> CGImage {
         guard maximumBytes > 0 else { return image }
+        return try renderToFitEncoded(
+            image, maximumBytes: maximumBytes, format: format, quality: quality, dpiScale: dpiScale
+        ).image
+    }
+
+    /// Keeps the accepted bytes with their pixels so capture persistence does
+    /// not repeat the final encode. The fitting algorithm and attempt cap match
+    /// the image-only API above.
+    static func renderToFitEncoded(
+        _ image: CGImage,
+        maximumBytes: Int,
+        format: ImageFormat,
+        quality: Double,
+        dpiScale: CGFloat
+    ) throws -> (image: CGImage, data: Data, format: ImageFormat) {
+        precondition(maximumBytes > 0)
         var candidate = image
         for _ in 0 ..< 8 {
             try Task.checkCancellation()
@@ -67,9 +83,11 @@ public enum SmartExportService {
                 format: format,
                 quality: quality,
                 dpiScale: dpiScale
-            ).data
-            guard encoded.count > maximumBytes else { return candidate }
-            let ratio = sqrt(Double(maximumBytes) / Double(max(encoded.count, 1))) * 0.94
+            )
+            guard encoded.data.count > maximumBytes else {
+                return (candidate, encoded.data, encoded.format)
+            }
+            let ratio = sqrt(Double(maximumBytes) / Double(max(encoded.data.count, 1))) * 0.94
             let scale = min(max(ratio, 0.35), 0.92)
             let size = CGSize(
                 width: max(1, (CGFloat(candidate.width) * scale).rounded(.down)),
@@ -78,18 +96,18 @@ public enum SmartExportService {
             candidate = try render(candidate, to: size)
         }
         try Task.checkCancellation()
-        let finalBytes = try ImageExport.encode(
+        let finalEncoding = try ImageExport.encode(
             candidate,
             format: format,
             quality: quality,
             dpiScale: dpiScale
-        ).data.count
-        guard finalBytes <= maximumBytes else {
+        )
+        guard finalEncoding.data.count <= maximumBytes else {
             throw NotchShotError.exportFailed(
                 "Could not fit this image below \(ByteCountFormatter.string(fromByteCount: Int64(maximumBytes), countStyle: .file))"
             )
         }
-        return candidate
+        return (candidate, finalEncoding.data, finalEncoding.format)
     }
 
     public static func plan(

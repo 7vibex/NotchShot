@@ -1,0 +1,993 @@
+{
+  "environment": {
+    "hardware": "Apple M5, 16 GiB, 10 logical CPUs",
+    "os": "macOS 26.7.2 (25G332)",
+    "toolchain": "Apple Swift 6.4 (swiftlang-6.4.0.34.1), macOS 27.0 SDK, target macOS 26",
+    "fixture": "Warm 3456x2234 deterministic screenshot, seed 42, scale 2; PNG 176302 bytes; no personal image data",
+    "sampling": "Five fresh-process pairs, alternating order; 2 warmups + 9 timed iterations per workload per run",
+    "primary_workload": "bounded-png-fits"
+  },
+  "campaigns": [
+    {
+      "id": "provisional-v1",
+      "decision": "Excluded from the decision: compiler activity at a recorded start and noisy host load",
+      "manifest": {
+        "binary_sha256": {
+          "baseline": "9e0cf4017fe4d49b805ef1edf3fa7366dec555acf430f68480c2c1ccedff83f4",
+          "candidate": "dd1007e535e82c7b3012e09cbaf3a058817decc518c74e2019d5b857275b682b"
+        },
+        "runs": [
+          {
+            "pair": 1,
+            "variant": "baseline",
+            "started_unix": 1793219251.951665,
+            "load": {
+              "compiler_count": 0,
+              "compiler_cpu_percent": 0
+            },
+            "medians_ms": {
+              "bounded-jpeg-resize": 90.215417,
+              "bounded-png-fits": 170.55025,
+              "bounded-png-resize": 109.086666,
+              "standard-png": 124.46775
+            },
+            "main_actor_medians_ms": {
+              "bounded-jpeg-resize": 0.0165,
+              "bounded-png-fits": 0.019417,
+              "bounded-png-resize": 0.01925,
+              "standard-png": 0.028125
+            },
+            "control_median_ms": 8.599916,
+            "peak_rss_bytes": 316817408,
+            "process_user_seconds": 5.51,
+            "process_system_seconds": 1.48
+          },
+          {
+            "pair": 1,
+            "variant": "candidate",
+            "started_unix": 1793219259.9434419,
+            "load": {
+              "compiler_count": 1,
+              "compiler_cpu_percent": 98.5
+            },
+            "medians_ms": {
+              "bounded-jpeg-resize": 152.989916,
+              "bounded-png-fits": 101.678459,
+              "bounded-png-resize": 170.654041,
+              "standard-png": 100.634708
+            },
+            "main_actor_medians_ms": {
+              "bounded-jpeg-resize": 0.02425,
+              "bounded-png-fits": 0.023375,
+              "bounded-png-resize": 0.027542,
+              "standard-png": 0.023333
+            },
+            "control_median_ms": 12.458625,
+            "peak_rss_bytes": 245628928,
+            "process_user_seconds": 5.16,
+            "process_system_seconds": 0.92
+          },
+          {
+            "pair": 2,
+            "variant": "candidate",
+            "started_unix": 1793219269.102369,
+            "load": {
+              "compiler_count": 0,
+              "compiler_cpu_percent": 0
+            },
+            "medians_ms": {
+              "bounded-jpeg-resize": 145.331833,
+              "bounded-png-fits": 105.35375,
+              "bounded-png-resize": 138.762459,
+              "standard-png": 106.598584
+            },
+            "main_actor_medians_ms": {
+              "bounded-jpeg-resize": 0.029541,
+              "bounded-png-fits": 0.026417,
+              "bounded-png-resize": 0.027042,
+              "standard-png": 0.023166
+            },
+            "control_median_ms": 15.312875,
+            "peak_rss_bytes": 217464832,
+            "process_user_seconds": 5.38,
+            "process_system_seconds": 0.96
+          },
+          {
+            "pair": 2,
+            "variant": "baseline",
+            "started_unix": 1793219277.358795,
+            "load": {
+              "compiler_count": 0,
+              "compiler_cpu_percent": 0
+            },
+            "medians_ms": {
+              "bounded-jpeg-resize": 179.07925,
+              "bounded-png-fits": 360.538667,
+              "bounded-png-resize": 236.494791,
+              "standard-png": 121.725167
+            },
+            "main_actor_medians_ms": {
+              "bounded-jpeg-resize": 0.030625,
+              "bounded-png-fits": 0.03,
+              "bounded-png-resize": 0.027083,
+              "standard-png": 0.02875
+            },
+            "control_median_ms": 31.057083,
+            "peak_rss_bytes": 247775232,
+            "process_user_seconds": 6.91,
+            "process_system_seconds": 1.26
+          },
+          {
+            "pair": 3,
+            "variant": "baseline",
+            "started_unix": 1793219291.877766,
+            "load": {
+              "compiler_count": 0,
+              "compiler_cpu_percent": 0
+            },
+            "medians_ms": {
+              "bounded-jpeg-resize": 196.054083,
+              "bounded-png-fits": 330.054417,
+              "bounded-png-resize": 259.184666,
+              "standard-png": 327.516875
+            },
+            "main_actor_medians_ms": {
+              "bounded-jpeg-resize": 0.032667,
+              "bounded-png-fits": 0.029916,
+              "bounded-png-resize": 0.034333,
+              "standard-png": 0.037125
+            },
+            "control_median_ms": 15.163542,
+            "peak_rss_bytes": 281837568,
+            "process_user_seconds": 6.83,
+            "process_system_seconds": 1.41
+          },
+          {
+            "pair": 3,
+            "variant": "candidate",
+            "started_unix": 1793219310.2923598,
+            "load": {
+              "compiler_count": 0,
+              "compiler_cpu_percent": 0
+            },
+            "medians_ms": {
+              "bounded-jpeg-resize": 155.876208,
+              "bounded-png-fits": 138.0585,
+              "bounded-png-resize": 139.105458,
+              "standard-png": 115.533042
+            },
+            "main_actor_medians_ms": {
+              "bounded-jpeg-resize": 0.029958,
+              "bounded-png-fits": 0.027542,
+              "bounded-png-resize": 0.026583,
+              "standard-png": 0.027083
+            },
+            "control_median_ms": 13.615874999999999,
+            "peak_rss_bytes": 244219904,
+            "process_user_seconds": 5.38,
+            "process_system_seconds": 1.08
+          },
+          {
+            "pair": 4,
+            "variant": "candidate",
+            "started_unix": 1793219319.215894,
+            "load": {
+              "compiler_count": 0,
+              "compiler_cpu_percent": 0
+            },
+            "medians_ms": {
+              "bounded-jpeg-resize": 187.094375,
+              "bounded-png-fits": 119.156917,
+              "bounded-png-resize": 156.512958,
+              "standard-png": 123.54975
+            },
+            "main_actor_medians_ms": {
+              "bounded-jpeg-resize": 0.031917,
+              "bounded-png-fits": 0.025416,
+              "bounded-png-resize": 0.027167,
+              "standard-png": 0.0265
+            },
+            "control_median_ms": 12.14925,
+            "peak_rss_bytes": 227966976,
+            "process_user_seconds": 5.47,
+            "process_system_seconds": 1.12
+          },
+          {
+            "pair": 4,
+            "variant": "baseline",
+            "started_unix": 1793219328.045443,
+            "load": {
+              "compiler_count": 1,
+              "compiler_cpu_percent": 82.6
+            },
+            "medians_ms": {
+              "bounded-jpeg-resize": 135.999792,
+              "bounded-png-fits": 211.617709,
+              "bounded-png-resize": 159.962791,
+              "standard-png": 94.456666
+            },
+            "main_actor_medians_ms": {
+              "bounded-jpeg-resize": 0.027334,
+              "bounded-png-fits": 0.028667,
+              "bounded-png-resize": 0.028792,
+              "standard-png": 0.020833
+            },
+            "control_median_ms": 12.294625,
+            "peak_rss_bytes": 316227584,
+            "process_user_seconds": 6.42,
+            "process_system_seconds": 1.07
+          },
+          {
+            "pair": 5,
+            "variant": "baseline",
+            "started_unix": 1793219338.371732,
+            "load": {
+              "compiler_count": 1,
+              "compiler_cpu_percent": 92.6
+            },
+            "medians_ms": {
+              "bounded-jpeg-resize": 149.960209,
+              "bounded-png-fits": 280.918916,
+              "bounded-png-resize": 261.687125,
+              "standard-png": 140.280542
+            },
+            "main_actor_medians_ms": {
+              "bounded-jpeg-resize": 0.02775,
+              "bounded-png-fits": 0.028166,
+              "bounded-png-resize": 0.031208,
+              "standard-png": 0.023958
+            },
+            "control_median_ms": 111.23425,
+            "peak_rss_bytes": 224280576,
+            "process_user_seconds": 6.8,
+            "process_system_seconds": 1.21
+          },
+          {
+            "pair": 5,
+            "variant": "candidate",
+            "started_unix": 1793219353.0451798,
+            "load": {
+              "compiler_count": 2,
+              "compiler_cpu_percent": 58.4
+            },
+            "medians_ms": {
+              "bounded-jpeg-resize": 212.262167,
+              "bounded-png-fits": 208.105083,
+              "bounded-png-resize": 285.047333,
+              "standard-png": 154.543875
+            },
+            "main_actor_medians_ms": {
+              "bounded-jpeg-resize": 0.032417,
+              "bounded-png-fits": 0.028583,
+              "bounded-png-resize": 0.028167,
+              "standard-png": 0.028625
+            },
+            "control_median_ms": 17.015417000000003,
+            "peak_rss_bytes": 135856128,
+            "process_user_seconds": 5.8,
+            "process_system_seconds": 1.23
+          }
+        ]
+      },
+      "summary": {
+        "bounded-jpeg-resize": {
+          "baseline_ms": 149.960209,
+          "candidate_ms": 155.876208,
+          "change_percent": 3.945045848795803,
+          "baseline_range_ms": [
+            90.215417,
+            196.054083
+          ],
+          "candidate_range_ms": [
+            145.331833,
+            212.262167
+          ]
+        },
+        "bounded-png-fits": {
+          "baseline_ms": 280.918916,
+          "candidate_ms": 119.156917,
+          "change_percent": -57.583163605828524,
+          "baseline_range_ms": [
+            170.55025,
+            360.538667
+          ],
+          "candidate_range_ms": [
+            101.678459,
+            208.105083
+          ]
+        },
+        "bounded-png-resize": {
+          "baseline_ms": 236.494791,
+          "candidate_ms": 156.512958,
+          "change_percent": -33.81970176247984,
+          "baseline_range_ms": [
+            109.086666,
+            261.687125
+          ],
+          "candidate_range_ms": [
+            138.762459,
+            285.047333
+          ]
+        },
+        "standard-png": {
+          "baseline_ms": 124.46775,
+          "candidate_ms": 115.533042,
+          "change_percent": -7.17833173653416,
+          "baseline_range_ms": [
+            94.456666,
+            327.516875
+          ],
+          "candidate_range_ms": [
+            100.634708,
+            154.543875
+          ]
+        }
+      }
+    },
+    {
+      "id": "quiet-v1",
+      "decision": "Superseded: resized PNG +9.3%; no gain established for resized output",
+      "manifest": {
+        "binary_sha256": {
+          "baseline": "9e0cf4017fe4d49b805ef1edf3fa7366dec555acf430f68480c2c1ccedff83f4",
+          "candidate": "dd1007e535e82c7b3012e09cbaf3a058817decc518c74e2019d5b857275b682b"
+        },
+        "runs": [
+          {
+            "pair": 1,
+            "variant": "baseline",
+            "started_unix": 1793220253.1141272,
+            "load": {
+              "compiler_count": 0,
+              "compiler_cpu_percent": 0
+            },
+            "medians_ms": {
+              "bounded-jpeg-resize": 49.950875,
+              "bounded-png-fits": 77.728209,
+              "bounded-png-resize": 49.109167,
+              "standard-png": 43.493625
+            },
+            "main_actor_medians_ms": {
+              "bounded-jpeg-resize": 0.008209,
+              "bounded-png-fits": 0.008916,
+              "bounded-png-resize": 0.007042,
+              "standard-png": 0.008208
+            },
+            "control_median_ms": 5.709708,
+            "peak_rss_bytes": 317669376,
+            "process_user_seconds": 2.53,
+            "process_system_seconds": 0.33
+          },
+          {
+            "pair": 1,
+            "variant": "candidate",
+            "started_unix": 1793220256.424808,
+            "load": {
+              "compiler_count": 0,
+              "compiler_cpu_percent": 0
+            },
+            "medians_ms": {
+              "bounded-jpeg-resize": 49.22025,
+              "bounded-png-fits": 40.227,
+              "bounded-png-resize": 53.657625,
+              "standard-png": 40.061375
+            },
+            "main_actor_medians_ms": {
+              "bounded-jpeg-resize": 0.0095,
+              "bounded-png-fits": 0.006959,
+              "bounded-png-resize": 0.008125,
+              "standard-png": 0.006958
+            },
+            "control_median_ms": 6.228583,
+            "peak_rss_bytes": 318144512,
+            "process_user_seconds": 2.14,
+            "process_system_seconds": 0.32
+          },
+          {
+            "pair": 2,
+            "variant": "candidate",
+            "started_unix": 1793220259.391202,
+            "load": {
+              "compiler_count": 0,
+              "compiler_cpu_percent": 0
+            },
+            "medians_ms": {
+              "bounded-jpeg-resize": 47.978583,
+              "bounded-png-fits": 46.02425,
+              "bounded-png-resize": 59.886958,
+              "standard-png": 43.608417
+            },
+            "main_actor_medians_ms": {
+              "bounded-jpeg-resize": 0.008708,
+              "bounded-png-fits": 0.011083,
+              "bounded-png-resize": 0.010333,
+              "standard-png": 0.008125
+            },
+            "control_median_ms": 6.1972499999999995,
+            "peak_rss_bytes": 316882944,
+            "process_user_seconds": 2.31,
+            "process_system_seconds": 0.36
+          },
+          {
+            "pair": 2,
+            "variant": "baseline",
+            "started_unix": 1793220262.545092,
+            "load": {
+              "compiler_count": 0,
+              "compiler_cpu_percent": 0
+            },
+            "medians_ms": {
+              "bounded-jpeg-resize": 50.288334,
+              "bounded-png-fits": 74.814,
+              "bounded-png-resize": 52.600083,
+              "standard-png": 40.164792
+            },
+            "main_actor_medians_ms": {
+              "bounded-jpeg-resize": 0.008541,
+              "bounded-png-fits": 0.007792,
+              "bounded-png-resize": 0.008333,
+              "standard-png": 0.007833
+            },
+            "control_median_ms": 6.226375,
+            "peak_rss_bytes": 316325888,
+            "process_user_seconds": 2.52,
+            "process_system_seconds": 0.3
+          },
+          {
+            "pair": 3,
+            "variant": "baseline",
+            "started_unix": 1793220265.834031,
+            "load": {
+              "compiler_count": 0,
+              "compiler_cpu_percent": 0
+            },
+            "medians_ms": {
+              "bounded-jpeg-resize": 50.298709,
+              "bounded-png-fits": 74.838875,
+              "bounded-png-resize": 52.075,
+              "standard-png": 39.714542
+            },
+            "main_actor_medians_ms": {
+              "bounded-jpeg-resize": 0.008917,
+              "bounded-png-fits": 0.00675,
+              "bounded-png-resize": 0.007667,
+              "standard-png": 0.007375
+            },
+            "control_median_ms": 6.006291,
+            "peak_rss_bytes": 316309504,
+            "process_user_seconds": 2.51,
+            "process_system_seconds": 0.29
+          },
+          {
+            "pair": 3,
+            "variant": "candidate",
+            "started_unix": 1793220269.100621,
+            "load": {
+              "compiler_count": 0,
+              "compiler_cpu_percent": 0
+            },
+            "medians_ms": {
+              "bounded-jpeg-resize": 48.079667,
+              "bounded-png-fits": 40.406208,
+              "bounded-png-resize": 53.551458,
+              "standard-png": 41.634625
+            },
+            "main_actor_medians_ms": {
+              "bounded-jpeg-resize": 0.010709,
+              "bounded-png-fits": 0.00675,
+              "bounded-png-resize": 0.008167,
+              "standard-png": 0.007583
+            },
+            "control_median_ms": 5.9985,
+            "peak_rss_bytes": 316391424,
+            "process_user_seconds": 2.15,
+            "process_system_seconds": 0.31
+          },
+          {
+            "pair": 4,
+            "variant": "candidate",
+            "started_unix": 1793220272.014966,
+            "load": {
+              "compiler_count": 0,
+              "compiler_cpu_percent": 0
+            },
+            "medians_ms": {
+              "bounded-jpeg-resize": 44.483917,
+              "bounded-png-fits": 40.156,
+              "bounded-png-resize": 51.150458,
+              "standard-png": 39.866
+            },
+            "main_actor_medians_ms": {
+              "bounded-jpeg-resize": 0.007667,
+              "bounded-png-fits": 0.00575,
+              "bounded-png-resize": 0.00725,
+              "standard-png": 0.006541
+            },
+            "control_median_ms": 5.6162920000000005,
+            "peak_rss_bytes": 316407808,
+            "process_user_seconds": 2.07,
+            "process_system_seconds": 0.27
+          },
+          {
+            "pair": 4,
+            "variant": "baseline",
+            "started_unix": 1793220274.733709,
+            "load": {
+              "compiler_count": 0,
+              "compiler_cpu_percent": 0
+            },
+            "medians_ms": {
+              "bounded-jpeg-resize": 46.449833,
+              "bounded-png-fits": 70.387666,
+              "bounded-png-resize": 48.131166,
+              "standard-png": 37.6305
+            },
+            "main_actor_medians_ms": {
+              "bounded-jpeg-resize": 0.00775,
+              "bounded-png-fits": 0.008,
+              "bounded-png-resize": 0.007125,
+              "standard-png": 0.0075
+            },
+            "control_median_ms": 5.606208,
+            "peak_rss_bytes": 316325888,
+            "process_user_seconds": 2.36,
+            "process_system_seconds": 0.27
+          },
+          {
+            "pair": 5,
+            "variant": "baseline",
+            "started_unix": 1793220277.740742,
+            "load": {
+              "compiler_count": 0,
+              "compiler_cpu_percent": 0
+            },
+            "medians_ms": {
+              "bounded-jpeg-resize": 48.735959,
+              "bounded-png-fits": 70.073917,
+              "bounded-png-resize": 48.191917,
+              "standard-png": 37.596
+            },
+            "main_actor_medians_ms": {
+              "bounded-jpeg-resize": 0.008167,
+              "bounded-png-fits": 0.006916,
+              "bounded-png-resize": 0.006625,
+              "standard-png": 0.006333
+            },
+            "control_median_ms": 6.016209,
+            "peak_rss_bytes": 316325888,
+            "process_user_seconds": 2.37,
+            "process_system_seconds": 0.28
+          },
+          {
+            "pair": 5,
+            "variant": "candidate",
+            "started_unix": 1793220280.7913642,
+            "load": {
+              "compiler_count": 0,
+              "compiler_cpu_percent": 0
+            },
+            "medians_ms": {
+              "bounded-jpeg-resize": 48.138834,
+              "bounded-png-fits": 40.162417,
+              "bounded-png-resize": 56.785708,
+              "standard-png": 39.854875
+            },
+            "main_actor_medians_ms": {
+              "bounded-jpeg-resize": 0.009667,
+              "bounded-png-fits": 0.007333,
+              "bounded-png-resize": 0.010459,
+              "standard-png": 0.007416
+            },
+            "control_median_ms": 5.680375,
+            "peak_rss_bytes": 317718528,
+            "process_user_seconds": 2.18,
+            "process_system_seconds": 0.31
+          }
+        ]
+      },
+      "summary": {
+        "bounded-jpeg-resize": {
+          "baseline_ms": 49.950875,
+          "candidate_ms": 48.079667,
+          "change_percent": -3.7460965398504076,
+          "baseline_range_ms": [
+            46.449833,
+            50.298709
+          ],
+          "candidate_range_ms": [
+            44.483917,
+            49.22025
+          ]
+        },
+        "bounded-png-fits": {
+          "baseline_ms": 74.814,
+          "candidate_ms": 40.227,
+          "change_percent": -46.23065201700216,
+          "baseline_range_ms": [
+            70.073917,
+            77.728209
+          ],
+          "candidate_range_ms": [
+            40.156,
+            46.02425
+          ]
+        },
+        "bounded-png-resize": {
+          "baseline_ms": 49.109167,
+          "candidate_ms": 53.657625,
+          "change_percent": 9.26193270596507,
+          "baseline_range_ms": [
+            48.131166,
+            52.600083
+          ],
+          "candidate_range_ms": [
+            51.150458,
+            59.886958
+          ]
+        },
+        "standard-png": {
+          "baseline_ms": 39.714542,
+          "candidate_ms": 40.061375,
+          "change_percent": 0.8733148678889302,
+          "baseline_range_ms": [
+            37.596,
+            43.493625
+          ],
+          "candidate_range_ms": [
+            39.854875,
+            43.608417
+          ]
+        }
+      }
+    },
+    {
+      "id": "final-v2",
+      "decision": "Retained: primary improvement, controls and resource guards pass",
+      "manifest": {
+        "binary_sha256": {
+          "baseline": "9e0cf4017fe4d49b805ef1edf3fa7366dec555acf430f68480c2c1ccedff83f4",
+          "candidate": "5e450f707acbb20e4294fec4d3758e76532e8dd3859f32a24133e775a6b48dc8"
+        },
+        "runs": [
+          {
+            "pair": 1,
+            "variant": "baseline",
+            "started_unix": 1793220980.086991,
+            "load": {
+              "compiler_count": 0,
+              "compiler_cpu_percent": 0
+            },
+            "medians_ms": {
+              "bounded-jpeg-resize": 46.609208,
+              "bounded-png-fits": 71.510584,
+              "bounded-png-resize": 47.940833,
+              "standard-png": 37.942292
+            },
+            "main_actor_medians_ms": {
+              "bounded-jpeg-resize": 0.008042,
+              "bounded-png-fits": 0.010333,
+              "bounded-png-resize": 0.007083,
+              "standard-png": 0.008209
+            },
+            "control_median_ms": 5.428833999999999,
+            "peak_rss_bytes": 317652992,
+            "process_user_seconds": 2.39,
+            "process_system_seconds": 0.28
+          },
+          {
+            "pair": 1,
+            "variant": "candidate",
+            "started_unix": 1793220983.204236,
+            "load": {
+              "compiler_count": 0,
+              "compiler_cpu_percent": 0
+            },
+            "medians_ms": {
+              "bounded-jpeg-resize": 45.690209,
+              "bounded-png-fits": 37.413458,
+              "bounded-png-resize": 48.246291,
+              "standard-png": 37.4705
+            },
+            "main_actor_medians_ms": {
+              "bounded-jpeg-resize": 0.008584,
+              "bounded-png-fits": 0.006583,
+              "bounded-png-resize": 0.007167,
+              "standard-png": 0.007916
+            },
+            "control_median_ms": 5.432667,
+            "peak_rss_bytes": 317128704,
+            "process_user_seconds": 2.03,
+            "process_system_seconds": 0.28
+          },
+          {
+            "pair": 2,
+            "variant": "candidate",
+            "started_unix": 1793220986.570146,
+            "load": {
+              "compiler_count": 0,
+              "compiler_cpu_percent": 0
+            },
+            "medians_ms": {
+              "bounded-jpeg-resize": 45.495417,
+              "bounded-png-fits": 37.25,
+              "bounded-png-resize": 47.945708,
+              "standard-png": 38.541041
+            },
+            "main_actor_medians_ms": {
+              "bounded-jpeg-resize": 0.00825,
+              "bounded-png-fits": 0.006833,
+              "bounded-png-resize": 0.007125,
+              "standard-png": 0.010459
+            },
+            "control_median_ms": 5.481375,
+            "peak_rss_bytes": 316506112,
+            "process_user_seconds": 2.02,
+            "process_system_seconds": 0.26
+          },
+          {
+            "pair": 2,
+            "variant": "baseline",
+            "started_unix": 1793220989.214726,
+            "load": {
+              "compiler_count": 0,
+              "compiler_cpu_percent": 0
+            },
+            "medians_ms": {
+              "bounded-jpeg-resize": 45.535417,
+              "bounded-png-fits": 70.244167,
+              "bounded-png-resize": 48.050958,
+              "standard-png": 37.439833
+            },
+            "main_actor_medians_ms": {
+              "bounded-jpeg-resize": 0.00775,
+              "bounded-png-fits": 0.007292,
+              "bounded-png-resize": 0.007209,
+              "standard-png": 0.00675
+            },
+            "control_median_ms": 5.527749999999999,
+            "peak_rss_bytes": 316309504,
+            "process_user_seconds": 2.35,
+            "process_system_seconds": 0.26
+          },
+          {
+            "pair": 3,
+            "variant": "baseline",
+            "started_unix": 1793220992.191509,
+            "load": {
+              "compiler_count": 0,
+              "compiler_cpu_percent": 0
+            },
+            "medians_ms": {
+              "bounded-jpeg-resize": 45.469375,
+              "bounded-png-fits": 70.20325,
+              "bounded-png-resize": 48.123167,
+              "standard-png": 37.414041
+            },
+            "main_actor_medians_ms": {
+              "bounded-jpeg-resize": 0.008458,
+              "bounded-png-fits": 0.007,
+              "bounded-png-resize": 0.007583,
+              "standard-png": 0.007
+            },
+            "control_median_ms": 5.4687920000000005,
+            "peak_rss_bytes": 316309504,
+            "process_user_seconds": 2.35,
+            "process_system_seconds": 0.26
+          },
+          {
+            "pair": 3,
+            "variant": "candidate",
+            "started_unix": 1793220995.1739671,
+            "load": {
+              "compiler_count": 0,
+              "compiler_cpu_percent": 0
+            },
+            "medians_ms": {
+              "bounded-jpeg-resize": 47.228959,
+              "bounded-png-fits": 37.401708,
+              "bounded-png-resize": 48.160292,
+              "standard-png": 37.665459
+            },
+            "main_actor_medians_ms": {
+              "bounded-jpeg-resize": 0.008459,
+              "bounded-png-fits": 0.007041,
+              "bounded-png-resize": 0.0075,
+              "standard-png": 0.008084
+            },
+            "control_median_ms": 7.726208,
+            "peak_rss_bytes": 317112320,
+            "process_user_seconds": 2.02,
+            "process_system_seconds": 0.27
+          },
+          {
+            "pair": 4,
+            "variant": "candidate",
+            "started_unix": 1793220997.956994,
+            "load": {
+              "compiler_count": 0,
+              "compiler_cpu_percent": 0
+            },
+            "medians_ms": {
+              "bounded-jpeg-resize": 45.63325,
+              "bounded-png-fits": 37.328625,
+              "bounded-png-resize": 48.572167,
+              "standard-png": 37.431292
+            },
+            "main_actor_medians_ms": {
+              "bounded-jpeg-resize": 0.008875,
+              "bounded-png-fits": 0.007291,
+              "bounded-png-resize": 0.008625,
+              "standard-png": 0.00725
+            },
+            "control_median_ms": 5.564375,
+            "peak_rss_bytes": 317833216,
+            "process_user_seconds": 2.03,
+            "process_system_seconds": 0.27
+          },
+          {
+            "pair": 4,
+            "variant": "baseline",
+            "started_unix": 1793221000.704294,
+            "load": {
+              "compiler_count": 0,
+              "compiler_cpu_percent": 0
+            },
+            "medians_ms": {
+              "bounded-jpeg-resize": 46.458,
+              "bounded-png-fits": 72.158583,
+              "bounded-png-resize": 48.38825,
+              "standard-png": 37.373209
+            },
+            "main_actor_medians_ms": {
+              "bounded-jpeg-resize": 0.008459,
+              "bounded-png-fits": 0.008292,
+              "bounded-png-resize": 0.007917,
+              "standard-png": 0.006625
+            },
+            "control_median_ms": 5.556125000000001,
+            "peak_rss_bytes": 316375040,
+            "process_user_seconds": 2.36,
+            "process_system_seconds": 0.27
+          },
+          {
+            "pair": 5,
+            "variant": "baseline",
+            "started_unix": 1793221003.711715,
+            "load": {
+              "compiler_count": 0,
+              "compiler_cpu_percent": 0
+            },
+            "medians_ms": {
+              "bounded-jpeg-resize": 45.470042,
+              "bounded-png-fits": 70.391083,
+              "bounded-png-resize": 49.719167,
+              "standard-png": 37.631625
+            },
+            "main_actor_medians_ms": {
+              "bounded-jpeg-resize": 0.007791,
+              "bounded-png-fits": 0.007166,
+              "bounded-png-resize": 0.009541,
+              "standard-png": 0.007333
+            },
+            "control_median_ms": 5.577166,
+            "peak_rss_bytes": 316342272,
+            "process_user_seconds": 2.38,
+            "process_system_seconds": 0.27
+          },
+          {
+            "pair": 5,
+            "variant": "candidate",
+            "started_unix": 1793221006.7500942,
+            "load": {
+              "compiler_count": 0,
+              "compiler_cpu_percent": 0
+            },
+            "medians_ms": {
+              "bounded-jpeg-resize": 45.688833,
+              "bounded-png-fits": 37.435708,
+              "bounded-png-resize": 48.02425,
+              "standard-png": 37.360625
+            },
+            "main_actor_medians_ms": {
+              "bounded-jpeg-resize": 0.00775,
+              "bounded-png-fits": 0.006875,
+              "bounded-png-resize": 0.006792,
+              "standard-png": 0.0075
+            },
+            "control_median_ms": 5.557625,
+            "peak_rss_bytes": 316456960,
+            "process_user_seconds": 2.0,
+            "process_system_seconds": 0.26
+          }
+        ]
+      },
+      "summary": {
+        "bounded-jpeg-resize": {
+          "baseline_ms": 45.535417,
+          "candidate_ms": 45.688833,
+          "change_percent": 0.3369157682249879,
+          "baseline_range_ms": [
+            45.469375,
+            46.609208
+          ],
+          "candidate_range_ms": [
+            45.495417,
+            47.228959
+          ]
+        },
+        "bounded-png-fits": {
+          "baseline_ms": 70.391083,
+          "candidate_ms": 37.401708,
+          "change_percent": -46.86584378876512,
+          "baseline_range_ms": [
+            70.20325,
+            72.158583
+          ],
+          "candidate_range_ms": [
+            37.25,
+            37.435708
+          ]
+        },
+        "bounded-png-resize": {
+          "baseline_ms": 48.123167,
+          "candidate_ms": 48.160292,
+          "change_percent": 0.07714579549595868,
+          "baseline_range_ms": [
+            47.940833,
+            49.719167
+          ],
+          "candidate_range_ms": [
+            47.945708,
+            48.572167
+          ]
+        },
+        "standard-png": {
+          "baseline_ms": 37.439833,
+          "candidate_ms": 37.4705,
+          "change_percent": 0.0819100875797174,
+          "baseline_range_ms": [
+            37.373209,
+            37.942292
+          ],
+          "candidate_range_ms": [
+            37.360625,
+            38.541041
+          ]
+        }
+      }
+    }
+  ],
+  "final_aggregate_resources": {
+    "baseline": {
+      "control_median_ms": 5.527749999999999,
+      "peak_rss_mib": 301.6875,
+      "process_user_seconds": 2.36,
+      "process_system_seconds": 0.27,
+      "main_actor_medians_ms": {
+        "bounded-jpeg-resize": 0.008042,
+        "bounded-png-fits": 0.007292,
+        "bounded-png-resize": 0.007583,
+        "standard-png": 0.007
+      }
+    },
+    "candidate": {
+      "control_median_ms": 5.557625,
+      "peak_rss_mib": 302.421875,
+      "process_user_seconds": 2.02,
+      "process_system_seconds": 0.27,
+      "main_actor_medians_ms": {
+        "bounded-jpeg-resize": 0.008459,
+        "bounded-png-fits": 0.006875,
+        "bounded-png-resize": 0.007167,
+        "standard-png": 0.007916
+      }
+    }
+  },
+  "final_guardrails": {
+    "primary_at_least_10_percent_faster": true,
+    "other_cases_below_10_percent_slowdown": true,
+    "peak_rss_below_10_percent_plus_2_mib": true,
+    "all_recorded_starts_without_compilers": true
+  },
+  "proof": "Helper preparation through completed atomic write. No claim about full shortcut-to-shelf latency, animation FPS, cold images, field tail latency or battery life."
+}

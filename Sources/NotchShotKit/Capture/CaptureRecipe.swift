@@ -198,6 +198,17 @@ public enum CaptureRecipeRenderer {
         format: ImageFormat,
         quality: Double
     ) async throws -> CapturedImage {
+        try await prepareForExport(image, recipe: recipe, format: format, quality: quality).image
+    }
+
+    /// The capture pipeline can reuse the encoding of a bounded image that
+    /// already fits, while image-only clients retain the existing `prepare` API.
+    public static func prepareForExport(
+        _ image: CapturedImage,
+        recipe: CaptureRecipe,
+        format: ImageFormat,
+        quality: Double
+    ) async throws -> PreparedCaptureExport {
         try await CaptureRecipeWorker.shared.prepare(image, recipe: recipe, format: format, quality: quality)
     }
 
@@ -240,22 +251,29 @@ public enum CaptureRecipeRenderer {
 actor CaptureRecipeWorker {
     static let shared = CaptureRecipeWorker()
 
-    func prepare(_ input: CapturedImage, recipe: CaptureRecipe, format: ImageFormat, quality: Double) throws -> CapturedImage {
+    func prepare(_ input: CapturedImage, recipe: CaptureRecipe, format: ImageFormat, quality: Double) throws -> PreparedCaptureExport {
         try autoreleasepool {
             try Task.checkCancellation()
             var output = try CaptureRecipeRenderer.render(input, recipe: recipe)
             try Task.checkCancellation()
+            var encoding: (data: Data, format: ImageFormat)?
             if let limit = recipe.targetMaximumBytes, limit > 0 {
+                let fitted = try SmartExportService.renderToFitEncoded(
+                    output.cgImage, maximumBytes: limit, format: format,
+                    quality: quality, dpiScale: output.scale
+                )
+                // The measured gain is for an image that already fits. Keep
+                // resized images on their original encode/write path: retaining
+                // their small encoding across the worker boundary did not help.
+                let alreadyFits = fitted.image === output.cgImage
                 output = CapturedImage(
-                    cgImage: try SmartExportService.renderToFit(
-                        output.cgImage, maximumBytes: limit, format: format,
-                        quality: quality, dpiScale: output.scale
-                    ),
+                    cgImage: fitted.image,
                     scale: output.scale, sourceRect: output.sourceRect
                 )
+                encoding = alreadyFits ? (fitted.data, fitted.format) : nil
             }
             try Task.checkCancellation()
-            return output
+            return PreparedCaptureExport(image: output, format: format, quality: quality, encoding: encoding)
         }
     }
 }
