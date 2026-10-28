@@ -204,17 +204,13 @@ struct IslandActivityGlyph: View {
         case .recording:
             IslandRecordingGlyph(isPaused: activity.lifecycle == .paused, side: side)
         case .ai:
-            IslandRingGlyph(
-                progress: activity.progress,
-                lifecycle: activity.lifecycle,
-                accent: accent,
-                side: side
-            ) {
-                if let agent = IslandActivityAdapters.headlineAgent(coordinator.context.islandAIActivities) {
-                    AgentVibeIdentity(source: agent.source, size: side * 0.62)
-                } else {
-                    symbol(side: side)
-                }
+            // The agent's own icon, whole, with no ring: progress and state
+            // are the trailing wing's job, and a ring squeezed the icon to a
+            // speck inside a dim provider-coloured track.
+            if let agent = IslandActivityAdapters.headlineAgent(coordinator.context.islandAIActivities) {
+                AgentVibeIdentity(source: agent.source, size: side * 1.12)
+            } else {
+                symbol(side: side)
             }
         case .timer:
             // The phone's timer ring shows what is left, so it empties as the

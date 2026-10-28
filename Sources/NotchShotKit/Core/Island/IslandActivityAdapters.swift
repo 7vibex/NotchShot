@@ -198,6 +198,14 @@ public enum IslandActivityAdapters {
         case .working, .waiting: .reported(headline.progress)
         }
         let metric: String? = progress.fraction.map { "\(Int(($0 * 100).rounded()))%" }
+        // The compact wing fits about one word; "Needs attention" was cut
+        // off there.
+        let stateLabel = switch headline.state {
+        case .working: "Working"
+        case .waiting: "Needs you"
+        case .finished: "Done"
+        case .failed: "Failed"
+        }
         let earliest = agents.compactMap(\.startedAt).min() ?? headline.updatedAt
         return IslandActivity(
             id: IslandActivityID(kind: .ai, key: "agents"),
@@ -211,7 +219,7 @@ public enum IslandActivityAdapters {
             expiresAt: expiresAt,
             title: headline.title,
             subtitle: headline.source.title,
-            stateLabel: headline.state.title,
+            stateLabel: stateLabel,
             metric: metric,
             symbolName: headline.source.symbolName,
             accentHex: headline.source.accentHex

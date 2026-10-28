@@ -19,6 +19,8 @@ struct IslandCompactContent: View {
         ))
     }
 
+    private var valueTint: Color { IslandAccessibility.valueTint(for: activity, accent: accent) }
+
     private var glyphSize: CGFloat {
         switch activity.kind {
         case .media: 20
@@ -136,14 +138,14 @@ struct IslandCompactContent: View {
                 IslandStateText(
                     text: activity.stateLabel ?? "",
                     font: .system(size: 12, weight: .semibold),
-                    color: IslandAccessibility.lifecycleColor(activity.lifecycle, accent: accent)
+                    color: IslandAccessibility.lifecycleColor(activity.lifecycle, accent: valueTint)
                 )
                 .minimumScaleFactor(0.8)
             } else {
                 IslandNumericText(
                     text: activity.metric ?? "",
                     font: .system(size: 12, weight: .semibold, design: .rounded),
-                    color: accent
+                    color: valueTint
                 )
             }
         case .calendar:
@@ -205,6 +207,12 @@ enum IslandAccessibility {
         return parts.joined(separator: ", ")
     }
 
+    /// The colour of a live value. Agents stay neutral while they work:
+    /// Claude's coral would read as the orange that means "needs you".
+    static func valueTint(for activity: IslandActivity, accent: Color) -> Color {
+        activity.kind == .ai ? Color.islandInk(0.82) : accent
+    }
+
     static func lifecycleColor(_ lifecycle: IslandLifecycle, accent: Color) -> Color {
         switch lifecycle {
         case .succeeded: .green
@@ -253,10 +261,17 @@ struct IslandSatelliteValue: View {
                     IslandStateText(
                         text: activity.stateLabel ?? "",
                         font: .system(size: 10, weight: .semibold),
-                        color: IslandAccessibility.lifecycleColor(activity.lifecycle, accent: accent)
+                        color: IslandAccessibility.lifecycleColor(
+                            activity.lifecycle,
+                            accent: IslandAccessibility.valueTint(for: activity, accent: accent)
+                        )
                     )
                 } else {
-                    IslandNumericText(text: activity.metric ?? "", font: font, color: accent)
+                    IslandNumericText(
+                        text: activity.metric ?? "",
+                        font: font,
+                        color: IslandAccessibility.valueTint(for: activity, accent: accent)
+                    )
                 }
             case .calendar:
                 Text(activity.metric ?? "")

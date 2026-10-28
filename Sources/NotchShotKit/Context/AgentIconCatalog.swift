@@ -108,6 +108,14 @@ enum AgentIconCatalog {
     }
 }
 
+/// The macOS app icon grid: an icon's body is 824 of its 1024 pt canvas, with
+/// corners at about 22.5% of the body. Drawn tiles follow it so they match the
+/// installed icons they sit beside.
+enum AgentIconGrid {
+    static let bodyScale: CGFloat = 824 / 1024
+    static let cornerScale: CGFloat = 0.225
+}
+
 /// The visual identity for one agent: its real app icon when installed, and a
 /// drawn accent tile when it is not.
 ///
@@ -130,7 +138,8 @@ struct AgentGlyph: View {
         ))
     }
 
-    private var cornerRadius: CGFloat { size * 0.26 }
+    private var tileSide: CGFloat { (size * AgentIconGrid.bodyScale).rounded() }
+    private var cornerRadius: CGFloat { tileSide * AgentIconGrid.cornerScale }
 
     var body: some View {
         content
@@ -150,7 +159,7 @@ struct AgentGlyph: View {
                 .fill(fallbackFill)
                 .overlay {
                     Image(systemName: source.symbolName)
-                        .font(.system(size: size * 0.5, weight: .semibold))
+                        .font(.system(size: tileSide * 0.5, weight: .semibold))
                         .foregroundStyle(accent)
                 }
                 .overlay {
@@ -159,6 +168,7 @@ struct AgentGlyph: View {
                             .stroke(accent.opacity(0.34), lineWidth: NotchIsland.Stroke.hairline)
                     }
                 }
+                .frame(width: tileSide, height: tileSide)
         }
     }
 

@@ -331,16 +331,11 @@ private struct IslandAIExpanded: View {
             // the camera on the left, its one line of state on the right.
             IslandBandHeader(leadingInset: 16, trailingInset: 16) {
                 HStack(spacing: 6) {
-                    if let source = runs.first?.source,
-                       runs.allSatisfy({ $0.source == source }) {
-                        AgentVibeIdentity(source: source, size: 15)
-                            .accessibilityHidden(true)
-                    } else {
-                        Image(systemName: "sparkles")
-                            .font(.system(size: 11, weight: .semibold))
-                            .foregroundStyle(Color.islandInk(NotchIsland.Ink.secondary))
-                            .accessibilityHidden(true)
-                    }
+                    // Which agents are running, as their own marks, rather
+                    // than a generic sparkle.
+                    AgentMarkStack(sources: AgentVibePresentation.sources(
+                        of: AgentVibePresentation.sorted(runs, claudeSessions: sessions, interactions: interactions)
+                    ))
                     Text(AgentVibePresentation.headerTitle(for: runs))
                         .font(.system(size: 11, weight: .semibold))
                         .foregroundStyle(Color.islandInk(NotchIsland.Ink.secondary))

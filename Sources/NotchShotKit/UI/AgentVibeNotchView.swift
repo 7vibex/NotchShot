@@ -83,21 +83,111 @@ enum AgentVibePresentation {
         if working > 0 { return "\(working) working" }
         return live.count == 1 ? "1 run" : "\(live.count) runs"
     }
+
+    /// The row's second line: what the run is asking, else what it is doing,
+    /// in the agent's own words where it gave any.
+    static func bodyText(
+        for activity: AIActivitySnapshot,
+        claudeSession: ClaudeCodeSession? = nil,
+        interaction: AgentInteraction? = nil
+    ) -> String {
+        if let interaction {
+            switch interaction.kind {
+            case .approval(let request): return "Wants to use " + request.tool
+            case .question(let form):
+                if let prompt = form.questions.first?.prompt, !prompt.isEmpty { return prompt }
+                return "Has a question"
+            }
+        }
+        if let permission = claudeSession?.permission {
+            return "Wants to use " + permission.toolName
+        }
+        switch activity.state {
+        case .working:
+            if let detail = activity.detail, !detail.isEmpty { return detail }
+            if let step = activity.steps.first(where: { $0.state == .working }) { return step.label }
+            return "Working"
+        case .waiting:
+            return activity.detail.flatMap { $0.isEmpty ? nil : $0 } ?? "Your turn"
+        case .finished:
+            return "Done"
+        case .failed:
+            return activity.detail.flatMap { $0.isEmpty ? nil : $0 } ?? "Stopped with an error"
+        }
+    }
+
+    /// Each provider once, in list order, for the header's stacked marks.
+    static func sources(of activities: [AIActivitySnapshot]) -> [AISource] {
+        var seen = Set<AISource>()
+        return activities.compactMap { seen.insert($0.source).inserted ? $0.source : nil }
+    }
 }
 
-/// The provider mark used by the shared surface. Claude keeps the Vibe crab;
-/// every other provider uses its current installed app icon or the existing
-/// source-aware fallback glyph.
+/// The provider mark used by every agent surface. Codex, Crewline and Cursor
+/// are their installed app icons; Claude Code's crab sits on a tile cut to the
+/// same icon grid, so a list of agents reads as one set of icons rather than
+/// app icons beside a loose sprite.
 struct AgentVibeIdentity: View {
     let source: AISource
     let size: CGFloat
 
     var body: some View {
         if source == .claude {
-            ClaudeVibeCrabIcon(size: size)
+            ClaudeCodeTile(size: size)
         } else {
             AgentGlyph(source: source, size: size)
         }
+    }
+}
+
+/// The crab on a graphite tile. The tile covers the share of the frame an
+/// app icon's body does (macOS icons leave a margin inside their square), so
+/// it lines up with the Codex and Crewline icons at every size.
+struct ClaudeCodeTile: View {
+    let size: CGFloat
+
+    private var side: CGFloat { (size * AgentIconGrid.bodyScale).rounded() }
+
+    var body: some View {
+        let shape = RoundedRectangle(cornerRadius: side * AgentIconGrid.cornerScale, style: .continuous)
+        shape
+            .fill(LinearGradient(
+                colors: [Color(white: 0.21), Color(white: 0.11)],
+                startPoint: .top,
+                endPoint: .bottom
+            ))
+            .overlay { shape.strokeBorder(Color.white.opacity(0.10), lineWidth: 0.5) }
+            .overlay { ClaudeVibeCrabIcon(size: (side * 0.5).rounded()) }
+            .frame(width: side, height: side)
+            .frame(width: size, height: size)
+            .accessibilityHidden(true)
+    }
+}
+
+/// Up to three provider marks, overlapping like shared-with avatars, so the
+/// header says which agents are running instead of showing a generic glyph.
+struct AgentMarkStack: View {
+    let sources: [AISource]
+    var size: CGFloat = 18
+
+    /// The visible tile: an app icon's frame includes the grid's margin.
+    private var tile: CGFloat { (size * AgentIconGrid.bodyScale).rounded() }
+
+    var body: some View {
+        HStack(spacing: -(size - tile) - tile * 0.18) {
+            ForEach(Array(sources.prefix(3).enumerated()), id: \.element) { index, source in
+                AgentVibeIdentity(source: source, size: size)
+                    // A black edge cut around each tile so overlapping
+                    // icons stay apart, as stacked avatars do.
+                    .background {
+                        RoundedRectangle(cornerRadius: (tile + 3) * AgentIconGrid.cornerScale, style: .continuous)
+                            .fill(Color.black)
+                            .frame(width: tile + 3, height: tile + 3)
+                    }
+                    .zIndex(Double(3 - index))
+            }
+        }
+        .accessibilityHidden(true)
     }
 }
 
@@ -231,7 +321,7 @@ struct AgentVibeActivitySurface: View {
     /// Only drawn where the island has no camera-band header of its own.
     private var header: some View {
         HStack(spacing: 6) {
-            AgentVibeIdentity(source: liveActivities.first?.source ?? .terminal, size: 15)
+            AgentMarkStack(sources: AgentVibePresentation.sources(of: liveActivities))
             Text(AgentVibePresentation.headerTitle(for: liveActivities))
                 .font(.system(size: 11, weight: .semibold))
                 .foregroundStyle(Color.islandInk(NotchIsland.Ink.secondary))
@@ -276,8 +366,8 @@ struct AgentVibeActivitySurface: View {
             Button(action: onClearHistory) {
                 Text("Clear")
                     .font(NotchAlertStyle.meta)
-                    .foregroundStyle(Color.islandInk(NotchIsland.Ink.secondary))
-                    .frame(minWidth: NotchIsland.Hit.control, minHeight: 28)
+                    .foregroundStyle(Color.islandInk(NotchIsland.Ink.tertiary))
+                    .frame(minWidth: NotchIsland.Hit.control, minHeight: 28, alignment: .trailing)
                     .contentShape(Rectangle())
             }
             .buttonStyle(NotchPressButtonStyle())
@@ -404,33 +494,18 @@ private struct AgentVibeActivityRow: View {
     /// small dot on its corner carries the state, the way an app badge does.
     private var mark: some View {
         Button(action: onOpenAgent) {
-            AgentVibeIdentity(source: activity.source, size: 26)
-                .frame(width: Self.markSize, height: Self.markSize)
-                .overlay(alignment: .bottomTrailing) { stateBadge }
-                .contentShape(Rectangle())
+            AgentStateMark(
+                source: activity.source,
+                state: activity.state,
+                isAsking: isAsking,
+                size: Self.markSize
+            )
+            .contentShape(Rectangle())
         }
         .buttonStyle(NotchPressButtonStyle())
         .disabled(!canOpenAgent)
         .help(jumpHelp)
         .accessibilityLabel(jumpHelp)
-    }
-
-    @ViewBuilder
-    private var stateBadge: some View {
-        let ring = Circle().stroke(Color.black, lineWidth: 2.5)
-        if isAsking || activity.state == .waiting {
-            Circle().fill(Color.orange).frame(width: 9, height: 9).overlay(ring)
-                .accessibilityHidden(true)
-        } else if activity.state == .failed {
-            Circle().fill(Color(red: 1, green: 0.36, blue: 0.33)).frame(width: 9, height: 9).overlay(ring)
-                .accessibilityHidden(true)
-        } else if activity.state == .working {
-            // White, not the provider colour: Claude's coral would read as
-            // the orange that means "needs you".
-            LayerPulsingDot(diameter: 9, color: .white, pulseOpacity: 0.3, outlineColor: .black, outlineWidth: 2.5)
-                .frame(width: 9, height: 9)
-                .accessibilityHidden(true)
-        }
     }
 
     private var jumpHelp: String {
@@ -444,33 +519,11 @@ private struct AgentVibeActivityRow: View {
     // MARK: Text
 
     private var bodyText: String {
-        if let interaction {
-            switch interaction.kind {
-            case .approval(let request): return "Wants to use " + request.tool
-            case .question(let form):
-                if let prompt = form.questions.first?.prompt, !prompt.isEmpty { return prompt }
-                return "Has a question"
-            }
-        }
-        if let permission = claudeSession?.permission {
-            return "Wants to use " + permission.toolName
-        }
-        switch activity.state {
-        case .working:
-            if let detail = activity.detail, !detail.isEmpty { return detail }
-            if let step = activity.steps.first(where: { $0.state == .working }) { return step.label }
-            return "Working"
-        case .waiting:
-            return activity.detail.flatMap { $0.isEmpty ? nil : $0 } ?? "Your turn"
-        case .finished:
-            return "Done"
-        case .failed:
-            return activity.detail.flatMap { $0.isEmpty ? nil : $0 } ?? "Stopped with an error"
-        }
+        AgentVibePresentation.bodyText(for: activity, claudeSession: claudeSession, interaction: interaction)
     }
 
     private var bodyColor: Color {
-        if activity.state == .failed, !isAsking { return Color(red: 1, green: 0.45, blue: 0.42) }
+        if activity.state == .failed, !isAsking { return AgentStateMark.failedInk }
         return Color.islandInk(0.82)
     }
 
@@ -555,7 +608,8 @@ private struct AgentVibeRecentRow: View {
     var body: some View {
         HStack(spacing: NotchAlertStyle.leadingGap) {
             Button(action: onOpenAgent) {
-                AgentVibeIdentity(source: activity.source, size: 16)
+                AgentVibeIdentity(source: activity.source, size: 22)
+                    .opacity(0.72)
                     .frame(width: AgentVibeActivityRow.markSize, height: 26)
                     .contentShape(Rectangle())
             }
@@ -573,7 +627,7 @@ private struct AgentVibeRecentRow: View {
                 Text(activity.state == .failed ? "Failed" : "Done")
                     .font(NotchAlertStyle.meta)
                     .foregroundStyle(activity.state == .failed
-                        ? Color(red: 1, green: 0.45, blue: 0.42)
+                        ? AgentStateMark.failedInk
                         : Color.islandInk(NotchIsland.Ink.tertiary))
                     .opacity(isHovered ? 0 : 1)
                 IslandBandButton(systemName: "xmark", label: "Remove \(activity.title)", action: onDismiss)
@@ -599,13 +653,7 @@ struct AgentVibeCompactStrip: View {
     let physicalNotchWidth: CGFloat?
     let onOpen: () -> Void
 
-    private var sourceAccent: Color {
-        Color(nsColor: NotchShotColorPolicy.readableAccentOnBlack(
-            NSColor(hex: activity.source.accentHex) ?? .systemGreen
-        ))
-    }
-
-    private var tint: Color { activity.state.tint(sourceAccent: sourceAccent) }
+    private var tint: Color { AgentStateMark.ink(for: activity.state) }
     private var signal: AgentStripSignal { AgentStripSignal.signal(for: activity) }
 
     var body: some View {
@@ -670,56 +718,54 @@ struct AgentVibeCompactStrip: View {
     }
 }
 
-/// The hover peek for agent activity. It used to be a 430 pt bar holding a
-/// 22 pt icon and a lone green activity count at the far edge, so the one
-/// thing worth knowing — is it still working, how far along — was missing.
-/// Now the icon wears the progress ring and a state dot, the state is named,
-/// and the count only appears when there is more than one run.
+/// The hover peek for agent activity: the lead run as one row of the list it
+/// opens into, so the peek and the list read as the same thing. The project
+/// and what the agent is doing take the space; the state rides on the mark's
+/// badge rather than in a coloured word, and progress or the run's age sits
+/// at the trailing edge with the count of other runs under it.
 struct AgentVibePeekHeader: View {
     let activity: AIActivitySnapshot
     let activityCount: Int
     let onOpen: () -> Void
 
-    private var tint: Color {
-        activity.state.tint(sourceAccent: Color(nsColor: NotchShotColorPolicy.readableAccentOnBlack(
-            NSColor(hex: activity.source.accentHex) ?? .systemGreen
-        )))
-    }
-
     var body: some View {
         Button(action: onOpen) {
-            HStack(spacing: 12) {
-                AgentVibeStatusMark(activity: activity, tint: tint, size: 32)
+            HStack(spacing: NotchAlertStyle.leadingGap) {
+                AgentStateMark(source: activity.source, state: activity.state, size: 32)
 
-                VStack(alignment: .leading, spacing: 2) {
-                    HStack(alignment: .firstTextBaseline, spacing: 6) {
-                        Text(activity.source.title)
-                            .font(.system(size: 13, weight: .semibold))
-                            .foregroundStyle(Color.islandInk(NotchIsland.Ink.primary))
-                            .fixedSize()
-                        Text(AgentVibePresentation.statusText(for: activity))
-                            .font(.system(size: 11, weight: .medium))
-                            .foregroundStyle(tint)
-                            .lineLimit(1)
-                    }
+                VStack(alignment: .leading, spacing: 1) {
                     Text(activity.title)
-                        .font(.system(size: 11))
-                        .foregroundStyle(Color.islandInk(NotchIsland.Ink.secondary))
+                        .font(NotchAlertStyle.title)
+                        .foregroundStyle(Color.islandInk(NotchIsland.Ink.primary))
+                        .lineLimit(1)
+                    Text(AgentVibePresentation.bodyText(for: activity))
+                        .font(NotchAlertStyle.body)
+                        .foregroundStyle(activity.state == .failed ? AgentStateMark.failedInk : Color.islandInk(0.82))
                         .lineLimit(1)
                         .truncationMode(.tail)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
 
                 VStack(alignment: .trailing, spacing: 2) {
-                    if let progress = activity.progress {
+                    if let progress = activity.progress, !activity.state.isTerminal {
                         Text("\(Int((min(max(progress, 0), 1) * 100).rounded()))%")
-                            .font(.system(size: 13, weight: .semibold, design: .rounded))
+                            .font(.system(size: 12, weight: .semibold, design: .rounded))
                             .monospacedDigit()
                             .foregroundStyle(Color.islandInk(NotchIsland.Ink.primary))
+                    } else {
+                        TimelineView(.periodic(from: activity.updatedAt, by: 30)) { context in
+                            Text(SystemNotificationTimePolicy.compactElapsed(
+                                receivedAt: activity.startedAt ?? activity.updatedAt,
+                                now: context.date
+                            ))
+                            .font(NotchAlertStyle.meta)
+                            .monospacedDigit()
+                            .foregroundStyle(Color.islandInk(NotchIsland.Ink.tertiary))
+                        }
                     }
                     if activityCount > 1 {
                         Text("+\(activityCount - 1) more")
-                            .font(.system(size: 10, weight: .medium))
+                            .font(NotchAlertStyle.meta)
                             .foregroundStyle(Color.islandInk(NotchIsland.Ink.tertiary))
                             .fixedSize()
                     }
@@ -737,47 +783,60 @@ struct AgentVibePeekHeader: View {
     }
 }
 
-/// The agent's mark inside a ring: a determinate arc when the run reports
-/// progress, otherwise a faint track, plus a state dot on the rim that pulses
-/// while the agent works.
-struct AgentVibeStatusMark: View {
-    let activity: AIActivitySnapshot
-    let tint: Color
+/// An agent's mark with its state as a badge on the tile's corner, the way
+/// an app icon carries a count: orange when it needs you, red when it
+/// failed, a breathing white dot while it works, nothing once it is done.
+/// Never the provider colour: Claude's coral reads as the orange that means
+/// "needs you".
+struct AgentStateMark: View {
+    static let failedInk = Color(red: 1, green: 0.45, blue: 0.42)
+    private static let failedBadge = Color(red: 1, green: 0.36, blue: 0.33)
+
+    let source: AISource
+    let state: AIActivityState
+    var isAsking = false
     let size: CGFloat
 
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    /// The colour a state's word or glyph takes on the island's black.
+    static func ink(for state: AIActivityState) -> Color {
+        switch state {
+        case .working: Color.islandInk(0.82)
+        case .waiting: .orange
+        case .finished: .green
+        case .failed: failedInk
+        }
+    }
 
-    private var ringWidth: CGFloat { max(2, size / 14) }
-    private var shouldPulse: Bool { activity.state == .working && !reduceMotion }
+    private var badge: CGFloat { max(8, (size * 0.3).rounded()) }
+    private var outline: CGFloat { max(2, badge * 0.25) }
+    /// Puts the badge's centre just inside the tile's corner rather than the
+    /// frame's: the icon grid leaves a margin around the tile.
+    private var inset: CGFloat {
+        size * (1 - AgentIconGrid.bodyScale) / 2 + size * 0.04 - badge / 2
+    }
 
     var body: some View {
-        ZStack {
-            Circle().stroke(tint.opacity(0.22), lineWidth: ringWidth)
-            if let progress = activity.progress {
-                Circle()
-                    .trim(from: 0, to: min(max(progress, 0), 1))
-                    .stroke(tint, style: StrokeStyle(lineWidth: ringWidth, lineCap: .round))
-                    .rotationEffect(.degrees(-90))
-                    .animation(NotchMotion.liveValue(reduceMotion: reduceMotion), value: progress)
+        AgentVibeIdentity(source: source, size: size)
+            .overlay(alignment: .bottomTrailing) {
+                stateBadge
+                    .frame(width: badge, height: badge)
+                    .offset(x: -inset, y: -inset)
             }
-            AgentVibeIdentity(source: activity.source, size: size - ringWidth * 2 - 8)
-        }
-        .frame(width: size, height: size)
-        .overlay(alignment: .bottomTrailing) {
+            .frame(width: size, height: size)
+            .accessibilityHidden(true)
+    }
+
+    @ViewBuilder
+    private var stateBadge: some View {
+        let ring = Circle().stroke(Color.black, lineWidth: outline)
+        if isAsking || state == .waiting {
+            Circle().fill(Color.orange).overlay(ring)
+        } else if state == .failed {
+            Circle().fill(Self.failedBadge).overlay(ring)
+        } else if state == .working {
             // A layer animation: a SwiftUI `repeatForever` opacity redrew the
             // whole notch every frame for as long as the agent worked.
-            LayerPulsingDot(
-                diameter: size * 0.28,
-                color: tint,
-                pulseOpacity: 0.4,
-                halfPeriod: 0.85,
-                pulses: shouldPulse,
-                outlineColor: .black,
-                outlineWidth: 2
-            )
-            .frame(width: size * 0.28, height: size * 0.28)
-            .offset(x: 1, y: 1)
+            LayerPulsingDot(diameter: badge, color: .white, pulseOpacity: 0.3, outlineColor: .black, outlineWidth: outline)
         }
-        .accessibilityHidden(true)
     }
 }

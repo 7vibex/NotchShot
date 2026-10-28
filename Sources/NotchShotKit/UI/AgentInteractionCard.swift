@@ -87,36 +87,81 @@ private struct AgentQuestionCard: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: NotchIsland.Spacing.row) {
+        VStack(alignment: .leading, spacing: NotchIsland.Spacing.element) {
             ForEach(Array(form.questions.enumerated()), id: \.offset) { index, question in
-                questionView(question, index: index)
-            }
-
-            HStack(spacing: NotchIsland.Spacing.snug) {
-                Button(action: onAnswerElsewhere) {
-                    Text(elsewhereTitle)
-                        .font(.system(size: 11, weight: .medium))
-                        .foregroundStyle(Color.islandInk(NotchIsland.Ink.tertiary))
-                        .frame(minHeight: NotchIsland.Hit.control)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(NotchPressButtonStyle())
-                .help(source == .crewline ? "Answer this in Crewline instead" : "Let Claude ask in its own terminal picker")
-
-                Spacer(minLength: 0)
-
-                if !form.sendsOnFirstChoice, !sendsFromField {
-                    AgentCapsuleButton(title: "Send", isPrimary: true) { onSubmit(answers) }
-                        .disabled(!form.isComplete(answers))
-                        .opacity(form.isComplete(answers) ? 1 : 0.4)
-                        .keyboardShortcut(.defaultAction)
-                        .accessibilityLabel("Send answer to \(source.title)")
+                if form.sendsOnFirstChoice {
+                    // One closed question: the choices and the way out share
+                    // a line when they fit, as a notification's actions do.
+                    ViewThatFits(in: .horizontal) {
+                        HStack(spacing: NotchIsland.Spacing.element) {
+                            HStack(spacing: NotchIsland.Spacing.snug) { chips(for: question, at: index) }
+                                .fixedSize()
+                            Spacer(minLength: NotchIsland.Spacing.element)
+                            elsewhereButton
+                        }
+                        VStack(alignment: .leading, spacing: NotchIsland.Spacing.tight) {
+                            questionView(question, index: index)
+                            elsewhereButton
+                        }
+                    }
+                } else {
+                    questionView(question, index: index)
                 }
             }
-            .padding(.top, -NotchIsland.Spacing.tight)
+
+            if !form.sendsOnFirstChoice {
+                HStack(spacing: NotchIsland.Spacing.snug) {
+                    elsewhereButton
+                    Spacer(minLength: 0)
+                    if !sendsFromField {
+                        AgentCapsuleButton(title: "Send", isPrimary: true) { onSubmit(answers) }
+                            .disabled(!form.isComplete(answers))
+                            .opacity(form.isComplete(answers) ? 1 : 0.4)
+                            .keyboardShortcut(.defaultAction)
+                            .accessibilityLabel("Send answer to \(source.title)")
+                            .padding(.vertical, -(NotchIsland.Hit.control - 28) / 2)
+                    }
+                }
+            }
         }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("\(source.title) asked: \(form.questions.first?.prompt ?? form.title)")
+    }
+
+    /// A quiet link out to the agent's own prompt. It lays out at the chips'
+    /// height so it never opens a gap under them; the full target still
+    /// takes clicks around it.
+    private var elsewhereButton: some View {
+        Button(action: onAnswerElsewhere) {
+            HStack(spacing: 3) {
+                Text(elsewhereTitle)
+                Image(systemName: "arrow.up.forward")
+                    .font(.system(size: 8.5, weight: .semibold))
+                    .accessibilityHidden(true)
+            }
+            .font(.system(size: 11, weight: .medium))
+            .foregroundStyle(Color.islandInk(NotchIsland.Ink.tertiary))
+            .frame(minHeight: NotchIsland.Hit.control)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(NotchPressButtonStyle())
+        .padding(.vertical, -(NotchIsland.Hit.control - 28) / 2)
+        .fixedSize()
+        .help(source == .crewline ? "Answer this in Crewline instead" : "Let Claude ask in its own terminal picker")
+    }
+
+    @ViewBuilder
+    private func chips(for question: AgentQuestion, at index: Int) -> some View {
+        ForEach(question.choices) { option in
+            AgentReplyChip(
+                title: option.label,
+                isSelected: isSelected(option.value, at: index, kind: question.kind),
+                showsCheck: question.kind == .multiSelect
+            ) {
+                choose(option.value, at: index, question: question)
+            }
+            .help(option.hint ?? "")
+        }
     }
 
     @ViewBuilder
@@ -150,16 +195,7 @@ private struct AgentQuestionCard: View {
 
             case .select, .multiSelect, .confirm:
                 AgentChipFlow(spacing: NotchIsland.Spacing.snug) {
-                    ForEach(question.choices) { option in
-                        AgentReplyChip(
-                            title: option.label,
-                            isSelected: isSelected(option.value, at: index, kind: question.kind),
-                            showsCheck: question.kind == .multiSelect
-                        ) {
-                            choose(option.value, at: index, question: question)
-                        }
-                        .help(option.hint ?? "")
-                    }
+                    chips(for: question, at: index)
                 }
             }
         }
