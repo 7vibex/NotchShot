@@ -113,6 +113,102 @@ struct LyricsTests {
         #expect(result.map(\.lines.count) == .success(1))
     }
 
+    @Test("Search still loads lyrics when the exact lookup fails", arguments: [400, 503])
+    func searchRecoversFromExactFailure(status: Int) async {
+        let session = LyricsResponseStub.session(responses: [
+            .init(status: status, body: "{}"),
+            .init(body: #"[{"duration":200,"syncedLyrics":"[00:01.00]Found by search"}]"#),
+        ])
+        defer { session.invalidateAndCancel() }
+        let service = LyricsService(session: session)
+        let query = LyricsQuery(title: "Song", artist: "Artist", duration: 200)
+
+        let result = await service.lyrics(for: query)
+
+        #expect(result.map { $0.lines.map(\.text) } == .success(["Found by search"]))
+        #expect(LyricsResponseStub.requests(for: session).map { $0.url?.lastPathComponent } == ["get", "search"])
+    }
+
+    @Test("A broken exact response does not become a cached missing track")
+    func malformedAnswerCanBeRetried() async {
+        let session = LyricsResponseStub.session(responses: [
+            .init(body: "not JSON"),
+            .init(body: "[]"),
+            .init(body: #"{"duration":200,"syncedLyrics":"[00:01.00]Recovered"}"#),
+        ])
+        defer { session.invalidateAndCancel() }
+        let service = LyricsService(session: session)
+        let query = LyricsQuery(title: "Song", artist: "Artist", duration: 200)
+
+        #expect(await service.lyrics(for: query) == .failure(.unavailable))
+        let retry = await service.lyrics(for: query)
+        #expect(retry.map { $0.lines.map(\.text) } == .success(["Recovered"]))
+        #expect(LyricsResponseStub.requests(for: session).count == 3)
+    }
+
+    @Test("Refresh bypasses a cached miss and keeps the recovered lyrics")
+    func refreshRetriesCachedMiss() async {
+        let session = LyricsResponseStub.session(responses: [
+            .init(status: 404, body: "{}"),
+            .init(body: "[]"),
+            .init(body: #"{"duration":200,"syncedLyrics":"[00:01.00]Now available"}"#),
+        ])
+        defer { session.invalidateAndCancel() }
+        let service = LyricsService(session: session)
+        let query = LyricsQuery(title: "Song", artist: "Artist", duration: 200)
+
+        #expect(await service.lyrics(for: query) == .failure(.notFound))
+        #expect(await service.lyrics(for: query) == .failure(.notFound))
+        #expect(LyricsResponseStub.requests(for: session).count == 2)
+
+        let refreshed = await service.lyrics(for: query, forceRefresh: true)
+        #expect(refreshed.map { $0.lines.map(\.text) } == .success(["Now available"]))
+        #expect(await service.lyrics(for: query) == refreshed)
+        #expect(LyricsResponseStub.requests(for: session).count == 3)
+    }
+
+    @Test("Failed lookups stay retryable when search also fails", arguments: [404, 503])
+    func incompleteLookupIsNotCached(searchStatus: Int) async {
+        let session = LyricsResponseStub.session(responses: [
+            .init(status: 503, body: "{}"),
+            .init(status: searchStatus, body: "[]"),
+            .init(body: #"{"duration":200,"plainLyrics":"Recovered lyrics"}"#),
+        ])
+        defer { session.invalidateAndCancel() }
+        let service = LyricsService(session: session)
+        let query = LyricsQuery(title: "Song", artist: "Artist", duration: 200)
+
+        #expect(await service.lyrics(for: query) == .failure(.unavailable))
+        let retry = await service.lyrics(for: query)
+        #expect(retry.map { $0.lines.map(\.text) } == .success(["Recovered lyrics"]))
+        #expect(LyricsResponseStub.requests(for: session).count == 3)
+    }
+
+    @Test("An unreadable synced result cannot hide usable plain lyrics")
+    func searchSkipsUnreadableLyrics() async {
+        let session = LyricsResponseStub.session(responses: [
+            .init(status: 404, body: "{}"),
+            .init(body: #"[{"duration":200,"syncedLyrics":"not LRC"},{"duration":201,"plainLyrics":"Readable lyrics"}]"#),
+        ])
+        defer { session.invalidateAndCancel() }
+        let service = LyricsService(session: session)
+        let result = await service.lyrics(for: LyricsQuery(title: "Song", artist: "Artist", duration: 200))
+
+        #expect(result.map { $0.lines.map(\.text) } == .success(["Readable lyrics"]))
+        #expect(result.map(\.isSynced) == .success(false))
+    }
+
+    @Test("Empty timestamped lines fall back to readable plain lyrics")
+    func emptySyncedLyricsUsePlainText() throws {
+        let record = LRCLIBRecord(
+            duration: 200, instrumental: false,
+            plainLyrics: "Readable lyrics", syncedLyrics: "[00:01.00]\n[00:02.00] "
+        )
+        let lyrics = try #require(LyricsService.lyrics(from: record))
+        #expect(!lyrics.isSynced)
+        #expect(lyrics.lines.map(\.text) == ["Readable lyrics"])
+    }
+
     /// The old read buffered the whole body first, so a server that kept
     /// sending held the lookup until the 12-second resource timeout.
     @Test("An oversized answer is refused as it arrives")
@@ -135,15 +231,38 @@ struct LyricsTests {
     }
 }
 
-/// Serves one canned body to every request. With `finishes` false the load
+/// Serves scripted responses in request order. With `finishes` false the load
 /// never completes, like a server that keeps the connection open.
 private final class LyricsResponseStub: URLProtocol {
+    struct Response {
+        var status = 200
+        var body: String
+    }
+
+    private struct Scenario {
+        var responses: [(status: Int, body: Data, finishes: Bool)]
+        var requests: [URLRequest] = []
+    }
+
     private static let lock = NSLock()
-    nonisolated(unsafe) private static var bodies: [String: (Data, Bool)] = [:]
+    nonisolated(unsafe) private static var scenarios: [String: Scenario] = [:]
 
     static func session(body: Data, finishes: Bool) -> URLSession {
+        makeSession(responses: [(200, body, finishes)])
+    }
+
+    static func session(responses: [Response]) -> URLSession {
+        makeSession(responses: responses.map { ($0.status, Data($0.body.utf8), true) })
+    }
+
+    static func requests(for session: URLSession) -> [URLRequest] {
+        let key = session.configuration.httpAdditionalHeaders?["X-Stub"] as? String ?? ""
+        return lock.withLock { scenarios[key]?.requests ?? [] }
+    }
+
+    private static func makeSession(responses: [(Int, Data, Bool)]) -> URLSession {
         let key = UUID().uuidString
-        lock.withLock { bodies[key] = (body, finishes) }
+        lock.withLock { scenarios[key] = Scenario(responses: responses) }
         let configuration = URLSessionConfiguration.ephemeral
         configuration.protocolClasses = [LyricsResponseStub.self]
         configuration.httpAdditionalHeaders = ["X-Stub": key]
@@ -155,13 +274,20 @@ private final class LyricsResponseStub: URLProtocol {
 
     override func startLoading() {
         let key = request.value(forHTTPHeaderField: "X-Stub") ?? ""
-        guard let (body, finishes) = Self.lock.withLock({ Self.bodies[key] }),
-              let url = request.url,
-              let response = HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: nil)
+        let reply = Self.lock.withLock { () -> (status: Int, body: Data, finishes: Bool)? in
+            guard var scenario = Self.scenarios[key] else { return nil }
+            scenario.requests.append(request)
+            let reply = scenario.responses.isEmpty
+                ? (500, Data(), true) : scenario.responses.removeFirst()
+            Self.scenarios[key] = scenario
+            return reply
+        }
+        guard let reply, let url = request.url,
+              let response = HTTPURLResponse(url: url, statusCode: reply.status, httpVersion: nil, headerFields: nil)
         else { return }
         client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
-        client?.urlProtocol(self, didLoad: body)
-        if finishes { client?.urlProtocolDidFinishLoading(self) }
+        client?.urlProtocol(self, didLoad: reply.body)
+        if reply.finishes { client?.urlProtocolDidFinishLoading(self) }
     }
 
     override func stopLoading() {}

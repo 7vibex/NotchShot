@@ -109,8 +109,15 @@ public actor LyricsService {
         }
     }
 
-    public func lyrics(for query: LyricsQuery) async -> Result<Lyrics, LookupError> {
-        if let cached = cache[query] { return cached }
+    /// An explicit refresh retries even a cached miss. Concurrent requests for
+    /// the same track still share one lookup.
+    public func lyrics(for query: LyricsQuery, forceRefresh: Bool = false) async -> Result<Lyrics, LookupError> {
+        if forceRefresh {
+            cache[query] = nil
+            cacheOrder.removeAll { $0 == query }
+        } else if let cached = cache[query] {
+            return cached
+        }
         if let running = inFlight[query] { return await running.value }
         let task = Task { await self.fetch(query) }
         inFlight[query] = task
@@ -132,13 +139,16 @@ public actor LyricsService {
     }
 
     private func fetch(_ query: LyricsQuery) async -> Result<Lyrics, LookupError> {
+        var exactLookupFailed = false
         // The exact-match endpoint first; it needs the length to disambiguate.
         if query.duration != nil {
             switch await get(query) {
             case .success(let record):
                 if let lyrics = Self.lyrics(from: record) { return .success(lyrics) }
             case .failure(.unavailable):
-                return .failure(.unavailable)
+                // A slow or rejected exact lookup must not prevent search from
+                // finding lyrics that are already in the database.
+                exactLookupFailed = true
             case .failure(.notFound):
                 break
             }
@@ -148,10 +158,10 @@ public actor LyricsService {
         case .success(let records):
             guard let record = Self.bestMatch(records, for: query),
                   let lyrics = Self.lyrics(from: record)
-            else { return .failure(.notFound) }
+            else { return .failure(exactLookupFailed ? .unavailable : .notFound) }
             return .success(lyrics)
         case .failure(let error):
-            return .failure(error)
+            return .failure(exactLookupFailed ? .unavailable : error)
         }
     }
 
@@ -199,33 +209,35 @@ public actor LyricsService {
             }
             return .success(try JSONDecoder().decode(T.self, from: data))
         } catch is DecodingError {
-            return .failure(.notFound)
+            // A broken response says nothing about whether this song has
+            // lyrics. Keep it retryable rather than caching a missing track.
+            return .failure(.unavailable)
         } catch {
             return .failure(.unavailable)
         }
     }
 
     static func bestMatch(_ records: [LRCLIBRecord], for query: LyricsQuery) -> LRCLIBRecord? {
-        let usable = records.filter { record in
-            guard record.instrumental == true || record.syncedLyrics?.isEmpty == false
-                || record.plainLyrics?.isEmpty == false
-            else { return false }
-            guard let wanted = query.duration, let length = record.duration else { return true }
-            return abs(length - wanted) <= durationTolerance
+        let usable = records.compactMap { record -> (record: LRCLIBRecord, lyrics: Lyrics)? in
+            if let wanted = query.duration, let length = record.duration,
+               abs(length - wanted) > durationTolerance { return nil }
+            guard let lyrics = lyrics(from: record) else { return nil }
+            return (record, lyrics)
         }
         // Prefer synced lyrics, then the closest length.
         return usable.min { lhs, rhs in
-            let lhsSynced = lhs.syncedLyrics?.isEmpty == false
-            let rhsSynced = rhs.syncedLyrics?.isEmpty == false
+            let lhsSynced = lhs.lyrics.isSynced
+            let rhsSynced = rhs.lyrics.isSynced
             if lhsSynced != rhsSynced { return lhsSynced }
             guard let wanted = query.duration else { return false }
-            return abs((lhs.duration ?? .infinity) - wanted) < abs((rhs.duration ?? .infinity) - wanted)
-        }
+            return abs((lhs.record.duration ?? .infinity) - wanted) < abs((rhs.record.duration ?? .infinity) - wanted)
+        }?.record
     }
 
     static func lyrics(from record: LRCLIBRecord) -> Lyrics? {
         if record.instrumental == true { return .instrumental }
-        if let synced = record.syncedLyrics, let parsed = LRCParser.parse(synced), !parsed.isEmpty {
+        if let synced = record.syncedLyrics, let parsed = LRCParser.parse(synced),
+           parsed.contains(where: { !$0.text.isEmpty }) {
             return Lyrics(lines: parsed, isSynced: true, isInstrumental: false)
         }
         if let plain = record.plainLyrics {

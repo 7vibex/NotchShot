@@ -9,7 +9,12 @@ enum LyricsPanelState: Equatable {
 
     static let noTrackMessage = "Lyrics need a track title and artist"
     static let notFoundMessage = "No lyrics found for this track"
-    static let offlineMessage = "Couldn't reach LRCLIB — check your connection"
+    static let offlineMessage = "Lyrics are temporarily unavailable — try refreshing"
+
+    var isLoading: Bool {
+        if case .loading = self { return true }
+        return false
+    }
 
     var query: LyricsQuery? {
         switch self {
@@ -41,7 +46,13 @@ struct LyricsPanel: View {
         Group {
             switch state {
             case .idle, .loading:
-                message("Finding lyrics…")
+                HStack(spacing: 8) {
+                    ProgressView().controlSize(.small)
+                    Text("Finding lyrics…")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(Color.islandInk(NotchIsland.Ink.tertiary))
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             case .unavailable(let text, _):
                 message(text)
             case .loaded(_, let lyrics) where lyrics.isInstrumental:

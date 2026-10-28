@@ -514,7 +514,11 @@ struct MediaContent: View {
                 }
             }
         case .lyrics:
-            panel(title: "Lyrics", onRefresh: { Task { await refreshLyrics() } }) {
+            panel(
+                title: "Lyrics",
+                isRefreshing: lyrics.isLoading,
+                onRefresh: { Task { await refreshLyrics(forceRefresh: true) } }
+            ) {
                 LyricsPanel(
                     state: lyrics,
                     snapshot: snapshot,
@@ -541,6 +545,7 @@ struct MediaContent: View {
 
     private func panel<Content: View>(
         title: String,
+        isRefreshing: Bool = false,
         onRefresh: @escaping () -> Void,
         @ViewBuilder content: () -> Content
     ) -> some View {
@@ -559,6 +564,7 @@ struct MediaContent: View {
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(NotchPressButtonStyle())
+                .disabled(isRefreshing)
                 .foregroundStyle(Color.islandInk(NotchIsland.Ink.tertiary))
                 .help("Refresh \(title.lowercased())")
                 .accessibilityLabel("Refresh \(title.lowercased())")
@@ -634,13 +640,13 @@ struct MediaContent: View {
         // The keyed task fetches once the panel is open.
     }
 
-    private func refreshLyrics() async {
+    private func refreshLyrics(forceRefresh: Bool = false) async {
         guard Preferences.shared.lyricsEnabled, let query = LyricsQuery(snapshot: snapshot) else {
             lyrics = .unavailable(LyricsPanelState.noTrackMessage)
             return
         }
-        if lyrics.query != query { lyrics = .loading(query) }
-        let result = await LyricsService.shared.lyrics(for: query)
+        lyrics = .loading(query)
+        let result = await LyricsService.shared.lyrics(for: query, forceRefresh: forceRefresh)
         // A shared lookup can finish after this panel task was cancelled.
         // Apply the same live-query gate to failures and successes.
         guard !Task.isCancelled,
