@@ -9,8 +9,29 @@ public enum BackgroundFill: Codable, Sendable, Equatable {
     case gradient(startHex: String, endHex: String, angle: Double)
     /// Relative path inside the `.notchshot` package, or an absolute file path.
     case image(path: String)
+    /// A backdrop NotchShot paints itself, at whatever size the canvas is.
+    case artwork(BackgroundArtwork)
 
     public var isTransparent: Bool { self == .none }
+}
+
+/// A title bar drawn above the capture, so an area or a cropped window
+/// still reads as a Mac window once it is framed.
+public enum BackgroundWindowChrome: String, Codable, Sendable, CaseIterable, Identifiable {
+    case light
+    case dark
+
+    public var id: String { rawValue }
+
+    public var title: String {
+        switch self {
+        case .light: "Light"
+        case .dark: "Dark"
+        }
+    }
+
+    /// Height of the bar in points at 1×, matching a compact macOS title bar.
+    public static let barHeight: Double = 28
 }
 
 /// Preset framings offered in the editor.
@@ -19,8 +40,25 @@ public struct BackgroundPreset: Sendable, Identifiable, Equatable {
     public let title: String
     public let configuration: BackgroundConfiguration
 
+    /// The painted backdrops share one framing so switching between them
+    /// changes only the scene behind the capture.
+    private static func artwork(_ artwork: BackgroundArtwork) -> BackgroundPreset {
+        BackgroundPreset(
+            id: artwork.rawValue,
+            title: artwork.title,
+            configuration: BackgroundConfiguration(
+                fill: .artwork(artwork),
+                padding: 72,
+                cornerRadius: 14,
+                shadowRadius: 36,
+                shadowOpacity: artwork.isDark ? 0.5 : 0.3
+            )
+        )
+    }
+
     public static let all: [BackgroundPreset] = [
         BackgroundPreset(id: "none", title: "None", configuration: .none),
+    ] + BackgroundArtwork.allCases.map(artwork) + [
         BackgroundPreset(
             id: "paper",
             title: "Paper",
@@ -100,6 +138,8 @@ public struct BackgroundConfiguration: Codable, Sendable, Equatable {
     public var balancesAutomatically: Bool
     /// Draws a subtle inset border on the screenshot, like a window edge.
     public var drawsInnerBorder: Bool
+    /// Optional so projects saved before window frames existed still decode.
+    public var windowChrome: BackgroundWindowChrome?
 
     public init(
         fill: BackgroundFill = .none,
@@ -111,7 +151,8 @@ public struct BackgroundConfiguration: Codable, Sendable, Equatable {
         horizontalAlignment: Double = 0,
         verticalAlignment: Double = 0,
         balancesAutomatically: Bool = true,
-        drawsInnerBorder: Bool = true
+        drawsInnerBorder: Bool = true,
+        windowChrome: BackgroundWindowChrome? = nil
     ) {
         self.fill = fill
         self.padding = padding
@@ -123,26 +164,37 @@ public struct BackgroundConfiguration: Codable, Sendable, Equatable {
         self.verticalAlignment = verticalAlignment
         self.balancesAutomatically = balancesAutomatically
         self.drawsInnerBorder = drawsInnerBorder
+        self.windowChrome = windowChrome
     }
 
     public static let none = BackgroundConfiguration()
 
     public var isEnabled: Bool {
-        !(fill.isTransparent && padding == 0 && cornerRadius == 0 && shadowRadius == 0 && aspectRatio == nil)
+        !(fill.isTransparent && padding == 0 && cornerRadius == 0 && shadowRadius == 0
+            && aspectRatio == nil && windowChrome == nil)
+    }
+
+    /// Height of the window title bar in pixels, or 0 without one.
+    public func chromeHeight(scale: CGFloat) -> Double {
+        windowChrome == nil ? 0 : (BackgroundWindowChrome.barHeight * Double(scale)).rounded()
     }
 
     /// Computes the output canvas and where the screenshot sits inside it.
     ///
     /// Pure so the layout — especially the aspect-ratio and optical-balance
-    /// behaviour — can be verified without rendering anything.
+    /// behaviour — can be verified without rendering anything. A window title
+    /// bar is laid out with the screenshot, directly above it; `content`
+    /// stays the screenshot's own pixels so annotations keep their mapping.
     public func layout(for contentPixelSize: CGSize, scale: CGFloat) -> (canvas: CGSize, content: CGRect) {
         guard contentPixelSize.width > 0, contentPixelSize.height > 0 else {
             return (CGSize(width: 1, height: 1), CGRect(x: 0, y: 0, width: 1, height: 1))
         }
 
         let paddingPixels = padding * Double(scale)
+        let chrome = chromeHeight(scale: scale)
+        let framedHeight = Double(contentPixelSize.height) + chrome
         var canvasWidth = Double(contentPixelSize.width) + paddingPixels * 2
-        var canvasHeight = Double(contentPixelSize.height) + paddingPixels * 2
+        var canvasHeight = framedHeight + paddingPixels * 2
 
         if let aspectRatio, aspectRatio > 0 {
             // Grow the short side rather than cropping — a background should
@@ -156,7 +208,7 @@ public struct BackgroundConfiguration: Codable, Sendable, Equatable {
         }
 
         let freeX = canvasWidth - Double(contentPixelSize.width)
-        let freeY = canvasHeight - Double(contentPixelSize.height)
+        let freeY = canvasHeight - framedHeight
 
         var originX = freeX / 2 + (horizontalAlignment * freeX / 2)
         var originY = freeY / 2 + (verticalAlignment * freeY / 2)
@@ -175,7 +227,7 @@ public struct BackgroundConfiguration: Codable, Sendable, Equatable {
             CGSize(width: canvasWidth.rounded(), height: canvasHeight.rounded()),
             CGRect(
                 x: originX.rounded(),
-                y: originY.rounded(),
+                y: originY.rounded() + chrome,
                 width: contentPixelSize.width,
                 height: contentPixelSize.height
             )

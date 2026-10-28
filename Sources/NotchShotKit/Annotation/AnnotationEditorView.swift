@@ -11,7 +11,9 @@ public struct AnnotationEditorView: View {
     @State private var inProgress: AnnotationElement?
     @State private var isCropping = false
     @State private var cropDraft: CGRect?
-    @State private var showsBackgroundPanel = false
+    /// Framing is half of what the editor is for, so it starts open; the
+    /// choice sticks once someone closes it.
+    @AppStorage("notchshot.editor.showsBackgroundPanel") private var showsBackgroundPanel = true
     @State private var editingTextID: UUID?
     @State private var errorMessage: String?
     @State private var colorEditingTask: Task<Void, Never>?
@@ -43,15 +45,18 @@ public struct AnnotationEditorView: View {
                 if showsBackgroundPanel {
                     Divider()
                     BackgroundPanel(controller: controller)
-                        .frame(width: 260)
+                        .frame(width: 280)
                         .transition(reduceMotion ? .opacity : .move(edge: .trailing))
                 }
             }
             Divider()
             statusBar
         }
-        .frame(minWidth: 820, minHeight: 560)
-        .background(Color(nsColor: .windowBackgroundColor))
+        .frame(minWidth: 860, minHeight: 560)
+        .background(Color(white: 0.09))
+        // NotchShot's surfaces are dark, and a framed capture reads best on
+        // a dark table, the way it will on most of the places it is posted.
+        .preferredColorScheme(.dark)
         .alert("Couldn't finish", isPresented: .constant(errorMessage != nil)) {
             Button("OK") { errorMessage = nil }
         } message: {
@@ -161,7 +166,7 @@ public struct AnnotationEditorView: View {
             Button {
                 withAnimation(NotchMotion.selection(reduceMotion: reduceMotion)) { showsBackgroundPanel.toggle() }
             } label: {
-                Image(systemName: "square.on.square.dashed")
+                Image(systemName: "photo.artframe")
                     .frame(
                         width: NotchShotDesignSystem.minimumControlTarget,
                         height: NotchShotDesignSystem.minimumControlTarget
@@ -305,7 +310,7 @@ public struct AnnotationEditorView: View {
             )
 
             ZStack {
-                Color(nsColor: .underPageBackgroundColor)
+                EditorCanvasBackdrop()
 
                 if let preview = controller.basePreviewImage() {
                     Image(nsImage: preview)
@@ -313,7 +318,7 @@ public struct AnnotationEditorView: View {
                         .interpolation(.high)
                         .frame(width: layout.outputViewRect.width, height: layout.outputViewRect.height)
                         .position(x: layout.outputViewRect.midX, y: layout.outputViewRect.midY)
-                        .shadow(radius: 6)
+                        .shadow(color: .black.opacity(0.45), radius: 18, y: 8)
                 }
 
                 Canvas { context, _ in
@@ -322,13 +327,16 @@ public struct AnnotationEditorView: View {
                     context.withCGContext { cgContext in
                         cgContext.saveGState()
                         defer { cgContext.restoreGState() }
+                        // The rounded corners belong to the whole frame; under
+                        // a title bar the screenshot's top corners are square.
                         cgContext.addPath(CGPath(
-                            roundedRect: layout.contentViewRect,
+                            roundedRect: layout.frameViewRect,
                             cornerWidth: layout.contentCornerRadius,
                             cornerHeight: layout.contentCornerRadius,
                             transform: nil
                         ))
                         cgContext.clip()
+                        cgContext.clip(to: layout.contentViewRect)
                         cgContext.concatenate(layout.sourceToViewTransform)
                         AnnotationRenderer.drawInteractive(
                             elements: elements,
@@ -542,20 +550,26 @@ public struct AnnotationEditorView: View {
             Spacer()
 
             if imageActionTask != nil { ProgressView().controlSize(.small) }
-            Button("Copy") { performCopy() }
-                .keyboardShortcut("c", modifiers: [.command, .shift])
-                .disabled(imageActionTask != nil)
-            Button("Share…") { performShare() }
-                .disabled(imageActionTask != nil)
-            Button("Save Project") { performSaveProject() }
+            Group {
+                Button("Close") { onClose() }
+                Button("Save Project") { performSaveProject() }
+                Button("Share…") { performShare() }
+                    .disabled(imageActionTask != nil)
+                Button("Copy") { performCopy() }
+                    .keyboardShortcut("c", modifiers: [.command, .shift])
+                    .disabled(imageActionTask != nil)
+            }
+            .buttonStyle(.bordered)
+            .buttonBorderShape(.capsule)
             Button("Export…") { performExport() }
                 .disabled(imageActionTask != nil)
                 .keyboardShortcut("s", modifiers: .command)
+                .buttonBorderShape(.capsule)
                 .notchShotPrimaryActionStyle()
-            Button("Close") { onClose() }
         }
+        .controlSize(.large)
         .padding(.horizontal, 14)
-        .padding(.vertical, 8)
+        .padding(.vertical, 10)
     }
 
     // MARK: Actions
@@ -747,6 +761,29 @@ public struct AnnotationEditorView: View {
 /// The one coordinate model used by the editor's preview, drawing, selection,
 /// crop and hit-testing paths. Source coordinates remain unrotated pixels;
 /// `contentViewRect` is the rotated capture inside any composed background.
+/// The table the capture sits on while it is edited: near-black with a faint
+/// dot grid, so a framed capture's own backdrop and shadow read as the result.
+private struct EditorCanvasBackdrop: View {
+    var body: some View {
+        Canvas { context, size in
+            context.fill(Path(CGRect(origin: .zero, size: size)), with: .color(Color(white: 0.075)))
+            let spacing: CGFloat = 18
+            var dots = Path()
+            var y = spacing / 2
+            while y < size.height {
+                var x = spacing / 2
+                while x < size.width {
+                    dots.addEllipse(in: CGRect(x: x - 0.75, y: y - 0.75, width: 1.5, height: 1.5))
+                    x += spacing
+                }
+                y += spacing
+            }
+            context.fill(dots, with: .color(.white.opacity(0.07)))
+        }
+        .accessibilityHidden(true)
+    }
+}
+
 struct AnnotationEditorGeometry: Sendable {
     let visibleSourceRect: CGRect
     let rotation: RotationAngle
@@ -754,6 +791,9 @@ struct AnnotationEditorGeometry: Sendable {
     let outputPixelSize: CGSize
     let outputViewRect: CGRect
     let contentViewRect: CGRect
+    /// The screenshot plus its window title bar, when it has one; this is
+    /// the shape that carries the rounded corners.
+    let frameViewRect: CGRect
     let contentCornerRadius: CGFloat
 
     init(document: AnnotationDocument, containerSize: CGSize) {
@@ -783,9 +823,16 @@ struct AnnotationEditorGeometry: Sendable {
             height: backgroundLayout.content.height * scaleY
         )
         contentViewRect = fittedContentViewRect
+        let chromeViewHeight = document.background.chromeHeight(scale: document.sourceScale) * scaleY
+        frameViewRect = CGRect(
+            x: fittedContentViewRect.minX,
+            y: fittedContentViewRect.minY - chromeViewHeight,
+            width: fittedContentViewRect.width,
+            height: fittedContentViewRect.height + chromeViewHeight
+        )
         contentCornerRadius = min(
             document.background.cornerRadius * document.sourceScale * min(scaleX, scaleY),
-            min(fittedContentViewRect.width, fittedContentViewRect.height) / 2
+            min(frameViewRect.width, frameViewRect.height) / 2
         )
     }
 
@@ -907,114 +954,39 @@ struct AnnotationEditorGeometry: Sendable {
 
 // MARK: - Background panel
 
+/// Frames the capture: what it sits on, how it is framed, and the canvas shape.
+///
+/// Each backdrop tile is painted by the export renderer with a stand-in
+/// window on it, so the grid previews the finished look rather than a
+/// colour chip.
 struct BackgroundPanel: View {
     @Bindable var controller: AnnotationDocumentController
     @State private var backgroundError: String?
 
+    private var background: BackgroundConfiguration { controller.document.background }
+
+    private static let ratios: [(title: String, value: Double?)] = [
+        ("Natural", nil), ("16:9", 16.0 / 9.0), ("4:3", 4.0 / 3.0), ("1:1", 1), ("9:16", 9.0 / 16.0),
+    ]
+
     var body: some View {
-        Form {
-            Section("Preset") {
-                LazyVGrid(columns: [GridItem(.adaptive(minimum: 68), spacing: 8)], spacing: 8) {
-                    ForEach(BackgroundPreset.all) { preset in
-                        let isSelected = controller.document.background == preset.configuration
-                        Button {
-                            controller.applyBackgroundPreset(preset)
-                        } label: {
-                            VStack(spacing: 4) {
-                                swatch(for: preset.configuration.fill)
-                                Text(preset.title)
-                                    .font(.caption2)
-                                    .lineLimit(1)
-                            }
-                            .padding(3)
-                            .background(
-                                isSelected ? Color.accentColor.opacity(0.16) : .clear,
-                                in: RoundedRectangle(cornerRadius: 8)
-                            )
-                            .overlay(alignment: .topTrailing) {
-                                if isSelected {
-                                    Image(systemName: "checkmark.circle.fill")
-                                        .symbolRenderingMode(.palette)
-                                        .foregroundStyle(.white, Color.accentColor)
-                                        .padding(5)
-                                }
-                            }
-                        }
-                        .buttonStyle(.plain)
-                        .accessibilityLabel("\(preset.title) background")
-                        .accessibilityValue(isSelected ? "Selected" : "")
-                        .accessibilityAddTraits(isSelected ? [.isSelected] : [])
-                    }
-                }
-            }
+        ScrollView {
+            VStack(alignment: .leading, spacing: 20) {
+                section("Backdrop", accessory: { defaultBackdropControl }) { backdropGrid }
+                section("Frame") { frameControls }
+                section("Canvas") { canvasControls }
 
-            Section("Layout") {
-                LabeledContent("Padding") {
-                    Slider(
-                        value: binding(\.padding, default: 0),
-                        in: 0 ... 200,
-                        onEditingChanged: updateContinuousEditing
-                    )
-                }
-                LabeledContent("Corner radius") {
-                    Slider(
-                        value: binding(\.cornerRadius, default: 0),
-                        in: 0 ... 48,
-                        onEditingChanged: updateContinuousEditing
-                    )
-                }
-                LabeledContent("Shadow") {
-                    Slider(
-                        value: binding(\.shadowRadius, default: 0),
-                        in: 0 ... 60,
-                        onEditingChanged: updateContinuousEditing
-                    )
-                }
-                Toggle("Balance automatically", isOn: Binding(
-                    get: { controller.document.background.balancesAutomatically },
-                    set: { newValue in
-                        var background = controller.document.background
-                        background.balancesAutomatically = newValue
-                        controller.applyBackground(background)
-                    }
-                ))
-                Toggle("Inner border", isOn: Binding(
-                    get: { controller.document.background.drawsInnerBorder },
-                    set: { newValue in
-                        var background = controller.document.background
-                        background.drawsInnerBorder = newValue
-                        controller.applyBackground(background)
-                    }
-                ))
-            }
-
-            Section("Aspect ratio") {
-                Picker("Ratio", selection: Binding(
-                    get: { controller.document.background.aspectRatio ?? 0 },
-                    set: { newValue in
-                        var background = controller.document.background
-                        background.aspectRatio = newValue == 0 ? nil : newValue
-                        controller.applyBackground(background)
-                    }
-                )) {
-                    Text("Natural").tag(0.0)
-                    Text("16 : 9").tag(16.0 / 9.0)
-                    Text("4 : 3").tag(4.0 / 3.0)
-                    Text("1 : 1").tag(1.0)
-                    Text("9 : 16").tag(9.0 / 16.0)
-                }
-                .pickerStyle(.menu)
-                .labelsHidden()
-            }
-
-            Section("Custom") {
-                Button("Choose Image…") { chooseBackgroundImage() }
-                Button("Clear Background") {
+                Button("Remove Background", role: .destructive) {
                     controller.applyBackground(.none)
                 }
+                .buttonStyle(.borderless)
+                .font(.system(size: 12))
+                .disabled(!background.isEnabled)
             }
+            .padding(14)
         }
-        .notchShotFormStyle()
+        .scrollIndicators(.automatic)
+        .background(Color(white: 0.11))
         .alert("Background image unavailable", isPresented: Binding(
             get: { backgroundError != nil },
             set: { if !$0 { backgroundError = nil } }
@@ -1025,16 +997,228 @@ struct BackgroundPanel: View {
         }
     }
 
-    private func binding(
-        _ keyPath: WritableKeyPath<BackgroundConfiguration, Double>,
-        default fallback: Double
-    ) -> Binding<Double> {
+    private func section<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
+        section(title, accessory: { EmptyView() }, content: content)
+    }
+
+    private func section<Accessory: View, Content: View>(
+        _ title: String,
+        @ViewBuilder accessory: () -> Accessory,
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text(title)
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                    .accessibilityAddTraits(.isHeader)
+                Spacer(minLength: 8)
+                accessory()
+            }
+            content()
+        }
+    }
+
+    /// The preset whose backdrop is showing, if the backdrop is one.
+    private var currentPreset: BackgroundPreset? {
+        BackgroundPreset.all.first {
+            $0.configuration.fill == background.fill
+                && $0.configuration.isEnabled == background.isEnabled
+        }
+    }
+
+    /// New editor documents open with this backdrop already applied.
+    @ViewBuilder
+    private var defaultBackdropControl: some View {
+        if let preset = currentPreset {
+            if Preferences.shared.defaultBackgroundPresetID == preset.id {
+                Text("Default")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.tertiary)
+            } else {
+                Button("Use by Default") {
+                    Preferences.shared.defaultBackgroundPresetID = preset.id
+                }
+                .buttonStyle(.borderless)
+                .font(.system(size: 11))
+                .help("Open new captures in the editor with \(preset.title)")
+            }
+        }
+    }
+
+    // MARK: Backdrop
+
+    private var backdropGrid: some View {
+        LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: 3), spacing: 10) {
+            ForEach(BackgroundPreset.all) { preset in
+                let isSelected = background.fill == preset.configuration.fill
+                    && (preset.configuration.isEnabled || !background.isEnabled)
+                Button {
+                    applyPreset(preset)
+                } label: {
+                    BackdropTile(
+                        title: preset.title,
+                        isSelected: isSelected,
+                        thumbnail: BackdropThumbnails.image(for: preset)
+                    )
+                }
+                .buttonStyle(.plain)
+                .help(preset.title)
+                .accessibilityLabel("\(preset.title) background")
+                .accessibilityAddTraits(isSelected ? [.isSelected] : [])
+            }
+
+            Button { chooseBackgroundImage() } label: {
+                BackdropTile(title: "Image…", isSelected: isImageFill, thumbnail: nil)
+            }
+            .buttonStyle(.plain)
+            .help("Use a picture as the backdrop")
+            .accessibilityLabel("Choose a background image")
+            .accessibilityAddTraits(isImageFill ? [.isSelected] : [])
+        }
+    }
+
+    private var isImageFill: Bool {
+        if case .image = background.fill { return true }
+        return false
+    }
+
+    /// Switching backdrops keeps the framing the user already tuned; only a
+    /// capture with no framing yet takes the preset's.
+    private func applyPreset(_ preset: BackgroundPreset) {
+        guard background.isEnabled, preset.configuration.isEnabled else {
+            controller.applyBackgroundPreset(preset)
+            return
+        }
+        var updated = background
+        updated.fill = preset.configuration.fill
+        if preset.configuration.aspectRatio != nil {
+            updated.aspectRatio = preset.configuration.aspectRatio
+        }
+        updated.shadowOpacity = preset.configuration.shadowOpacity
+        controller.applyBackground(updated)
+    }
+
+    // MARK: Frame
+
+    private var frameControls: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            sliderRow("Padding", value: binding(\.padding), range: 0 ... 200)
+            sliderRow("Corners", value: binding(\.cornerRadius), range: 0 ... 48)
+            sliderRow("Shadow", value: binding(\.shadowRadius), range: 0 ... 60)
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Window bar")
+                    .font(.system(size: 12))
+                Picker("Window bar", selection: Binding(
+                    get: { background.windowChrome },
+                    set: { newValue in
+                        var updated = background
+                        updated.windowChrome = newValue
+                        // A bare title bar floating on nothing reads as a
+                        // mistake; give it a little room and a soft edge.
+                        if newValue != nil, updated.padding == 0 { updated.padding = 48 }
+                        if newValue != nil, updated.cornerRadius == 0 { updated.cornerRadius = 10 }
+                        controller.applyBackground(updated)
+                    }
+                )) {
+                    Text("None").tag(BackgroundWindowChrome?.none)
+                    ForEach(BackgroundWindowChrome.allCases) { chrome in
+                        Text(chrome.title).tag(Optional(chrome))
+                    }
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+            }
+
+            Toggle("Edge highlight", isOn: Binding(
+                get: { background.drawsInnerBorder },
+                set: { newValue in
+                    var updated = background
+                    updated.drawsInnerBorder = newValue
+                    controller.applyBackground(updated)
+                }
+            ))
+            .toggleStyle(.switch)
+            .controlSize(.small)
+            .font(.system(size: 12))
+        }
+    }
+
+    private func sliderRow(_ title: String, value: Binding<Double>, range: ClosedRange<Double>) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            HStack {
+                Text(title)
+                    .font(.system(size: 12))
+                Spacer()
+                Text("\(Int(value.wrappedValue.rounded()))")
+                    .font(.system(size: 11).monospacedDigit())
+                    .foregroundStyle(.secondary)
+            }
+            Slider(value: value, in: range, onEditingChanged: updateContinuousEditing)
+                .controlSize(.small)
+                .labelsHidden()
+                .accessibilityLabel(title)
+        }
+    }
+
+    // MARK: Canvas
+
+    private var canvasControls: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 6) {
+                ForEach(Self.ratios, id: \.title) { ratio in
+                    let isSelected = background.aspectRatio == ratio.value
+                    Button {
+                        var updated = background
+                        updated.aspectRatio = ratio.value
+                        if ratio.value != nil, updated.padding == 0 { updated.padding = 48 }
+                        controller.applyBackground(updated)
+                    } label: {
+                        Text(ratio.title)
+                            .font(.system(size: 11, weight: isSelected ? .semibold : .regular))
+                            .lineLimit(1)
+                            .fixedSize()
+                            .padding(.horizontal, 8)
+                            .frame(height: 24)
+                            .background(
+                                Capsule().fill(isSelected ? Color.accentColor : Color.white.opacity(0.07))
+                            )
+                            .overlay(Capsule().strokeBorder(Color.white.opacity(isSelected ? 0 : 0.1)))
+                            .foregroundStyle(isSelected ? Color.white : Color.primary)
+                            .contentShape(Capsule())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(ratio.value == nil ? "Natural aspect ratio" : "\(ratio.title) aspect ratio")
+                    .accessibilityAddTraits(isSelected ? [.isSelected] : [])
+                }
+            }
+
+            Toggle("Balance automatically", isOn: Binding(
+                get: { background.balancesAutomatically },
+                set: { newValue in
+                    var updated = background
+                    updated.balancesAutomatically = newValue
+                    controller.applyBackground(updated)
+                }
+            ))
+            .toggleStyle(.switch)
+            .controlSize(.small)
+            .font(.system(size: 12))
+            .disabled(background.aspectRatio == nil)
+            .help("Lifts the capture slightly above centre when a ratio adds space")
+        }
+    }
+
+    // MARK: Helpers
+
+    private func binding(_ keyPath: WritableKeyPath<BackgroundConfiguration, Double>) -> Binding<Double> {
         Binding(
             get: { controller.document.background[keyPath: keyPath] },
             set: { newValue in
-                var background = controller.document.background
-                background[keyPath: keyPath] = newValue
-                controller.applyBackground(background)
+                var updated = controller.document.background
+                updated[keyPath: keyPath] = newValue
+                controller.applyBackground(updated)
             }
         )
     }
@@ -1047,30 +1231,6 @@ struct BackgroundPanel: View {
         }
     }
 
-    @ViewBuilder
-    private func swatch(for fill: BackgroundFill) -> some View {
-        let shape = RoundedRectangle(cornerRadius: 6)
-        switch fill {
-        case .none:
-            shape.strokeBorder(.secondary, style: StrokeStyle(lineWidth: 1, dash: [3, 2]))
-                .frame(height: 40)
-        case .solid(let hex):
-            shape.fill(Color(nsColor: NSColor(hex: hex) ?? .gray)).frame(height: 40)
-        case .gradient(let start, let end, _):
-            shape.fill(LinearGradient(
-                colors: [
-                    Color(nsColor: NSColor(hex: start) ?? .blue),
-                    Color(nsColor: NSColor(hex: end) ?? .purple),
-                ],
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
-            ))
-            .frame(height: 40)
-        case .image:
-            shape.fill(.tertiary).frame(height: 40)
-        }
-    }
-
     private func chooseBackgroundImage() {
         let panel = NSOpenPanel()
         panel.allowedContentTypes = [.image]
@@ -1080,9 +1240,114 @@ struct BackgroundPanel: View {
             backgroundError = "Choose a regular, single-frame image no larger than 16,384 pixels per side or 50 megapixels."
             return
         }
-        var background = controller.document.background
-        background.fill = .image(path: url.path)
-        if background.padding == 0 { background.padding = 64 }
-        controller.applyBackground(background)
+        var updated = controller.document.background
+        updated.fill = .image(path: url.path)
+        if updated.padding == 0 { updated.padding = 64 }
+        controller.applyBackground(updated)
+    }
+}
+
+private struct BackdropTile: View {
+    var title: String
+    var isSelected: Bool
+    var thumbnail: NSImage?
+
+    @State private var isHovered = false
+
+    var body: some View {
+        let shape = RoundedRectangle(cornerRadius: 9, style: .continuous)
+        VStack(spacing: 5) {
+            Group {
+                if let thumbnail {
+                    Image(nsImage: thumbnail)
+                        .resizable()
+                        .interpolation(.high)
+                } else {
+                    ZStack {
+                        Color.white.opacity(0.06)
+                        Image(systemName: "photo")
+                            .font(.system(size: 15, weight: .medium))
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+            .aspectRatio(4.0 / 3.0, contentMode: .fit)
+            .clipShape(shape)
+            .overlay(shape.strokeBorder(Color.white.opacity(0.12), lineWidth: 1))
+            .padding(2)
+            .overlay(
+                RoundedRectangle(cornerRadius: 11, style: .continuous)
+                    .strokeBorder(
+                        isSelected ? Color.accentColor : Color.white.opacity(isHovered ? 0.25 : 0),
+                        lineWidth: 2
+                    )
+            )
+            Text(title)
+                .font(.system(size: 10.5, weight: isSelected ? .semibold : .regular))
+                .foregroundStyle(isSelected ? Color.primary : Color.secondary)
+                .lineLimit(1)
+                .minimumScaleFactor(0.85)
+        }
+        .contentShape(Rectangle())
+        .onHover { isHovered = $0 }
+    }
+}
+
+/// Small renders of each preset: the backdrop with a stand-in window on it.
+@MainActor
+enum BackdropThumbnails {
+    private static var cache: [String: NSImage] = [:]
+    static let pixelSize = CGSize(width: 168, height: 126)
+
+    static func image(for preset: BackgroundPreset) -> NSImage {
+        if let cached = cache[preset.id] { return cached }
+        let image = render(preset.configuration)
+        cache[preset.id] = image
+        return image
+    }
+
+    static func render(_ configuration: BackgroundConfiguration) -> NSImage {
+        let size = pixelSize
+        guard let context = AnnotationRenderer.makeContext(width: Int(size.width), height: Int(size.height)) else {
+            return NSImage(size: CGSize(width: size.width / 2, height: size.height / 2))
+        }
+        let canvas = CGRect(origin: .zero, size: size)
+        if configuration.fill.isTransparent {
+            // A checkerboard says "transparent" the way every image editor does.
+            let cell: CGFloat = 12
+            for row in 0 ..< Int(size.height / cell) + 1 {
+                for column in 0 ..< Int(size.width / cell) + 1 {
+                    context.setFillColor(CGColor(gray: (row + column).isMultiple(of: 2) ? 0.22 : 0.17, alpha: 1))
+                    context.fill(CGRect(x: CGFloat(column) * cell, y: CGFloat(row) * cell, width: cell, height: cell))
+                }
+            }
+        } else {
+            // Painted at a third of the export scale so grain, stipple and
+            // grid read at thumbnail size the way they will in the file.
+            AnnotationRenderer.drawFill(configuration.fill, in: context, rect: canvas, scale: 0.6)
+        }
+
+        let window = canvas.insetBy(dx: 30, dy: 26)
+        let path = CGPath(roundedRect: window, cornerWidth: 7, cornerHeight: 7, transform: nil)
+        context.saveGState()
+        context.setShadow(offset: CGSize(width: 0, height: -4), blur: 12, color: CGColor(gray: 0, alpha: 0.35))
+        context.addPath(path)
+        context.setFillColor(CGColor(gray: 0.98, alpha: 1))
+        context.fillPath()
+        context.restoreGState()
+        context.saveGState()
+        context.addPath(path)
+        context.clip()
+        let bar = CGRect(x: window.minX, y: window.maxY - 14, width: window.width, height: 14)
+        context.setFillColor(CGColor(gray: 0.9, alpha: 1))
+        context.fill(bar)
+        for (index, gray) in [0.72, 0.78, 0.84].enumerated() {
+            context.setFillColor(CGColor(gray: gray, alpha: 1))
+            context.fill(CGRect(x: window.minX + 10, y: window.maxY - 30 - CGFloat(index) * 12, width: window.width * (0.7 - CGFloat(index) * 0.15), height: 6))
+        }
+        context.restoreGState()
+
+        guard let image = context.makeImage() else { return NSImage(size: size) }
+        return NSImage(cgImage: image, size: CGSize(width: size.width / 2, height: size.height / 2))
     }
 }

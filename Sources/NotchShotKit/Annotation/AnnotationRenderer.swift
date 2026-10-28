@@ -505,11 +505,20 @@ public enum AnnotationRenderer {
             height: layout.content.height
         )
 
+        // The window frame is the screenshot plus its title bar, which sits
+        // directly above the screenshot (higher y in this flipped space).
+        let chromeHeight = background.chromeHeight(scale: scale)
+        let frameRect = CGRect(
+            x: contentRect.minX,
+            y: contentRect.minY,
+            width: contentRect.width,
+            height: contentRect.height + chromeHeight
+        )
         let radius = background.cornerRadius * Double(scale)
         let clipPath = CGPath(
-            roundedRect: contentRect,
-            cornerWidth: min(radius, contentRect.width / 2),
-            cornerHeight: min(radius, contentRect.height / 2),
+            roundedRect: frameRect,
+            cornerWidth: min(radius, frameRect.width / 2),
+            cornerHeight: min(radius, frameRect.height / 2),
             transform: nil
         )
 
@@ -529,6 +538,14 @@ public enum AnnotationRenderer {
         context.saveGState()
         context.addPath(clipPath)
         context.clip()
+        if let chrome = background.windowChrome {
+            drawWindowChrome(
+                chrome,
+                in: context,
+                bar: CGRect(x: frameRect.minX, y: contentRect.maxY, width: frameRect.width, height: chromeHeight),
+                scale: scale
+            )
+        }
         context.draw(content, in: contentRect)
         context.restoreGState()
 
@@ -547,7 +564,73 @@ public enum AnnotationRenderer {
         return image
     }
 
-    private static func drawFill(
+    /// A compact macOS title bar: the window's own surface, a hairline
+    /// under it, and the three traffic lights.
+    private static func drawWindowChrome(
+        _ chrome: BackgroundWindowChrome,
+        in context: CGContext,
+        bar: CGRect,
+        scale: CGFloat
+    ) {
+        let isDark = chrome == .dark
+        let top = isDark ? NSColor(white: 0.18, alpha: 1) : NSColor(white: 0.95, alpha: 1)
+        let bottom = isDark ? NSColor(white: 0.155, alpha: 1) : NSColor(white: 0.91, alpha: 1)
+        if let gradient = CGGradient(
+            colorsSpace: CGColorSpace(name: CGColorSpace.sRGB),
+            colors: [top.cgColor, bottom.cgColor] as CFArray,
+            locations: [0, 1]
+        ) {
+            context.saveGState()
+            context.clip(to: bar)
+            context.drawLinearGradient(
+                gradient,
+                start: CGPoint(x: bar.minX, y: bar.maxY),
+                end: CGPoint(x: bar.minX, y: bar.minY),
+                options: []
+            )
+            context.restoreGState()
+        }
+        let hairline = max(1, scale.rounded(.down))
+        context.setFillColor(NSColor.black.withAlphaComponent(isDark ? 0.55 : 0.12).cgColor)
+        context.fill(CGRect(x: bar.minX, y: bar.minY, width: bar.width, height: hairline))
+
+        let diameter = 12 * scale
+        let lights: [(fill: UInt32, edge: UInt32)] = [
+            (0xFF5F57, 0xE0443E),
+            (0xFEBC2E, 0xDEA123),
+            (0x28C840, 0x1AAB29),
+        ]
+        for (index, light) in lights.enumerated() {
+            let center = CGPoint(
+                x: bar.minX + (14 + CGFloat(index) * 20) * scale,
+                y: bar.midY
+            )
+            let circle = CGRect(
+                x: center.x - diameter / 2,
+                y: center.y - diameter / 2,
+                width: diameter,
+                height: diameter
+            )
+            context.setFillColor(color(light.fill))
+            context.fillEllipse(in: circle)
+            context.setStrokeColor(color(light.edge))
+            context.setLineWidth(max(0.5, 0.5 * scale))
+            context.strokeEllipse(in: circle.insetBy(dx: 0.25 * scale, dy: 0.25 * scale))
+        }
+    }
+
+    private static func color(_ hex: UInt32) -> CGColor {
+        CGColor(
+            srgbRed: CGFloat((hex >> 16) & 0xFF) / 255,
+            green: CGFloat((hex >> 8) & 0xFF) / 255,
+            blue: CGFloat(hex & 0xFF) / 255,
+            alpha: 1
+        )
+    }
+
+    /// Also paints the editor's backdrop thumbnails, so a swatch is the
+    /// backdrop itself rather than an approximation of it.
+    static func drawFill(
         _ fill: BackgroundFill,
         in context: CGContext,
         rect: CGRect,
@@ -587,6 +670,9 @@ public enum AnnotationRenderer {
                 end: endPoint,
                 options: [.drawsBeforeStartLocation, .drawsAfterEndLocation]
             )
+
+        case .artwork(let artwork):
+            BackgroundArtworkRenderer.draw(artwork, in: context, rect: rect, scale: scale)
 
         case .image(let path):
             guard let cgImage = SafeImageFile.cgImage(

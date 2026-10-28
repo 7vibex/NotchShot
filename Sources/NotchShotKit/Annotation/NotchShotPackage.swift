@@ -389,6 +389,9 @@ public enum NotchShotPackage {
                 && abs(angle) <= 36_000
         case .image(let path):
             path.utf8.count <= 1_024
+        case .artwork:
+            // A closed enum: decoding already rejected anything unknown.
+            true
         }
     }
 
