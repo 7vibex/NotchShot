@@ -326,6 +326,10 @@ public struct NotchRootView: View {
         )
     }
 
+    private var shellShadowScale: Double {
+        shellIsSeeThrough ? IslandGlassPolicy.shadowScale : 1
+    }
+
     /// Whether the glass shell is on at all, independent of whether this
     /// presentation is see-through. Constant while the island morphs, so the
     /// view structure that depends on it never swaps mid-animation.
@@ -349,7 +353,8 @@ public struct NotchRootView: View {
                         // Clipped to the shell below, so the visible half of a
                         // 3 pt stroke reads as the old 1.5 pt border.
                         MarchingDashStroke(shape: shape, color: .accentColor, lineWidth: 3, dash: [8, 6])
-                    } else if !isRecording {
+                    } else if !isRecording, !shellIsSeeThrough {
+                        // Glass draws its own edge.
                         mediaShellKeyline
                     }
                 }
@@ -391,7 +396,7 @@ public struct NotchRootView: View {
                 .shadow(
                     // Strength 0.5 is the original 0.45 opacity.
                     color: .black.opacity(
-                        effectiveActivity.isExpanded ? Preferences.shared.islandShadowStrength * 0.9 : 0
+                        effectiveActivity.isExpanded ? Preferences.shared.islandShadowStrength * 0.9 * shellShadowScale : 0
                     ),
                     radius: 14 + 16 * Preferences.shared.islandShadowStrength,
                     y: 10

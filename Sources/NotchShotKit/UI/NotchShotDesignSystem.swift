@@ -249,16 +249,11 @@ extension View {
         modifier(NotchShotContentSwapModifier(identity: id))
     }
 
-    /// Clear glass lets the desktop refract through the lower edge. The shell
-    /// supplies its own black gradient to protect the camera and controls.
-    func notchShotShellGlass<S: Shape>(in shape: S, tintOpacity: Double) -> some View {
-        glassEffect(.clear.tint(.black.opacity(tintOpacity)), in: shape)
-    }
-
-    /// The detached page switcher needs the stronger, adaptive material behind
-    /// its small glyphs. It shares the dark appearance of the notch's chrome.
-    func notchShotNavigationGlass<S: Shape>(in shape: S) -> some View {
-        glassEffect(.regular.tint(.black.opacity(0.12)), in: shape)
+    /// The open notch's glass (see `IslandGlassSurface`): clear, so the
+    /// desktop shows through without frosting, and in the dark appearance
+    /// like the rest of the island under its white ink.
+    func notchShotShellGlass<S: Shape>(in shape: S) -> some View {
+        glassEffect(.clear, in: shape)
             .environment(\.colorScheme, .dark)
     }
 

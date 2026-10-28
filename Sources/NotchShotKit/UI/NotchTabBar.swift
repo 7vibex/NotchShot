@@ -33,21 +33,31 @@ struct NotchTabBar: View {
             height: NotchTabBarGeometry.height
         )
         .background {
-            if IslandGlassPolicy.usesGlass(
-                enabled: Preferences.shared.islandGlassEnabled,
-                reduceTransparency: reduceTransparency,
-                increaseContrast: colorSchemeContrast == .increased
-            ) {
-                Color.clear.notchShotNavigationGlass(in: Capsule())
+            if usesGlass {
+                IslandGlassSurface(
+                    shape: Capsule(),
+                    floorOpacity: IslandGlassPolicy.floorOpacity(level: Preferences.shared.islandGlassLevel)
+                )
             } else {
                 Capsule().fill(.black)
+                    .overlay(Capsule().strokeBorder(
+                        Color.islandInk(NotchIsland.Surface.edge),
+                        lineWidth: NotchIsland.Stroke.hairline
+                    ))
+                    .shadow(color: .black.opacity(0.35), radius: 10, y: 4)
             }
         }
-        .overlay(Capsule().strokeBorder(Color.islandInk(NotchIsland.Surface.edge), lineWidth: NotchIsland.Stroke.hairline))
-        .shadow(color: .black.opacity(0.35), radius: 10, y: 4)
         .animation(NotchMotion.selection(reduceMotion: reduceMotion), value: current)
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Notch pages")
+    }
+
+    private var usesGlass: Bool {
+        IslandGlassPolicy.usesGlass(
+            enabled: Preferences.shared.islandGlassEnabled,
+            reduceTransparency: reduceTransparency,
+            increaseContrast: colorSchemeContrast == .increased
+        )
     }
 }
 

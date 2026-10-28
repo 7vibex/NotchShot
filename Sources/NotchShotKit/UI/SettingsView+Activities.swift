@@ -66,7 +66,7 @@ struct ActivityIslandSettings: View {
             } header: {
                 Text("Motion and Feel")
             } footer: {
-                Text("Subtle never overshoots; Bouncy settles with a visible spring. Reduce Motion in System Settings replaces all of them with short fades. Shadow sets how strongly the open notch lifts off the screen. Glass notch keeps the camera and main controls dark while the lower edge reveals the desktop through clear Liquid Glass. The page switcher uses matching glass. Glass level controls how far the transparency reaches. The closed notch stays black, and Reduce Transparency or Increase Contrast keeps it all black.")
+                Text("Subtle never overshoots; Bouncy settles with a visible spring. Reduce Motion in System Settings replaces all of them with short fades. Shadow sets how strongly the open notch lifts off the screen. Glass notch turns the lower part of the open notch into Liquid Glass, and the page pill under it matches; the camera and the main controls stay on black. Glass level sets how much of the desktop shows through. The closed notch stays black, and Reduce Transparency or Increase Contrast keeps it all black.")
             }
 
             Group {
