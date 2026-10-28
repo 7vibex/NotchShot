@@ -262,6 +262,12 @@ extension View {
             .environment(\.colorScheme, .dark)
     }
 
+    /// The menu-bar panel's glass. The panel darkens it further with the
+    /// island's black, so the tint here stays light.
+    func notchShotMenuGlass<S: Shape>(in shape: S) -> some View {
+        glassEffect(.regular.tint(.black.opacity(0.2)), in: shape)
+    }
+
     /// Coordinates the separate activity cards as one native Liquid Glass
     /// family while keeping their individual rounded silhouettes.
     func notchShotActivityGlassGroup(spacing: CGFloat) -> some View {

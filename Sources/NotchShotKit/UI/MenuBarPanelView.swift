@@ -327,7 +327,7 @@ private struct MenuBarGlassBackground: View {
         ) {
             ZStack {
                 Color.clear
-                    .glassEffect(.regular.tint(.black.opacity(0.2)), in: shape)
+                    .notchShotMenuGlass(in: shape)
                 shape.fill(LinearGradient(
                     colors: [.black.opacity(0.62), .black.opacity(0.42)],
                     startPoint: .top,
