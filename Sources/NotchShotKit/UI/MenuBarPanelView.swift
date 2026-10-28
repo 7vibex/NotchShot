@@ -4,14 +4,14 @@ import SwiftUI
 /// The glass menu that drops from the menu-bar mascot.
 ///
 /// It replaces both the plain popover and the twenty-item right-click menu
-/// that sat behind the old camera icon. What people reach for every day is on
-/// the surface — the four capture tiles the island uses, the places captures
-/// end up, and the three after-capture switches people actually flip. The
+/// that sat behind the old camera icon. Capturing is the notch's job, so the
+/// menu holds no capture buttons: only the places captures end up, the three
+/// after-capture switches people actually flip, and the app itself. The
 /// rarely used commands are one level down under More, and everything else
 /// stays in Settings.
 ///
-/// It is drawn like the island it controls: dark glass, white ink, the
-/// island's own tiles and capsules, hairlines instead of boxes.
+/// It is drawn like the island it controls: dark glass, white ink,
+/// hairlines instead of boxes.
 struct MenuBarPanelView: View {
     @Bindable var coordinator: AppCoordinator
     /// Nil when this build has no signed update feed.
@@ -26,14 +26,13 @@ struct MenuBarPanelView: View {
     @State private var hasAppeared = false
 
     static let width: CGFloat = 320
-    /// Concentric with the 16 pt island tiles inside the 10 pt inset.
-    static let cornerRadius: CGFloat = 26
+    /// Concentric with the rows' 10 pt highlight inside the 10 pt inset.
+    static let cornerRadius: CGFloat = 20
     static let inset: CGFloat = 10
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             header
-            captureSection
             MenuBarHairline()
             librarySection
             MenuBarHairline()
@@ -74,91 +73,24 @@ struct MenuBarPanelView: View {
         }
         .padding(.horizontal, 6)
         .frame(height: 34)
-        .padding(.bottom, 6)
-    }
-
-    // MARK: Capture
-
-    private var captureSection: some View {
-        VStack(spacing: 7) {
-            HStack(spacing: 7) {
-                captureTile(.area)
-                captureTile(.window)
-                captureTile(.display)
-                recordTile
-            }
-            HStack(spacing: 7) {
-                commandButton("Text", systemImage: "text.viewfinder", help: CaptureIntent.ocr.title) {
-                    coordinator.capture(.ocr, timer: .none)
-                }
-                commandButton("Scrolling", systemImage: CaptureIntent.scrolling.symbolName, help: CaptureIntent.scrolling.title) {
-                    coordinator.capture(.scrolling, timer: .none)
-                }
-                commandButton("Voice", systemImage: "waveform.and.mic", help: "Record a voice note") {
-                    coordinator.startVoiceNote()
-                }
-            }
-        }
-        .padding(.bottom, 4)
-    }
-
-    private func captureTile(_ intent: CaptureIntent) -> some View {
-        Button {
-            onDismiss()
-            coordinator.capture(intent, timer: .none)
-        } label: {
-            CaptureTileLabel(title: intent.shortTitle, systemImage: intent.symbolName)
-        }
-        .buttonStyle(NotchPressButtonStyle())
-        .help(intent.title)
-        .accessibilityLabel(intent.title)
-    }
-
-    @ViewBuilder
-    private var recordTile: some View {
-        if coordinator.isRecordingActive {
-            Button {
-                onDismiss()
-                coordinator.stopRecording()
-            } label: {
-                CaptureTileLabel(title: "Stop", systemImage: "stop.circle.fill", tint: IslandSystemColor.red)
-            }
-            .buttonStyle(NotchPressButtonStyle())
-            .help("Stop recording")
-            .accessibilityLabel("Stop recording")
-        } else {
-            Button {
-                onDismiss()
-                coordinator.startRecording(mode: preferences.recordingTargetMode)
-            } label: {
-                CaptureTileLabel(title: "Record", systemImage: "record.circle", tint: IslandSystemColor.red)
-            }
-            .buttonStyle(NotchPressButtonStyle())
-            .help("Record the screen")
-            .accessibilityLabel("Record")
-        }
-    }
-
-    private func commandButton(
-        _ title: String,
-        systemImage: String,
-        help: String,
-        action: @escaping () -> Void
-    ) -> some View {
-        Button {
-            onDismiss()
-            action()
-        } label: {
-            CaptureCommandLabel(title: title, systemImage: systemImage)
-        }
-        .buttonStyle(NotchPressButtonStyle())
-        .help(help)
     }
 
     // MARK: Library
 
     private var librarySection: some View {
         VStack(spacing: 0) {
+            // The one capture control kept here: the menu bar is where people
+            // look to stop a recording, and it is only shown while one runs.
+            if coordinator.isRecordingActive {
+                MenuBarRow(
+                    title: "Stop Recording",
+                    systemImage: "stop.circle.fill",
+                    iconTint: IslandSystemColor.red
+                ) {
+                    onDismiss()
+                    coordinator.stopRecording()
+                }
+            }
             MenuBarRow(
                 title: "Shelf",
                 systemImage: "tray.full",
@@ -398,13 +330,14 @@ private struct MenuBarStatusLabel: View {
 private struct MenuBarRowLabel<Trailing: View>: View {
     var title: String
     var systemImage: String
+    var iconTint: Color = .islandInk(NotchIsland.Ink.secondary)
     @ViewBuilder var trailing: () -> Trailing
 
     var body: some View {
         HStack(spacing: 10) {
             Image(systemName: systemImage)
                 .font(.system(size: 13, weight: .medium))
-                .foregroundStyle(Color.islandInk(NotchIsland.Ink.secondary))
+                .foregroundStyle(iconTint)
                 .frame(width: 18)
                 .accessibilityHidden(true)
             Text(title)
@@ -420,13 +353,14 @@ private struct MenuBarRowLabel<Trailing: View>: View {
 private struct MenuBarRow: View {
     var title: String
     var systemImage: String
+    var iconTint: Color = .islandInk(NotchIsland.Ink.secondary)
     var detail: String?
     var shortcut: String?
     var action: () -> Void
 
     var body: some View {
         Button(action: action) {
-            MenuBarRowLabel(title: title, systemImage: systemImage) {
+            MenuBarRowLabel(title: title, systemImage: systemImage, iconTint: iconTint) {
                 if let detail {
                     Text(detail)
                         .font(.system(size: 12))
