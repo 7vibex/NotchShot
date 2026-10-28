@@ -134,10 +134,21 @@ public final class ProductivityNoteStore {
 
     public func update(_ note: ProductivityNote) {
         guard let index = notes.firstIndex(where: { $0.id == note.id }) else { return }
+        // Legacy notes can exceed the current field limit. Keep them editable
+        // without silently trimming an untouched body during a title change.
+        guard note.body.count <= max(200_000, notes[index].body.count) else {
+            lastError = AuthoredContentFile.PersistenceError.textTooLong(200_000).localizedDescription
+            return
+        }
         var updated = note
-        updated.title = String(updated.title.trimmingCharacters(in: .whitespacesAndNewlines).prefix(160))
-        if updated.title.isEmpty { updated.title = "Untitled Note" }
-        updated.body = String(updated.body.prefix(200_000))
+        if updated.title != notes[index].title {
+            let title = updated.title.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard title.count <= max(160, notes[index].title.count) else {
+                lastError = AuthoredContentFile.PersistenceError.textTooLong(160).localizedDescription
+                return
+            }
+            updated.title = title.isEmpty ? "Untitled Note" : title
+        }
         updated.updatedAt = Date()
         var candidate = notes
         candidate[index] = updated
@@ -193,12 +204,16 @@ public final class LyricsStore {
     public func lyrics(for key: String) -> String { lyricsByTrack[key] ?? "" }
 
     public func setLyrics(_ text: String, for key: String) throws {
-        let bounded = String(text.prefix(300_000))
+        guard text.count <= max(300_000, lyricsByTrack[key]?.count ?? 0) else {
+            let error = AuthoredContentFile.PersistenceError.textTooLong(300_000)
+            lastError = error.localizedDescription
+            throw error
+        }
         var candidate = lyricsByTrack
-        if bounded.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        if text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             candidate.removeValue(forKey: key)
         } else {
-            candidate[key] = bounded
+            candidate[key] = text
         }
         do {
             try file.save(candidate)
@@ -353,7 +368,10 @@ public enum TerminalRunner {
     public static let maximumOutputBytes = 256_000
 
     public static func run(_ command: String, timeout: TimeInterval = 30) async throws -> TerminalResult {
-        let bounded = String(command.prefix(8_000)).trimmingCharacters(in: .whitespacesAndNewlines)
+        let bounded = command.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard bounded.count <= 8_000 else {
+            throw NotchShotError.exportFailed("Commands must fit within 8,000 characters. Nothing was run.")
+        }
         guard !bounded.isEmpty else { return TerminalResult(output: "", exitCode: 0, timedOut: false, wasTruncated: false) }
         return try await Task.detached(priority: .userInitiated) {
             let temporaryURL = FileManager.default.temporaryDirectory
@@ -596,6 +614,36 @@ public enum WindowSnapLayout {
 
 @MainActor
 public enum WindowSnapService {
+    private static var previousApplication: NSRunningApplication?
+    private static var activationObserver: NSObjectProtocol?
+
+    /// Remember the user's app before Productivity Center takes keyboard focus.
+    /// Keep following subsequent activations while that window stays open.
+    static func rememberFrontmostApplication() {
+        remember(NSWorkspace.shared.frontmostApplication)
+        guard activationObserver == nil else { return }
+        activationObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didActivateApplicationNotification, object: nil, queue: .main
+        ) { notification in
+            let processID = (notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication)?.processIdentifier
+            MainActor.assumeIsolated {
+                remember(processID.flatMap { NSRunningApplication(processIdentifier: $0) })
+            }
+        }
+    }
+
+    private static func remember(_ app: NSRunningApplication?) {
+        guard let app, !app.isTerminated,
+              app.processIdentifier != ProcessInfo.processInfo.processIdentifier else { return }
+        previousApplication = app
+    }
+
+    static func targetProcessIdentifier(frontmost: pid_t?, remembered: pid_t?, own: pid_t) -> pid_t? {
+        if let frontmost, frontmost != own { return frontmost }
+        if let remembered, remembered != own { return remembered }
+        return nil
+    }
+
     public static func isAccessibilityTrusted(prompt: Bool) -> Bool {
         let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: prompt] as CFDictionary
         return AXIsProcessTrustedWithOptions(options)
@@ -605,11 +653,15 @@ public enum WindowSnapService {
         guard isAccessibilityTrusted(prompt: true) else {
             throw NotchShotError.exportFailed("Accessibility permission is required to move another app's window")
         }
-        guard let app = NSWorkspace.shared.frontmostApplication,
-              app.processIdentifier != ProcessInfo.processInfo.processIdentifier else {
+        let remembered = previousApplication.flatMap { $0.isTerminated ? nil : $0.processIdentifier }
+        guard let processID = targetProcessIdentifier(
+            frontmost: NSWorkspace.shared.frontmostApplication?.processIdentifier,
+            remembered: remembered,
+            own: ProcessInfo.processInfo.processIdentifier
+        ) else {
             throw NotchShotError.exportFailed("Bring another app to the front, then try Window Snap again")
         }
-        let application = AXUIElementCreateApplication(app.processIdentifier)
+        let application = AXUIElementCreateApplication(processID)
         var rawWindow: CFTypeRef?
         guard AXUIElementCopyAttributeValue(application, kAXFocusedWindowAttribute as CFString, &rawWindow) == .success,
               let rawWindow,

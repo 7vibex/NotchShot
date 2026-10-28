@@ -610,6 +610,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func showProductivity() {
+        WindowSnapService.rememberFrontmostApplication()
         if let productivityWindow {
             bringToFront(productivityWindow)
             return

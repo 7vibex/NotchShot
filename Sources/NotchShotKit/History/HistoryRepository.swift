@@ -225,11 +225,14 @@ public struct HistoryQuery: Sendable {
 /// deletable, which matters for something that indexes screen contents.
 public enum HistoryPersistenceError: LocalizedError {
     case unsafeManagedStore
+    case unrecoveredStore
 
     public var errorDescription: String? {
         switch self {
         case .unsafeManagedStore:
             "NotchShot refused to write History because its managed storage location is unsafe"
+        case .unrecoveredStore:
+            "History could not be read or backed up. Its original file was left untouched; restore access and reopen NotchShot before saving."
         }
     }
 }
@@ -272,8 +275,10 @@ public final class HistoryRepository {
     public private(set) var loadOutcome: HistoryLoadOutcome = .missing
     public var hasUnpersistedChanges: Bool { persistedRevision < mutationRevision }
     public var loadRecoveryMessage: String? {
-        guard case .failed = loadOutcome else { return nil }
-        return "History could not be loaded, so NotchShot preserved every managed capture and disabled automatic cleanup. The damaged index was quarantined for recovery."
+        guard case .failed(_, let backupURL) = loadOutcome else { return nil }
+        let message = "History could not be loaded, so NotchShot preserved every managed capture and disabled automatic cleanup."
+        if backupURL != nil { return message + " The original index was quarantined for recovery." }
+        return message + " The index could not be quarantined. Saving is disabled; restore access and reopen NotchShot."
     }
 
     private let storeURL: URL
@@ -1464,6 +1469,12 @@ public final class HistoryRepository {
 
     /// The main-actor half: check the destination, snapshot the rows.
     private func makeWriteRequest() throws -> WriteRequest {
+        // A failed read cannot authorize replacing the unknown original with
+        // an empty snapshot. A successful quarantine retains those bytes and
+        // permits a fresh store; otherwise reopening must recover authority.
+        if case .failed(_, nil) = loadOutcome {
+            throw HistoryPersistenceError.unrecoveredStore
+        }
         guard !usesManagedStore || AppPaths.owns(storeURL) else {
             throw HistoryPersistenceError.unsafeManagedStore
         }

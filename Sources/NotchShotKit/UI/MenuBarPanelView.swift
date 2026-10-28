@@ -423,17 +423,16 @@ private struct MenuBarSwitchRow: View {
     @Binding var isOn: Bool
 
     var body: some View {
-        MenuBarRowHighlight(isPressed: false) {
+        Button { isOn.toggle() } label: {
             MenuBarRowLabel(title: title, systemImage: systemImage) {
                 MenuBarSwitch(isOn: isOn)
             }
         }
-        .onTapGesture { isOn.toggle() }
+        .buttonStyle(MenuBarRowButtonStyle())
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(title)
         .accessibilityValue(isOn ? "On" : "Off")
         .accessibilityAddTraits(.isToggle)
-        .accessibilityAction { isOn.toggle() }
     }
 }
 

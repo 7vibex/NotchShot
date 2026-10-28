@@ -36,11 +36,15 @@ public actor MediaRemoteAdapterSource: MediaSource {
     private let runnerURL: URL?
     private var process: Process?
     private var processGroupID: pid_t?
+    private var processExit: DispatchSemaphore?
+    private var shutdownTask: (generation: UInt64, task: Task<Void, Never>)?
+    private var streamGeneration: UInt64 = 0
     private var outputPipe: Pipe?
     private var continuation: AsyncStream<MediaSnapshot>.Continuation?
     private var buffer = Data()
 
     var runningProcessIdentifier: pid_t? { process?.processIdentifier }
+    var bufferedOutputByteCount: Int { buffer.count }
 
     private final class CancellationFlag: @unchecked Sendable {
         private let lock = NSLock()
@@ -110,10 +114,17 @@ public actor MediaRemoteAdapterSource: MediaSource {
     }
 
     public func updates() -> AsyncStream<MediaSnapshot> {
-        AsyncStream { continuation in
+        // One process owns this source. A retiring stream cannot be replaced
+        // until all stop callers have joined its cleanup.
+        guard process == nil, shutdownTask == nil else {
+            return AsyncStream { $0.yield(.empty); $0.finish() }
+        }
+        streamGeneration &+= 1
+        let generation = streamGeneration
+        return AsyncStream { continuation in
             self.continuation = continuation
             continuation.onTermination = { _ in
-                Task { await self.stop() }
+                Task { await self.stop(generation: generation) }
             }
             start(continuation: continuation)
         }
@@ -145,38 +156,76 @@ public actor MediaRemoteAdapterSource: MediaSource {
     }
 
     public func stop() async {
+        if let shutdownTask {
+            await shutdownTask.task.value
+            if self.shutdownTask?.generation == shutdownTask.generation { self.shutdownTask = nil }
+            return
+        }
+        streamGeneration &+= 1
+        let retiringGeneration = streamGeneration
         let runningProcess = process
         process = nil
         let groupID = processGroupID
         processGroupID = nil
+        let exited = processExit
+        processExit = nil
         let pipe = outputPipe
         outputPipe = nil
-        pipe?.fileHandleForReading.readabilityHandler = nil
-        runningProcess?.terminationHandler = nil
-        if let runningProcess, runningProcess.isRunning {
-            if let groupID {
-                _ = kill(-groupID, SIGTERM)
-            } else {
-                runningProcess.terminate()
-            }
-            let deadline = ProcessInfo.processInfo.systemUptime + 0.3
-            while (groupID.map(Self.processGroupExists) ?? runningProcess.isRunning),
-                  ProcessInfo.processInfo.systemUptime < deadline {
-                try? await Task.sleep(for: .milliseconds(10))
-            }
-            if let groupID {
-                if Self.processGroupExists(groupID) {
-                    _ = kill(-groupID, SIGKILL)
-                }
-            } else if runningProcess.isRunning {
-                _ = kill(runningProcess.processIdentifier, SIGKILL)
-            }
-            runningProcess.waitUntilExit()
-        }
-        pipe?.fileHandleForReading.closeFile()
-        continuation?.finish()
+        let retiringContinuation = continuation
         continuation = nil
         buffer.removeAll()
+        pipe?.fileHandleForReading.readabilityHandler = nil
+        let cleanup = Task<Void, Never> {
+            if let runningProcess {
+                if groupID.map(Self.processGroupExists) ?? runningProcess.isRunning {
+                    if let groupID {
+                        _ = kill(-groupID, SIGTERM)
+                    } else {
+                        runningProcess.terminate()
+                    }
+                    let deadline = ProcessInfo.processInfo.systemUptime + 0.3
+                    while (groupID.map(Self.processGroupExists) ?? runningProcess.isRunning),
+                          ProcessInfo.processInfo.systemUptime < deadline {
+                        try? await Task.sleep(for: .milliseconds(10))
+                    }
+                    if let groupID {
+                        if Self.processGroupExists(groupID) { _ = kill(-groupID, SIGKILL) }
+                    } else if runningProcess.isRunning {
+                        _ = kill(runningProcess.processIdentifier, SIGKILL)
+                    }
+                }
+                // Never spin a cooperative worker's run loop in
+                // Process.waitUntilExit. The prelaunch handler cannot miss an
+                // exit and signals before it asks this actor to do anything.
+                if let exited { await Self.waitForExit(exited) }
+                runningProcess.terminationHandler = nil
+                if let groupID {
+                    let deadline = ProcessInfo.processInfo.systemUptime + 0.3
+                    while Self.processGroupExists(groupID), ProcessInfo.processInfo.systemUptime < deadline {
+                        try? await Task.sleep(for: .milliseconds(10))
+                    }
+                }
+            }
+            pipe?.fileHandleForReading.closeFile()
+            retiringContinuation?.finish()
+        }
+        shutdownTask = (retiringGeneration, cleanup)
+        await cleanup.value
+        if shutdownTask?.generation == retiringGeneration { shutdownTask = nil }
+    }
+
+    private func stop(generation: UInt64) async {
+        guard generation == streamGeneration else { return }
+        await stop()
+    }
+
+    private nonisolated static func waitForExit(_ exited: DispatchSemaphore) async {
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            DispatchQueue.global(qos: .utility).async {
+                exited.wait()
+                continuation.resume()
+            }
+        }
     }
 
     // MARK: Process plumbing
@@ -192,6 +241,7 @@ public actor MediaRemoteAdapterSource: MediaSource {
             return
         }
         let process = Process()
+        let generation = streamGeneration
         process.executableURL = runnerURL
         process.arguments = Self.runnerArguments(
             executableURL: executableURL,
@@ -209,43 +259,53 @@ public actor MediaRemoteAdapterSource: MediaSource {
         output.fileHandleForReading.readabilityHandler = { handle in
             let data = handle.availableData
             guard !data.isEmpty else { return }
-            Task { await self.ingest(data) }
+            Task { await self.ingest(data, generation: generation) }
         }
 
+        let exited = DispatchSemaphore(value: 0)
         process.terminationHandler = { terminated in
+            exited.signal()
+            let processID = terminated.processIdentifier
             Task {
                 Log.media.notice("Media adapter exited; falling back")
-                await self.handleTermination(processID: terminated.processIdentifier)
+                await self.handleTermination(processID: processID, generation: generation)
             }
         }
 
         do {
             try process.run()
+            self.process = process
+            self.processExit = exited
+            self.outputPipe = output
             let pid = process.processIdentifier
             guard Self.waitForDedicatedProcessGroup(processID: pid) else {
-                process.terminate()
-                process.waitUntilExit()
-                throw AdapterCommandError.failed
+                Task { await self.stop(generation: generation) }
+                continuation.yield(.empty)
+                continuation.finish()
+                return
             }
             processGroupID = pid
-            self.process = process
-            self.outputPipe = output
             Log.media.info("Media adapter started: \(self.executableURL.lastPathComponent)")
         } catch {
+            output.fileHandleForReading.readabilityHandler = nil
+            output.fileHandleForReading.closeFile()
             Log.media.error("Could not start media adapter: \(error.localizedDescription)")
             continuation.yield(.empty)
             continuation.finish()
         }
     }
 
-    private func handleTermination(processID: pid_t) {
-        guard process?.processIdentifier == processID else { return }
+    private func handleTermination(processID: pid_t, generation: UInt64) {
+        guard generation == streamGeneration, process?.processIdentifier == processID else { return }
+        streamGeneration &+= 1
         if processGroupID == processID, Self.processGroupExists(processID) {
             _ = kill(-processID, SIGKILL)
         }
         outputPipe?.fileHandleForReading.readabilityHandler = nil
         outputPipe = nil
         processGroupID = nil
+        processExit = nil
+        buffer.removeAll()
         continuation?.yield(.empty)
         continuation?.finish()
         continuation = nil
@@ -254,7 +314,8 @@ public actor MediaRemoteAdapterSource: MediaSource {
 
     /// Accumulates stdout and emits one snapshot per complete JSON line. A
     /// malformed line is skipped, never fatal.
-    private func ingest(_ data: Data) {
+    private func ingest(_ data: Data, generation: UInt64) {
+        guard generation == streamGeneration, process != nil else { return }
         buffer.append(data)
         // Cap the buffer so a wedged adapter emitting no newlines can't grow
         // memory without bound.

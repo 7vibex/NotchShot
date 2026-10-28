@@ -9,6 +9,7 @@ struct AuthoredContentFile {
 
     enum PersistenceError: LocalizedError {
         case readLocked, tooLarge, changed
+        case textTooLong(Int)
 
         var errorDescription: String? {
             switch self {
@@ -18,6 +19,8 @@ struct AuthoredContentFile {
                 "Saved content must fit within 8 MiB. This change was not saved; reduce the content and try again."
             case .changed:
                 "The saved content changed outside this window. Reopen it before saving; the other file was left untouched."
+            case .textTooLong(let limit):
+                "Text must fit within \(limit.formatted()) characters. This change was not saved; shorten it and try again."
             }
         }
     }

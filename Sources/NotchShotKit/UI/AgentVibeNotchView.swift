@@ -469,8 +469,8 @@ private struct AgentVibeActivityRow: View {
                     Spacer(minLength: 0)
                     AgentCapsuleButton(title: "Deny", isPrimary: false, action: onDeny)
                         .accessibilityLabel("Deny Claude Code permission")
-                    AgentCapsuleButton(title: "Allow", isPrimary: true, action: onApprove)
-                        .accessibilityLabel("Allow Claude Code permission")
+                    AgentCapsuleButton(title: claudeSession?.permission?.reviewActionTitle ?? "Review in Terminal", isPrimary: true, action: onApprove)
+                        .accessibilityLabel("Review Claude Code action")
                 }
                 .padding(.leading, Self.markSize + NotchAlertStyle.leadingGap)
                 .padding(.bottom, NotchIsland.Spacing.group)

@@ -296,13 +296,13 @@ private struct ClaudeVibeSessionRow: View {
                     .background(Color.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
                     .accessibilityLabel("Deny Claude Code permission")
 
-                Button("Allow", action: onApprove)
+                Button(session.permission?.reviewActionTitle ?? "Review in Terminal", action: onApprove)
                     .buttonStyle(NotchPressButtonStyle())
                     .font(.system(size: 8.5, weight: .bold))
                     .foregroundStyle(.black)
                     .frame(minWidth: 46, minHeight: NotchIsland.Hit.control)
                     .background(.orange, in: RoundedRectangle(cornerRadius: 8))
-                    .accessibilityLabel("Allow Claude Code permission")
+                    .accessibilityLabel("Review Claude Code action")
             } else {
                 Button(action: onDismiss) {
                     Image(systemName: "archivebox")

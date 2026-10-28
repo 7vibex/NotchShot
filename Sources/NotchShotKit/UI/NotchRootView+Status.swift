@@ -475,6 +475,7 @@ private struct LevelBar: View {
     @State private var stretchEdge: SystemLevelBump.Edge = .top
 
     var body: some View {
+        let stretchAnchor: UnitPoint = stretchEdge == .bottom ? .trailing : .leading
         GeometryReader { geometry in
             ZStack(alignment: .leading) {
                 Capsule().fill(Color.islandInk(0.2))
@@ -493,7 +494,7 @@ private struct LevelBar: View {
             content.scaleEffect(
                 x: stretch.width,
                 y: stretch.height,
-                anchor: stretchEdge == .bottom ? .trailing : .leading
+                anchor: stretchAnchor
             )
         } keyframes: { _ in
             KeyframeTrack(\.width) {

@@ -634,9 +634,21 @@ struct MediaContent: View {
             + CGFloat(rows - 1) * NotchLayout.mediaPanelRowSpacing
     }
 
-    /// Identity for the queue refresh: the track and which panel is open.
-    private var queueRefreshKey: String {
-        "\(coordinator.mediaPanel == .playingNext)—\(snapshot.title ?? "")—\(snapshot.artist ?? "")"
+    private struct QueueRefreshKey: Equatable {
+        var isPresented: Bool
+        var player: String
+        var title: String
+        var artist: String
+    }
+
+    /// Separate fields avoid collisions when a track name contains a separator.
+    private var queueRefreshKey: QueueRefreshKey {
+        QueueRefreshKey(
+            isPresented: coordinator.mediaPanel == .playingNext,
+            player: snapshot.applicationBundleID ?? "",
+            title: snapshot.title ?? "",
+            artist: snapshot.artist ?? ""
+        )
     }
 
     /// Lyrics fill the tallest panel the island allows, so a few lines of
@@ -726,15 +738,18 @@ struct MediaContent: View {
     /// their two-second timeout, so this only runs when the panel is open —
     /// never on the playback tick.
     private func refreshQueue() async {
+        let key = queueRefreshKey
         guard supportsQueue else {
             upcoming = []
             queueUnavailable = true
+            isLoadingQueue = false
             return
         }
         isLoadingQueue = upcoming.isEmpty
         let entries = await MediaQueueService.shared.upcoming(
             for: snapshot.applicationBundleID
         )
+        guard !Task.isCancelled, coordinator.mediaPanel == .playingNext, queueRefreshKey == key else { return }
         isLoadingQueue = false
         queueUnavailable = entries == nil
         upcoming = entries ?? []

@@ -433,6 +433,7 @@ private struct TerminalToolView: View {
     }
 
     private func run() {
+        guard !isRunning, !command.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
         let requestedCommand = command
         isRunning = true
         output = "Running…"

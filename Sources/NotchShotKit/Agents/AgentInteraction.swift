@@ -53,11 +53,14 @@ public struct AgentApprovalRequest: Equatable, Sendable {
     public var summary: String?
     /// Whether the source can remember the approval for the rest of the run.
     public var offersSessionApproval: Bool
+    /// A source that needs a full action review supplies that action's title.
+    public var reviewActionTitle: String?
 
-    public init(tool: String, summary: String? = nil, offersSessionApproval: Bool = false) {
+    public init(tool: String, summary: String? = nil, offersSessionApproval: Bool = false, reviewActionTitle: String? = nil) {
         self.tool = tool
         self.summary = summary
         self.offersSessionApproval = offersSessionApproval
+        self.reviewActionTitle = reviewActionTitle
     }
 }
 

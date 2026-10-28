@@ -34,17 +34,26 @@ public struct ClaudeCodePermissionRequest: Codable, Equatable, Identifiable, Sen
     public var id: String
     public var toolName: String
     public var detail: String?
+    public var actionDescription: String?
     public var receivedAt: Date
+
+    public var canApproveInline: Bool {
+        ClaudePermissionDetails.validated(actionDescription, tool: toolName) != nil
+    }
+
+    public var reviewActionTitle: String { canApproveInline ? "Review…" : "Review in Terminal" }
 
     public init(
         id: String = UUID().uuidString,
         toolName: String,
         detail: String? = nil,
-        receivedAt: Date = Date()
+        receivedAt: Date = Date(),
+        actionDescription: String? = nil
     ) {
         self.id = id
         self.toolName = toolName
         self.detail = detail
+        self.actionDescription = actionDescription
         self.receivedAt = receivedAt
     }
 }
@@ -241,8 +250,11 @@ enum ClaudeCodeHookPolicy {
 /// Unix socket transport used by the bundled Claude hook. All mutable state is
 /// confined to `queue`; the unchecked marker documents that invariant for
 /// Swift's strict concurrency checking.
-private final class ClaudeCodeHookServer: @unchecked Sendable {
-    static let socketPath = ClaudeHookSocket.path
+final class ClaudeCodeHookServer: @unchecked Sendable {
+    private let socketPath: String
+    private let maximumClients: Int
+    private let readTimeout: TimeInterval
+    private let decisionTimeout: TimeInterval
     private static let maximumMessageBytes = 64 * 1_024
 
     private final class Client: @unchecked Sendable {
@@ -250,6 +262,8 @@ private final class ClaudeCodeHookServer: @unchecked Sendable {
         var source: DispatchSourceRead?
         var buffer = Data()
         var handledMessage = false
+        var requestID: String?
+        var timeout: DispatchWorkItem?
 
         init(fileDescriptor: Int32) {
             self.fileDescriptor = fileDescriptor
@@ -266,6 +280,18 @@ private final class ClaudeCodeHookServer: @unchecked Sendable {
     private var clients: [Int32: Client] = [:]
     private var pendingBySession: [String: Int32] = [:]
 
+    init(socketPath: String = ClaudeHookSocket.path, maximumClients: Int = 16,
+         readTimeout: TimeInterval = 2, decisionTimeout: TimeInterval = 310) {
+        self.socketPath = socketPath
+        self.maximumClients = max(1, maximumClients)
+        self.readTimeout = readTimeout
+        self.decisionTimeout = decisionTimeout
+    }
+
+    var clientCount: Int { queue.sync { clients.count } }
+
+    func stopAndWait() { queue.sync { stopOnQueue() } }
+
     func start(onData: @escaping @Sendable (Data) -> Void) {
         queue.async { [weak self] in
             self?.startOnQueue(onData: onData)
@@ -278,25 +304,26 @@ private final class ClaudeCodeHookServer: @unchecked Sendable {
         }
     }
 
-    func respond(sessionID: String, decision: String, reason: String?) {
+    func respond(sessionID: String, requestID: String? = nil, decision: String, reason: String?) {
         var response: [String: Any] = ["decision": decision]
         if let reason {
             response["reason"] = String(reason.prefix(240))
         }
-        respond(sessionID: sessionID, object: response)
+        respond(sessionID: sessionID, requestID: requestID, object: response)
     }
 
     /// Writes one JSON line to the hook process waiting for this session and
     /// lets it go.
-    func respond(sessionID: String, object: [String: Any]) {
+    func respond(sessionID: String, requestID: String? = nil, object: [String: Any]) {
         guard let data = try? JSONSerialization.data(withJSONObject: object) else { return }
         queue.async { [weak self] in
-            self?.respondOnQueue(sessionID: sessionID, line: data)
+            self?.respondOnQueue(sessionID: sessionID, requestID: requestID, line: data)
         }
     }
 
     private func startOnQueue(onData: @escaping @Sendable (Data) -> Void) {
         guard serverFileDescriptor < 0 else { return }
+        guard socketPath.utf8.count < MemoryLayout.size(ofValue: sockaddr_un().sun_path) else { return }
         guard removeStaleSocketIfSafe() else {
             Log.app.error("Claude hook socket path could not be reclaimed safely")
             return
@@ -311,7 +338,7 @@ private final class ClaudeCodeHookServer: @unchecked Sendable {
 
         var address = sockaddr_un()
         address.sun_family = sa_family_t(AF_UNIX)
-        Self.socketPath.withCString { path in
+        socketPath.withCString { path in
             withUnsafeMutablePointer(to: &address.sun_path) { pathPointer in
                 let buffer = UnsafeMutableRawPointer(pathPointer).assumingMemoryBound(to: CChar.self)
                 strcpy(buffer, path)
@@ -330,12 +357,12 @@ private final class ClaudeCodeHookServer: @unchecked Sendable {
             Log.app.error("Claude hook socket bind failed with errno \(code)")
             return
         }
-        chmod(Self.socketPath, 0o600)
+        chmod(socketPath, 0o600)
         guard listen(descriptor, 16) == 0 else {
             let code = errno
             close(descriptor)
             serverFileDescriptor = -1
-            unlink(Self.socketPath)
+            unlink(socketPath)
             Log.app.error("Claude hook socket listen failed with errno \(code)")
             return
         }
@@ -382,6 +409,10 @@ private final class ClaudeCodeHookServer: @unchecked Sendable {
                 close(clientFileDescriptor)
                 continue
             }
+            guard clients.count < maximumClients else {
+                close(clientFileDescriptor)
+                continue
+            }
             let client = Client(fileDescriptor: clientFileDescriptor)
             clients[clientFileDescriptor] = client
             let source = DispatchSource.makeReadSource(
@@ -397,6 +428,7 @@ private final class ClaudeCodeHookServer: @unchecked Sendable {
             }
             client.source = source
             source.resume()
+            scheduleTimeout(for: client, after: readTimeout)
         }
     }
 
@@ -427,13 +459,12 @@ private final class ClaudeCodeHookServer: @unchecked Sendable {
 
     private func handle(message: Data, from client: Client) {
         guard message.count <= Self.maximumMessageBytes,
-              let object = try? JSONSerialization.jsonObject(with: message) as? [String: Any]
+              var object = try? JSONSerialization.jsonObject(with: message) as? [String: Any]
         else {
             closeClient(client.fileDescriptor)
             return
         }
 
-        eventHandler?(message)
         let event = (object["hook_event_name"] as? String)
             ?? (object["event"] as? String)
             ?? ""
@@ -445,6 +476,7 @@ private final class ClaudeCodeHookServer: @unchecked Sendable {
             || status == ClaudeQuestionBridge.waitingStatus
 
         guard expectsResponse, !sessionID.isEmpty else {
+            eventHandler?(message)
             closeClient(client.fileDescriptor)
             return
         }
@@ -453,10 +485,17 @@ private final class ClaudeCodeHookServer: @unchecked Sendable {
             closeClient(previousFileDescriptor)
         }
         pendingBySession[sessionID] = client.fileDescriptor
+        let requestID = UUID().uuidString
+        client.requestID = requestID
+        object["notchshot_request_id"] = requestID
+        scheduleTimeout(for: client, after: decisionTimeout)
+        if let identified = try? JSONSerialization.data(withJSONObject: object) { eventHandler?(identified) }
     }
 
-    private func respondOnQueue(sessionID: String, line data: Data) {
-        guard let fileDescriptor = pendingBySession.removeValue(forKey: sessionID) else { return }
+    private func respondOnQueue(sessionID: String, requestID: String?, line data: Data) {
+        guard let fileDescriptor = pendingBySession[sessionID],
+              requestID == nil || clients[fileDescriptor]?.requestID == requestID else { return }
+        pendingBySession.removeValue(forKey: sessionID)
         guard writeAll(data + Data([10]), to: fileDescriptor) else {
             closeClient(fileDescriptor)
             return
@@ -487,7 +526,18 @@ private final class ClaudeCodeHookServer: @unchecked Sendable {
     private func closeClient(_ fileDescriptor: Int32) {
         pendingBySession = pendingBySession.filter { $0.value != fileDescriptor }
         guard let client = clients.removeValue(forKey: fileDescriptor) else { return }
+        client.timeout?.cancel()
         client.source?.cancel()
+    }
+
+    private func scheduleTimeout(for client: Client, after delay: TimeInterval) {
+        client.timeout?.cancel()
+        let timeout = DispatchWorkItem { [weak self, weak client] in
+            guard let self, let client, self.clients[client.fileDescriptor] === client else { return }
+            self.closeClient(client.fileDescriptor)
+        }
+        client.timeout = timeout
+        queue.asyncAfter(deadline: .now() + delay, execute: timeout)
     }
 
     private func setNonBlocking(_ fileDescriptor: Int32) {
@@ -508,11 +558,11 @@ private final class ClaudeCodeHookServer: @unchecked Sendable {
 
     private func removeStaleSocketIfSafe() -> Bool {
         var information = stat()
-        guard lstat(Self.socketPath, &information) == 0 else {
+        guard lstat(socketPath, &information) == 0 else {
             return errno == ENOENT
         }
         guard (information.st_mode & S_IFMT) == S_IFSOCK else { return false }
-        return unlink(Self.socketPath) == 0
+        return unlink(socketPath) == 0
     }
 }
 
@@ -577,10 +627,10 @@ public final class ClaudeCodeSessionMonitor {
         // request until the reporter's timeout and hide Allow/Deny, so dismiss
         // resolves it as a denial first.
         if let index = sessions.firstIndex(where: { $0.id == sessionID }) {
-            if sessions[index].permission != nil {
-                server.respond(sessionID: sessionID, decision: "deny", reason: "Dismissed")
-            } else if sessions[index].question != nil {
-                server.respond(sessionID: sessionID, object: ["decision": "defer"])
+            if let permission = sessions[index].permission {
+                server.respond(sessionID: sessionID, requestID: permission.id, decision: "deny", reason: "Dismissed")
+            } else if let question = sessions[index].question {
+                server.respond(sessionID: sessionID, requestID: question.id, object: ["decision": "defer"])
             }
         }
         let previousCount = sessions.count
@@ -589,10 +639,11 @@ public final class ClaudeCodeSessionMonitor {
         publish()
     }
 
-    public func approve(sessionID: String) {
+    public func approve(sessionID: String, requestID: String? = nil) {
         guard let index = sessions.firstIndex(where: { $0.id == sessionID }),
-              sessions[index].permission != nil else { return }
-        server.respond(sessionID: sessionID, decision: "allow", reason: nil)
+              let permission = sessions[index].permission,
+              permission.id == requestID, permission.canApproveInline else { return }
+        server.respond(sessionID: sessionID, requestID: permission.id, decision: "allow", reason: nil)
         sessions[index].permission = nil
         sessions[index].phase = .working
         sessions[index].detail = "Permission approved"
@@ -600,12 +651,14 @@ public final class ClaudeCodeSessionMonitor {
         publish()
     }
 
-    public func deny(sessionID: String, reason: String? = nil) {
+    public func deny(sessionID: String, requestID: String? = nil, reason: String? = nil) {
         guard let index = sessions.firstIndex(where: { $0.id == sessionID }),
-              sessions[index].permission != nil else { return }
+              let permission = sessions[index].permission,
+              requestID == nil || permission.id == requestID else { return }
         let boundedReason = ClaudeCodeHookPolicy.bounded(reason, maximum: 180)
         server.respond(
             sessionID: sessionID,
+            requestID: permission.id,
             decision: "deny",
             reason: boundedReason ?? "Denied by user via NotchShot"
         )
@@ -628,7 +681,7 @@ public final class ClaudeCodeSessionMonitor {
               sessions[index].question?.id == questionID,
               let encoded = AgentAnswerEncoder.encode(answers, for: form)
         else { return }
-        server.respond(sessionID: sessionID, object: [
+        server.respond(sessionID: sessionID, requestID: questionID, object: [
             "decision": "answer",
             "answers": AgentAnswerEncoder.jsonObject(encoded),
         ])
@@ -640,17 +693,19 @@ public final class ClaudeCodeSessionMonitor {
     }
 
     /// Lets the held question go to Claude's own terminal picker instead.
-    public func answerInTerminal(sessionID: String) {
+    public func answerInTerminal(sessionID: String, requestID: String? = nil) {
         guard let index = sessions.firstIndex(where: { $0.id == sessionID }),
-              sessions[index].question != nil else { return }
-        server.respond(sessionID: sessionID, object: ["decision": "defer"])
+              let currentID = sessions[index].permission?.id ?? sessions[index].question?.id,
+              requestID == nil || currentID == requestID else { return }
+        server.respond(sessionID: sessionID, requestID: currentID, object: ["decision": "defer"])
         sessions[index].question = nil
+        sessions[index].permission = nil
         sessions[index].detail = "Answer in the terminal"
         sessions[index].updatedAt = Date()
         publish()
     }
 
-    private func receiveHookData(_ data: Data) {
+    func receiveHookData(_ data: Data) {
         guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let rawID = object["session_id"] as? String else { return }
         let id = AIActivityPolicy.safeIdentifier(rawID)
@@ -674,6 +729,7 @@ public final class ClaudeCodeSessionMonitor {
             notificationType: notificationType
         )
         let now = Date()
+        let requestID = object["notchshot_request_id"] as? String ?? UUID().uuidString
         let pid = (object["pid"] as? NSNumber)?.intValue
         let tty = ClaudeCodeHookPolicy.bounded(object["tty"] as? String, maximum: 80)
 
@@ -706,7 +762,7 @@ public final class ClaudeCodeSessionMonitor {
         let normalizedEvent = ClaudeCodeHookPolicy.normalized(event)
         if let form = ClaudeCodeHookPolicy.questionForm(from: object["question_form"]),
            status == ClaudeQuestionBridge.waitingStatus {
-            session.question = ClaudeCodeQuestion(form: form, receivedAt: now)
+            session.question = ClaudeCodeQuestion(id: requestID, form: form, receivedAt: now)
             session.phase = .waiting
             session.detail = "Asked a question"
         } else if normalizedEvent.contains("posttooluse")
@@ -719,8 +775,10 @@ public final class ClaudeCodeSessionMonitor {
         }
         if normalizedEvent.contains("permissionrequest") {
             session.permission = ClaudeCodePermissionRequest(
+                id: requestID,
                 toolName: tool ?? "Claude Code tool",
-                detail: message
+                detail: message,
+                actionDescription: ClaudePermissionDetails.validated(object["permission_action"] as? String, tool: tool)
             )
         } else if normalizedEvent.contains("posttooluse")
                     || normalizedEvent.contains("permissiondenied")

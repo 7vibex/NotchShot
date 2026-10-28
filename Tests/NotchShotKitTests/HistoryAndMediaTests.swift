@@ -1025,6 +1025,13 @@ struct AdapterCommandProcessTests {
         let childProcessID = try #require(pid_t(childPIDText))
         defer { _ = kill(childProcessID, SIGKILL) }
 
+        let firstStop = Task { await source.stop() }
+        let stopDeadline = ContinuousClock.now + .seconds(3)
+        while await source.runningProcessIdentifier != nil, ContinuousClock.now < stopDeadline {
+            await Task.yield()
+        }
+        // The second caller must join the first retirement even though the
+        // actor has already cleared its process property before suspending.
         await source.stop()
         errno = 0
         #expect(kill(processID, 0) == -1)
@@ -1032,7 +1039,58 @@ struct AdapterCommandProcessTests {
         errno = 0
         #expect(kill(childProcessID, 0) == -1)
         #expect(errno == ESRCH)
+        await firstStop.value
         _ = stream
+    }
+
+    @Test("A naturally ended stream cannot contaminate or stop its replacement")
+    func streamingSourceCanRestart() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("notchshot-stream-restart-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let executable = directory.appendingPathComponent("adapter")
+        let marker = directory.appendingPathComponent("started")
+        let gate = directory.appendingPathComponent("finish-first")
+        try Data("""
+        #!/bin/sh
+        if [ -f "$1" ]; then
+          printf '%s\\n' '{"title":"Fresh"}'
+          while :; do sleep 1; done
+        else
+          : > "$1"
+          printf '%s' '{"title":"Old'
+          while [ ! -f "$2" ]; do sleep 0.01; done
+        fi
+        """.utf8).write(to: executable)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: executable.path)
+        let source = MediaRemoteAdapterSource(executableURL: executable, arguments: [marker.path, gate.path])
+        let first = await source.updates()
+        let firstFinished = Task { for await _ in first {} }
+        let deadline = ContinuousClock.now + .seconds(3)
+        while await source.bufferedOutputByteCount == 0, ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(await source.bufferedOutputByteCount > 0)
+        try Data().write(to: gate)
+        await firstFinished.value
+
+        let second = await source.updates()
+        let snapshot = await withTaskGroup(of: MediaSnapshot?.self) { group in
+            group.addTask {
+                var iterator = second.makeAsyncIterator()
+                return await iterator.next()
+            }
+            group.addTask {
+                try? await Task.sleep(for: .seconds(3))
+                return nil
+            }
+            let result = await group.next() ?? nil
+            group.cancelAll()
+            return result
+        }
+        await source.stop()
+        #expect(snapshot?.title == "Fresh")
     }
 }
 

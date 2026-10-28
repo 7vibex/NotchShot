@@ -70,10 +70,14 @@ Use the same command for each lifecycle event you want to surface:
 ```
 
 The reporter uses only the event name, session id, current working-directory
-name, prompt title, and tool name. It deliberately ignores transcript paths,
-tool input, tool output, and assistant messages on the hook path. Claude's
-permission event uses the same local socket to wait for an Allow or Deny action;
-the response contains only the decision and an optional bounded reason.
+name, prompt title, and tool name. Transcript paths, tool output and assistant
+messages are ignored. Questions may send their bounded answer choices. A Claude
+Bash permission request may also send the complete command, working directory
+and execution flags over the owner-only local socket, only when they fit within
+8 KiB and credential filtering leaves all action details visible. Review opens
+the full selectable action before Allow Once; missing, oversized, hidden or unsupported details return to
+Claude's terminal prompt. The response contains only the decision and an
+optional bounded reason.
 
 Do not replace an existing hooks file. Add the handler to its existing event
 arrays so current formatters, notifications, and policy hooks keep working.
@@ -117,7 +121,11 @@ listens on a per-user owner-only socket at `$TMPDIR/notchshot-claude-<uid>.sock`
 is too long), verifies the peer's user id on both ends, and stays silent if it
 cannot bind. The expanded
 Claude activity card lists live sessions, keeps a PermissionRequest visible, and
-returns Claude's documented `hookSpecificOutput` decision after Allow or Deny.
+returns Claude's documented `hookSpecificOutput` decision after action review
+and Allow Once or Deny. Decisions are bound to the held request, so a late click
+cannot approve a replacement request. The socket admits at most 16 clients,
+retires clients that send no complete event within two seconds, and gives held
+decisions at most 310 seconds.
 The conversation button reads at most 4 MB of the matching local JSONL file on
 demand, shows at most 80 visible messages, and does not persist the transcript.
 

@@ -46,7 +46,7 @@ struct ClaudePermissionBar: View {
                 .accessibilityLabel("Deny Claude Code permission")
                 .accessibilityHint("Reject the requested tool call")
 
-            Button("Allow", action: onApprove)
+            Button(request.reviewActionTitle, action: onApprove)
                 .buttonStyle(NotchPressButtonStyle())
                 .font(.system(size: 9, weight: .bold))
                 .foregroundStyle(.black)
@@ -55,8 +55,8 @@ struct ClaudePermissionBar: View {
                     RoundedRectangle(cornerRadius: NotchIsland.Radius.control, style: .continuous)
                         .fill(.orange)
                 }
-                .accessibilityLabel("Allow Claude Code permission")
-                .accessibilityHint("Approve the requested tool call")
+                .accessibilityLabel("\(request.reviewActionTitle) Claude Code action")
+                .accessibilityHint("Inspect the complete requested action before approving")
         }
         .padding(.horizontal, NotchIsland.Spacing.element)
         .padding(.vertical, NotchIsland.Spacing.tight)

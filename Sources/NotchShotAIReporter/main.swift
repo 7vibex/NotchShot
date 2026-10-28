@@ -308,24 +308,7 @@ private enum Reporter {
     /// Runs the user's previous status line command with the same input and
     /// returns its output, bounded in size and time.
     private static func chainedStatusLine(command: String, input: Data) -> String {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/bin/sh")
-        process.arguments = ["-c", command]
-        let stdin = Pipe()
-        let stdout = Pipe()
-        process.standardInput = stdin
-        process.standardOutput = stdout
-        process.standardError = FileHandle.nullDevice
-        do { try process.run() } catch { return "" }
-        stdin.fileHandleForWriting.write(input)
-        try? stdin.fileHandleForWriting.close()
-
-        let deadline = Date().addingTimeInterval(5)
-        while process.isRunning, Date() < deadline { usleep(20_000) }
-        if process.isRunning { process.terminate() }
-        let data = (try? stdout.fileHandleForReading.read(upToCount: 16 * 1_024)) ?? nil
-        return data.flatMap { String(data: $0, encoding: .utf8) }?
-            .trimmingCharacters(in: .newlines) ?? ""
+        StatusLineCommand.run(command: command, input: input)
     }
 
     private static func runCommand(_ arguments: [String]) throws {
@@ -518,8 +501,8 @@ private enum Reporter {
         toolInput: Any? = nil
     ) -> String? {
         let normalizedEvent = event.lowercased().filter(\.isLetter)
-        // Only a question that is about to be asked is worth holding Claude
-        // for; any other tool's input never leaves this process.
+        // Questions and complete, credential-free Bash approval details are
+        // the only tool input sent over the owner-only local socket.
         let questions = normalizedEvent == "pretooluse" && ClaudeQuestionBridge.isQuestionTool(tool)
             ? ClaudeQuestionBridge.socketQuestions(fromToolInput: toolInput)
             : nil
@@ -547,6 +530,10 @@ private enum Reporter {
         if let questions {
             payload["question_form"] = questions
             payload["status"] = ClaudeQuestionBridge.waitingStatus
+        }
+        if normalizedEvent.contains("permissionrequest"),
+           let action = ClaudePermissionDetails.actionDescription(tool: tool, input: toolInput, cwd: workspacePath) {
+            payload["permission_action"] = action
         }
 
         guard let data = try? JSONSerialization.data(withJSONObject: payload),

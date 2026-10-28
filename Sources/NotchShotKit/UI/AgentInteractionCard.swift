@@ -58,9 +58,9 @@ private struct AgentApprovalCard: View {
                     AgentCapsuleButton(title: "Allow for This Run") { onRespond(.allowForSession) }
                         .help("Allow \(request.tool) for the rest of this run")
                 }
-                AgentCapsuleButton(title: "Allow", isPrimary: true) { onRespond(.allowOnce) }
+                AgentCapsuleButton(title: request.reviewActionTitle ?? "Allow", isPrimary: true) { onRespond(.allowOnce) }
                     .keyboardShortcut(.defaultAction)
-                    .accessibilityLabel("Allow \(request.tool) once")
+                    .accessibilityLabel("\(request.reviewActionTitle ?? "Allow") \(request.tool)")
             }
         }
         .accessibilityElement(children: .contain)

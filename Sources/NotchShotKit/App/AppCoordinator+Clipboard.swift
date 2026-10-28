@@ -341,8 +341,8 @@ extension AppCoordinator {
 
     public func clearAIActivityHistory() { context.ai.clearHistory() }
 
-    public func approveClaudePermission(sessionID: String) {
-        context.claude.approve(sessionID: sessionID)
+    public func approveClaudePermission(sessionID: String, requestID: String? = nil) {
+        reviewClaudePermission(sessionID: sessionID, requestID: requestID)
     }
 
     public func denyClaudePermission(sessionID: String, reason: String? = nil) {

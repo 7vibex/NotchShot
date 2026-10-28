@@ -97,7 +97,11 @@ actor CrewlineConnection {
     private let session: URLSession
     private var task: URLSessionWebSocketTask?
     private var receiveLoop: Task<Void, Never>?
-    private var pending: [String: CheckedContinuation<Data, Error>] = [:]
+    private struct PendingRequest {
+        var continuation: CheckedContinuation<Data, Error>
+        var timeout: Task<Void, Never>
+    }
+    private var pending: [String: PendingRequest] = [:]
     private var streams: [String: AsyncStream<Data>.Continuation] = [:]
     private var nextID = 0
     private var onClose: (@Sendable (CrewlineConnectionError) -> Void)?
@@ -132,22 +136,45 @@ actor CrewlineConnection {
         let id = "ns-\(nextID)"
         let frame = try Self.frame(op: "req", id: id, method: method, payload: payload)
 
-        return try await withThrowingTaskGroup(of: Data.self) { group in
-            group.addTask {
-                try await withCheckedThrowingContinuation { continuation in
-                    Task { await self.register(id: id, continuation: continuation, frame: frame, on: task) }
-                }
+        return try await waitForReply(id: id, timeout: Self.requestTimeout) { completion in
+            task.send(.string(frame)) { error in
+                completion(error == nil ? nil : CrewlineConnectionError.closed)
             }
-            group.addTask {
-                try await Task.sleep(for: Self.requestTimeout)
-                await self.fail(id: id, with: .timedOut)
-                throw CrewlineConnectionError.timedOut
-            }
-            defer { group.cancelAll() }
-            guard let result = try await group.next() else { throw CrewlineConnectionError.closed }
-            return result
         }
     }
+
+    /// Registration is synchronous on this actor. Cancellation can neither
+    /// remove a timeout while leaving its continuation held, nor run before a
+    /// later unstructured registration that sends an already-cancelled request.
+    func waitForReply(
+        id: String,
+        timeout: Duration = .seconds(30),
+        send: @Sendable (@escaping @Sendable (Error?) -> Void) -> Void
+    ) async throws -> Data {
+        try Task.checkCancellation()
+        return try await withTaskCancellationHandler {
+            try Task.checkCancellation()
+            return try await withCheckedThrowingContinuation { continuation in
+                guard !Task.isCancelled else {
+                    continuation.resume(throwing: CancellationError())
+                    return
+                }
+                let timeoutTask = Task<Void, Never> { [weak self] in
+                    do { try await Task.sleep(for: timeout) } catch { return }
+                    await self?.fail(id: id, with: CrewlineConnectionError.timedOut)
+                }
+                pending[id] = PendingRequest(continuation: continuation, timeout: timeoutTask)
+                send { [weak self] error in
+                    guard let error else { return }
+                    Task { await self?.fail(id: id, with: error) }
+                }
+            }
+        } onCancel: {
+            Task { await self.fail(id: id, with: CancellationError()) }
+        }
+    }
+
+    var pendingRequestCount: Int { pending.count }
 
     /// Opens a server stream. The returned sequence ends when the socket
     /// closes or the caller stops iterating.
@@ -173,25 +200,10 @@ actor CrewlineConnection {
         task.send(.string(#"{"op":"unsub","id":"\#(id)"}"#)) { _ in }
     }
 
-    private func register(
-        id: String,
-        continuation: CheckedContinuation<Data, Error>,
-        frame: String,
-        on task: URLSessionWebSocketTask
-    ) {
-        guard self.task === task else {
-            continuation.resume(throwing: CrewlineConnectionError.closed)
-            return
-        }
-        pending[id] = continuation
-        task.send(.string(frame)) { [weak self] error in
-            guard error != nil else { return }
-            Task { await self?.fail(id: id, with: .closed) }
-        }
-    }
-
-    private func fail(id: String, with error: CrewlineConnectionError) {
-        pending.removeValue(forKey: id)?.resume(throwing: error)
+    private func fail(id: String, with error: any Error) {
+        guard let request = pending.removeValue(forKey: id) else { return }
+        request.timeout.cancel()
+        request.continuation.resume(throwing: error)
     }
 
     private func receive() async {
@@ -222,15 +234,18 @@ actor CrewlineConnection {
                 withJSONObject: object["payload"] ?? NSNull(),
                 options: .fragmentsAllowed
             )) ?? Data("null".utf8)
-            pending.removeValue(forKey: id)?.resume(returning: payload)
+            if let request = pending.removeValue(forKey: id) {
+                request.timeout.cancel()
+                request.continuation.resume(returning: payload)
+            }
         case "err":
             let error = object["error"] as? [String: Any]
             let failure = CrewlineConnectionError.server(
                 code: error?["code"] as? String ?? "error",
                 message: error?["message"] as? String ?? "Crewline refused the request."
             )
-            if let continuation = pending.removeValue(forKey: id) {
-                continuation.resume(throwing: failure)
+            if pending[id] != nil {
+                fail(id: id, with: failure)
             } else {
                 streams.removeValue(forKey: id)?.finish()
             }
@@ -253,8 +268,7 @@ actor CrewlineConnection {
         task.cancel(with: .normalClosure, reason: nil)
         receiveLoop?.cancel()
         receiveLoop = nil
-        for continuation in pending.values { continuation.resume(throwing: error) }
-        pending.removeAll()
+        for id in Array(pending.keys) { fail(id: id, with: error) }
         for continuation in streams.values { continuation.finish() }
         streams.removeAll()
         let onClose = self.onClose

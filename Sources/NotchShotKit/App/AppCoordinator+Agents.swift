@@ -4,6 +4,60 @@ import Foundation
 /// One front door for agents waiting on the user, so the island's card does
 /// not need to know which bridge asked.
 extension AppCoordinator {
+    /// A compact card cannot show a complete shell action. Its Review button
+    /// opens this inspection before an exact, still-current request can run.
+    func reviewClaudePermission(sessionID: String, requestID: String?) {
+        guard let permission = context.claude.session(for: sessionID)?.permission,
+              requestID == nil || permission.id == requestID else { return }
+        guard permission.canApproveInline, let action = permission.actionDescription else {
+            reviewClaudePermissionInTerminal(sessionID: sessionID, requestID: permission.id)
+            return
+        }
+        let alert = NSAlert()
+        alert.messageText = "Review \(permission.toolName) action"
+        alert.informativeText = "Allow Once approves the complete action below."
+        alert.addButton(withTitle: "Review in Terminal")
+        alert.addButton(withTitle: "Allow Once")
+        alert.addButton(withTitle: "Deny")
+        // Return chooses the terminal fallback; approval always needs its own
+        // explicit activation after the full text is available for inspection.
+        alert.buttons[1].keyEquivalent = ""
+        let scroll = NSScrollView(frame: NSRect(x: 0, y: 0, width: 560, height: 240))
+        scroll.hasVerticalScroller = true
+        scroll.borderType = .bezelBorder
+        let text = NSTextView(frame: scroll.bounds)
+        text.string = action
+        text.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
+        text.isEditable = false
+        text.isSelectable = true
+        text.isVerticallyResizable = true
+        text.isHorizontallyResizable = false
+        text.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
+        text.autoresizingMask = [.width]
+        text.textContainer?.containerSize = NSSize(width: scroll.contentSize.width, height: CGFloat.greatestFiniteMagnitude)
+        text.textContainer?.widthTracksTextView = true
+        text.setAccessibilityLabel("Complete action requested by Claude Code")
+        scroll.documentView = text
+        alert.accessoryView = scroll
+        NSApp.activate(ignoringOtherApps: true)
+        switch alert.runModal() {
+        case .alertSecondButtonReturn:
+            context.claude.approve(sessionID: sessionID, requestID: permission.id)
+        case .alertThirdButtonReturn:
+            context.claude.deny(sessionID: sessionID, requestID: permission.id)
+        default:
+            reviewClaudePermissionInTerminal(sessionID: sessionID, requestID: permission.id)
+        }
+    }
+
+    private func reviewClaudePermissionInTerminal(sessionID: String, requestID: String) {
+        context.claude.answerInTerminal(sessionID: sessionID, requestID: requestID)
+        if let session = context.claude.session(for: sessionID) {
+            _ = AgentTerminalJumper.jump(pid: session.pid, tty: session.tty)
+            collapseAfterAgentJump()
+        }
+    }
+
     /// Every open approval and question, oldest first.
     public var agentInteractions: [AgentInteraction] {
         let claude = context.claude.sessions.flatMap(Self.interactions(for:))
@@ -18,7 +72,9 @@ extension AppCoordinator {
                 id: permission.id,
                 activityKey: key,
                 source: .claude,
-                kind: .approval(AgentApprovalRequest(tool: permission.toolName, summary: permission.detail)),
+                kind: .approval(AgentApprovalRequest(
+                    tool: permission.toolName, summary: permission.detail, reviewActionTitle: permission.reviewActionTitle
+                )),
                 receivedAt: permission.receivedAt
             ))
         }
@@ -56,13 +112,13 @@ extension AppCoordinator {
             let sessionID = String(interaction.activityKey.dropFirst(AISource.claude.rawValue.count + 1))
             switch (interaction.kind, response) {
             case (.approval, .allowOnce), (.approval, .allowForSession):
-                context.claude.approve(sessionID: sessionID)
+                approveClaudePermission(sessionID: sessionID, requestID: interaction.id)
             case (.approval, .deny):
-                context.claude.deny(sessionID: sessionID)
+                context.claude.deny(sessionID: sessionID, requestID: interaction.id)
             case (.question(let form), .answer(let answers)):
                 context.claude.answer(sessionID: sessionID, questionID: interaction.id, form: form, answers: answers)
-            case (.question, .answerElsewhere):
-                context.claude.answerInTerminal(sessionID: sessionID)
+            case (.question, .answerElsewhere), (.approval, .answerElsewhere):
+                context.claude.answerInTerminal(sessionID: sessionID, requestID: interaction.id)
                 if let session = context.claude.session(for: sessionID) {
                     _ = AgentTerminalJumper.jump(pid: session.pid, tty: session.tty)
                     collapseAfterAgentJump()

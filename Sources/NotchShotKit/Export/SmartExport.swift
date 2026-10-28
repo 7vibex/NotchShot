@@ -225,7 +225,13 @@ public final class SmartExportSession {
             + "-optimized.\(plan.format.fileExtension)"
         panel.message = "Exports a flattened image and removes the original file metadata. Only redactions already applied to this image are included."
         guard panel.runModal() == .OK, let url = panel.url else { return }
+        export(to: url, plan: plan)
+    }
 
+    /// The save panel and programmatic callers use the same publication path.
+    func export(to url: URL, plan suppliedPlan: SmartExportPlan? = nil) {
+        guard !isExporting else { return }
+        let plan = suppliedPlan ?? self.plan
         let source = CapturedImage(cgImage: self.source, scale: asset.scale, sourceRect: .zero)
         let preset = self.preset
         // When nothing was resampled the original scale (and therefore its DPI)
@@ -234,8 +240,8 @@ public final class SmartExportSession {
             width: CGFloat(self.source.width),
             height: CGFloat(self.source.height)
         )
-        let outputScale: CGFloat = matchesSource ? max(1, asset.scale) : 2
-        let dpiScale: CGFloat = preset == .standard1x ? 1 : outputScale
+        let outputScale = Self.outputScale(preset: preset, matchesSource: matchesSource, sourceScale: asset.scale)
+        let dpiScale = outputScale
         isExporting = true
         errorMessage = nil
         Task { [weak self] in
@@ -265,6 +271,11 @@ public final class SmartExportSession {
                 self.errorMessage = message
             }
         }
+    }
+
+    nonisolated static func outputScale(preset: SmartExportPreset, matchesSource: Bool, sourceScale: CGFloat) -> CGFloat {
+        if preset == .standard1x { return 1 }
+        return matchesSource ? max(1, sourceScale) : 2
     }
 
     /// AppKit panels stay on the main actor; the render, encode, and possible
