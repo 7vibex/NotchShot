@@ -249,6 +249,46 @@ private enum Reporter {
         ))
 
         guard source == .claude else { return nil }
+        let normalizedEvent = event.lowercased().filter(\.isLetter)
+        let report = runReport(event: normalizedEvent, tool: tool, json: json, workspacePath: workspacePath)
+
+        // Pause and Stop from the island take effect at tool boundaries.
+        let beforeTool = normalizedEvent == "pretooluse"
+        if beforeTool || normalizedEvent == "posttooluse",
+           let command = ClaudeRunControl.pending(sessionID: identifier) {
+            switch command {
+            case .stop:
+                ClaudeRunControl.clear(sessionID: identifier)
+                var stopped = report
+                stopped["status"] = ClaudeRunControl.stoppedStatus
+                _ = sendClaudeHook(
+                    event: event,
+                    identifier: identifier,
+                    title: title,
+                    tool: tool,
+                    workspacePath: workspacePath,
+                    notificationType: nil,
+                    message: nil,
+                    extras: stopped,
+                    waitsForReply: false
+                )
+                return ClaudeRunControl.stopOutput(beforeTool: beforeTool)
+            case .pause where beforeTool:
+                if holdWhilePaused(
+                    event: event,
+                    identifier: identifier,
+                    title: title,
+                    tool: tool,
+                    workspacePath: workspacePath,
+                    report: report
+                ) {
+                    return ClaudeRunControl.stopOutput(beforeTool: true)
+                }
+            case .pause:
+                break
+            }
+        }
+
         return sendClaudeHook(
             event: event,
             identifier: identifier,
@@ -257,8 +297,72 @@ private enum Reporter {
             workspacePath: workspacePath,
             notificationType: firstString(in: json, keys: ["notification_type", "notificationType"]),
             message: firstString(in: json, keys: ["message", "error", "reason"]),
-            toolInput: json["tool_input"]
+            toolInput: json["tool_input"],
+            extras: report
         )
+    }
+
+    /// The bounded extras the island's run card draws: what the tool works
+    /// on, its call ID (to time it), task-list changes and the model.
+    private static func runReport(
+        event normalizedEvent: String,
+        tool: String?,
+        json: [String: Any],
+        workspacePath: String?
+    ) -> [String: Any] {
+        var report: [String: Any] = [:]
+        let toolInput = json["tool_input"]
+        if let identifier = firstString(in: json, keys: ["tool_use_id", "toolUseId"]),
+           let safe = ClaudeRunReport.safeIdentifier(identifier) {
+            report["tool_use_id"] = safe
+        }
+        if let target = ClaudeRunReport.target(tool: tool, input: toolInput, cwd: workspacePath) {
+            report["tool_target"] = target
+        }
+        if normalizedEvent == "pretooluse",
+           let plan = ClaudeRunReport.planPayload(tool: tool, input: toolInput) {
+            report.merge(plan) { current, _ in current }
+        }
+        if let model = ClaudeRunReport.model(from: json["model"]) {
+            report["model"] = model
+        }
+        return report
+    }
+
+    /// Holds Claude before its next tool while the user has it paused.
+    /// Returns true when the user stopped it instead of resuming. With
+    /// NotchShot closed, or no answer before the hold times out, Claude goes
+    /// on.
+    private static func holdWhilePaused(
+        event: String,
+        identifier: String,
+        title: String,
+        tool: String?,
+        workspacePath: String?,
+        report: [String: Any]
+    ) -> Bool {
+        var payload = report
+        payload["session_id"] = identifier
+        payload["hook_event_name"] = event
+        payload["event"] = event
+        payload["status"] = ClaudeRunControl.heldStatus
+        payload["pid"] = Int(getppid())
+        payload["prompt"] = bounded(CommandSecretRedactor.redactText(title), maximum: 160)
+        if let workspacePath = boundedOptional(workspacePath, maximum: 240) { payload["cwd"] = workspacePath }
+        if let tool = boundedOptional(tool, maximum: 80) { payload["tool_name"] = tool }
+
+        guard let data = try? JSONSerialization.data(withJSONObject: payload),
+              let fileDescriptor = connectToClaudeSocket() else { return false }
+        defer { close(fileDescriptor) }
+        guard writeAll(data + Data([10]), to: fileDescriptor) else { return false }
+        var descriptor = pollfd()
+        descriptor.fd = fileDescriptor
+        descriptor.events = Int16(POLLIN)
+        guard Darwin.poll(&descriptor, 1, ClaudeRunControl.holdTimeoutMilliseconds) > 0 else { return false }
+        var responseBytes = [UInt8](repeating: 0, count: 1_024)
+        let count = Darwin.read(fileDescriptor, &responseBytes, responseBytes.count)
+        guard count > 0 else { return false }
+        return ClaudeRunControl.shouldStop(afterHoldReply: Data(responseBytes.prefix(count)))
     }
 
     /// Claude Code's `statusLine` command. Records plan limits and context use
@@ -487,9 +591,11 @@ private enum Reporter {
 
     private static let claudeSocketPath = ClaudeHookSocket.path
 
-    /// Sends only the bounded labels already used by the generic activity
-    /// record. In particular, `tool_input`, tool output, and transcript fields
-    /// never cross the hook boundary.
+    /// Sends only bounded labels: those of the generic activity record plus
+    /// the run card's extras from `ClaudeRunReport`. Tool output and
+    /// transcript fields never cross the hook boundary, and of `tool_input`
+    /// only a pending question, approval details and the redacted labels
+    /// `ClaudeRunReport` picks out do.
     private static func sendClaudeHook(
         event: String,
         identifier: String,
@@ -498,11 +604,14 @@ private enum Reporter {
         workspacePath: String?,
         notificationType: String?,
         message: String?,
-        toolInput: Any? = nil
+        toolInput: Any? = nil,
+        extras: [String: Any] = [:],
+        waitsForReply: Bool = true
     ) -> String? {
         let normalizedEvent = event.lowercased().filter(\.isLetter)
-        // Questions and complete, credential-free Bash approval details are
-        // the only tool input sent over the owner-only local socket.
+        // Questions, complete credential-free Bash approval details and the
+        // run card's labels are the only tool input sent over the owner-only
+        // local socket.
         let questions = normalizedEvent == "pretooluse" && ClaudeQuestionBridge.isQuestionTool(tool)
             ? ClaudeQuestionBridge.socketQuestions(fromToolInput: toolInput)
             : nil
@@ -535,11 +644,13 @@ private enum Reporter {
            let action = ClaudePermissionDetails.actionDescription(tool: tool, input: toolInput, cwd: workspacePath) {
             payload["permission_action"] = action
         }
+        payload.merge(extras) { _, extra in extra }
 
         guard let data = try? JSONSerialization.data(withJSONObject: payload),
               let fileDescriptor = connectToClaudeSocket() else { return nil }
         defer { close(fileDescriptor) }
         guard writeAll(data + Data([10]), to: fileDescriptor) else { return nil }
+        guard waitsForReply else { return nil }
 
         let expectsPermission = normalizedEvent.contains("permissionrequest")
             && bridgeStatus(for: event) == "waiting_for_approval"

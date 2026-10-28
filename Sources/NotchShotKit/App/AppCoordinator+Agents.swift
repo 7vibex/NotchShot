@@ -131,6 +131,61 @@ extension AppCoordinator {
         }
     }
 
+    /// Which of Pause, Resume and Stop the run card offers for a run.
+    public func runControls(for activity: AIActivitySnapshot) -> AgentRunControls {
+        switch activity.source {
+        case .claude:
+            guard let session = context.claude.session(for: activity.id) else { return .none }
+            let asking = session.permission != nil || session.question != nil
+            let live = !asking && (session.phase == .working || session.control != nil)
+            return AgentRunControls(canPause: live, canStop: live, state: session.control)
+        case .crewline:
+            guard let run = context.crewline.workspace.run(activity.id) else { return .none }
+            var state: AgentRunControlState? = run.status == .paused ? .paused(before: nil) : nil
+            switch context.crewline.pendingControls[run.id] {
+            case .pause: state = .pausing
+            case .stop: state = .stopping
+            case .resume, nil: break
+            }
+            return AgentRunControls(
+                canPause: run.status == .running || run.status == .starting,
+                canStop: run.status.isActive,
+                state: state
+            )
+        case .codex, .cursor, .terminal:
+            return .none
+        }
+    }
+
+    public func controlAgentRun(_ activity: AIActivitySnapshot, _ command: AgentRunCommand) {
+        switch activity.source {
+        case .claude:
+            switch command {
+            case .pause: context.claude.pauseRun(sessionID: activity.id)
+            case .resume: context.claude.resumeRun(sessionID: activity.id)
+            case .stop: context.claude.stopRun(sessionID: activity.id)
+            }
+        case .crewline:
+            context.crewline.control(runID: activity.id, command)
+        case .codex, .cursor, .terminal:
+            break
+        }
+    }
+
+    /// The model behind a run, in people's words, when anything names it.
+    public func runModelName(for activity: AIActivitySnapshot) -> String? {
+        switch activity.source {
+        case .claude:
+            let raw = context.claudeUsage.modelBySession[activity.id]
+                ?? context.claude.session(for: activity.id)?.model
+            return raw.map(AgentModelName.display)
+        case .crewline:
+            return activity.agentLabel
+        case .codex, .cursor, .terminal:
+            return activity.agentLabel
+        }
+    }
+
     /// Goes to where the agent runs: the Claude session's own terminal tab,
     /// the run inside Crewline, or the agent's app for the rest.
     public func jumpToAgent(_ activity: AIActivitySnapshot) {
