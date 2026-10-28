@@ -61,7 +61,13 @@ struct NetworkStatusCard: View {
 
     private var restoredRow: some View {
         NotchAlertRow(title: snapshot.title, subtitle: snapshot.subtitle) {
-            NotchAlertStyle.symbol("wifi", color: accent, size: 24)
+            // Back on Wi-Fi gets the joining sweep; other links just say so.
+            if snapshot.metric == NetworkLinkKind.wifi.displayName {
+                WiFiJoinGlyph(size: 22, tint: accent)
+                    .frame(width: 26)
+            } else {
+                NotchAlertStyle.symbol(snapshot.metric == NetworkLinkKind.wired.displayName ? "cable.connector" : "wifi", color: accent, size: 24)
+            }
         }
     }
 }

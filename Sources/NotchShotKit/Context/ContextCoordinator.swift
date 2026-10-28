@@ -16,6 +16,8 @@ public final class ContextCoordinator {
     public let voiceNotes = VoiceNoteCoordinator.shared
     public let privacy = PrivacyIndicatorMonitor.shared
     public var onSnapshotChange: ((ContextSnapshot?) -> Void)?
+    /// Short island bursts (VPN, Wi-Fi join) that are not context cards.
+    public var onIslandEvent: ((IslandTransientEvent) -> Void)?
 
     private let power = PowerSourceMonitor()
     private let audio = AudioRouteMonitor()
@@ -43,6 +45,7 @@ public final class ContextCoordinator {
         power.onTransition = { [weak self] snapshot in self?.present(snapshot) }
         audio.onTransition = { [weak self] snapshot in self?.present(snapshot) }
         network.onTransition = { [weak self] snapshot in self?.present(snapshot) }
+        network.onEvent = { [weak self] event in self?.onIslandEvent?(event) }
         calendar.onSnapshotChange = { [weak self] snapshot in self?.updateCalendar(snapshot) }
         ai.onSnapshotChange = { [weak self] snapshot in self?.updateAI(snapshot) }
         claude.onSnapshotChange = { [weak self] snapshot in self?.updateClaude(snapshot) }

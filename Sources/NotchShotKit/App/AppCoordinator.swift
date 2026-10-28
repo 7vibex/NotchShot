@@ -69,6 +69,7 @@ public final class AppCoordinator {
     public let displayBrightness = DisplayBrightnessController.shared
     @ObservationIgnored let keyboardState = KeyboardStateMonitor()
     @ObservationIgnored let downloads = DownloadProgressMonitor()
+    @ObservationIgnored let peripherals = PeripheralBatteryMonitor()
     @ObservationIgnored var islandEngine = IslandPresentationEngine()
     @ObservationIgnored var islandEvents = IslandTransientQueue()
     @ObservationIgnored var islandExpiryTask: Task<Void, Never>?
@@ -191,6 +192,8 @@ public final class AppCoordinator {
                 )
             }
         }
+        context.onIslandEvent = { [weak self] event in self?.presentIslandEvent(event) }
+        SongRecognizer.shared.onEvent = { [weak self] event in self?.presentIslandEvent(event) }
         // The dots widen the idle notch, so its hit region has to follow.
         context.privacy.onChange = { [weak self] in self?.refreshActivity() }
         context.start()

@@ -75,6 +75,33 @@ public final class ExtrasPreferences {
     /// Only shown when more than one layout is enabled.
     public var showsInputSource = true { didSet { write(showsInputSource, "inputSource") } }
 
+    // MARK: Network and accessories
+
+    /// A burst when a VPN connects or disconnects. Only whether one is up is
+    /// read, never which.
+    public var showsVPNStatus = true { didSet { write(showsVPNStatus, "vpnStatus") } }
+    /// The Wi-Fi bars sweeping, then filling, when the Mac joins Wi-Fi.
+    public var showsWiFiJoin = true { didSet { write(showsWiFiJoin, "wifiJoin") } }
+    /// A battery ring when a mouse, keyboard or trackpad connects, and a
+    /// warning when one runs low.
+    public var showsAccessoryBattery = true { didSet { write(showsAccessoryBattery, "accessoryBattery") } }
+
+    // MARK: Music
+
+    /// The cover's colour glowing softly behind it in the open player.
+    public var showsArtworkGlow = true { didSet { write(showsArtworkGlow, "artworkGlow") } }
+    /// The cover steps back and dims while paused, as the phone's player does.
+    public var dimsArtworkWhenPaused = true { didSet { write(dimsArtworkWhenPaused, "dimPausedArtwork") } }
+    /// The line being sung, in a small pill under the closed notch. Needs
+    /// lyrics turned on.
+    public var pinsLyricLine = false { didSet { write(pinsLyricLine, "pinnedLyric") } }
+    /// The meter follows the music itself through a Core Audio tap on the
+    /// player. Asks for "System Audio Recording" the first time.
+    public var usesLiveAudioMeter = false { didSet { write(usesLiveAudioMeter, "liveAudioMeter") } }
+    /// A "What's this song?" button in the open player that listens to the
+    /// Mac's own sound and asks Shazam. Asks for "System Audio Recording".
+    public var songRecognitionEnabled = true { didSet { write(songRecognitionEnabled, "songRecognition") } }
+
     // MARK: Downloads
 
     /// Browser downloads in the island. Safari, Chrome and other browsers
@@ -117,6 +144,14 @@ public final class ExtrasPreferences {
         showsCapsLock = bool("capsLock", true)
         showsInputSource = bool("inputSource", true)
         showsDownloads = bool("downloads", true)
+        showsArtworkGlow = bool("artworkGlow", true)
+        dimsArtworkWhenPaused = bool("dimPausedArtwork", true)
+        pinsLyricLine = bool("pinnedLyric", false)
+        usesLiveAudioMeter = bool("liveAudioMeter", false)
+        songRecognitionEnabled = bool("songRecognition", true)
+        showsVPNStatus = bool("vpnStatus", true)
+        showsWiFiJoin = bool("wifiJoin", true)
+        showsAccessoryBattery = bool("accessoryBattery", true)
         controlsExternalDisplays = bool("externalDisplays", true)
     }
 

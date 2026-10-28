@@ -126,6 +126,8 @@ struct IslandOverlayContent: View {
                 physicalNotchWidth: physicalNotchWidth,
                 coordinator: coordinator
             )
+        case .event(let event) where event.kind == .accessory:
+            PeripheralBatteryContent(event: event, physicalNotchWidth: physicalNotchWidth)
         case .event(let event):
             IslandEventContent(event: event, physicalNotchWidth: physicalNotchWidth)
         }
@@ -142,13 +144,14 @@ struct IslandEventContent: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var arrived = 0
 
-    private var isModeSwitch: Bool { event.kind == .focus || event.kind == .capsLock }
+    private var isModeSwitch: Bool { event.kind == .focus || event.kind == .capsLock || event.kind == .vpn }
 
-    /// Focus and Caps Lock carry their state in the symbol's fill.
+    /// Focus, Caps Lock and VPN carry their state in the symbol's fill.
     private var isModeOn: Bool {
         switch event.kind {
         case .focus: event.symbolName == "moon.fill"
         case .capsLock: event.symbolName == "capslock.fill"
+        case .vpn: event.symbolName == NetworkEventPolicy.vpnOnSymbol
         default: false
         }
     }
@@ -176,6 +179,8 @@ struct IslandEventContent: View {
                     fill: isModeOn ? modeOnFill : IslandSystemColor.neutralPill
                 )
                 .symbolEffect(.bounce, value: arrived)
+            } else if event.kind == .wifi {
+                WiFiJoinGlyph(strength: event.level)
             } else if event.kind == .inputSource, let code = event.detail {
                 // The language code in the pill, the way the input menu
                 // shows it, so the burst reads at a glance.
@@ -188,6 +193,12 @@ struct IslandEventContent: View {
                     .padding(.horizontal, 2)
                     .background(IslandSystemColor.blue, in: Capsule())
                     .accessibilityHidden(true)
+            } else if event.kind == .song {
+                // Shazam's blue, pulsing while it listens.
+                Image(systemName: event.symbolName)
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(event.severity == .error ? tint : IslandSystemColor.blue)
+                    .symbolEffect(.pulse, options: .repeating, isActive: event.severity == .informational && !reduceMotion)
             } else {
                 Image(systemName: event.symbolName)
                     .font(.system(size: 15, weight: .semibold))

@@ -911,8 +911,8 @@ struct LockedCardGeometryTests {
         let frame = LockedCardGeometry.panelFrame(in: screen)
         let card = LockedCardGeometry.cardSize(in: screen)
         #expect(card == LockedCardGeometry.preferredCardSize)
-        #expect(card.width == 320)
-        #expect(card.height == 132)
+        #expect(card.width == 372)
+        #expect(card.height == 188)
 
         let cocoaCenterFromBottom = frame.midY - screen.minY
         #expect(abs(
@@ -925,7 +925,8 @@ struct LockedCardGeometryTests {
         let visualCenterFromTop = screen.height - cocoaCenterFromBottom
         let visualTop = visualCenterFromTop - card.height / 2
         let visualBottom = visualCenterFromTop + card.height / 2
-        #expect(visualTop > screen.height * 0.62)
+        // The taller card grows upward; its bottom stays above the avatar.
+        #expect(visualTop > screen.height * 0.58)
         #expect(visualBottom > screen.height * 0.78)
         #expect(visualBottom < screen.height * 0.84)
         #expect(frame.midX == screen.midX)

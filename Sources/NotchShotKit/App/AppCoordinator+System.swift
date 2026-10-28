@@ -193,6 +193,7 @@ extension AppCoordinator {
             hasLockedActivityContent: notifications.lockScreenItem() != nil
                 || context.timer.current != nil
                 || (!media.isSessionActive && LockedChargingPolicy.reading() != nil),
+            hasLockedChargingContent: !media.isSessionActive && LockedChargingPolicy.reading() != nil,
             mediaPanelRowCount: mediaPanelRowCount
         )
     }

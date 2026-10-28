@@ -14,7 +14,9 @@ import Observation
 public final class MediaCoordinator {
     public static let shared = MediaCoordinator()
 
-    public private(set) var snapshot = MediaSnapshot.empty
+    public private(set) var snapshot = MediaSnapshot.empty {
+        didSet { syncLiveAudioMeter() }
+    }
     public private(set) var activeSource: MediaSourceKind = .none
     /// Decoded only when artwork bytes change. Rebuilding an `NSImage` from the
     /// same data on every two-second position tick needlessly decodes on the UI
@@ -39,7 +41,18 @@ public final class MediaCoordinator {
     /// notification: posting one for a switched-away session would put a
     /// stale song card in front of the user who returns.
     public private(set) var isScreenLocked = false
-    public private(set) var areScreensAwake = true
+    public private(set) var areScreensAwake = true {
+        didSet { syncLiveAudioMeter() }
+    }
+
+    /// Tells the live meter which app to listen to, and whether to at all.
+    private func syncLiveAudioMeter() {
+        LiveAudioMeter.shared.updateSource(
+            bundleID: snapshot.applicationBundleID,
+            isPlaying: snapshot.isPlaying,
+            screensAwake: areScreensAwake
+        )
+    }
     /// Set when every backend failed, for the settings UI to explain.
     public private(set) var lastFailureReason: String?
 

@@ -120,20 +120,40 @@ struct LyricsPanel: View {
         let isCurrent = lyrics.isSynced && line.id == currentIndex
         let isPast = lyrics.isSynced && currentIndex.map { line.id < $0 } == true
         let text = line.text.isEmpty ? "♪" : line.text
+        let sweep = isCurrent && !line.text.isEmpty
+            ? LiveLyricLinePolicy.sweep(
+                in: lyrics,
+                index: line.id,
+                position: position(at: Date()),
+                trackDuration: snapshot.duration
+            )
+            : nil
         // One font size for every line, with the current one scaled up: a
         // transform animates on the GPU, where changing the point size would
         // re-lay out the text and shove the lines below it each time.
-        let label = Text(text)
-            .font(.system(size: 14, weight: .bold))
-            .foregroundStyle(Color.islandInk(
-                isCurrent ? NotchIsland.Ink.primary
-                    : (isPast ? NotchIsland.Ink.recessed : NotchIsland.Ink.tertiary)
-            ))
-            .lineLimit(2)
-            .multilineTextAlignment(.leading)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .scaleEffect(isCurrent || !lyrics.isSynced ? 1 : 0.93, anchor: .leading)
-            .animation(reduceMotion ? nil : .easeOut(duration: 0.3), value: isCurrent)
+        let label = Group {
+            if let sweep, !reduceMotion {
+                LyricSweepLabel(
+                    text: text,
+                    startFraction: sweep.fraction,
+                    duration: sweep.duration,
+                    isRunning: snapshot.isPlaying && ticks
+                )
+                .id(line.id)
+            } else {
+                Text(text)
+                    .font(.system(size: 14, weight: .bold))
+                    .foregroundStyle(Color.islandInk(
+                        isCurrent ? NotchIsland.Ink.primary
+                            : (isPast ? NotchIsland.Ink.recessed : NotchIsland.Ink.tertiary)
+                    ))
+                    .lineLimit(2)
+                    .multilineTextAlignment(.leading)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .scaleEffect(isCurrent || !lyrics.isSynced ? 1 : 0.93, anchor: .leading)
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.3), value: isCurrent)
 
         if lyrics.isSynced, let time = line.time, snapshot.supportedCommands.contains(.seek) {
             Button { onSeek(time) } label: { label.contentShape(Rectangle()) }
@@ -165,5 +185,46 @@ struct LyricsPanel: View {
 
     private func position(at date: Date) -> TimeInterval {
         snapshot.interpolatedPosition(at: date) ?? 0
+    }
+}
+
+/// The sung line filling from left to right as it is sung, like karaoke:
+/// the dim line underneath, the bright copy revealed over it. One linear
+/// animation per line, started when the line starts and frozen on pause.
+struct LyricSweepLabel: View {
+    var text: String
+    var startFraction: Double
+    var duration: TimeInterval
+    var isRunning: Bool
+
+    @State private var progress: Double = 0
+
+    var body: some View {
+        label(NotchIsland.Ink.secondary)
+            .overlay(alignment: .leading) {
+                label(NotchIsland.Ink.primary)
+                    .mask(alignment: .leading) {
+                        Rectangle().scaleEffect(x: progress, y: 1, anchor: .leading)
+                    }
+            }
+            .onAppear(perform: start)
+            .onChange(of: isRunning) { _, _ in start() }
+    }
+
+    private func label(_ ink: Double) -> some View {
+        Text(text)
+            .font(.system(size: 14, weight: .bold))
+            .foregroundStyle(Color.islandInk(ink))
+            .lineLimit(2)
+            .multilineTextAlignment(.leading)
+            .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func start() {
+        var still = Transaction()
+        still.disablesAnimations = true
+        withTransaction(still) { progress = startFraction }
+        guard isRunning else { return }
+        withAnimation(.linear(duration: max(0.05, duration * (1 - startFraction)))) { progress = 1 }
     }
 }

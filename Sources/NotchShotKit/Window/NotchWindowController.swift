@@ -22,6 +22,8 @@ enum LockedMediaPresentationPolicy {
     enum Content: Equatable {
         case none
         case compactMedia
+        /// Nothing playing but plugged in: the same card spot shows the charge.
+        case charging
         case activityStack
     }
 
@@ -30,7 +32,8 @@ enum LockedMediaPresentationPolicy {
         hasMediaContent: Bool,
         activityStackOptedIn: Bool,
         hasActivityContent: Bool,
-        isPrimaryDisplay: Bool = true
+        isPrimaryDisplay: Bool = true,
+        hasChargingContent: Bool = false
     ) -> Content {
         // A playing track wins over the stack. The song card is the one the
         // user is looking for at a locked screen, and the stack renders in the
@@ -38,6 +41,11 @@ enum LockedMediaPresentationPolicy {
         // stack still owns the screen whenever there is no track to show.
         if mediaOptedIn, hasMediaContent, isPrimaryDisplay {
             return .compactMedia
+        }
+        // The Lock Screen card's other face, so charging sits where the
+        // player does instead of in the notch band.
+        if mediaOptedIn, hasChargingContent, isPrimaryDisplay {
+            return .charging
         }
         // The separate activity opt-in must not resurrect the retired player
         // or show an empty panel solely because music is playing.
@@ -54,7 +62,8 @@ enum LockedMediaPresentationPolicy {
         hasMediaContent: Bool,
         activityStackOptedIn: Bool = false,
         hasActivityContent: Bool = false,
-        isPrimaryDisplay: Bool = true
+        isPrimaryDisplay: Bool = true,
+        hasChargingContent: Bool = false
     ) -> NotchActivity {
         guard !sessionIsActive else { return currentActivity }
         return content(
@@ -62,7 +71,8 @@ enum LockedMediaPresentationPolicy {
             hasMediaContent: hasMediaContent,
             activityStackOptedIn: activityStackOptedIn,
             hasActivityContent: hasActivityContent,
-            isPrimaryDisplay: isPrimaryDisplay
+            isPrimaryDisplay: isPrimaryDisplay,
+            hasChargingContent: hasChargingContent
         ) == .none ? .idle : .media
     }
 
@@ -74,7 +84,8 @@ enum LockedMediaPresentationPolicy {
         hasMediaContent: Bool,
         activityStackOptedIn: Bool = false,
         hasActivityContent: Bool = false,
-        isPrimaryDisplay: Bool = true
+        isPrimaryDisplay: Bool = true,
+        hasChargingContent: Bool = false
     ) -> Bool {
         if sessionIsActive { return true }
         // `sessionDidResignActive` arrives before loginwindow publishes the
@@ -89,7 +100,8 @@ enum LockedMediaPresentationPolicy {
             hasMediaContent: hasMediaContent,
             activityStackOptedIn: activityStackOptedIn,
             hasActivityContent: hasActivityContent,
-            isPrimaryDisplay: isPrimaryDisplay
+            isPrimaryDisplay: isPrimaryDisplay,
+            hasChargingContent: hasChargingContent
         ) == .media
     }
 
@@ -243,6 +255,7 @@ public final class NotchWindowController {
     private var hasStack = false
     private var hasMediaContent = false
     private var hasLockedActivityContent = false
+    private var hasLockedChargingContent = false
     private var mediaPanelRowCount = 0
 
     public init(makeContent: @escaping (NotchDisplayContext) -> AnyView) {
@@ -594,7 +607,7 @@ public final class NotchWindowController {
         // notch band and would clip in the narrower card frame.
         guard isScreenLocked,
               !isSessionActive,
-              lockedContent(for: context) == .compactMedia else {
+              [.compactMedia, .charging].contains(lockedContent(for: context)) else {
             return panelFrame(for: context.metrics)
         }
         return LockedCardGeometry.panelFrame(in: context.metrics.screenFrame)
@@ -608,7 +621,8 @@ public final class NotchWindowController {
             hasMediaContent: hasMediaContent,
             activityStackOptedIn: Preferences.shared.showsActivityStackWhileLocked,
             hasActivityContent: hasLockedActivityContent,
-            isPrimaryDisplay: context.isPrimary
+            isPrimaryDisplay: context.isPrimary,
+            hasChargingContent: hasLockedChargingContent
         )
     }
 
@@ -633,6 +647,7 @@ public final class NotchWindowController {
         hasStack: Bool,
         hasMediaContent: Bool,
         hasLockedActivityContent: Bool,
+        hasLockedChargingContent: Bool = false,
         mediaPanelRowCount: Int = 0
     ) {
         self.currentActivity = activity
@@ -641,6 +656,7 @@ public final class NotchWindowController {
         self.hasStack = hasStack
         self.hasMediaContent = hasMediaContent
         self.hasLockedActivityContent = hasLockedActivityContent
+        self.hasLockedChargingContent = hasLockedChargingContent
         self.mediaPanelRowCount = mediaPanelRowCount
         applyLayout()
     }
@@ -810,7 +826,8 @@ public final class NotchWindowController {
                 hasMediaContent: hasMediaContent,
                 activityStackOptedIn: Preferences.shared.showsActivityStackWhileLocked,
                 hasActivityContent: hasLockedActivityContent,
-                isPrimaryDisplay: context.isPrimary
+                isPrimaryDisplay: context.isPrimary,
+                hasChargingContent: hasLockedChargingContent
             )
         }
         if case .dictation(let snap) = currentActivity, let did = snap.displayID {
@@ -1191,7 +1208,8 @@ public final class NotchWindowController {
             hasMediaContent: hasMediaContent,
             activityStackOptedIn: Preferences.shared.showsActivityStackWhileLocked,
             hasActivityContent: hasLockedActivityContent,
-            isPrimaryDisplay: context.isPrimary
+            isPrimaryDisplay: context.isPrimary,
+            hasChargingContent: hasLockedChargingContent
         )
     }
 
@@ -1299,7 +1317,8 @@ public final class NotchWindowController {
             hasMediaContent: hasMediaContent,
             activityStackOptedIn: Preferences.shared.showsActivityStackWhileLocked,
             hasActivityContent: hasLockedActivityContent,
-            isPrimaryDisplay: context.isPrimary
+            isPrimaryDisplay: context.isPrimary,
+            hasChargingContent: hasLockedChargingContent
         ) {
             panel.orderFrontRegardless()
         } else {

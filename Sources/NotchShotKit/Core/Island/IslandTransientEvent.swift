@@ -24,6 +24,15 @@ public enum IslandTransientKind: String, Sendable, Codable, Equatable, Hashable 
     case capsLock
     /// The keyboard switched to another language or layout.
     case inputSource
+    /// A VPN tunnel came up or went down.
+    case vpn
+    /// Joined Wi-Fi; `level` carries the signal for the bars.
+    case wifi
+    /// A mouse, keyboard or trackpad connected or is running low; `level`
+    /// carries its charge.
+    case accessory
+    /// "What's this song?" listening, or its answer.
+    case song
 }
 
 /// A burst: the island stretches, shows an icon and a line, holds briefly,
@@ -38,6 +47,8 @@ public struct IslandTransientEvent: Sendable, Equatable, Identifiable {
     public var symbolName: String
     public var title: String
     public var detail: String?
+    /// A 0...1 reading the burst draws (Wi-Fi bars, an accessory's charge).
+    public var level: Double?
     public var createdAt: Date
     public var holdDuration: TimeInterval
 
@@ -49,6 +60,7 @@ public struct IslandTransientEvent: Sendable, Equatable, Identifiable {
         symbolName: String,
         title: String,
         detail: String? = nil,
+        level: Double? = nil,
         createdAt: Date = Date(),
         holdDuration: TimeInterval? = nil
     ) {
@@ -59,6 +71,7 @@ public struct IslandTransientEvent: Sendable, Equatable, Identifiable {
         self.symbolName = symbolName
         self.title = String(title.prefix(IslandTransientQueue.maximumTitleLength))
         self.detail = detail.map { String($0.prefix(IslandTransientQueue.maximumDetailLength)) }
+        self.level = level.map { min(max($0, 0), 1) }
         self.createdAt = createdAt
         let fallback: TimeInterval = severity == .error || severity == .warning ? 3.2 : 2.2
         self.holdDuration = min(8, max(0.8, holdDuration ?? fallback))

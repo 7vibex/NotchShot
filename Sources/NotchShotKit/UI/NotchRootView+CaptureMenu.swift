@@ -104,6 +104,13 @@ struct CaptureMenuContent: View {
                     } label: {
                         Label("Voice Note", systemImage: "waveform.and.mic")
                     }
+                    if ExtrasPreferences.shared.songRecognitionEnabled {
+                        Button {
+                            SongRecognizer.shared.toggle()
+                        } label: {
+                            Label("What's This Song?", systemImage: "shazam.logo")
+                        }
+                    }
                     if !ExtrasPreferences.shared.pinnedShortcuts.isEmpty {
                         Section("Shortcuts") {
                             ForEach(ExtrasPreferences.shared.pinnedShortcuts, id: \.self) { name in

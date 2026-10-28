@@ -124,8 +124,9 @@ struct DesignSystemTests {
         #expect(!lockedCard.contains("transportSymbol(\"shuffle\""))
         #expect(!lockedCard.contains("transportSymbol(\"heart.fill\""))
         #expect(lockedCard.contains(".allowsHitTesting(false)"))
-        #expect(LockedNowPlayingLayout.artworkSize / LockedCardGeometry.preferredCardSize.width == 0.15)
-        #expect(LockedNowPlayingLayout.cornerRadius == 22)
+        #expect(LockedNowPlayingLayout.artworkSize == 72)
+        #expect(LockedNowPlayingLayout.artworkSize < LockedCardGeometry.preferredCardSize.height / 2)
+        #expect(LockedNowPlayingLayout.cornerRadius == 30)
     }
 
     @Test("Locked playback uses real route identity and honest metadata fallbacks")

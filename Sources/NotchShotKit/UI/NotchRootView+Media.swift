@@ -330,6 +330,21 @@ struct MediaContent: View {
                     )
                 }
 
+                if ExtrasPreferences.shared.songRecognitionEnabled {
+                    MediaControlButton(
+                        systemName: "shazam.logo",
+                        label: SongRecognizer.shared.isListening ? "Stop listening" : "What's this song?",
+                        diameter: 30,
+                        symbolSize: 14,
+                        opacity: SongRecognizer.shared.isListening
+                            ? NotchIsland.Ink.primary
+                            : NotchIsland.Ink.tertiary,
+                        isSelected: SongRecognizer.shared.isListening
+                    ) {
+                        SongRecognizer.shared.toggle()
+                    }
+                }
+
                 if supportsPlaybackModes {
                     MediaControlButton(
                         systemName: "shuffle",
@@ -778,6 +793,12 @@ struct MediaContent: View {
         }
         .frame(width: size, height: size)
         .clipShape(RoundedRectangle(cornerRadius: size / 5, style: .continuous))
+        .artworkPresence(
+            isPlaying: snapshot.isPlaying,
+            accent: Color(nsColor: coordinator.media.artworkAccentColor),
+            cornerRadius: size / 5,
+            glows: size >= 40
+        )
         .overlay(alignment: .bottomTrailing) {
             if size >= 40, let icon = coordinator.media.sourceApplicationIcon {
                 Image(nsImage: icon)

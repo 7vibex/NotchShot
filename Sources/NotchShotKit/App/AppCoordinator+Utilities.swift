@@ -21,6 +21,13 @@ extension AppCoordinator {
             downloads.stop()
         }
 
+        peripherals.onEvent = { [weak self] event in self?.presentIslandEvent(event) }
+        if extras.showsAccessoryBattery {
+            peripherals.start()
+        } else {
+            peripherals.stop()
+        }
+
         if extras.controlsExternalDisplays {
             displayBrightness.start()
         } else {
@@ -33,6 +40,7 @@ extension AppCoordinator {
     func stopUtilities() {
         keyboardState.stop()
         downloads.stop()
+        peripherals.stop()
         displayBrightness.stop()
     }
 

@@ -44,7 +44,8 @@ public struct NotchRootView: View {
             hasActivityContent: notificationStore.lockScreenItem() != nil
                 || coordinator.context.timer.current != nil
                 || LockedChargingPolicy.reading() != nil,
-            isPrimaryDisplay: context.isPrimary
+            isPrimaryDisplay: context.isPrimary,
+            hasChargingContent: LockedChargingPolicy.reading() != nil
         )
     }
 
@@ -60,7 +61,8 @@ public struct NotchRootView: View {
                 hasActivityContent: !notificationStore.activeItems.isEmpty
                     || coordinator.context.timer.current != nil
                     || LockedChargingPolicy.reading() != nil,
-                isPrimaryDisplay: context.isPrimary
+                isPrimaryDisplay: context.isPrimary,
+                hasChargingContent: LockedChargingPolicy.reading() != nil
             )
         }
         if case .systemLevel(let level) = coordinator.activity,
@@ -181,6 +183,8 @@ public struct NotchRootView: View {
                 coordinator: coordinator,
                 cardSize: LockedCardGeometry.cardSize(in: context.metrics.screenFrame)
             )
+        } else if isLockedSession, lockedPresentationContent == .charging {
+            LockedChargingCard(cardSize: LockedCardGeometry.cardSize(in: context.metrics.screenFrame))
         } else {
             standardPresentation
         }
@@ -192,6 +196,17 @@ public struct NotchRootView: View {
                 .frame(height: layout.topInset)
                 .accessibilityHidden(true)
             island
+            if showsPinnedLyric {
+                LiveLyricLine(snapshot: coordinator.media.snapshot, ticks: pinnedLyricTicks) { line in
+                    ZStack {
+                        if let line {
+                            PinnedLyricPill(text: line, maxWidth: max(layout.size.width + 120, 320))
+                        }
+                    }
+                    .animation(reduceMotion ? nil : .spring(response: 0.42, dampingFraction: 0.88), value: line)
+                }
+                .padding(.top, 5)
+            }
             if let tab = visibleTab {
                 NotchTabBar(current: tab, coordinator: coordinator)
                     .padding(.top, NotchTabBarGeometry.gap)
@@ -237,6 +252,28 @@ public struct NotchRootView: View {
         .onChange(of: isTargetedForDrop) { _, targeted in
             coordinator.setDraggingFiles(targeted)
         }
+    }
+
+    /// The sung line under the closed notch, opted into in Settings → Extras.
+    /// Only for the compact player on the display the user is on: an open
+    /// notch has its own lyrics panel, and an overlay burst owns the space.
+    private var showsPinnedLyric: Bool {
+        guard ExtrasPreferences.shared.pinsLyricLine,
+              Preferences.shared.lyricsEnabled,
+              isActiveDisplay,
+              !isLockedSession,
+              coordinator.media.snapshot.isPlaying
+        else { return false }
+        switch effectiveActivity {
+        case .media: return true
+        case .island(let descriptor):
+            return descriptor.primaryKind == .media && !descriptor.isExpanded && descriptor.overlay == nil
+        default: return false
+        }
+    }
+
+    private var pinnedLyricTicks: Bool {
+        coordinator.media.snapshot.isPlaying && coordinator.media.areScreensAwake
     }
 
     /// The page pill under the open notch. Must match the window

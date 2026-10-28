@@ -228,7 +228,7 @@ struct PreferencesTests {
         #expect(!preferences.recordingPresenterCamera)
     }
 
-    @Test("Retired lock-screen music ignores legacy opt-ins and preserves other preferences")
+    @Test("The Lock Screen player ignores the retired opt-in and persists its own")
     func lockedMediaPreference() {
         let suiteName = "notchshot.tests.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!
@@ -256,6 +256,9 @@ struct PreferencesTests {
         ))
         #expect(Preferences(defaults: defaults).showsActivityStackWhileLocked)
         #expect(Preferences(defaults: defaults).mirrorsSystemNotificationBanners)
+
+        upgraded.showsMediaWhileLocked = true
+        #expect(Preferences(defaults: defaults).showsMediaWhileLocked)
     }
 
     @Test("Context modules use privacy-safe defaults and persist explicit choices")

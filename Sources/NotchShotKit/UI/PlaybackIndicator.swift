@@ -23,15 +23,23 @@ struct PlaybackIndicator: NSViewRepresentable {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     func makeNSView(context: Context) -> PlaybackMeterView {
-        PlaybackMeterView(style: .playback, scale: scale)
+        PlaybackMeterView(style: .playback, scale: scale, followsLiveAudio: true)
     }
 
     func updateNSView(_ view: PlaybackMeterView, context: Context) {
+        let isActive = isPlaying && animates && !reduceMotion
         view.update(
-            isActive: isPlaying && animates && !reduceMotion,
+            isActive: isActive,
             isPlaying: isPlaying,
             color: NSColor(accentColor)
         )
+        // Read here so turning the setting on or off reaches meters already
+        // on screen.
+        view.setFollowingLiveAudio(isActive && ExtrasPreferences.shared.usesLiveAudioMeter && view.window != nil)
+    }
+
+    static func dismantleNSView(_ view: PlaybackMeterView, coordinator: ()) {
+        view.setFollowingLiveAudio(false)
     }
 
     func sizeThatFits(_ proposal: ProposedViewSize, nsView: PlaybackMeterView, context: Context) -> CGSize? {
@@ -84,14 +92,20 @@ final class PlaybackMeterView: NSView {
 
     private let style: Style
     private let scale: CGFloat
+    /// Now-playing meters can follow the real audio; the call meter can't.
+    private let followsLiveAudio: Bool
     private var barLayers: [CALayer] = []
     private var isActive = false
     private var isPlaying = false
     private var color: NSColor = .white
+    /// Attached to `LiveAudioMeter` and receiving levels.
+    private var isFollowingLiveAudio = false
+    private var isShowingLiveLevels = false
 
-    init(style: Style, scale: CGFloat) {
+    init(style: Style, scale: CGFloat, followsLiveAudio: Bool = false) {
         self.style = style
         self.scale = scale
+        self.followsLiveAudio = followsLiveAudio
         super.init(frame: CGRect(origin: .zero, size: Self.size(style: style, scale: scale)))
         let host = CALayer()
         host.masksToBounds = false
@@ -132,7 +146,8 @@ final class PlaybackMeterView: NSView {
         super.viewDidMoveToWindow()
         // Animations are dropped when a layer leaves its window; restart them
         // on the way back in rather than leaving the bars frozen mid-height.
-        if window != nil, isActive { startBouncing() }
+        if window != nil, isActive, !isShowingLiveLevels { startBouncing() }
+        setFollowingLiveAudio(window != nil && isActive)
     }
 
     override func viewDidChangeBackingProperties() {
@@ -150,11 +165,53 @@ final class PlaybackMeterView: NSView {
         }
         guard isActive != self.isActive else { return }
         self.isActive = isActive
+        setFollowingLiveAudio(isActive && window != nil)
         if isActive {
-            startBouncing()
+            if !isShowingLiveLevels { startBouncing() }
         } else {
+            isShowingLiveLevels = false
             applyResting(animated: true)
         }
+    }
+
+    // MARK: Live audio
+
+    func setFollowingLiveAudio(_ follow: Bool) {
+        let follow = follow && followsLiveAudio && ExtrasPreferences.shared.usesLiveAudioMeter
+        guard follow != isFollowingLiveAudio else { return }
+        isFollowingLiveAudio = follow
+        if follow {
+            LiveAudioMeter.shared.attach(self)
+        } else {
+            LiveAudioMeter.shared.detach(self)
+            if isShowingLiveLevels { liveLevelsEnded() }
+        }
+    }
+
+    /// One analysis frame: each bar goes straight to its band's height with
+    /// a short ease, replacing the keyframed bounce while levels flow.
+    func applyLiveLevels(_ levels: [Float]) {
+        guard isFollowingLiveAudio, isActive else { return }
+        if !isShowingLiveLevels {
+            isShowingLiveLevels = true
+            barLayers.forEach { $0.removeAnimation(forKey: "bounce") }
+        }
+        CATransaction.begin()
+        CATransaction.setAnimationDuration(0.07)
+        CATransaction.setAnimationTimingFunction(CAMediaTimingFunction(name: .easeOut))
+        for (index, bar) in barLayers.enumerated() {
+            let spec = style.bars[index]
+            let level = CGFloat(levels.isEmpty ? 0 : levels[index % levels.count])
+            bar.bounds.size.height = (spec.rest + (spec.peak - spec.rest) * level) * scale
+        }
+        CATransaction.commit()
+    }
+
+    /// The tap stopped or never started: back to the keyframed bounce.
+    func liveLevelsEnded() {
+        guard isShowingLiveLevels else { return }
+        isShowingLiveLevels = false
+        if isActive { startBouncing() } else { applyResting(animated: true) }
     }
 
     private func layoutBars() {

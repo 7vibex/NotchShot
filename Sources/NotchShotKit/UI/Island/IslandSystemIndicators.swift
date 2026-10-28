@@ -249,3 +249,81 @@ struct IslandCallAvatar: View {
         }
     }
 }
+
+/// Wi-Fi joining, the way the phone's status bar draws it: the bars sweep
+/// outward while it connects, then settle at the real signal. The sweep is
+/// the system's own variable-colour symbol effect, so the render server
+/// runs it rather than a SwiftUI timer.
+struct WiFiJoinGlyph: View {
+    /// 0...1; nil draws full bars.
+    var strength: Double?
+    var size: CGFloat = 15
+    var tint: Color = IslandSystemColor.green
+    /// How long the sweep plays before the bars settle.
+    static let sweepDuration: Duration = .milliseconds(1100)
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var joined = false
+
+    var body: some View {
+        Image(systemName: "wifi", variableValue: joined ? (strength ?? 1) : 1)
+            .font(.system(size: size, weight: .semibold))
+            .foregroundStyle(tint)
+            .symbolEffect(
+                .variableColor.iterative.dimInactiveLayers.nonReversing,
+                options: .repeating,
+                isActive: !joined
+            )
+            .task {
+                guard !reduceMotion else {
+                    joined = true
+                    return
+                }
+                try? await Task.sleep(for: Self.sweepDuration)
+                withAnimation(.easeOut(duration: 0.25)) { joined = true }
+            }
+            .accessibilityHidden(true)
+    }
+}
+
+/// A mouse, keyboard or trackpad: the device on one wing, its charge as a
+/// ring and a number on the other, like an AirPods case connecting.
+struct PeripheralBatteryContent: View {
+    var event: IslandTransientEvent
+    var physicalNotchWidth: CGFloat?
+
+    @State private var arrived = 0
+
+    private var percent: Int? { event.level.map { Int(($0 * 100).rounded()) } }
+    private var isLow: Bool { event.severity == .warning }
+
+    var body: some View {
+        IslandWings(physicalNotchWidth: physicalNotchWidth) {
+            Image(systemName: event.symbolName)
+                .font(.system(size: 17, weight: .regular))
+                .symbolRenderingMode(.hierarchical)
+                .foregroundStyle(Color.islandInk(NotchIsland.Ink.primary))
+                .symbolEffect(.bounce, value: arrived)
+        } trailing: {
+            HStack(spacing: 6) {
+                if physicalNotchWidth == nil || isLow {
+                    Text(event.title)
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(isLow ? IslandSystemColor.red : Color.islandInk(NotchIsland.Ink.primary))
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.8)
+                }
+                if let percent {
+                    IslandBatteryRing(percent: percent)
+                }
+            }
+        }
+        .task {
+            try? await Task.sleep(for: .milliseconds(180))
+            arrived += 1
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel([event.detail, event.title].compactMap { $0 }.joined(separator: ", "))
+        .accessibilityValue(percent.map { "\($0) percent" } ?? "")
+    }
+}

@@ -69,6 +69,8 @@
 	<string>NotchShot can briefly show when a Focus turns on or off. macOS shares only whether a Focus is on, never which one.</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>NotchShot records your microphone only when you start a screen recording with microphone audio, explicitly start a Voice Note, or use Notch Dictation to transcribe speech locally.</string>
+	<key>NSAudioCaptureUsageDescription</key>
+	<string>NotchShot listens to what's playing only when you turn on the live music meter or ask "What's this song?". The sound is analysed in memory on this Mac and never recorded or saved.</string>
 	<key>NSCameraUsageDescription</key>
 	<string>NotchShot uses the camera only while you open Presenter Camera or explicitly enable its visible recording overlay.</string>
 	<key>NSLocalNetworkUsageDescription</key>

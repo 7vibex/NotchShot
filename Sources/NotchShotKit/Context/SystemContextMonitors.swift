@@ -9,19 +9,60 @@ public struct PowerSourceReading: Sendable, Equatable {
     public var isCharging: Bool
     public var isInternalBattery: Bool
     public var isUPS: Bool
+    /// The adapter's rating in watts, when macOS knows it.
+    public var adapterWatts: Int?
+    /// macOS's own estimate; nil while it is still calculating.
+    public var minutesToFull: Int?
 
     public init(
         percentage: Int,
         isConnectedToPower: Bool,
         isCharging: Bool,
         isInternalBattery: Bool = true,
-        isUPS: Bool = false
+        isUPS: Bool = false,
+        adapterWatts: Int? = nil,
+        minutesToFull: Int? = nil
     ) {
         self.percentage = percentage
         self.isConnectedToPower = isConnectedToPower
         self.isCharging = isCharging
         self.isInternalBattery = isInternalBattery
         self.isUPS = isUPS
+        self.adapterWatts = adapterWatts
+        self.minutesToFull = minutesToFull
+    }
+
+    /// Plugged in, not full, and not charging: Optimized Charging or the
+    /// charge limit is holding it, which the battery menu calls "On Hold".
+    public var isChargingOnHold: Bool {
+        isConnectedToPower && !isCharging && percentage < 100
+    }
+}
+
+/// The charging card's words, kept out of the view so they can be tested.
+enum PowerChargeDescription {
+    static func title(_ power: PowerSourceReading) -> String {
+        if power.isChargingOnHold { return "Charging On Hold" }
+        if power.percentage >= 100 || !power.isCharging { return "Charged" }
+        return "Charging"
+    }
+
+    /// "1:20 until full · 96W", or as much of it as macOS reports.
+    static func detail(_ power: PowerSourceReading) -> String {
+        var parts: [String] = []
+        if power.isCharging, let minutes = power.minutesToFull, minutes > 0 {
+            parts.append(minutes >= 60
+                ? String(format: "%d:%02d until full", minutes / 60, minutes % 60)
+                : "\(minutes) min until full")
+        } else if power.isChargingOnHold {
+            parts.append("Protecting battery health")
+        } else if power.percentage >= 100 {
+            parts.append("Connected to power")
+        } else {
+            parts.append("Plugged in")
+        }
+        if let watts = power.adapterWatts, watts > 0 { parts.append("\(watts)W") }
+        return parts.joined(separator: " · ")
     }
 }
 
@@ -142,12 +183,19 @@ final class PowerSourceMonitor {
             let state = description[kIOPSPowerSourceStateKey as String] as? String
             let connected = state == (kIOPSACPowerValue as String)
             let charging = description[kIOPSIsChargingKey as String] as? Bool ?? false
+            // -1 means "still calculating"; the adapter can be unknown too.
+            let toFull = (description[kIOPSTimeToFullChargeKey as String] as? Int).flatMap { $0 > 0 ? $0 : nil }
+            let watts = connected
+                ? (IOPSCopyExternalPowerAdapterDetails()?.takeRetainedValue() as? [String: Any])?[kIOPSPowerAdapterWattsKey as String] as? Int
+                : nil
             return PowerSourceReading(
                 percentage: Int((Double(current) / Double(maximum) * 100).rounded()),
                 isConnectedToPower: connected,
                 isCharging: charging,
                 isInternalBattery: true,
-                isUPS: false
+                isUPS: false,
+                adapterWatts: watts,
+                minutesToFull: toFull
             )
         }
         return nil

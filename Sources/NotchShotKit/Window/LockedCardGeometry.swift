@@ -2,15 +2,15 @@ import CoreGraphics
 
 /// Responsive placement for the opted-in Now Playing card on loginwindow.
 public enum LockedCardGeometry {
-    /// The phone's small Lock Screen player, sized to sit just above the
-    /// avatar and password field without competing with them.
-    public static let preferredCardSize = CGSize(width: 320, height: 132)
+    /// A Lock Screen player large enough for a 72 pt cover and a full-width
+    /// transport, still clear of the avatar and password field below it.
+    public static let preferredCardSize = CGSize(width: 372, height: 188)
     /// Slack around the card for its border and shadow.
     public static let padding: CGFloat = 30
-    /// AppKit is bottom-origin. At 0.27 the visual bottom of this compact card
-    /// sits just above loginwindow's avatar/password group, with no empty space
-    /// reserved for activity cards that are not present.
-    public static let verticalCenterFraction: CGFloat = 0.27
+    /// AppKit is bottom-origin. At 0.30 the visual bottom of the card sits
+    /// where the smaller card's did, just above loginwindow's avatar and
+    /// password group, so the extra height grows upward.
+    public static let verticalCenterFraction: CGFloat = 0.30
 
     public static func cardSize(in screenFrame: CGRect) -> CGSize {
         let availableWidth = max(0, screenFrame.width - padding * 2)

@@ -220,9 +220,11 @@ public final class Preferences {
         didSet { write(usesSystemScreenshotShortcuts, .usesSystemShortcuts) }
     }
     public var mediaIntegrationEnabled = true { didSet { write(mediaIntegrationEnabled, .mediaEnabled) } }
-    /// Retired feature. Ignore old opt-ins so upgrades cannot restore the
-    /// experimental lock-screen player or its song-notification fallback.
-    public let showsMediaWhileLocked = false
+    /// The Liquid Glass player on the Lock Screen. Opt-in, under a key of its
+    /// own: the September player's opt-in stays retired and is still cleared
+    /// on load, so an upgrade never turns this on by itself. There is still
+    /// no song-notification fallback.
+    public var showsMediaWhileLocked = false { didSet { write(showsMediaWhileLocked, .lockScreenPlayer) } }
     /// More revealing lock-session presentation. Off by default and separate
     /// from ordinary media because it may show Focus state and
     /// the content of NotchShot-owned alerts.
@@ -545,7 +547,7 @@ public final class Preferences {
         case notchHiddenApps
         case notchEnabled, notchDisplayPlacement, islandOnExternal, mirrorPassiveContext, hoverPeek, hoverPeekDelay, systemLevelHUD
         case mirrorsBrightness, suppressesSystemOSD, usesSystemShortcuts
-        case mediaEnabled, activityStackWhileLocked, mirrorSystemNotifications
+        case mediaEnabled, activityStackWhileLocked, lockScreenPlayer, mirrorSystemNotifications
         case appleEventsFallback, adapterPath, adapterIdentity, mediaLyrics
         case calendarGlance, selectedCalendars, hiddenTitleCalendars, calendarTitles, calendarOverMedia
         case customCalendarSelection
@@ -694,6 +696,7 @@ public final class Preferences {
         usesSystemScreenshotShortcuts = bool(.usesSystemShortcuts, false)
         mediaIntegrationEnabled = bool(.mediaEnabled, true)
         defaults.removeObject(forKey: "notchshot.mediaWhileLocked")
+        showsMediaWhileLocked = bool(.lockScreenPlayer, false)
         showsActivityStackWhileLocked = bool(.activityStackWhileLocked, false)
         mirrorsSystemNotificationBanners = bool(.mirrorSystemNotifications, false)
         appleEventsFallbackEnabled = bool(.appleEventsFallback, false)

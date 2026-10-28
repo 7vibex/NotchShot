@@ -188,6 +188,32 @@ struct ExtrasSettings: View {
             .onChange(of: extras.showsCapsLock) { _, _ in coordinator.refreshUtilities() }
             .onChange(of: extras.showsInputSource) { _, _ in coordinator.refreshUtilities() }
 
+            Section("Music") {
+                Toggle("Glow from the album colour", isOn: $extras.showsArtworkGlow)
+                Toggle("Dim the cover while paused", isOn: $extras.dimsArtworkWhenPaused)
+                Toggle("Pin the sung lyric under the notch", isOn: $extras.pinsLyricLine)
+                    .disabled(!preferences.lyricsEnabled)
+                Toggle("Meter follows the music", isOn: $extras.usesLiveAudioMeter)
+                Toggle("What's this song?", isOn: $extras.songRecognitionEnabled)
+                Text("The live meter and song recognition listen to the Mac's own sound, never the microphone, and ask for System Audio Recording the first time. Nothing is recorded or saved. Recognition sends an audio signature to Shazam. The pinned lyric needs lyrics turned on under Media.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            .onChange(of: extras.usesLiveAudioMeter) { _, _ in LiveAudioMeter.shared.preferenceChanged() }
+
+            Section("Network and Accessories") {
+                Toggle("VPN on and off", isOn: $extras.showsVPNStatus)
+                Toggle("Wi-Fi joining animation", isOn: $extras.showsWiFiJoin)
+                Toggle("Mouse, keyboard and trackpad battery", isOn: $extras.showsAccessoryBattery)
+                Text("VPN and Wi-Fi bursts only say whether you're connected: no network name, server or address is read. Bluetooth input devices show their charge when they connect and warn at 10% and 5%.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                if !preferences.networkStatusEnabled, extras.showsVPNStatus || extras.showsWiFiJoin {
+                    SettingsWarningRow(message: "Turn on network status in Live Activities to see the VPN and Wi-Fi bursts.")
+                }
+            }
+            .onChange(of: extras.showsAccessoryBattery) { _, _ in coordinator.refreshUtilities() }
+
             Section("Downloads") {
                 Toggle("Browser downloads as a live activity", isOn: $extras.showsDownloads)
                 Text("Safari, Chrome and other browsers report progress for files saving to Downloads. Quick downloads under a second never appear.")

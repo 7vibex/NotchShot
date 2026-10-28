@@ -208,6 +208,17 @@ struct MediaSettings: View {
                         coordinator.media.restart()
                     }
                 ))
+                Toggle("Music player on the Lock Screen", isOn: Binding(
+                    get: { preferences.showsMediaWhileLocked },
+                    set: { newValue in
+                        preferences.showsMediaWhileLocked = newValue
+                        coordinator.windowController?.refreshLockedPresentation()
+                    }
+                ))
+                .disabled(!preferences.mediaIntegrationEnabled)
+                Text("A Liquid Glass player above the password field, tinted by the cover, with the battery while charging and the sung lyric line when lyrics are on. Display only. It uses an unsupported macOS window API, so a macOS update may hide it.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
                 Toggle("Show activity stack while Mac is locked", isOn: Binding(
                     get: { preferences.showsActivityStackWhileLocked },
                     set: { newValue in

@@ -27,10 +27,23 @@ public enum NetworkLinkKind: String, Sendable, Codable, Equatable {
 public struct NetworkReachability: Sendable, Equatable {
     public var isOnline: Bool
     public var link: NetworkLinkKind?
+    /// A VPN tunnel is carrying traffic. Only whether one is up is kept, never
+    /// its name or server.
+    public var isVPNActive: Bool
+    /// Wi-Fi signal as 0...1, for how many bars the join burst fills. Nil when
+    /// not on Wi-Fi or when the radio does not report it.
+    public var wifiStrength: Double?
 
-    public init(isOnline: Bool, link: NetworkLinkKind? = nil) {
+    public init(
+        isOnline: Bool,
+        link: NetworkLinkKind? = nil,
+        isVPNActive: Bool = false,
+        wifiStrength: Double? = nil
+    ) {
         self.isOnline = isOnline
         self.link = link
+        self.isVPNActive = isVPNActive
+        self.wifiStrength = wifiStrength
     }
 }
 
@@ -108,6 +121,70 @@ enum NetworkContextPolicy {
             // the stream that is playing is about to stop.
             mayInterruptMedia: true
         )
+    }
+}
+
+/// Short bursts for changes that are news but not worth a card: a VPN coming
+/// up or going down, and joining Wi-Fi while already online over something
+/// else. Reaching the internet again keeps its card above.
+enum NetworkEventPolicy {
+    static let vpnOnSymbol = "lock.shield.fill"
+    static let vpnOffSymbol = "lock.shield"
+    static let wifiSymbol = "wifi"
+
+    static func events(
+        previous: NetworkReachability?,
+        current: NetworkReachability,
+        showsVPN: Bool,
+        showsWiFiJoin: Bool,
+        now: Date = Date()
+    ) -> [IslandTransientEvent] {
+        // Same rule as the card: the state at launch is not news.
+        guard let previous else { return [] }
+        var events: [IslandTransientEvent] = []
+        if showsVPN, previous.isVPNActive != current.isVPNActive {
+            events.append(IslandTransientEvent(
+                kind: .vpn,
+                severity: current.isVPNActive ? .success : .informational,
+                coalescingKey: "vpn",
+                symbolName: current.isVPNActive ? vpnOnSymbol : vpnOffSymbol,
+                title: current.isVPNActive ? "VPN On" : "VPN Off",
+                createdAt: now,
+                holdDuration: 1.8
+            ))
+        }
+        // Coming back online already has the card; this is only for moving
+        // onto Wi-Fi from Ethernet or a hotspot while still connected.
+        if showsWiFiJoin, previous.isOnline, current.isOnline,
+           previous.link != .wifi, current.link == .wifi {
+            events.append(wifiJoinEvent(strength: current.wifiStrength, now: now))
+        }
+        return events
+    }
+
+    static func wifiJoinEvent(strength: Double?, now: Date = Date()) -> IslandTransientEvent {
+        IslandTransientEvent(
+            kind: .wifi,
+            severity: .success,
+            coalescingKey: "wifi",
+            symbolName: wifiSymbol,
+            // The bars already say Wi-Fi; a longer title is cut off beside
+            // the camera.
+            title: "Connected",
+            detail: "Wi-Fi",
+            level: strength,
+            createdAt: now,
+            holdDuration: 2.2
+        )
+    }
+
+    /// RSSI in dBm to bars, using the thresholds the Wi-Fi menu's three bars
+    /// roughly follow: -50 and stronger is full, -80 and weaker is one bar.
+    static func strength(rssi: Int) -> Double? {
+        guard rssi < 0 else { return nil }
+        if rssi >= -55 { return 1 }
+        if rssi >= -67 { return 0.67 }
+        return 0.34
     }
 }
 

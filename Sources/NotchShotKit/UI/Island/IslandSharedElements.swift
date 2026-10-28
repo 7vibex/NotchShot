@@ -411,7 +411,61 @@ struct IslandArtworkGlyph: View {
         // A track change crossfades the cover rather than cutting to it.
         .id(coordinator.media.artwork.map(ObjectIdentifier.init))
         .transition(.opacity.animation(.easeInOut(duration: 0.3)))
+        .artworkPresence(
+            isPlaying: coordinator.media.snapshot.isPlaying,
+            accent: Color(nsColor: coordinator.media.artworkAccentColor),
+            cornerRadius: base / 5,
+            // Only the open player has room for the glow; on the compact
+            // wing it would bleed into the camera band.
+            glows: side >= 40
+        )
         .scaleEffect(max(side, 1) / base)
         .frame(width: side, height: side)
+    }
+}
+
+/// The cover's two quiet states: a soft glow of its own colour behind it
+/// while it plays, and stepping back — smaller, dimmer, less saturated —
+/// while paused, the way the phone's player does. Both are static between
+/// changes; nothing here loops, and the glow's blur radius never animates.
+struct ArtworkPresenceModifier: ViewModifier {
+    var isPlaying: Bool
+    var accent: Color
+    var cornerRadius: CGFloat
+    var glows: Bool
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    func body(content: Content) -> some View {
+        let extras = ExtrasPreferences.shared
+        let dims = extras.dimsArtworkWhenPaused && !isPlaying
+        content
+            .background {
+                if glows, extras.showsArtworkGlow {
+                    RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                        .fill(accent)
+                        .blur(radius: 12)
+                        .scaleEffect(0.94)
+                        .offset(y: 3)
+                        .opacity(isPlaying ? 0.6 : 0.18)
+                        .accessibilityHidden(true)
+                }
+            }
+            .saturation(dims ? 0.55 : 1)
+            .opacity(dims ? 0.74 : 1)
+            .scaleEffect(dims ? 0.9 : 1)
+            .animation(reduceMotion ? nil : .spring(response: 0.45, dampingFraction: 0.78), value: dims)
+            .animation(.easeInOut(duration: 0.35), value: isPlaying)
+    }
+}
+
+extension View {
+    func artworkPresence(isPlaying: Bool, accent: Color, cornerRadius: CGFloat, glows: Bool) -> some View {
+        modifier(ArtworkPresenceModifier(
+            isPlaying: isPlaying,
+            accent: accent,
+            cornerRadius: cornerRadius,
+            glows: glows
+        ))
     }
 }
