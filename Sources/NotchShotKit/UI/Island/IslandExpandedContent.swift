@@ -371,7 +371,13 @@ private struct IslandAIExpanded: View {
                 onRespond: { coordinator.respondToAgent($0, with: $1) },
                 onJump: { coordinator.jumpToAgent($0) },
                 contextBySession: coordinator.context.claudeUsage.contextBySession,
-                accessory: AnyView(AgentUsageStrip(coordinator: coordinator))
+                accessory: AnyView(AgentUsageStrip(coordinator: coordinator)),
+                runControls: { coordinator.runControls(for: $0) },
+                onRunControl: { coordinator.controlAgentRun($0, $1) },
+                modelName: { coordinator.runModelName(for: $0) },
+                onShowRun: { run in
+                    if run.source == .claude { coordinator.context.claude.refreshModel(sessionID: run.id) }
+                }
             )
             .islandReveal(stage: 1)
         }

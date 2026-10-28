@@ -116,6 +116,15 @@ enum AgentVibePresentation {
         }
     }
 
+    /// Where the run card's "Open run" goes, in words.
+    static func jumpHelp(for activity: AIActivitySnapshot, claudeSession: ClaudeCodeSession?) -> String {
+        switch activity.source {
+        case .claude where claudeSession?.tty != nil || claudeSession?.pid != nil: "Go to this session's terminal"
+        case .crewline: "Open this run in Crewline"
+        default: "Open \(activity.source.title)"
+        }
+    }
+
     /// Each provider once, in list order, for the header's stacked marks.
     static func sources(of activities: [AIActivitySnapshot]) -> [AISource] {
         var seen = Set<AISource>()
@@ -219,9 +228,18 @@ struct AgentVibeActivitySurface: View {
     var contextBySession: [String: Double] = [:]
     /// Pinned under the list (plan limits).
     var accessory: AnyView?
+    /// Pause, Resume and Stop for the lead run's card.
+    var runControls: (AIActivitySnapshot) -> AgentRunControls = { _ in .none }
+    var onRunControl: (AIActivitySnapshot, AgentRunCommand) -> Void = { _, _ in }
+    /// The model behind a run, when anything names it.
+    var modelName: (AIActivitySnapshot) -> String? = { _ in nil }
+    /// Called when a run becomes the card, to fetch what it still lacks.
+    var onShowRun: (AIActivitySnapshot) -> Void = { _ in }
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var selectedClaudeSession: ClaudeCodeSession?
+    /// The run the user picked for the card; else the one that matters most.
+    @State private var selectedRunKey: String?
 
     private var liveActivities: [AIActivitySnapshot] {
         var merged = activities
@@ -272,9 +290,18 @@ struct AgentVibeActivitySurface: View {
     }
 
     private var list: some View {
-        ScrollView(.vertical) {
+        let live = liveActivities
+        let lead = leadActivity(in: live)
+        let others = live.filter { $0.displayIdentifier != lead?.displayIdentifier }
+        return ScrollView(.vertical) {
             LazyVStack(alignment: .leading, spacing: 0) {
-                ForEach(Array(liveActivities.enumerated()), id: \.element.displayIdentifier) { index, activity in
+                if let lead {
+                    runCard(for: lead)
+                        .padding(.top, 2)
+                        .padding(.bottom, others.isEmpty ? 0 : 4)
+                        .transition(.opacity)
+                }
+                ForEach(Array(others.enumerated()), id: \.element.displayIdentifier) { index, activity in
                     if index > 0 { AgentRowSeparator() }
                     let interaction = interaction(for: activity)
                     AgentVibeActivityRow(
@@ -295,7 +322,8 @@ struct AgentVibeActivitySurface: View {
                         onOpenAgent: {
                             if let onJump { onJump(activity) } else { AgentIconCatalog.activate(activity.source) }
                         },
-                        onDismiss: { onDismiss(activity) }
+                        onDismiss: { onDismiss(activity) },
+                        onSelect: { selectedRunKey = activity.displayIdentifier }
                     )
                     .transition(.asymmetric(
                         insertion: .move(edge: .top).combined(with: .opacity),
@@ -316,6 +344,47 @@ struct AgentVibeActivitySurface: View {
             }
         }
         .scrollIndicators(.automatic)
+    }
+
+    /// The run that gets the card: the user's pick while it is live, else
+    /// one asking for something, else one at work, else the first.
+    private func leadActivity(in live: [AIActivitySnapshot]) -> AIActivitySnapshot? {
+        if let selectedRunKey, let chosen = live.first(where: { $0.displayIdentifier == selectedRunKey }) {
+            return chosen
+        }
+        return live.first { interaction(for: $0) != nil || claudeSession(for: $0)?.permission != nil }
+            ?? live.first { $0.state == .working }
+            ?? live.first
+    }
+
+    private func runCard(for activity: AIActivitySnapshot) -> some View {
+        let session = claudeSession(for: activity)
+        let interaction = interaction(for: activity)
+        return AgentRunCard(
+            model: AgentRunCardModel(
+                activity: activity,
+                claudeSession: session,
+                interaction: interaction,
+                modelName: modelName(activity),
+                controls: runControls(activity)
+            ),
+            interaction: interaction,
+            showsPermissionButtons: interaction == nil && session?.permission != nil,
+            canOpen: onJump != nil || AgentIconCatalog.applicationURL(for: activity.source) != nil,
+            openHelp: AgentVibePresentation.jumpHelp(for: activity, claudeSession: session),
+            onOpen: {
+                if let onJump { onJump(activity) } else { AgentIconCatalog.activate(activity.source) }
+            },
+            onControl: { onRunControl(activity, $0) },
+            onRespond: { response in
+                if let interaction { onRespond(interaction, response) }
+            },
+            onApprove: { onApprovePermission(activity.id) },
+            onDeny: { onDenyPermission(activity.id) },
+            onOpenConversation: session.map { session in { selectedClaudeSession = session } },
+            onDismiss: { onDismiss(activity) }
+        )
+        .task(id: activity.displayIdentifier) { onShowRun(activity) }
     }
 
     /// Only drawn where the island has no camera-band header of its own.
@@ -422,6 +491,8 @@ private struct AgentVibeActivityRow: View {
     let canOpenAgent: Bool
     let onOpenAgent: () -> Void
     let onDismiss: () -> Void
+    /// Makes this run the card.
+    var onSelect: (() -> Void)?
 
     @State private var isHovered = false
 
@@ -454,6 +525,10 @@ private struct AgentVibeActivityRow: View {
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
+                .onTapGesture { onSelect?() }
+                .accessibilityAddTraits(onSelect == nil ? [] : .isButton)
+                .accessibilityAction(named: "Show this run") { onSelect?() }
 
                 trailing
             }

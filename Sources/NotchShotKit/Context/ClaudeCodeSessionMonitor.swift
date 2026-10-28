@@ -77,6 +77,25 @@ public struct ClaudeCodeSession: Codable, Equatable, Identifiable, Sendable {
     public var startedAt: Date
     public var updatedAt: Date
 
+    // The run card's live detail. None of it is persisted.
+
+    /// The current turn's tool calls, oldest first.
+    public var actions: [AgentRunAction] = []
+    /// Every tool call this turn, including those that scrolled out of
+    /// `actions`.
+    public var toolCallCount = 0
+    /// Claude's own task list, from `TodoWrite` or `TaskCreate`/`TaskUpdate`.
+    public var plan: [AIActivityStep] = []
+    /// As the hook or the transcript named it.
+    public var model: String?
+    public var control: AgentRunControlState?
+    /// When the user last sent a prompt, and when Claude last finished one.
+    public var turnStartedAt: Date?
+    public var turnEndedAt: Date?
+    /// True once a PostToolUse arrives: calls then end on their own events,
+    /// so parallel calls are not cut short by the next one starting.
+    public var reportsToolEnds = false
+
     private enum CodingKeys: String, CodingKey {
         case id, cwd, pid, tty, phase, title, detail, lastTool, permission, startedAt, updatedAt
     }
@@ -113,7 +132,9 @@ public struct ClaudeCodeSession: Codable, Equatable, Identifiable, Sendable {
     }
 
     public var aiActivity: AIActivitySnapshot {
-        let steps: [AIActivityStep] = if let lastTool, !lastTool.isEmpty {
+        let steps: [AIActivityStep] = if !plan.isEmpty {
+            plan
+        } else if let lastTool, !lastTool.isEmpty {
             [AIActivityStep(
                 id: "last-tool",
                 label: "Using \(lastTool)",
@@ -265,6 +286,9 @@ private final class ClaudeCodeHookServer: @unchecked Sendable {
     private var eventHandler: (@Sendable (Data) -> Void)?
     private var clients: [Int32: Client] = [:]
     private var pendingBySession: [String: Int32] = [:]
+    /// Hooks holding a paused session before its next tool. Parallel tool
+    /// calls each hold, so a session can have several.
+    private var heldBySession: [String: [Int32]] = [:]
 
     func start(onData: @escaping @Sendable (Data) -> Void) {
         queue.async { [weak self] in
@@ -284,6 +308,19 @@ private final class ClaudeCodeHookServer: @unchecked Sendable {
             response["reason"] = String(reason.prefix(240))
         }
         respond(sessionID: sessionID, object: response)
+    }
+
+    /// Lets every hook holding this paused session go: on to the tool, or
+    /// ending the turn.
+    func release(sessionID: String, stop: Bool) {
+        guard let data = try? JSONSerialization.data(withJSONObject: ["decision": stop ? "stop" : "resume"]) else { return }
+        queue.async { [weak self] in
+            guard let self else { return }
+            for fileDescriptor in self.heldBySession.removeValue(forKey: sessionID) ?? [] {
+                _ = self.writeAll(data + Data([10]), to: fileDescriptor)
+                self.closeClient(fileDescriptor)
+            }
+        }
     }
 
     /// Writes one JSON line to the hook process waiting for this session and
@@ -363,6 +400,7 @@ private final class ClaudeCodeHookServer: @unchecked Sendable {
         }
         clients.removeAll()
         pendingBySession.removeAll()
+        heldBySession.removeAll()
         eventHandler = nil
         _ = removeStaleSocketIfSafe()
     }
@@ -444,6 +482,10 @@ private final class ClaudeCodeHookServer: @unchecked Sendable {
             || ClaudeCodeHookPolicy.normalized(status).contains("waitingforapproval")
             || status == ClaudeQuestionBridge.waitingStatus
 
+        if status == ClaudeRunControl.heldStatus, !sessionID.isEmpty {
+            heldBySession[sessionID, default: []].append(client.fileDescriptor)
+            return
+        }
         guard expectsResponse, !sessionID.isEmpty else {
             closeClient(client.fileDescriptor)
             return
@@ -486,6 +528,10 @@ private final class ClaudeCodeHookServer: @unchecked Sendable {
     /// alone.
     private func closeClient(_ fileDescriptor: Int32) {
         pendingBySession = pendingBySession.filter { $0.value != fileDescriptor }
+        heldBySession = heldBySession.compactMapValues { held in
+            let rest = held.filter { $0 != fileDescriptor }
+            return rest.isEmpty ? nil : rest
+        }
         guard let client = clients.removeValue(forKey: fileDescriptor) else { return }
         client.source?.cancel()
     }
@@ -527,6 +573,7 @@ public final class ClaudeCodeSessionMonitor {
     public var onSnapshotChange: ((ContextSnapshot?) -> Void)?
 
     private let server = ClaudeCodeHookServer()
+    private var modelChecks: [String: Date] = [:]
     private var pruneTask: Task<Void, Never>?
     private var mayInterruptMedia = true
 
@@ -539,6 +586,8 @@ public final class ClaudeCodeSessionMonitor {
             return
         }
         isRunning = true
+        // Nothing asked of a run before NotchShot last quit still stands.
+        ClaudeRunControl.clearAll()
         server.start { [weak self] data in
             Task { @MainActor [weak self] in
                 self?.receiveHookData(data)
@@ -577,6 +626,11 @@ public final class ClaudeCodeSessionMonitor {
         // request until the reporter's timeout and hide Allow/Deny, so dismiss
         // resolves it as a denial first.
         if let index = sessions.firstIndex(where: { $0.id == sessionID }) {
+            if sessions[index].control != nil {
+                // A hidden run must not stay held or be stopped unseen.
+                ClaudeRunControl.clear(sessionID: sessionID)
+                server.release(sessionID: sessionID, stop: false)
+            }
             if sessions[index].permission != nil {
                 server.respond(sessionID: sessionID, decision: "deny", reason: "Dismissed")
             } else if sessions[index].question != nil {
@@ -614,6 +668,70 @@ public final class ClaudeCodeSessionMonitor {
         sessions[index].detail = boundedReason ?? "Permission denied"
         sessions[index].updatedAt = Date()
         publish()
+    }
+
+    // MARK: Pause and Stop
+
+    /// Holds Claude before its next tool until `resumeRun`. Takes effect at
+    /// that tool's hook, so a long command already running finishes first.
+    public func pauseRun(sessionID: String) {
+        guard let index = sessions.firstIndex(where: { $0.id == sessionID }),
+              sessions[index].phase == .working,
+              sessions[index].control == nil,
+              ClaudeRunControl.request(.pause, sessionID: sessionID) else { return }
+        sessions[index].control = .pausing
+        publish()
+    }
+
+    public func resumeRun(sessionID: String) {
+        guard let index = sessions.firstIndex(where: { $0.id == sessionID }),
+              let control = sessions[index].control, control != .stopping else { return }
+        ClaudeRunControl.clear(sessionID: sessionID)
+        server.release(sessionID: sessionID, stop: false)
+        sessions[index].control = nil
+        sessions[index].updatedAt = Date()
+        publish()
+    }
+
+    /// Ends Claude's turn at its next tool, or at once when it is held. The
+    /// session stays open for the next prompt, as after Esc in the terminal.
+    public func stopRun(sessionID: String) {
+        guard let index = sessions.firstIndex(where: { $0.id == sessionID }),
+              sessions[index].control != .stopping,
+              !sessions[index].phase.isTerminal else { return }
+        let now = Date()
+        if sessions[index].control?.isPaused == true {
+            ClaudeRunControl.clear(sessionID: sessionID)
+            server.release(sessionID: sessionID, stop: true)
+            AgentRunTimeline.endAll(at: now, in: &sessions[index].actions)
+            sessions[index].turnEndedAt = now
+            sessions[index].control = nil
+            sessions[index].phase = .waiting
+            sessions[index].detail = ClaudeRunControl.stopReason
+        } else {
+            guard ClaudeRunControl.request(.stop, sessionID: sessionID) else { return }
+            sessions[index].control = .stopping
+        }
+        sessions[index].updatedAt = now
+        publish()
+    }
+
+    /// Reads the model from the end of the session's transcript when the
+    /// run card shows it, at most every 30 seconds per session.
+    public func refreshModel(sessionID: String) {
+        guard let session = session(for: sessionID) else { return }
+        let now = Date()
+        if let checked = modelChecks[sessionID], now.timeIntervalSince(checked) < 30 { return }
+        modelChecks[sessionID] = now
+        Task { [weak self] in
+            let model = await Task.detached(priority: .utility) {
+                ClaudeConversationReader.latestModel(for: session)
+            }.value
+            guard let model, let self,
+                  let index = self.sessions.firstIndex(where: { $0.id == sessionID }),
+                  self.sessions[index].model != model else { return }
+            self.sessions[index].model = model
+        }
     }
 
     /// Answers a held `AskUserQuestion`. Claude continues as if the user had
@@ -688,6 +806,21 @@ public final class ClaudeCodeSessionMonitor {
                 startedAt: now,
                 updatedAt: now
             )
+        let eventName = ClaudeCodeHookPolicy.normalized(event)
+        let previousControl = session.control
+        let changesPhase = ClaudeCodeRunTracker.apply(object, event: eventName, tool: tool, now: now, to: &session)
+        if previousControl != nil, session.control == nil { ClaudeRunControl.clear(sessionID: id) }
+        guard changesPhase else {
+            // A pause holding or a stop taking effect: only the run changed.
+            if let index = sessions.firstIndex(where: { $0.id == id }) {
+                sessions[index] = session
+            } else {
+                sessions.append(session)
+            }
+            publish()
+            return
+        }
+
         if !cwd.isEmpty { session.cwd = cwd }
         if let pid { session.pid = pid }
         if let tty { session.tty = tty }
@@ -701,6 +834,9 @@ public final class ClaudeCodeSessionMonitor {
             notificationType: notificationType,
             message: message
         )
+        if eventName == "pretooluse", let detail = ClaudeCodeRunTracker.detail(forStartOf: tool, in: session) {
+            session.detail = detail
+        }
         session.updatedAt = now
 
         let normalizedEvent = ClaudeCodeHookPolicy.normalized(event)

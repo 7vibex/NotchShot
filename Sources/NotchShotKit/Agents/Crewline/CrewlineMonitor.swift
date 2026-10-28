@@ -40,6 +40,8 @@ public final class CrewlineMonitor {
 
     public private(set) var state: CrewlineLinkState = .off
     public private(set) var workspace = CrewlineWorkspace()
+    /// Pause, resume or stop commands sent and not yet answered, by run.
+    public private(set) var pendingControls: [String: AgentRunCommand] = [:]
     /// The open question per run ID, fetched for runs in `awaiting_input`.
     public private(set) var questions: [String: AgentInteraction] = [:]
     public private(set) var usageAccounts: [CrewlineUsageAccount] = []
@@ -427,6 +429,29 @@ public final class CrewlineMonitor {
                 self?.lastError = error.localizedDescription
                 self?.onChange?()
             }
+        }
+    }
+
+    /// Pauses, resumes or stops a run, as Crewline's own run controls do.
+    /// The command shows as pending until Crewline answers.
+    public func control(runID: String, _ command: AgentRunCommand) {
+        guard let connection, pendingControls[runID] == nil else { return }
+        let method = switch command {
+        case .pause: "runs.pause"
+        case .resume: "runs.resume"
+        case .stop: "runs.stop"
+        }
+        pendingControls[runID] = command
+        onChange?()
+        Task { [weak self] in
+            do {
+                _ = try await connection.request(method, payload: ["runId": runID])
+                self?.scheduleRefresh(after: .milliseconds(200))
+            } catch {
+                self?.lastError = error.localizedDescription
+            }
+            self?.pendingControls[runID] = nil
+            self?.onChange?()
         }
     }
 

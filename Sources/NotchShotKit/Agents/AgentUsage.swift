@@ -86,6 +86,18 @@ public enum AgentUsagePolicy {
         return AgentUsageGroup(source: .claude, label: "Claude", meters: meters, isStale: stale)
     }
 
+    /// Each live Claude session's model, as its status line names it.
+    public static func modelBySession(
+        from snapshots: [ClaudeStatusSnapshot],
+        now: Date = Date()
+    ) -> [String: String] {
+        var result: [String: String] = [:]
+        for snapshot in snapshots where now.timeIntervalSince(snapshot.updatedAt) < contextLifetime {
+            if let model = snapshot.model { result[snapshot.sessionID] = model }
+        }
+        return result
+    }
+
     /// Each live Claude session's context use, for its own row.
     public static func contextBySession(
         from snapshots: [ClaudeStatusSnapshot],
@@ -147,6 +159,8 @@ public final class ClaudeUsageMonitor {
     public private(set) var group: AgentUsageGroup?
     /// Context window used, by Claude session ID.
     public private(set) var contextBySession: [String: Double] = [:]
+    /// Model, by Claude session ID, when the status line names one.
+    public private(set) var modelBySession: [String: String] = [:]
     private var pollTask: Task<Void, Never>?
     private let folder: URL
 
@@ -169,6 +183,7 @@ public final class ClaudeUsageMonitor {
         pollTask = nil
         group = nil
         contextBySession = [:]
+        modelBySession = [:]
     }
 
     func refresh(now: Date = Date()) async {
@@ -180,6 +195,8 @@ public final class ClaudeUsageMonitor {
         if updated != group { group = updated }
         let context = AgentUsagePolicy.contextBySession(from: snapshots, now: now)
         if context != contextBySession { contextBySession = context }
+        let models = AgentUsagePolicy.modelBySession(from: snapshots, now: now)
+        if models != modelBySession { modelBySession = models }
     }
 
     nonisolated static func readSnapshots(in folder: URL, now: Date) -> [ClaudeStatusSnapshot] {
