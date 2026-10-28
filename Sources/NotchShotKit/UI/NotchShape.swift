@@ -78,7 +78,9 @@ private struct NotchControlSurfaceModifier<S: Shape>: ViewModifier {
             increaseContrast: increaseContrast,
             allowsLiquidGlass: allowsLiquidGlass
         ) {
-            content.glassEffect(liquidGlass, in: shape)
+            content
+                .glassEffect(liquidGlass, in: shape)
+                .environment(\.colorScheme, .dark)
         } else {
             content.background {
                 shape

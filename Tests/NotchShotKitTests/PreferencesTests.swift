@@ -24,6 +24,26 @@ struct PreferencesTests {
         return Calendar(identifier: .gregorian).date(from: components)!
     }
 
+    @Test("New installations use the transparent glass appearance")
+    func glassDefaults() {
+        let preferences = makePreferences()
+        #expect(preferences.islandGlassEnabled)
+        #expect(preferences.islandGlassLevel == IslandGlassPolicy.defaultLevel)
+    }
+
+    @Test("Existing glass appearance choices survive the new defaults")
+    func glassPreferencePersistence() {
+        let suiteName = "notchshot.tests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        defaults.set(false, forKey: "notchshot.islandGlass")
+        defaults.set(0.4, forKey: "notchshot.islandGlassLevel")
+
+        let preferences = Preferences(defaults: defaults)
+        #expect(!preferences.islandGlassEnabled)
+        #expect(preferences.islandGlassLevel == 0.4)
+    }
+
     @Test("The default template expands date and time")
     func defaultTemplate() {
         let preferences = makePreferences()

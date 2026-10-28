@@ -520,8 +520,8 @@ public struct NotchRootView: View {
         }
     }
 
-    /// The shell stays opaque while compact control surfaces are coordinated so
-    /// adjacent effects merge cleanly without tinting readable content.
+    /// Coordinate the compact controls separately from the shell so adjacent
+    /// effects merge without flattening its black-to-clear background.
     private var styledContent: some View {
         GlassEffectContainer(spacing: 6) {
             // Outgoing and incoming content overlap during a switch; both hang

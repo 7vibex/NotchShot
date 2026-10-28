@@ -8,16 +8,23 @@ import SwiftUI
 /// content is white ink designed for a dark shell, so the floor keeps it
 /// readable over a white window.
 enum IslandGlassPolicy {
+    static let defaultEnabled = true
+    static let defaultLevel = 0.85
+
     /// Black that remains at the bottom edge at level 0 and level 1.
     static let bottomOpacityRange: ClosedRange<Double> = 0.3...0.85
     /// Dark tint on the glass itself, for the same legibility reason.
-    static let glassTintOpacity = 0.22
+    static let glassTintOpacity = 0.06
 
     struct Fade: Equatable {
         /// Fraction of the shell's height that is still solid black.
         var start: Double
         /// Black opacity left at the bottom edge.
         var bottomOpacity: Double
+
+        /// Keep the main controls dark before the lower edge opens onto the
+        /// desktop, rather than washing the entire player in transparency.
+        var controlStop: Double { start + (1 - start) * 0.5 }
     }
 
     static func usesGlass(
@@ -47,7 +54,7 @@ enum IslandGlassPolicy {
 }
 
 /// The island's background: all black while closed, black-into-glass while
-/// open when the user has turned glass on.
+/// open when glass is enabled.
 struct IslandShellFill<S: Shape>: View {
     var shape: S
     var isExpanded: Bool
@@ -77,6 +84,7 @@ struct IslandShellFill<S: Shape>: View {
                         stops: [
                             .init(color: .black, location: 0),
                             .init(color: .black, location: fade.start),
+                            .init(color: .black.opacity(0.9), location: fade.controlStop),
                             .init(color: .black.opacity(fade.bottomOpacity), location: 1),
                         ],
                         startPoint: .top,

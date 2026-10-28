@@ -352,10 +352,10 @@ public final class Preferences {
     }
     /// The open notch melts from black into Liquid Glass. Off keeps the
     /// all-black shell, which matches the hardware cutout everywhere.
-    public var islandGlassEnabled = false { didSet { write(islandGlassEnabled, .islandGlass) } }
+    public var islandGlassEnabled = IslandGlassPolicy.defaultEnabled { didSet { write(islandGlassEnabled, .islandGlass) } }
     /// How far the glass reaches: 0 is a hint of glass at the bottom edge,
     /// 1 starts right under the camera band and is the most see-through.
-    public var islandGlassLevel: Double = 0.5 {
+    public var islandGlassLevel: Double = IslandGlassPolicy.defaultLevel {
         didSet {
             let clamped = min(1, max(0, islandGlassLevel))
             if clamped != islandGlassLevel { islandGlassLevel = clamped; return }
@@ -745,8 +745,8 @@ public final class Preferences {
         islandAnimationStyle = string(.islandAnimationStyle).flatMap(IslandAnimationStyle.init) ?? .iPhone
         NotchMotion.style = islandAnimationStyle
         islandShadowStrength = double(.islandShadowStrength, 0.5)
-        islandGlassEnabled = bool(.islandGlass, false)
-        islandGlassLevel = double(.islandGlassLevel, 0.5)
+        islandGlassEnabled = bool(.islandGlass, IslandGlassPolicy.defaultEnabled)
+        islandGlassLevel = double(.islandGlassLevel, IslandGlassPolicy.defaultLevel)
         longPressExpandsIsland = bool(.islandLongPress, true)
         showsPrivacyIndicators = bool(.privacyIndicators, true)
         allowsAlertsOverActivities = bool(.islandAlerts, true)

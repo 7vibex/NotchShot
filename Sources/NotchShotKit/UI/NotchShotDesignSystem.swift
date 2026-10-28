@@ -249,10 +249,17 @@ extension View {
         modifier(NotchShotContentSwapModifier(identity: id))
     }
 
-    /// The open notch's optional glass base (Settings → Glass notch). Tinted
-    /// dark because everything drawn on the shell is white ink.
+    /// Clear glass lets the desktop refract through the lower edge. The shell
+    /// supplies its own black gradient to protect the camera and controls.
     func notchShotShellGlass<S: Shape>(in shape: S, tintOpacity: Double) -> some View {
-        glassEffect(.regular.tint(.black.opacity(tintOpacity)), in: shape)
+        glassEffect(.clear.tint(.black.opacity(tintOpacity)), in: shape)
+    }
+
+    /// The detached page switcher needs the stronger, adaptive material behind
+    /// its small glyphs. It shares the dark appearance of the notch's chrome.
+    func notchShotNavigationGlass<S: Shape>(in shape: S) -> some View {
+        glassEffect(.regular.tint(.black.opacity(0.12)), in: shape)
+            .environment(\.colorScheme, .dark)
     }
 
     /// Coordinates the separate activity cards as one native Liquid Glass

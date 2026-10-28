@@ -7,6 +7,8 @@ struct NotchTabBar: View {
     @Bindable var coordinator: AppCoordinator
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+    @Environment(\.colorSchemeContrast) private var colorSchemeContrast
     @Namespace private var selection
 
     var body: some View {
@@ -30,7 +32,17 @@ struct NotchTabBar: View {
             width: NotchTabBarGeometry.size(tabCount: tabs.count).width,
             height: NotchTabBarGeometry.height
         )
-        .background(Capsule().fill(.black))
+        .background {
+            if IslandGlassPolicy.usesGlass(
+                enabled: Preferences.shared.islandGlassEnabled,
+                reduceTransparency: reduceTransparency,
+                increaseContrast: colorSchemeContrast == .increased
+            ) {
+                Color.clear.notchShotNavigationGlass(in: Capsule())
+            } else {
+                Capsule().fill(.black)
+            }
+        }
         .overlay(Capsule().strokeBorder(Color.islandInk(NotchIsland.Surface.edge), lineWidth: NotchIsland.Stroke.hairline))
         .shadow(color: .black.opacity(0.35), radius: 10, y: 4)
         .animation(NotchMotion.selection(reduceMotion: reduceMotion), value: current)
