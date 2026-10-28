@@ -193,6 +193,19 @@ struct IslandEventContent: View {
                     .padding(.horizontal, 2)
                     .background(IslandSystemColor.blue, in: Capsule())
                     .accessibilityHidden(true)
+            } else if event.kind == .unlock {
+                // The padlock opens a beat after the island appears, as the
+                // phone's does on Face ID. Reduce Motion shows it open.
+                Image(systemName: arrived > 0 || reduceMotion ? "lock.open.fill" : "lock.fill")
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(Color.islandInk(NotchIsland.Ink.primary))
+                    .contentTransition(.symbolEffect(.replace.magic(fallback: .downUp.byLayer)))
+            } else if event.kind == .nudge {
+                // A slow breath, twice, and done: a nudge, not an alarm.
+                Image(systemName: event.symbolName)
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(Self.nudgeTint(event.symbolName))
+                    .symbolEffect(.breathe, options: .repeat(2), value: arrived)
             } else if event.kind == .song {
                 // Shazam's blue, pulsing while it listens.
                 Image(systemName: event.symbolName)
@@ -219,13 +232,24 @@ struct IslandEventContent: View {
             }
         }
         .task {
-            guard !reduceMotion, isModeSwitch else { return }
-            try? await Task.sleep(for: .milliseconds(160))
+            guard !reduceMotion, isModeSwitch || event.kind == .unlock || event.kind == .nudge else { return }
+            try? await Task.sleep(for: .milliseconds(event.kind == .unlock ? 260 : 160))
             arrived += 1
         }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(event.title)
         .accessibilityValue(event.detail ?? "")
+    }
+}
+
+extension IslandEventContent {
+    /// Each break its own colour, so a glance tells eyes from water.
+    static func nudgeTint(_ symbolName: String) -> Color {
+        switch symbolName {
+        case BreakNudgeKind.water.symbolName: IslandSystemColor.blue
+        case BreakNudgeKind.stand.symbolName: IslandSystemColor.green
+        default: IslandSystemColor.indigoText
+        }
     }
 }
 

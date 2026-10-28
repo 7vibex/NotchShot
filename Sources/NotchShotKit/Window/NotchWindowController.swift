@@ -670,16 +670,14 @@ public final class NotchWindowController {
             resultCount: resultCount,
             hasStack: hasStack,
             mediaPanelRows: mediaPanelRowCount,
-            privacyIndicators: showsPrivacyIndicators(on: context)
+            indicatorWings: showsIndicatorWings(on: context)
         )
     }
 
-    /// Must match `NotchRootView.showsPrivacyIndicators`, or the dots' strip
-    /// is drawn but clicks there fall through to the menu bar.
-    private func showsPrivacyIndicators(on context: NotchDisplayContext) -> Bool {
-        context.metrics.hasPhysicalNotch
-            && Preferences.shared.showsPrivacyIndicators
-            && PrivacyIndicatorMonitor.shared.isActive
+    /// Must match `NotchRootView.showsIndicatorWings`, or the strips are
+    /// drawn but clicks there fall through to the menu bar.
+    private func showsIndicatorWings(on context: NotchDisplayContext) -> Bool {
+        NotchStatusGlyphPolicy.showsIndicatorWings(hasPhysicalNotch: context.metrics.hasPhysicalNotch)
     }
 
     /// Updates click-through regions. Deliberately does **not** re-evaluate
@@ -809,7 +807,7 @@ public final class NotchWindowController {
                 isPeeking: false,
                 resultCount: resultCount,
                 hasStack: hasStack,
-                privacyIndicators: showsPrivacyIndicators(on: context)
+                indicatorWings: showsIndicatorWings(on: context)
             ),
             activity
         )

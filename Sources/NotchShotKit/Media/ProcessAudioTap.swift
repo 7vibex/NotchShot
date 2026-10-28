@@ -155,6 +155,12 @@ final class ProcessAudioTap: @unchecked Sendable {
     }
 
     static func audioProcessBundleIDs() -> [String] {
+        audioProcessObjects().compactMap(bundleID(of:))
+    }
+
+    /// Every process Core Audio knows about: each one that has opened audio,
+    /// playing or not.
+    static func audioProcessObjects() -> [AudioObjectID] {
         var address = AudioObjectPropertyAddress(
             mSelector: kAudioHardwarePropertyProcessObjectList,
             mScope: kAudioObjectPropertyScopeGlobal,
@@ -165,10 +171,22 @@ final class ProcessAudioTap: @unchecked Sendable {
         guard AudioObjectGetPropertyDataSize(system, &address, 0, nil, &size) == noErr, size > 0 else { return [] }
         var objects = [AudioObjectID](repeating: 0, count: Int(size) / MemoryLayout<AudioObjectID>.size)
         guard AudioObjectGetPropertyData(system, &address, 0, nil, &size, &objects) == noErr else { return [] }
-        return objects.compactMap(bundleID(of:))
+        return objects
     }
 
-    private static func bundleID(of process: AudioObjectID) -> String? {
+    /// Whether the process is sending sound to an output right now.
+    static func isRunningOutput(_ process: AudioObjectID) -> Bool {
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioProcessPropertyIsRunningOutput,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var value: UInt32 = 0
+        var size = UInt32(MemoryLayout<UInt32>.size)
+        return AudioObjectGetPropertyData(process, &address, 0, nil, &size, &value) == noErr && value != 0
+    }
+
+    static func bundleID(of process: AudioObjectID) -> String? {
         var address = AudioObjectPropertyAddress(
             mSelector: kAudioProcessPropertyBundleID,
             mScope: kAudioObjectPropertyScopeGlobal,

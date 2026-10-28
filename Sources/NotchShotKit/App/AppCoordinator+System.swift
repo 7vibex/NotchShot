@@ -178,6 +178,7 @@ extension AppCoordinator {
 
     func refreshActivity() {
         releaseSystemMuteAfterCalls()
+        syncQuickToggleInputs()
         refreshIsland()
         let resolved = arbiter.resolve()
         if resolved != activity {
@@ -258,6 +259,8 @@ extension AppCoordinator {
             systemNotificationTask?.cancel()
             systemNotificationTask = nil
             systemNotificationTaskID = nil
+            // The card is gone, so no hover end will arrive for it.
+            systemNotificationHovered = false
             return
         }
         // Keyed on the newest banner, so each arrival restarts the clock and
@@ -265,17 +268,38 @@ extension AppCoordinator {
         guard systemNotificationTaskID != snapshot.id else { return }
 
         systemNotificationTask?.cancel()
+        systemNotificationTask = nil
         systemNotificationTaskID = snapshot.id
+        // A banner that arrives under the pointer waits for it to leave too.
+        guard !systemNotificationHovered else { return }
         // A little longer for each extra row there is to read.
-        let visible = Double(snapshot.rows.count - 1) * 2 + 6
+        scheduleSystemNotificationDismissal(of: snapshot.id, after: Double(snapshot.rows.count - 1) * 2 + 6)
+    }
+
+    private func scheduleSystemNotificationDismissal(of id: UUID, after seconds: TimeInterval) {
+        systemNotificationTask?.cancel()
         systemNotificationTask = Task { [weak self] in
-            try? await Task.sleep(for: .seconds(visible))
+            try? await Task.sleep(for: .seconds(seconds))
             guard !Task.isCancelled else { return }
             await MainActor.run {
-                guard let self, self.arbiter.systemNotification?.id == snapshot.id else { return }
+                guard let self, self.arbiter.systemNotification?.id == id else { return }
                 self.clearSystemNotifications()
                 self.refreshActivity()
             }
+        }
+    }
+
+    /// Hovering the banners stops their clock; leaving gives a short grace
+    /// rather than the full time again, or a read stack would linger.
+    public func setSystemNotificationHovered(_ hovered: Bool) {
+        guard hovered != systemNotificationHovered else { return }
+        systemNotificationHovered = hovered
+        guard let id = arbiter.systemNotification?.id else { return }
+        if hovered {
+            systemNotificationTask?.cancel()
+            systemNotificationTask = nil
+        } else {
+            scheduleSystemNotificationDismissal(of: id, after: 3)
         }
     }
 
@@ -283,6 +307,7 @@ extension AppCoordinator {
         systemNotificationTask?.cancel()
         systemNotificationTask = nil
         systemNotificationTaskID = nil
+        systemNotificationHovered = false
         systemNotificationQueue.removeAll()
         arbiter.systemNotification = nil
     }

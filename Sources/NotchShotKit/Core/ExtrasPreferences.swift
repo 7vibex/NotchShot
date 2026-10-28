@@ -30,6 +30,9 @@ public final class ExtrasPreferences {
     /// banner's own reply field through Accessibility, so the posting app
     /// still routes the message.
     public var notificationRepliesEnabled = true { didSet { write(notificationRepliesEnabled, "notificationReplies") } }
+    /// A Copy button on mirrored banners that carry a one-time code. The code
+    /// is read from the banner already on screen and is never stored.
+    public var offersOneTimeCodes = true { didSet { write(offersOneTimeCodes, "oneTimeCodes") } }
 
     // MARK: Shortcuts and apps
 
@@ -55,6 +58,12 @@ public final class ExtrasPreferences {
     public var eyeBreakIntervalMinutes = 20 { didSet { write(eyeBreakIntervalMinutes, "eyeBreakInterval") } }
     /// Counts time per frontmost app, on this Mac only.
     public var screenTimeEnabled = false { didSet { write(screenTimeEnabled, "screenTime") } }
+    /// Short nudges to blink, drink water and stand up, each after its own
+    /// stretch of continuous use. The menu bar's Breaks switch.
+    public var breakNudgesEnabled = false { didSet { write(breakNudgesEnabled, "breakNudges") } }
+    public var blinkNudgeMinutes = 10 { didSet { write(blinkNudgeMinutes, "blinkNudge") } }
+    public var waterNudgeMinutes = 45 { didSet { write(waterNudgeMinutes, "waterNudge") } }
+    public var standNudgeMinutes = 60 { didSet { write(standNudgeMinutes, "standNudge") } }
 
     // MARK: Developer
 
@@ -66,6 +75,8 @@ public final class ExtrasPreferences {
 
     /// A charging card in the locked activity stack while plugged in.
     public var showsChargingWhileLocked = true { didSet { write(showsChargingWhileLocked, "lockedCharging") } }
+    /// A padlock that opens in the notch as the Mac unlocks.
+    public var showsUnlockAnimation = true { didSet { write(showsUnlockAnimation, "unlockAnimation") } }
 
     // MARK: Keyboard
 
@@ -101,6 +112,33 @@ public final class ExtrasPreferences {
     /// A "What's this song?" button in the open player that listens to the
     /// Mac's own sound and asks Shazam. Asks for "System Audio Recording".
     public var songRecognitionEnabled = true { didSet { write(songRecognitionEnabled, "songRecognition") } }
+    /// A two-finger swipe across the closed player skips to the next or
+    /// previous track when there is no other activity to swipe to.
+    public var swipesBetweenTracks = true { didSet { write(swipesBetweenTracks, "swipeTracks") } }
+    /// A soft sheen that follows the pointer across the open player's cover.
+    public var showsArtworkGlare = true { didSet { write(showsArtworkGlare, "artworkGlare") } }
+
+    // MARK: App volume
+
+    /// Per-app volume sliders in the player's sound panel. Each app turned
+    /// down is played through a Core Audio tap, which asks for "System Audio
+    /// Recording" the first time; an app left at full volume is never tapped.
+    public var appVolumesEnabled = false { didSet { write(appVolumesEnabled, "appVolumes") } }
+    /// Bundle identifier → volume below 1, for apps the user turned down.
+    public var appVolumes: [String: Double] = [:] { didSet { writeJSON(appVolumes, "appVolumeLevels") } }
+
+    // MARK: Instant Replay
+
+    /// Keeps the last `replaySeconds` of the screen in memory, so a shortcut
+    /// can save what just happened. Nothing reaches the disk until it does.
+    public var instantReplayEnabled = false { didSet { write(instantReplayEnabled, "instantReplay") } }
+    public var replaySeconds = 30 { didSet { write(replaySeconds, "replaySeconds") } }
+    public var replayIncludesSystemAudio = true { didSet { write(replayIncludesSystemAudio, "replayAudio") } }
+
+    // MARK: Motion
+
+    /// The closed notch stretches a few points toward the pointer over it.
+    public var leansTowardPointer = true { didSet { write(leansTowardPointer, "pointerLean") } }
 
     // MARK: Downloads
 
@@ -138,6 +176,22 @@ public final class ExtrasPreferences {
         let interval = defaults.integer(forKey: key("eyeBreakInterval"))
         eyeBreakIntervalMinutes = interval > 0 ? min(max(interval, 5), 120) : 20
         screenTimeEnabled = bool("screenTime", false)
+        breakNudgesEnabled = bool("breakNudges", false)
+        blinkNudgeMinutes = minutes("blinkNudge", fallback: 10, in: 5 ... 60)
+        waterNudgeMinutes = minutes("waterNudge", fallback: 45, in: 15 ... 180)
+        standNudgeMinutes = minutes("standNudge", fallback: 60, in: 15 ... 180)
+        offersOneTimeCodes = bool("oneTimeCodes", true)
+        showsUnlockAnimation = bool("unlockAnimation", true)
+        swipesBetweenTracks = bool("swipeTracks", true)
+        showsArtworkGlare = bool("artworkGlare", true)
+        appVolumesEnabled = bool("appVolumes", false)
+        appVolumes = (readJSON("appVolumeLevels") as [String: Double]?)?
+            .compactMapValues { $0.isFinite && $0 >= 0 && $0 < 1 ? $0 : nil } ?? [:]
+        instantReplayEnabled = bool("instantReplay", false)
+        let replay = defaults.integer(forKey: key("replaySeconds"))
+        replaySeconds = Self.replayDurations.contains(replay) ? replay : 30
+        replayIncludesSystemAudio = bool("replayAudio", true)
+        leansTowardPointer = bool("pointerLean", true)
         reviewQueueEnabled = bool("reviewQueue", false)
         showsChargingWhileLocked = bool("lockedCharging", true)
         idleAnimationFileName = defaults.string(forKey: key("idleAnimation"))
@@ -155,7 +209,15 @@ public final class ExtrasPreferences {
         controlsExternalDisplays = bool("externalDisplays", true)
     }
 
+    /// The lengths Instant Replay offers, in seconds.
+    public static let replayDurations = [15, 30, 60, 120]
+
     private func key(_ name: String) -> String { "notchshot.extras.\(name)" }
+
+    private func minutes(_ name: String, fallback: Int, in range: ClosedRange<Int>) -> Int {
+        let stored = defaults.integer(forKey: key(name))
+        return stored > 0 ? min(max(stored, range.lowerBound), range.upperBound) : fallback
+    }
 
     private func bool(_ name: String, _ fallback: Bool) -> Bool {
         defaults.object(forKey: key(name)) as? Bool ?? fallback

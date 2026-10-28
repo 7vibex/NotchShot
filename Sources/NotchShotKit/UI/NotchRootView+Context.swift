@@ -534,6 +534,14 @@ struct IdleContent: View {
                             .transition(.opacity)
                     }
                 }
+                .overlay(alignment: .leading) {
+                    let glyphs = NotchStatusGlyphPolicy.current
+                    if !glyphs.isEmpty {
+                        NotchStatusGlyphRow(glyphs: glyphs)
+                            .frame(width: NotchLayout.privacyIndicatorWing)
+                            .transition(.opacity)
+                    }
+                }
         }
     }
 

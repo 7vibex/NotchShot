@@ -42,8 +42,30 @@ public struct SystemLevel: Sendable, Equatable {
     public var isMuted: Bool
     /// Display that produced the level when it is display-specific.
     public var displayID: CGDirectDisplayID? = nil
+    /// A key pressed against the end of the scale, which the bar answers
+    /// with a rubber-band stretch instead of nothing.
+    public var bump: SystemLevelBump? = nil
 
     public var symbolName: String { kind.symbolName(for: value, isMuted: isMuted) }
+}
+
+/// One press past 0% or 100%. `sequence` differs on every press, so a held
+/// key stretches the bar again each time.
+public struct SystemLevelBump: Sendable, Equatable {
+    public enum Edge: Sendable, Equatable {
+        case top
+        case bottom
+    }
+
+    public var edge: Edge
+    public var sequence: Int
+
+    /// The bump a key makes, or nil when it still moves the level.
+    static func at(current: Double, increasing: Bool, sequence: Int) -> SystemLevelBump? {
+        if increasing, current >= 0.999 { return SystemLevelBump(edge: .top, sequence: sequence) }
+        if !increasing, current <= 0.001 { return SystemLevelBump(edge: .bottom, sequence: sequence) }
+        return nil
+    }
 }
 
 /// Watches system volume and display brightness so the notch can mirror them.
@@ -77,6 +99,7 @@ public final class SystemLevelMonitor {
     private var brightnessTimer: Timer?
     private var lastVolume: Double?
     private var lastMuted: Bool?
+    private var bumpSequence = 0
     private var brightness = BrightnessChangeClassifier()
     private var brightnessDisplayID: CGDirectDisplayID?
     private var brightnessIntent = BrightnessKeyIntentGate()
@@ -410,6 +433,7 @@ public final class SystemLevelMonitor {
 
     private func adjustVolume(increasing: Bool, fine: Bool) -> Bool {
         guard let current = readVolume() else { return false }
+        let bump = nextBump(current: current, increasing: increasing)
         let target = SystemMediaKeyAction.adjustedLevel(
             current: current,
             increasing: increasing,
@@ -421,8 +445,16 @@ public final class SystemLevelMonitor {
         let actualMuted = readMuted() ?? false
         lastVolume = actualVolume
         lastMuted = actualMuted
-        publish(SystemLevel(kind: .volume, value: actualVolume, isMuted: actualMuted))
+        publish(SystemLevel(kind: .volume, value: actualVolume, isMuted: actualMuted, bump: bump))
         return true
+    }
+
+    private func nextBump(current: Double, increasing: Bool) -> SystemLevelBump? {
+        guard let bump = SystemLevelBump.at(current: current, increasing: increasing, sequence: bumpSequence + 1) else {
+            return nil
+        }
+        bumpSequence = bump.sequence
+        return bump
     }
 
     private func toggleMute() -> Bool {
@@ -581,6 +613,7 @@ public final class SystemLevelMonitor {
             increasing: increasing,
             fine: fine
         )
+        let bump = nextBump(current: reading.value, increasing: increasing)
         guard BrightnessReader.shared.setBrightness(target, displayID: reading.displayID) else {
             return false
         }
@@ -591,7 +624,8 @@ public final class SystemLevelMonitor {
             kind: .brightness,
             value: target,
             isMuted: false,
-            displayID: reading.displayID
+            displayID: reading.displayID,
+            bump: bump
         ))
         return true
     }

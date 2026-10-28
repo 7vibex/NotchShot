@@ -415,6 +415,9 @@ struct IslandArtworkGlyph: View {
             // wing it would bleed into the camera band.
             glows: side >= 40
         )
+        .overlay {
+            if side >= 40 { ArtworkGlareSheen(cornerRadius: base / 5) }
+        }
         .scaleEffect(max(side, 1) / base)
         .frame(width: side, height: side)
     }

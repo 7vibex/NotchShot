@@ -19,6 +19,7 @@ public enum HotKeyAction: String, Sendable, CaseIterable, Identifiable, Codable 
     case toggleDictation
     case pushToTalk
     case showShelf
+    case saveInstantReplay
 
     public var id: String { rawValue }
 
@@ -40,6 +41,7 @@ public enum HotKeyAction: String, Sendable, CaseIterable, Identifiable, Codable 
         case .toggleDictation: "Toggle Dictation"
         case .pushToTalk: "Push to Talk"
         case .showShelf: "Show Shelf"
+        case .saveInstantReplay: "Save Instant Replay"
         }
     }
 
@@ -96,6 +98,8 @@ public enum HotKeyAction: String, Sendable, CaseIterable, Identifiable, Codable 
         // global combination for a surface that is empty most of the time is
         // not a trade the user asked for.
         case .showShelf: nil
+        // Pressed while Instant Replay is off, it says how to turn it on.
+        case .saveInstantReplay: HotKeyBinding(keyCode: UInt32(kVK_ANSI_P), modifiers: UInt32(cmdKey | shiftKey | optionKey))
         }
     }
 }

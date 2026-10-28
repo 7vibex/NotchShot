@@ -5,10 +5,10 @@ import SwiftUI
 ///
 /// It replaces both the plain popover and the twenty-item right-click menu
 /// that sat behind the old camera icon. Capturing is the notch's job, so the
-/// menu holds no capture buttons: only the places captures end up, the three
-/// after-capture switches people actually flip, and the app itself. The
-/// rarely used commands are one level down under More, and everything else
-/// stays in Settings.
+/// menu holds no capture buttons: only the Quick Toggles row, the places
+/// captures end up, the three after-capture switches people actually flip,
+/// and the app itself. The rarely used commands are one level down under
+/// More, and everything else stays in Settings.
 ///
 /// It is drawn like the island it controls: dark glass, white ink,
 /// hairlines instead of boxes.
@@ -33,6 +33,8 @@ struct MenuBarPanelView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             header
+            MenuBarHairline()
+            MenuBarQuickToggles(coordinator: coordinator, onDismiss: onDismiss)
             MenuBarHairline()
             librarySection
             MenuBarHairline()
@@ -327,7 +329,7 @@ private struct MenuBarStatusLabel: View {
 
 /// Icon, title, and an optional trailing detail or shortcut, the way a menu
 /// item reads, on the island's ink ladder.
-private struct MenuBarRowLabel<Trailing: View>: View {
+struct MenuBarRowLabel<Trailing: View>: View {
     var title: String
     var systemImage: String
     var iconTint: Color = .islandInk(NotchIsland.Ink.secondary)
@@ -350,7 +352,7 @@ private struct MenuBarRowLabel<Trailing: View>: View {
     }
 }
 
-private struct MenuBarRow: View {
+struct MenuBarRow: View {
     var title: String
     var systemImage: String
     var iconTint: Color = .islandInk(NotchIsland.Ink.secondary)
@@ -380,7 +382,7 @@ private struct MenuBarRow: View {
 
 /// The row's highlight follows the pointer like a system menu's selection,
 /// as a rounded fill on the island's surface ladder.
-private struct MenuBarRowButtonStyle: ButtonStyle {
+struct MenuBarRowButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         MenuBarRowHighlight(isPressed: configuration.isPressed) {
             configuration.label
@@ -388,7 +390,7 @@ private struct MenuBarRowButtonStyle: ButtonStyle {
     }
 }
 
-private struct MenuBarRowHighlight<Content: View>: View {
+struct MenuBarRowHighlight<Content: View>: View {
     var isPressed: Bool
     @ViewBuilder var content: () -> Content
 

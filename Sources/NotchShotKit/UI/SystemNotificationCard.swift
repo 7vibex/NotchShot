@@ -11,6 +11,9 @@ struct SystemNotificationCard: View {
     var onOpenSource: (SystemNotificationSnapshot) -> Void
     var onReply: (SystemNotificationSnapshot) -> Void = { _ in }
     var onDismiss: () -> Void
+    /// The stack stays up while the pointer is over it, so a banner being
+    /// read (or a code being copied) doesn't slide away mid-sentence.
+    var onHoverChange: (Bool) -> Void = { _ in }
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var isHovered = false
@@ -107,7 +110,10 @@ struct SystemNotificationCard: View {
         }
         .padding(.horizontal, NotchAlertStyle.horizontalInset - 4)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-        .onHover { isHovered = $0 }
+        .onHover { hovering in
+            isHovered = hovering
+            onHoverChange(hovering)
+        }
         .animation(NotchMotion.selection(reduceMotion: reduceMotion), value: rows.map(\.id))
         .animation(.easeOut(duration: 0.15), value: isHovered)
         .accessibilityElement(children: .contain)
@@ -130,9 +136,16 @@ private struct SystemNotificationRow: View {
     var onReply: (() -> Void)?
 
     @State private var isHovered = false
+    @State private var copiedCode = false
 
     private var source: SystemNotificationSourcePresentation {
         SystemNotificationSourcePresentation(sourceName: snapshot.sourceName)
+    }
+
+    /// A sign-in code in the banner, read from the text on screen.
+    private var oneTimeCode: String? {
+        guard ExtrasPreferences.shared.offersOneTimeCodes else { return nil }
+        return OneTimeCodeDetector.code(in: snapshot.title + "\n" + snapshot.body)
     }
 
     private var canOpen: Bool {
@@ -157,6 +170,35 @@ private struct SystemNotificationRow: View {
             .frame(maxWidth: .infinity, alignment: .leading)
 
             HStack(spacing: 6) {
+                if let oneTimeCode {
+                    // Always shown: copying the code is why this banner was
+                    // looked at. White, as the island's primary actions are.
+                    Button {
+                        OneTimeCodeClipboard.copy(oneTimeCode)
+                        copiedCode = true
+                        Task {
+                            try? await Task.sleep(for: .seconds(1.6))
+                            copiedCode = false
+                        }
+                    } label: {
+                        Label(
+                            copiedCode ? "Copied" : "Copy \(oneTimeCode)",
+                            systemImage: copiedCode ? "checkmark" : "doc.on.doc"
+                        )
+                        .labelStyle(.titleOnly)
+                        .font(.system(size: 11, weight: .semibold).monospacedDigit())
+                        .foregroundStyle(.black)
+                        .padding(.horizontal, 10)
+                        .frame(height: 22)
+                        .background(Color.white, in: Capsule())
+                        .contentShape(Capsule())
+                        .contentTransition(.opacity)
+                    }
+                    .buttonStyle(NotchPressButtonStyle())
+                    .fixedSize()
+                    .help("Copy the code. The clipboard is cleared after 90 seconds")
+                    .accessibilityLabel(copiedCode ? "Code copied" : "Copy code \(oneTimeCode.map(String.init).joined(separator: " "))")
+                }
                 if let onReply {
                     // Shown under the pointer only, so a resting stack reads
                     // as messages rather than a row of buttons.
@@ -215,6 +257,9 @@ private struct SystemNotificationRow: View {
         .accessibilityAddTraits(canOpen ? .isButton : [])
         .accessibilityAction { if canOpen { onOpen() } }
         .accessibilityAction(named: "Reply") { onReply?() }
+        .accessibilityAction(named: "Copy Code") {
+            if let oneTimeCode { OneTimeCodeClipboard.copy(oneTimeCode) }
+        }
     }
 }
 

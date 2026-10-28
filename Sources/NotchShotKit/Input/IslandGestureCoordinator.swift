@@ -25,6 +25,12 @@ enum IslandHaptics {
         case actionCompleted
         /// The user clicked or held the island open.
         case islandOpened
+        /// A dropped file went into the island.
+        case dropSwallowed
+        /// A scroll moved a value one step, such as a timer's minute.
+        case valueStep
+        /// A swipe skipped a track.
+        case trackSkipped
     }
 
     static func perform(_ moment: Moment) {
@@ -34,6 +40,9 @@ enum IslandHaptics {
         case .dropTargetLocked: .alignment
         case .actionCompleted: .levelChange
         case .islandOpened: .generic
+        case .dropSwallowed: .levelChange
+        case .valueStep: .alignment
+        case .trackSkipped: .levelChange
         }
         // A no-op on hardware without a Force Touch trackpad.
         NSHapticFeedbackManager.defaultPerformer.perform(pattern, performanceTime: .now)
@@ -66,6 +75,16 @@ final class IslandGestureCoordinator {
     private var tracker = IslandSwipeTracker()
     private var ownsGesture = false
     private var swallowMomentum = false
+    /// A scroll over a single compact activity, which has no neighbour to
+    /// swipe to: the timer's minutes, or the player's tracks.
+    private var compactGesture: CompactGesture?
+    private var timerStepper = IslandScrollStepper()
+    private var trackSwipe = TrackSwipeDecision()
+
+    private enum CompactGesture {
+        case timerMinutes
+        case trackSkip
+    }
 
     init(coordinator: AppCoordinator) {
         self.coordinator = coordinator
@@ -98,19 +117,37 @@ final class IslandGestureCoordinator {
         guard let coordinator else { return false }
         let reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
 
+        // A mouse wheel has no phases: each click is one minute on a timer.
+        if event.phase.isEmpty {
+            guard compactGestureKind(for: event, coordinator: coordinator) == .timerMinutes else { return false }
+            let steps = IslandScrollStepper.wheelSteps(upward: Self.upwardDelta(event))
+            if steps != 0, coordinator.context.timer.adjust(byMinutes: steps) {
+                IslandHaptics.perform(.valueStep)
+            }
+            return true
+        }
+
         if event.phase.contains(.began) {
             swallowMomentum = false
-            guard shouldBegin(event, coordinator: coordinator),
-                  case .island(let descriptor) = coordinator.activity else {
+            compactGesture = nil
+            if shouldBegin(event, coordinator: coordinator),
+               case .island(let descriptor) = coordinator.activity {
+                tracker.begin(
+                    canNavigateLeading: descriptor.leadingID != nil,
+                    canNavigateTrailing: descriptor.trailingID != nil,
+                    at: event.timestamp
+                )
+                ownsGesture = true
+            } else {
                 ownsGesture = false
-                return false
+                compactGesture = compactGestureKind(for: event, coordinator: coordinator)
+                timerStepper.reset()
+                trackSwipe = TrackSwipeDecision()
             }
-            tracker.begin(
-                canNavigateLeading: descriptor.leadingID != nil,
-                canNavigateTrailing: descriptor.trailingID != nil,
-                at: event.timestamp
-            )
-            ownsGesture = true
+        }
+
+        if let compactGesture {
+            return handleCompact(compactGesture, event: event, coordinator: coordinator)
         }
 
         guard ownsGesture else { return false }
@@ -174,6 +211,64 @@ final class IslandGestureCoordinator {
             return fromTop <= topInset + Self.expandedHeaderBand
         }
         return true
+    }
+
+    /// Which compact gesture a scroll over the closed island starts, if any.
+    private func compactGestureKind(for event: NSEvent, coordinator: AppCoordinator) -> CompactGesture? {
+        guard NSEvent.pressedMouseButtons == 0, event.window is NotchPanel else { return nil }
+        let primary: IslandActivityKind?
+        switch coordinator.activity {
+        case .island(let descriptor):
+            guard !descriptor.isExpanded, descriptor.overlay == nil else { return nil }
+            // With a neighbour beside it, a sideways swipe switches to it.
+            if descriptor.primaryKind == .media, descriptor.satelliteCount > 0 { return nil }
+            primary = descriptor.primaryKind
+        case .media:
+            primary = .media
+        default:
+            return nil
+        }
+        switch primary {
+        case .timer:
+            guard let timer = coordinator.context.timer.current, timer.state != .completed else { return nil }
+            return .timerMinutes
+        case .media:
+            guard ExtrasPreferences.shared.swipesBetweenTracks, event.hasPreciseScrollingDeltas else { return nil }
+            return .trackSkip
+        default:
+            return nil
+        }
+    }
+
+    private func handleCompact(_ gesture: CompactGesture, event: NSEvent, coordinator: AppCoordinator) -> Bool {
+        let ended = event.phase.contains(.ended) || event.phase.contains(.cancelled)
+        switch gesture {
+        case .timerMinutes:
+            if !ended {
+                let steps = timerStepper.steps(adding: Self.upwardDelta(event))
+                // One tick per change, however many minutes a fast flick moved.
+                if steps != 0, coordinator.context.timer.adjust(byMinutes: steps) {
+                    IslandHaptics.perform(.valueStep)
+                }
+            }
+        case .trackSkip:
+            trackSwipe.add(deltaX: event.scrollingDeltaX, deltaY: event.scrollingDeltaY)
+            if event.phase.contains(.ended), let command = trackSwipe.command {
+                coordinator.media.send(command)
+                IslandHaptics.perform(.trackSkipped)
+            }
+        }
+        if ended {
+            compactGesture = nil
+            swallowMomentum = true
+        }
+        return true
+    }
+
+    /// Scroll distance toward "more": fingers or wheel moving up, whatever
+    /// the natural-scrolling setting.
+    private static func upwardDelta(_ event: NSEvent) -> CGFloat {
+        event.isDirectionInvertedFromDevice ? -event.scrollingDeltaY : event.scrollingDeltaY
     }
 
     private func resetTracking() {

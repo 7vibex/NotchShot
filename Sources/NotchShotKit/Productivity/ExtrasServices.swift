@@ -400,6 +400,46 @@ enum UserIdleTime {
 /// The 20-20-20 reminder. Counts continuous use in one-minute samples; a
 /// stretch away from the keyboard longer than a break resets the count, so
 /// coming back from lunch never triggers a reminder straight away.
+/// The short breaks the Breaks switch reminds about.
+public enum BreakNudgeKind: String, CaseIterable, Sendable {
+    case blink
+    case water
+    case stand
+
+    public var symbolName: String {
+        switch self {
+        case .blink: "eye"
+        case .water: "drop.fill"
+        case .stand: "figure.stand"
+        }
+    }
+
+    public var title: String {
+        switch self {
+        case .blink: "Blink"
+        case .water: "Drink some water"
+        case .stand: "Stand up and stretch"
+        }
+    }
+
+    public var detail: String {
+        switch self {
+        case .blink: "Close your eyes for a moment"
+        case .water: "A glass keeps the afternoon going"
+        case .stand: "A minute on your feet"
+        }
+    }
+
+    @MainActor
+    func intervalMinutes(_ extras: ExtrasPreferences) -> Int {
+        switch self {
+        case .blink: extras.blinkNudgeMinutes
+        case .water: extras.waterNudgeMinutes
+        case .stand: extras.standNudgeMinutes
+        }
+    }
+}
+
 public struct EyeBreakTracker: Equatable, Sendable {
     public static let breakResetSeconds: TimeInterval = 5 * 60
     public var activeSeconds: TimeInterval = 0
@@ -421,6 +461,37 @@ public struct EyeBreakTracker: Equatable, Sendable {
         guard activeSeconds >= threshold else { return false }
         activeSeconds = 0
         return true
+    }
+}
+
+/// The three break nudges' clocks, and the ones that came due while the
+/// user couldn't be interrupted, shown at the next sample that can.
+struct BreakNudgeSchedule: Equatable, Sendable {
+    private(set) var trackers: [BreakNudgeKind: EyeBreakTracker] = [:]
+    private(set) var pending: [BreakNudgeKind] = []
+
+    /// Feeds one sample; returns the nudge to show now, if any.
+    mutating func sample(
+        interval: TimeInterval,
+        idleSeconds: TimeInterval,
+        minutes: (BreakNudgeKind) -> Int,
+        canNudge: Bool
+    ) -> BreakNudgeKind? {
+        for kind in BreakNudgeKind.allCases {
+            var tracker = trackers[kind] ?? EyeBreakTracker()
+            let due = tracker.record(
+                interval: interval,
+                idleSeconds: idleSeconds,
+                reminderAfter: TimeInterval(minutes(kind) * 60)
+            )
+            trackers[kind] = tracker
+            if due, !pending.contains(kind) { pending.append(kind) }
+        }
+        // A real break clears what was waiting: the user already took it.
+        if idleSeconds >= EyeBreakTracker.breakResetSeconds { pending.removeAll() }
+        // One at a time, so three nudges never pile up in a row.
+        guard canNudge, !pending.isEmpty else { return nil }
+        return pending.removeFirst()
     }
 }
 
@@ -469,10 +540,15 @@ public final class WellbeingMonitor {
 
     public private(set) var ledger: ScreenTimeLedger
     @ObservationIgnored private var eyeBreaks = EyeBreakTracker()
+    @ObservationIgnored private var nudges = BreakNudgeSchedule()
     @ObservationIgnored private var timer: Timer?
     @ObservationIgnored private let storeURL: URL
     @ObservationIgnored private var unsavedSamples = 0
     @ObservationIgnored var onEyeBreakDue: (() -> Void)?
+    @ObservationIgnored var onNudgeDue: ((BreakNudgeKind) -> Void)?
+    /// False during a call, a recording, or anything else a nudge would
+    /// interrupt. A nudge that comes due then waits instead of being lost.
+    @ObservationIgnored var canNudge: () -> Bool = { true }
 
     public init(storeURL: URL = AppPaths.support.appendingPathComponent("screen-time.json")) {
         self.storeURL = storeURL
@@ -483,7 +559,10 @@ public final class WellbeingMonitor {
     /// Starts or stops sampling to match Settings.
     public func refresh() {
         let extras = ExtrasPreferences.shared
-        let needed = extras.screenTimeEnabled || extras.eyeBreaksEnabled
+        let needed = extras.screenTimeEnabled || extras.eyeBreaksEnabled || extras.breakNudgesEnabled
+        if !extras.breakNudgesEnabled {
+            nudges = BreakNudgeSchedule()
+        }
         if needed, timer == nil {
             let timer = Timer(timeInterval: Self.sampleInterval, repeats: true) { [weak self] _ in
                 MainActor.assumeIsolated { self?.sample() }
@@ -514,6 +593,7 @@ public final class WellbeingMonitor {
            ) {
             onEyeBreakDue?()
         }
+        if extras.breakNudgesEnabled { sampleNudges(idleSeconds: idle) }
         guard extras.screenTimeEnabled, idle < Self.activeIdleLimit,
               let app = NSWorkspace.shared.frontmostApplication,
               let bundleIdentifier = app.bundleIdentifier else { return }
@@ -527,6 +607,18 @@ public final class WellbeingMonitor {
         // Every five minutes rather than every sample: the ledger is small,
         // but there's no reason to touch the disk twice a minute.
         if unsavedSamples >= 10 { save() }
+    }
+
+    private func sampleNudges(idleSeconds: TimeInterval) {
+        let extras = ExtrasPreferences.shared
+        if let due = nudges.sample(
+            interval: Self.sampleInterval,
+            idleSeconds: idleSeconds,
+            minutes: { $0.intervalMinutes(extras) },
+            canNudge: canNudge()
+        ) {
+            onNudgeDue?(due)
+        }
     }
 
     func save() {

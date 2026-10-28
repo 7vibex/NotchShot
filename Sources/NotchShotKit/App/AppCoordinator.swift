@@ -101,6 +101,10 @@ public final class AppCoordinator {
     var systemLevelTask: Task<Void, Never>?
     var systemNotificationTask: Task<Void, Never>?
     var systemNotificationTaskID: UUID?
+    /// The pointer is over the banners; their clock waits until it leaves.
+    var systemNotificationHovered = false
+    /// The lock state `observeMedia` last saw, so it can tell an unlock.
+    var lastObservedScreenLock = false
     var systemNotificationQueue = SystemNotificationQueue()
     /// When each calling app started holding the microphone, for the call
     /// activity's elapsed time. Keyed by bundle identifier.
@@ -238,6 +242,7 @@ public final class AppCoordinator {
                 detail: "Look at something 20 feet away for 20 seconds"
             ))
         }
+        startQuickToggles()
         wellbeing.refresh()
         // One-time migration: older builds could leave the native helper
         // suspended without a watchdog. Later launches resume only PIDs owned
@@ -286,6 +291,8 @@ public final class AppCoordinator {
     }
 
     func observeMedia() {
+        if lastObservedScreenLock, !media.isScreenLocked { presentUnlockAnimation() }
+        lastObservedScreenLock = media.isScreenLocked
         arbiter.hasMedia = media.snapshot.hasContent
         systemNotifications.setSessionActive(media.isSessionActive)
         if !media.isSessionActive {

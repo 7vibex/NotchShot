@@ -184,3 +184,49 @@ public struct IslandSwipeTracker: Sendable, Equatable {
         samples.removeAll()
     }
 }
+
+/// Turns a trackpad scroll into whole steps, one per `distance` points, the
+/// remainder carried into the next event so slow scrolling still steps.
+struct IslandScrollStepper: Equatable {
+    var distance: CGFloat = 12
+    private(set) var accumulated: CGFloat = 0
+
+    mutating func reset() { accumulated = 0 }
+
+    mutating func steps(adding delta: CGFloat) -> Int {
+        guard delta.isFinite else { return 0 }
+        accumulated += delta
+        let steps = Int((accumulated / distance).rounded(.towardZero))
+        accumulated -= CGFloat(steps) * distance
+        return steps
+    }
+
+    /// A mouse wheel moves by clicks; each one is a step.
+    static func wheelSteps(upward delta: CGFloat) -> Int {
+        guard delta.isFinite, abs(delta) >= 0.1 else { return 0 }
+        return delta > 0 ? 1 : -1
+    }
+}
+
+/// A sideways swipe over the closed player: decided once, when the fingers
+/// lift, so a scroll that wanders never skips twice.
+struct TrackSwipeDecision: Equatable {
+    /// About a third of the closed player's width.
+    static let threshold: CGFloat = 40
+
+    private(set) var deltaX: CGFloat = 0
+    private(set) var deltaY: CGFloat = 0
+
+    mutating func add(deltaX: CGFloat, deltaY: CGFloat) {
+        guard deltaX.isFinite, deltaY.isFinite else { return }
+        self.deltaX += deltaX
+        self.deltaY += deltaY
+    }
+
+    /// Content moving left (negative, as the activity swipe reads it) is the
+    /// next track, as swiping a card away reveals the one after it.
+    var command: MediaCommand? {
+        guard abs(deltaX) >= Self.threshold, abs(deltaX) > abs(deltaY) * 1.5 else { return nil }
+        return deltaX < 0 ? .nextTrack : .previousTrack
+    }
+}

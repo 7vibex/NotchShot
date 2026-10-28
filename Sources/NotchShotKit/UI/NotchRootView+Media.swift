@@ -240,11 +240,17 @@ struct MediaContent: View {
 
     private var header: some View {
         HStack(spacing: NotchIsland.Spacing.group) {
-            if let sharedArtworkID {
-                IslandGlyphSlot(id: sharedArtworkID, size: 56)
-            } else {
-                artwork(size: 56)
+            Group {
+                if let sharedArtworkID {
+                    IslandGlyphSlot(id: sharedArtworkID, size: 56)
+                } else {
+                    artwork(size: 56)
+                }
             }
+            // In the island the cover is drawn in the shared layer above,
+            // which draws its own sheen; this one serves the plain player.
+            .overlay { ArtworkGlareSheen(cornerRadius: 56 / 5) }
+            .overlay { ArtworkGlareTracker() }
 
             VStack(alignment: .leading, spacing: NotchIsland.Spacing.hairline) {
                 HStack(spacing: NotchIsland.Spacing.snug) {
@@ -514,16 +520,22 @@ struct MediaContent: View {
             EmptyView()
         case .audioRoutes:
             panel(title: "Audio Output", onRefresh: refreshAudioOutputs) {
-                if audioOutputs.isEmpty {
+                if audioOutputs.isEmpty && appVolumeSources.isEmpty {
                     emptyPanelRow("No audio outputs found")
                 } else {
-                    panelList(rowCount: audioOutputs.count) {
+                    panelList(rowCount: audioOutputs.count + appVolumeSources.count) {
                         ForEach(audioOutputs) { output in
                             AudioOutputDeviceRow(
                                 output: output,
                                 isSelected: output.deviceID == currentAudioOutputID,
                                 action: { selectAudioOutput(output) }
                             )
+                        }
+                        // Per-app levels under the speakers they play to,
+                        // as one list: the output and the mix are one choice.
+                        ForEach(appVolumeSources) { source in
+                            AppVolumeRow(source: source)
+                                .padding(.horizontal, 8)
                         }
                     }
                 }
@@ -692,7 +704,7 @@ struct MediaContent: View {
             return
         }
         refreshAudioOutputs()
-        coordinator.setMediaPanel(.audioRoutes, rowCount: max(1, audioOutputs.count))
+        coordinator.setMediaPanel(.audioRoutes, rowCount: max(1, audioOutputs.count + appVolumeSources.count))
         coordinator.windowController?.focusActivePanel()
     }
 
@@ -750,9 +762,15 @@ struct MediaContent: View {
     private func refreshAudioOutputs() {
         audioOutputs = AudioOutputDeviceService.availableOutputs()
         currentAudioOutputID = AudioOutputDeviceService.currentOutput()?.deviceID
+        AppVolumeMixer.shared.refreshSources()
         if coordinator.mediaPanel == .audioRoutes {
-            coordinator.setMediaPanel(.audioRoutes, rowCount: max(1, audioOutputs.count))
+            coordinator.setMediaPanel(.audioRoutes, rowCount: max(1, audioOutputs.count + appVolumeSources.count))
         }
+    }
+
+    /// Empty unless per-app volume is on.
+    private var appVolumeSources: [AppVolumeSource] {
+        ExtrasPreferences.shared.appVolumesEnabled ? AppVolumeMixer.shared.sources : []
     }
 
     private func selectAudioOutput(_ output: AudioRouteReading) {

@@ -33,6 +33,16 @@ public enum IslandTransientKind: String, Sendable, Codable, Equatable, Hashable 
     case accessory
     /// "What's this song?" listening, or its answer.
     case song
+    /// Keep Awake turned on or off.
+    case keepAwake
+    /// The keyboard was locked for cleaning, or given back.
+    case keyboardLock
+    /// Instant Replay started, paused, or saved a clip.
+    case replay
+    /// A nudge to blink, drink water or stand up.
+    case nudge
+    /// The Mac was unlocked: the padlock opens.
+    case unlock
 }
 
 /// A burst: the island stretches, shows an icon and a line, holds briefly,

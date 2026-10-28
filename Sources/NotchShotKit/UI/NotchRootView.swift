@@ -23,6 +23,8 @@ public struct NotchRootView: View {
     @State private var fileDropContext: FileDropContext = .files
     @State private var usesManualFileDropSelection = false
     @State private var fileDropPull: CGFloat = 0
+    /// Counts accepted drops; each one plays the island's swallow.
+    @State private var dropGulps = 0
 
     public init(coordinator: AppCoordinator, context: NotchDisplayContext) {
         self.coordinator = coordinator
@@ -104,7 +106,7 @@ public struct NotchRootView: View {
             hasStack: coordinator.stack.isCollecting || !coordinator.stack.isEmpty,
             mediaPanelRows: coordinator.mediaPanelRowCount,
             shelfStyle: Preferences.shared.shelfPresentationStyle,
-            privacyIndicators: showsPrivacyIndicators,
+            indicatorWings: showsIndicatorWings,
             isScrollingCapture: coordinator.isScrollingCaptureActive
         )
     }
@@ -119,14 +121,12 @@ public struct NotchRootView: View {
             : .floating
     }
 
-    /// Mic or camera dots beside the camera. Physical notches only: a floating
-    /// island on an external display sits away from the menu bar, where
-    /// macOS's own indicator already is.
-    private var showsPrivacyIndicators: Bool {
+    /// Mic or camera dots and NotchShot's status glyphs beside the camera.
+    /// Physical notches only: a floating island on an external display sits
+    /// away from the menu bar, where macOS's own indicator already is.
+    private var showsIndicatorWings: Bool {
         !isLockedSession
-            && context.metrics.hasPhysicalNotch
-            && Preferences.shared.showsPrivacyIndicators
-            && PrivacyIndicatorMonitor.shared.isActive
+            && NotchStatusGlyphPolicy.showsIndicatorWings(hasPhysicalNotch: context.metrics.hasPhysicalNotch)
     }
 
     /// When capture, recording, a result, or an error outranks systemLevel in
@@ -407,7 +407,32 @@ public struct NotchRootView: View {
                     cutsOut: shellIsSeeThrough
                 ))
         }
+        // The swallow's ripple: one thin ring leaving the glass edge.
+        .overlay {
+            shape
+                .stroke(Color.white, lineWidth: 1.5)
+                .keyframeAnimator(initialValue: DropRipple(), trigger: dropGulps) { content, ripple in
+                    content
+                        .scaleEffect(ripple.scale, anchor: .top)
+                        .opacity(ripple.opacity)
+                } keyframes: { _ in
+                    KeyframeTrack(\.opacity) {
+                        LinearKeyframe(0.5, duration: 0.08)
+                        CubicKeyframe(0, duration: 0.5)
+                    }
+                    KeyframeTrack(\.scale) {
+                        CubicKeyframe(1.12, duration: 0.58)
+                        MoveKeyframe(1)
+                    }
+                }
+                .allowsHitTesting(false)
+                .accessibilityHidden(true)
+        }
         .frame(width: layout.size.width, height: layout.size.height)
+        .modifier(IslandPointerLean(
+            isEnabled: ExtrasPreferences.shared.leansTowardPointer && !effectiveActivity.isExpanded,
+            width: layout.size.width
+        ))
         // Held down, the compact island gives a little under the pointer, as
         // the phone's does under a finger, and springs back on release. The
         // scoped animation touches only this scale: a plain `.animation`
@@ -438,6 +463,13 @@ public struct NotchRootView: View {
             anchor: fileDropPull < 0 ? .trailing : .leading
         )
         .offset(x: reduceMotion || !isTargetedForDrop ? 0 : fileDropPull * 4)
+        // A drop is swallowed: the island swells a little and settles.
+        .keyframeAnimator(initialValue: CGFloat(1), trigger: dropGulps) { content, scale in
+            content.scaleEffect(scale, anchor: .top)
+        } keyframes: { _ in
+            SpringKeyframe(1.045, duration: 0.12, spring: .snappy)
+            SpringKeyframe(1, duration: 0.45, spring: .bouncy(duration: 0.45, extraBounce: 0.12))
+        }
         .animation(NotchMotion.drag(reduceMotion: reduceMotion), value: fileDropPull)
         .animation(shapeAnimation, value: layout.size)
         .animation(shapeAnimation, value: layout.satelliteDiameter)
@@ -743,7 +775,8 @@ public struct NotchRootView: View {
                 snapshot: snapshot,
                 onOpenSource: { coordinator.openSystemNotificationSource($0) },
                 onReply: { coordinator.replyToSystemNotification($0) },
-                onDismiss: { coordinator.dismissSystemNotification() }
+                onDismiss: { coordinator.dismissSystemNotification() },
+                onHoverChange: { coordinator.setSystemNotificationHovered($0) }
             )
         case .error(let message):
             ErrorContent(message: message, coordinator: coordinator)
@@ -820,6 +853,8 @@ public struct NotchRootView: View {
 
     private func handleDrop(_ providers: [NSItemProvider], action: FileDropAction) {
         let expectedItemCount = providers.count
+        IslandHaptics.perform(.dropSwallowed)
+        if !reduceMotion { dropGulps += 1 }
         Task {
             var urls: [URL] = []
             for provider in providers {
@@ -877,4 +912,10 @@ private struct ShadowCarrierCutout: ViewModifier {
             content
         }
     }
+}
+
+/// One frame of the swallow's ripple.
+private struct DropRipple {
+    var scale: CGFloat = 1
+    var opacity: Double = 0
 }

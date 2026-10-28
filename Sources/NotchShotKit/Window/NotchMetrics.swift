@@ -176,7 +176,8 @@ public struct NotchLayout: Sendable, Equatable {
     }
 
     /// Width the idle notch grows by on each side while the microphone or a
-    /// camera is in use, to show the indicator dots beside the camera.
+    /// camera is in use, or NotchShot has a mode on (Keep Awake, Instant
+    /// Replay, a locked keyboard), to show small indicators beside the camera.
     public static let privacyIndicatorWing: CGFloat = 22
 
     /// Width reserved for a lone satellite's value.
@@ -330,7 +331,7 @@ public struct NotchLayout: Sendable, Equatable {
         hasStack: Bool = false,
         mediaPanelRows: Int = 0,
         shelfStyle: ShelfPresentationStyle = .detail,
-        privacyIndicators: Bool = false,
+        indicatorWings: Bool = false,
         isScrollingCapture: Bool = false
     ) -> NotchLayout {
         let closed = CGSize(
@@ -394,9 +395,10 @@ public struct NotchLayout: Sendable, Equatable {
                 // instead of a row hung below an empty band.
                 return banded(width: wingWidth(idlePeekWing, floatingWidth: 360), bodyHeight: statusLip, cornerRadius: 18)
             }
-            if privacyIndicators {
+            if indicatorWings {
                 // A strip either side of the camera, symmetric so the shell
-                // stays centred under it; the dots sit in the trailing one.
+                // stays centred under it: privacy dots in the trailing one,
+                // NotchShot's own status glyphs in the leading one.
                 return NotchLayout(
                     size: CGSize(width: closed.width + 2 * privacyIndicatorWing, height: closed.height),
                     cornerRadius: metrics.hasPhysicalNotch ? 12 : NotchIsland.Geometry.compactHeight / 2,

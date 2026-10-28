@@ -158,9 +158,35 @@ struct ExtrasSettings: View {
 
     var body: some View {
         Form {
+            Section("Instant Replay") {
+                Toggle("Instant Replay", isOn: Binding(
+                    get: { extras.instantReplayEnabled },
+                    set: { coordinator.setInstantReplayEnabled($0) }
+                ))
+                Picker("Keep the last", selection: $extras.replaySeconds) {
+                    ForEach(ExtrasPreferences.replayDurations, id: \.self) { seconds in
+                        Text(seconds < 60 ? "\(seconds) seconds" : seconds == 60 ? "1 minute" : "\(seconds / 60) minutes").tag(seconds)
+                    }
+                }
+                Toggle("Include the Mac's sound", isOn: $extras.replayIncludesSystemAudio)
+                LabeledContent("Save shortcut") {
+                    Text(HotKeyController.shared.bindings[.saveInstantReplay]?.displayString ?? "None")
+                        .foregroundStyle(.secondary)
+                }
+                Text("Keeps the last moments of the display under the pointer in memory, never on disk, so the shortcut can save what just happened as a recording. The notch shows a record glyph while it runs, and it pauses while the Mac is locked or a recording is running. A minute takes up to about 60 MB of memory.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                if case .failed(let message) = InstantReplayController.shared.state {
+                    SettingsWarningRow(message: message)
+                }
+            }
+            .onChange(of: extras.replaySeconds) { _, _ in InstantReplayController.shared.refresh() }
+            .onChange(of: extras.replayIncludesSystemAudio) { _, _ in InstantReplayController.shared.refresh() }
+
             Section("Notifications") {
                 Toggle("Reply button on mirrored notifications", isOn: $extras.notificationRepliesEnabled)
-                Text("Shown when the banner on screen offers Reply, such as Messages. It opens that banner's own reply field, so the app still sends the message. Needs notification mirroring in Media.")
+                Toggle("Copy button for sign-in codes", isOn: $extras.offersOneTimeCodes)
+                Text("Reply is shown when the banner on screen offers it, such as Messages. It opens that banner's own reply field, so the app still sends the message. A banner with a sign-in code gets a Copy button; the code is copied so clipboard histories skip it, cleared after 90 seconds, and never kept. Both need notification mirroring in Media.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 if !preferences.mirrorsSystemNotificationBanners {
@@ -195,11 +221,28 @@ struct ExtrasSettings: View {
                     .disabled(!preferences.lyricsEnabled)
                 Toggle("Meter follows the music", isOn: $extras.usesLiveAudioMeter)
                 Toggle("What's this song?", isOn: $extras.songRecognitionEnabled)
-                Text("The live meter and song recognition listen to the Mac's own sound, never the microphone, and ask for System Audio Recording the first time. Nothing is recorded or saved. Recognition sends an audio signature to Shazam. The pinned lyric needs lyrics turned on under Media.")
+                Toggle("Swipe the closed player to change track", isOn: $extras.swipesBetweenTracks)
+                Toggle("Cover catches the light under the pointer", isOn: $extras.showsArtworkGlare)
+                Text("The live meter and song recognition listen to the Mac's own sound, never the microphone, and ask for System Audio Recording the first time. Nothing is recorded or saved. Recognition sends an audio signature to Shazam. The pinned lyric needs lyrics turned on under Media. Swiping works on a trackpad when the player is the only activity.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
             .onChange(of: extras.usesLiveAudioMeter) { _, _ in LiveAudioMeter.shared.preferenceChanged() }
+
+            Section("Sound") {
+                Toggle("Volume for each app", isOn: Binding(
+                    get: { extras.appVolumesEnabled },
+                    set: { coordinator.setAppVolumesEnabled($0) }
+                ))
+                Text("Sliders for the apps playing sound appear in the menu bar menu and under Audio Output in the player. An app you turn down plays through NotchShot at that level, which asks for System Audio Recording the first time; an app left at full volume is never touched. Quitting NotchShot gives every app its own volume back.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                if extras.appVolumesEnabled, !extras.appVolumes.isEmpty {
+                    Button("Reset All Apps to Full Volume") {
+                        for id in extras.appVolumes.keys { AppVolumeMixer.shared.setVolume(1, for: id) }
+                    }
+                }
+            }
 
             Section("Network and Accessories") {
                 Toggle("VPN on and off", isOn: $extras.showsVPNStatus)
@@ -262,12 +305,20 @@ struct ExtrasSettings: View {
                 Toggle("Eye-break reminders", isOn: $extras.eyeBreaksEnabled)
                 Stepper("Every \(extras.eyeBreakIntervalMinutes) minutes of use", value: $extras.eyeBreakIntervalMinutes, in: 5 ... 120, step: 5)
                     .disabled(!extras.eyeBreaksEnabled)
+                Toggle("Blink, water and stand nudges", isOn: $extras.breakNudgesEnabled)
+                Stepper("Blink every \(extras.blinkNudgeMinutes) minutes", value: $extras.blinkNudgeMinutes, in: 5 ... 60, step: 5)
+                    .disabled(!extras.breakNudgesEnabled)
+                Stepper("Water every \(extras.waterNudgeMinutes) minutes", value: $extras.waterNudgeMinutes, in: 15 ... 180, step: 15)
+                    .disabled(!extras.breakNudgesEnabled)
+                Stepper("Stand every \(extras.standNudgeMinutes) minutes", value: $extras.standNudgeMinutes, in: 15 ... 180, step: 15)
+                    .disabled(!extras.breakNudgesEnabled)
                 Toggle("Screen time per app", isOn: $extras.screenTimeEnabled)
-                Text("Screen time samples the frontmost app every 30 seconds while you're active and stays on this Mac for two weeks. See it under More → Today.")
+                Text("Nudges are a soft pulse in the notch, counted in minutes of use, so time away resets them. One that comes due during a call or a recording waits until it ends. Screen time samples the frontmost app every 30 seconds while you're active and stays on this Mac for two weeks. See it under More → Today.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
             .onChange(of: extras.eyeBreaksEnabled) { _, _ in coordinator.wellbeing.refresh() }
+            .onChange(of: extras.breakNudgesEnabled) { _, _ in coordinator.wellbeing.refresh() }
             .onChange(of: extras.screenTimeEnabled) { _, _ in coordinator.wellbeing.refresh() }
             .onChange(of: extras.dayStartHour) { _, start in
                 if extras.dayEndHour <= start { extras.dayEndHour = start + 1 }
@@ -285,12 +336,14 @@ struct ExtrasSettings: View {
 
             Section("Lock Screen") {
                 Toggle("Charging card while plugged in", isOn: $extras.showsChargingWhileLocked)
+                Toggle("Padlock opens in the notch when you unlock", isOn: $extras.showsUnlockAnimation)
                 if !preferences.showsActivityStackWhileLocked {
                     SettingsWarningRow(message: "Turn on the Lock Screen activity stack in Live Activities to see it.")
                 }
             }
 
             Section("Idle Notch") {
+                Toggle("Leans toward the pointer", isOn: $extras.leansTowardPointer)
                 LabeledContent("Hover animation") {
                     HStack(spacing: 10) {
                         if let url = IdleAnimationStore.currentURL {
@@ -301,7 +354,7 @@ struct ExtrasSettings: View {
                         Button("Choose…", action: chooseIdleAnimation)
                     }
                 }
-                Text("A GIF or picture beside Capture when you hover the notch.")
+                Text("The closed notch stretches a little toward the pointer over it; never with Reduce Motion on. The hover animation is a GIF or picture beside Capture when you hover the notch.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 if let idleError {

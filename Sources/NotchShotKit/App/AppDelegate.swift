@@ -475,6 +475,8 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             break
         case .showShelf:
             coordinator.showShelf()
+        case .saveInstantReplay:
+            coordinator.saveInstantReplay()
         }
     }
 

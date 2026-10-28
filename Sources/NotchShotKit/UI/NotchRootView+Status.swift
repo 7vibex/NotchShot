@@ -390,7 +390,7 @@ struct SystemLevelContent: View {
         HStack(spacing: 12) {
             levelSymbol(size: 16)
                 .frame(width: 24)
-            LevelBar(fraction: fillFraction, isMuted: level.isMuted, height: 8)
+            LevelBar(fraction: fillFraction, isMuted: level.isMuted, height: 8, bump: level.bump)
             percentage(size: 12)
         }
         .padding(.horizontal, 18)
@@ -411,7 +411,7 @@ struct SystemLevelContent: View {
                 .frame(width: physicalNotchWidth)
                 .accessibilityHidden(true)
 
-            LevelBar(fraction: fillFraction, isMuted: level.isMuted, height: 6)
+            LevelBar(fraction: fillFraction, isMuted: level.isMuted, height: 6, bump: level.bump)
                 .padding(.leading, 10)
                 .padding(.trailing, 14)
                 .frame(maxWidth: .infinity)
@@ -464,6 +464,15 @@ private struct LevelBar: View {
     var fraction: Double
     var isMuted: Bool
     var height: CGFloat
+    /// A press past the end: the bar stretches toward it and springs back,
+    /// as iOS's sliders do, so a key at 100% answers instead of doing nothing.
+    var bump: SystemLevelBump? = nil
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    /// Counted here rather than read from `bump`, so the press that moves
+    /// the level off the end (bump gone) doesn't play the stretch again.
+    @State private var stretches = 0
+    @State private var stretchEdge: SystemLevelBump.Edge = .top
 
     var body: some View {
         GeometryReader { geometry in
@@ -478,7 +487,39 @@ private struct LevelBar: View {
             }
         }
         .frame(height: height)
+        .keyframeAnimator(initialValue: LevelBarStretch(), trigger: stretches) { content, stretch in
+            // Pinned at the far end, so the stretch reaches past the edge
+            // the key pushed against.
+            content.scaleEffect(
+                x: stretch.width,
+                y: stretch.height,
+                anchor: stretchEdge == .bottom ? .trailing : .leading
+            )
+        } keyframes: { _ in
+            KeyframeTrack(\.width) {
+                SpringKeyframe(1.08, duration: 0.11, spring: .snappy)
+                SpringKeyframe(1, duration: 0.5, spring: .bouncy(duration: 0.5, extraBounce: 0.1))
+            }
+            KeyframeTrack(\.height) {
+                SpringKeyframe(0.72, duration: 0.11, spring: .snappy)
+                SpringKeyframe(1, duration: 0.5, spring: .bouncy(duration: 0.5, extraBounce: 0.1))
+            }
+        }
+        // The HUD often appears on the very press that hits the end.
+        .onAppear { stretch(for: bump) }
+        .onChange(of: bump) { _, bump in stretch(for: bump) }
     }
+
+    private func stretch(for bump: SystemLevelBump?) {
+        guard let bump, !reduceMotion else { return }
+        stretchEdge = bump.edge
+        stretches += 1
+    }
+}
+
+private struct LevelBarStretch {
+    var width: CGFloat = 1
+    var height: CGFloat = 1
 }
 
 /// Breathes on the render server; see `LayerPulsingDot`.

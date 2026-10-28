@@ -488,13 +488,13 @@ struct IslandClusterCentringTests {
     func privacyWings() {
         let idle = NotchLayout.layout(for: .idle, metrics: Self.notched, isPeeking: false, resultCount: 0)
         let dotted = NotchLayout.layout(
-            for: .idle, metrics: Self.notched, isPeeking: false, resultCount: 0, privacyIndicators: true
+            for: .idle, metrics: Self.notched, isPeeking: false, resultCount: 0, indicatorWings: true
         )
         #expect(dotted.size.width == idle.size.width + 2 * NotchLayout.privacyIndicatorWing)
         #expect(dotted.size.height == idle.size.height)
         let expanded = NotchLayout.layout(for: .expanded, metrics: Self.notched, isPeeking: false, resultCount: 0)
         let expandedDotted = NotchLayout.layout(
-            for: .expanded, metrics: Self.notched, isPeeking: false, resultCount: 0, privacyIndicators: true
+            for: .expanded, metrics: Self.notched, isPeeking: false, resultCount: 0, indicatorWings: true
         )
         #expect(expanded == expandedDotted)
     }

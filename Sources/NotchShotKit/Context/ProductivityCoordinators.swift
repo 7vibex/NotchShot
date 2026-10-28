@@ -6,6 +6,14 @@ import Observation
 public enum FocusTimerPolicy {
     public static let presets: [TimeInterval] = [5, 15, 25, 45].map { $0 * 60 }
 
+    /// What a scroll of `minutes` leaves on a timer: clamped to at least a
+    /// minute, and to a day including what has already run.
+    public static func adjustedRemaining(_ remaining: TimeInterval, byMinutes minutes: Int, elapsed: TimeInterval) -> TimeInterval {
+        let target = remaining + TimeInterval(minutes) * 60
+        let ceiling = max(60, 24 * 60 * 60 - elapsed)
+        return min(max(target, min(60, remaining)), ceiling)
+    }
+
     public static func formatted(_ interval: TimeInterval) -> String {
         let seconds = max(0, Int(interval.rounded(.up)))
         return String(format: "%02d:%02d", seconds / 60, seconds % 60)
@@ -85,6 +93,21 @@ public final class FocusTimerCoordinator {
         current = nil
         lastTick = nil
         onSnapshotChange?(nil)
+    }
+
+    /// Adds or takes whole minutes off a running or paused timer, from a
+    /// scroll over it. Never below a minute left, never past a day in all.
+    /// Returns whether the time changed, so the scroll can tick once.
+    @discardableResult
+    public func adjust(byMinutes minutes: Int) -> Bool {
+        updateElapsed()
+        guard var timer = current, timer.state != .completed, minutes != 0 else { return false }
+        let remaining = FocusTimerPolicy.adjustedRemaining(timer.remaining, byMinutes: minutes, elapsed: timer.elapsed)
+        guard remaining != timer.remaining else { return false }
+        timer.duration = timer.elapsed + remaining
+        current = timer
+        publish()
+        return true
     }
 
     private func runTicker() {
