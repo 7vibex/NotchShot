@@ -207,7 +207,11 @@ struct ShelfContent: View {
 
     private func thumbnail(for item: ShelfItem) -> some View {
         Button {
-            coordinator.openPreview(for: item)
+            if item.asset.kind.isImage {
+                coordinator.openPreview(for: item)
+            } else {
+                coordinator.perform(.open, on: item)
+            }
         } label: {
             Group {
                 if let thumbnail = item.thumbnail {
@@ -249,8 +253,10 @@ struct ShelfContent: View {
             }
         }
         .help("Click to open. Drag to a folder or app.")
-        .accessibilityLabel("Open capture preview")
-        .accessibilityHint("Opens a larger preview. The image can also be dragged to another app.")
+        .accessibilityLabel(item.asset.kind.isImage ? "Open capture preview" : "Open \(item.asset.displayName)")
+        .accessibilityHint(item.asset.kind.isImage
+            ? "Opens a larger preview. The image can also be dragged to another app."
+            : "Opens this file in its default app. The file can also be dragged to another app.")
     }
 
     /// Name, then one metadata line, then a single line of recognised text

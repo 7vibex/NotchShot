@@ -6,8 +6,10 @@ import Testing
 private final class MenuCommandFixture: NSObject {
     var quits = 0
     var settings = 0
+    var closes = 0
     @objc func quit(_ sender: Any?) { quits += 1 }
     @objc func openSettings(_ sender: Any?) { settings += 1 }
+    @objc func performClose(_ sender: Any?) { closes += 1 }
 }
 
 @Suite("Call actions and application commands", .serialized)
@@ -36,15 +38,20 @@ struct CallControlsAndMenuRegressionTests {
         #expect(hold.remaining(live: []) == nil)
     }
 
-    @Test("The application menu dispatches Quit and Settings without an open status menu")
+    @Test("The application menu dispatches Quit, Settings and Command-W")
     func menuKeyEquivalents() throws {
         _ = NSApplication.shared
         let target = MenuCommandFixture()
         let menu = AppCommandMenu.make(target: target, settings: #selector(MenuCommandFixture.openSettings(_:)), quit: #selector(MenuCommandFixture.quit(_:)))
-        for (key, code) in [("q", UInt16(12)), (",", UInt16(43))] {
+        let close = try #require(menu.items.flatMap { $0.submenu?.items ?? [] }.first { $0.action == #selector(NSWindow.performClose(_:)) })
+        #expect(close.target == nil)
+        // The unbundled runner has no key window. Supply a receiver to prove
+        // key dispatch; the signed app's actual responder chain is tested live.
+        close.target = target
+        for (key, code) in [("q", UInt16(12)), (",", UInt16(43)), ("w", UInt16(13))] {
             let event = try #require(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: .command, timestamp: 0, windowNumber: 0, context: nil, characters: key, charactersIgnoringModifiers: key, isARepeat: false, keyCode: code))
             #expect(menu.performKeyEquivalent(with: event))
         }
-        #expect(target.quits == 1 && target.settings == 1)
+        #expect(target.quits == 1 && target.settings == 1 && target.closes == 1)
     }
 }

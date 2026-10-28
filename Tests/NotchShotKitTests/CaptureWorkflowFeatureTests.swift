@@ -5,9 +5,28 @@ import Testing
 
 @Suite("Capture recipes")
 struct CaptureRecipeTests {
-    @Test("Interactive recipes copy first and never open a save panel")
+    @Test("Standard follows capture settings while named recipes remain clipboard-first")
     func recipesAreClipboardFirst() {
-        #expect(CaptureRecipe.all.allSatisfy { $0.destination == .clipboardOnly })
+        #expect(CaptureRecipe.all.first { $0.id == "standard" }?.destination == .configuredFolder)
+        #expect(CaptureRecipe.all.filter { $0.id != "standard" }.allSatisfy { $0.destination == .clipboardOnly })
+    }
+
+    @Test("Duplicating Standard preserves the clipboard-first custom recipe default")
+    @MainActor
+    func duplicateStandardDestination() throws {
+        let defaults = UserDefaults.standard
+        let keys = ["notchshot.captureRecipe", "notchshot.customCaptureRecipes"]
+        let previous = keys.map { defaults.object(forKey: $0) }
+        defer {
+            for (key, value) in zip(keys, previous) {
+                if let value { defaults.set(value, forKey: key) } else { defaults.removeObject(forKey: key) }
+            }
+        }
+        let store = CaptureRecipeStore()
+        let standard = try #require(CaptureRecipe.all.first { $0.id == "standard" })
+        let copy = store.duplicate(standard)
+        #expect(copy.id.hasPrefix("custom-"))
+        #expect(copy.destination == .clipboardOnly)
     }
 
     @Test("Every named workflow has a unique recipe")

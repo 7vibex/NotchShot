@@ -639,6 +639,8 @@ struct ShortcutSettings: View {
                                 recording = recording == action ? nil : action
                             }
                             .frame(minWidth: 120)
+                            .accessibilityLabel("Set shortcut for \(action.title)")
+                            .accessibilityValue(recording == action ? "Press keys" : (bindings[action]?.displayString ?? "None"))
 
                             if bindings[action] != nil {
                                 Button {
@@ -652,6 +654,7 @@ struct ShortcutSettings: View {
                             }
                         }
                     }
+                    .accessibilityElement(children: .contain)
                 }
                 Button("Restore Defaults") {
                     HotKeyController.shared.restoreDefaults()

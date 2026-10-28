@@ -60,7 +60,7 @@ public struct CaptureRecipe: Sendable, Identifiable, Equatable, Codable {
             background: .none,
             annotationMode: .none,
             filenameTemplate: "NotchShot {date} at {time}",
-            destination: .clipboardOnly,
+            destination: .configuredFolder,
             imageFormat: nil
         ),
         CaptureRecipe(
@@ -165,6 +165,9 @@ public final class CaptureRecipeStore {
         var copy = recipe
         copy.id = "custom-\(UUID().uuidString)"
         copy.name = "\(recipe.name) Copy"
+        // Standard follows the global switches. A custom copy keeps the
+        // existing clipboard-first default until its destination is edited.
+        if recipe.id == "standard" { copy.destination = .clipboardOnly }
         customRecipes.append(copy)
         activeRecipeID = copy.id
         saveCustomRecipes()

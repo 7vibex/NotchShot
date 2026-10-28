@@ -15,6 +15,14 @@ enum AppCommandMenu {
         commands.addItem(quitItem)
         application.submenu = commands
         menu.addItem(application)
+
+        // Use the responder chain so Command-W closes the current auxiliary
+        // window, while nonclosable notch panels keep their own lifecycle.
+        let file = NSMenuItem(title: "File", action: nil, keyEquivalent: "")
+        let fileCommands = NSMenu(title: "File")
+        fileCommands.addItem(NSMenuItem(title: "Close", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w"))
+        file.submenu = fileCommands
+        menu.addItem(file)
         return menu
     }
 }
