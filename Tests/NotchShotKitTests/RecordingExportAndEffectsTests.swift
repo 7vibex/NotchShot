@@ -276,7 +276,7 @@ struct RecordingExportAndEffectsTests {
     }
 
     @MainActor
-    private static func makeFixtureVideo(at url: URL, duration: Double = 1) async throws {
+    static func makeFixtureVideo(at url: URL, duration: Double = 1) async throws {
         let writer = try AVAssetWriter(outputURL: url, fileType: .mp4)
         let input = AVAssetWriterInput(
             mediaType: .video,

@@ -479,35 +479,43 @@ public final class RecordingService {
         let temporary = temporaryURL
         teardown()
         setLifecycle(.idle)
-        if let temporary {
+        guard let temporary else { return nil }
+        return discardScratchRecording(temporary, discardedDirectory: AppPaths.discardedRecordings)
+    }
+
+    /// Disk disposition shared by live cancellation and isolated fault fixtures.
+    func discardScratchRecording(
+        _ temporary: URL,
+        discardedDirectory: URL,
+        trash: (URL) throws -> Void = { try FileManager.default.trashItem(at: $0, resultingItemURL: nil) }
+    ) -> URL? {
+        do {
+            try trash(temporary)
+        } catch {
+            Log.recording.error(
+                "Could not move discarded recording to Trash: \(error.localizedDescription)"
+            )
+            // A deliberate discard must never be offered as crash
+            // recovery on the next launch. Preserve it in a clearly named
+            // fallback folder instead of silently deleting it forever.
+            let fallback = AppPaths.uniqueURL(
+                in: discardedDirectory,
+                name: "Discarded Recording",
+                extension: "mp4"
+            )
             do {
-                try FileManager.default.trashItem(at: temporary, resultingItemURL: nil)
+                return try moveOrCopy(from: temporary, to: fallback)
             } catch {
-                Log.recording.error(
-                    "Could not move discarded recording to Trash: \(error.localizedDescription)"
-                )
-                // A deliberate discard must never be offered as crash
-                // recovery on the next launch. Preserve it in a clearly named
-                // fallback folder instead of silently deleting it forever.
-                let fallback = AppPaths.uniqueURL(
-                    in: AppPaths.discardedRecordings,
-                    name: "Discarded Recording",
-                    extension: "mp4"
-                )
+                // The source remains recoverable on disk, but mark it so
+                // orphan scanning cannot resurrect the user's discard.
                 do {
-                    return try moveOrCopy(from: temporary, to: fallback)
+                    try Self.markExcludedFromRecovery(temporary)
                 } catch {
-                    // The source remains recoverable on disk, but mark it so
-                    // orphan scanning cannot resurrect the user's discard.
-                    do {
-                        try Self.markExcludedFromRecovery(temporary)
-                    } catch {
-                        Log.recording.fault(
-                            "Could not mark discarded recording as excluded from recovery: \(error.localizedDescription)"
-                        )
-                    }
-                    return temporary
+                    Log.recording.fault(
+                        "Could not mark discarded recording as excluded from recovery: \(error.localizedDescription)"
+                    )
                 }
+                return temporary
             }
         }
         Log.recording.notice("Recording cancelled")
@@ -577,7 +585,11 @@ public final class RecordingService {
     public static func isRecoverableRecording(_ url: URL) -> Bool {
         // This is only a cheap candidate filter. `recover` performs the actual
         // AVAsset validation before the file is moved or shown as successful.
-        recoveryCandidateIdentity(for: url) != nil
+        isRecoverableRecording(url, inProgress: AppPaths.inProgress)
+    }
+
+    static func isRecoverableRecording(_ url: URL, inProgress: URL) -> Bool {
+        recoveryCandidateIdentity(for: url, inProgress: inProgress) != nil
     }
 
     /// Finalizes a single paused segment through the same move/copy/rollback
@@ -622,15 +634,18 @@ public final class RecordingService {
     }
 
     public func recover(_ url: URL) async throws -> CaptureAsset {
-        guard let originalIdentity = Self.recoveryCandidateIdentity(for: url) else {
+        try await recover(url, inProgress: AppPaths.inProgress, destination: { self.defaultRecordingURL() })
+    }
+
+    func recover(_ url: URL, inProgress: URL, destination: () -> URL) async throws -> CaptureAsset {
+        guard let originalIdentity = Self.recoveryCandidateIdentity(for: url, inProgress: inProgress) else {
             throw NotchShotError.recordingFailed("The recovery item is not a trusted NotchShot scratch recording")
         }
         let metadata = try await validatedVideoMetadata(of: url)
-        guard Self.recoveryCandidateIdentity(for: url) == originalIdentity else {
+        guard Self.recoveryCandidateIdentity(for: url, inProgress: inProgress) == originalIdentity else {
             throw NotchShotError.recordingFailed("The recovery item changed while it was being validated")
         }
-        let destination = defaultRecordingURL()
-        let moved = try moveOrCopy(from: url, to: destination)
+        let moved = try moveOrCopy(from: url, to: destination())
         return CaptureAsset(
             url: moved,
             kind: .recording,
@@ -1136,11 +1151,14 @@ public final class RecordingService {
         var modifiedAt: Date?
     }
 
-    private static func recoveryCandidateIdentity(for url: URL) -> RecoveryCandidateIdentity? {
+    private static func recoveryCandidateIdentity(for url: URL, inProgress: URL) -> RecoveryCandidateIdentity? {
         guard url.isFileURL else { return nil }
         let resolved = url.standardizedFileURL
-        guard resolved.deletingLastPathComponent() == AppPaths.inProgress.standardizedFileURL,
-              resolved.pathExtension.lowercased() == "mp4" else { return nil }
+        guard resolved.deletingLastPathComponent() == inProgress.standardizedFileURL,
+              resolved.pathExtension.lowercased() == "mp4",
+              AppPaths.owns(resolved, within: inProgress),
+              !FileManager.default.fileExists(atPath: recoveryExclusionMarker(for: resolved).path)
+        else { return nil }
         let values = try? resolved.resourceValues(forKeys: [
             .isRegularFileKey,
             .isSymbolicLinkKey,

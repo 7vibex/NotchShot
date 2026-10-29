@@ -3,6 +3,9 @@
 Continuation of the [source audit](2026-10-28-app-audit.md), requested specifically
 to execute the real app's capture, recording, keyboard and VoiceOver paths.
 
+The [29 October automated recovery follow-up](2026-10-29-recording-recovery-audit.md)
+adds isolated recovery/discard checks and bounded long-media evidence.
+
 ## Scope and environment
 
 - macOS 26.7.2, arm64; the built-in Retina display was tested. The existing Screen Recording
