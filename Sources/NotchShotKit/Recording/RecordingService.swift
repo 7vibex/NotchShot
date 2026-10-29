@@ -235,6 +235,17 @@ public final class RecordingService {
     // MARK: Start
 
     public func start(_ configuration: RecordingConfiguration) async throws {
+        try await start(configuration, inProgress: AppPaths.inProgress) {
+            AppPaths.ensureDirectories() && AppPaths.owns(AppPaths.inProgress)
+        }
+    }
+
+    /// Runs the real writer against a private directory in opt-in runtime tests.
+    func start(
+        _ configuration: RecordingConfiguration,
+        inProgress: URL,
+        prepareDirectory: () -> Bool
+    ) async throws {
         guard case .idle = lifecycle, stopTask == nil else {
             throw NotchShotError.recordingFailed("A recording operation is already in progress")
         }
@@ -263,17 +274,17 @@ public final class RecordingService {
             try Task.checkCancellation()
         }
 
-        guard AppPaths.ensureDirectories(), AppPaths.owns(AppPaths.inProgress) else {
-            throw NotchShotError.destinationUnwritable(AppPaths.inProgress.path)
+        guard prepareDirectory() else {
+            throw NotchShotError.destinationUnwritable(inProgress.path)
         }
         // Recording is written to a scratch file first: if export or the app
         // itself dies, the footage is still on disk and recoverable.
-        let temporary = AppPaths.inProgress
+        let temporary = inProgress
             .appendingPathComponent(UUID().uuidString)
             .appendingPathExtension("mp4")
         scratchURL = temporary
 
-        guard availableCapacity(AppPaths.inProgress) > RecordingCapacityPolicy.minimumStartBytes else {
+        guard availableCapacity(inProgress) > RecordingCapacityPolicy.minimumStartBytes else {
             throw NotchShotError.diskSpaceUnavailable
         }
 

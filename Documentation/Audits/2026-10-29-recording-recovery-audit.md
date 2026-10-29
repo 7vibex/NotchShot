@@ -1,6 +1,8 @@
 # Automated recording recovery audit — 29 October 2026
 
 Follow-up to the [runtime audit](2026-10-28-runtime-audit.md), against `09ebb88`.
+The [actual ScreenCaptureKit follow-up](2026-10-29-screencapturekit-audit.md)
+adds real client-interruption and sustained-recording evidence.
 All media and filesystem tests use unique private temporary directories. No real
 capture session, user recording, preferences, TCC grants or installed app bundle
 was changed. Successful Trash checks leave only their own small disposable
