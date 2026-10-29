@@ -163,6 +163,32 @@ enum Benchmark {
         return result
     }
 
+    /// Instructions the whole process retires per call of `body`, after one
+    /// untimed call. Unlike wall time, this barely moves when other work loads
+    /// the machine, so it can confirm an A/B that timing alone leaves noisy.
+    @discardableResult
+    static func instructions(_ name: String, iterations: Int = 30, _ body: () -> Void) -> Double {
+        body()
+        let start = retiredInstructions()
+        for _ in 0 ..< iterations { body() }
+        let perCall = Double(retiredInstructions() - start) / Double(iterations)
+        let label = name.padding(toLength: 46, withPad: " ", startingAt: 0)
+        print("\(label) \(String(format: "%9.3f", perCall / 1_000_000)) M instructions/call   n=\(iterations)")
+        BenchmarkJournal.shared?.recordCounter(name, instructionsPerCall: perCall, iterations: iterations)
+        return perCall
+    }
+
+    private static func retiredInstructions() -> UInt64 {
+        var info = rusage_info_v6()
+        let status = withUnsafeMutablePointer(to: &info) {
+            $0.withMemoryRebound(to: rusage_info_t?.self, capacity: 1) {
+                proc_pid_rusage(getpid(), RUSAGE_INFO_V6, $0)
+            }
+        }
+        precondition(status == 0, "proc_pid_rusage failed")
+        return info.ri_instructions
+    }
+
     /// Closes the raw-sample journal and returns its path, if one was opened.
     @discardableResult
     static func finish() -> URL? {
@@ -258,6 +284,17 @@ private final class BenchmarkJournal: @unchecked Sendable {
         ]
         if !result.medianSeconds.isNaN { row["median_seconds"] = result.medianSeconds }
         if !result.minimumSeconds.isNaN { row["minimum_seconds"] = result.minimumSeconds }
+        appendEnvironment(&row)
+        write(row)
+    }
+
+    func recordCounter(_ name: String, instructionsPerCall: Double, iterations: Int) {
+        var row: [String: Any] = [
+            "record": "counter",
+            "benchmark": name,
+            "instructions_per_call": instructionsPerCall,
+            "iterations": iterations,
+        ]
         appendEnvironment(&row)
         write(row)
     }

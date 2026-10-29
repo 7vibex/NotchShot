@@ -1,0 +1,83 @@
+{
+ "protocol": "NotchShotBench ai.activity (release), NOTCHSHOT_BENCH_AI_DIRECTORY set to the live AI Activity folder (read only). Benchmark.instructions: proc_pid_rusage(RUSAGE_INFO_V6).ri_instructions for the whole bench process over 30 calls after one untimed call, both caches warm. Before = Baselines.AIActivityListingLoaderBefore (loadActivities at f55e42f); after = current AIActivityMonitor. Two separate runs; each list holds one value per run. Working tree: f973020 plus the uncommitted bench counter.",
+ "environment": {
+  "os": "Version 26.7.2 (Build 25G332)",
+  "toolchain": "Apple Swift version 6.4 (swiftlang-6.4.0.34.1 clang-2100.3.34.1)",
+  "hardware": "Apple M5, 16 GB, 10 cores",
+  "source_sha_parent": "f973020faf6f45dfae56ebc07b930553838876a2"
+ },
+ "groups": [
+  {
+   "workload": "ai.activity refresh 1 unchanged",
+   "before_instructions_per_call": [
+    531308,
+    531585
+   ],
+   "after_instructions_per_call": [
+    338455,
+    338704
+   ],
+   "change": -0.363
+  },
+  {
+   "workload": "ai.activity refresh 3 unchanged",
+   "before_instructions_per_call": [
+    993271,
+    993684
+   ],
+   "after_instructions_per_call": [
+    652362,
+    653808
+   ],
+   "change": -0.343
+  },
+  {
+   "workload": "ai.activity refresh 32 unchanged",
+   "before_instructions_per_call": [
+    7804420,
+    7833828
+   ],
+   "after_instructions_per_call": [
+    5212331,
+    5237453
+   ],
+   "change": -0.332
+  },
+  {
+   "workload": "ai.activity refresh 500 files unchanged",
+   "before_instructions_per_call": [
+    39110381,
+    39184833
+   ],
+   "after_instructions_per_call": [
+    11037128,
+    11029231
+   ],
+   "change": -0.718
+  },
+  {
+   "workload": "ai.activity refresh 2000 files unchanged",
+   "before_instructions_per_call": [
+    140178002,
+    140969140
+   ],
+   "after_instructions_per_call": [
+    24807147,
+    25251860
+   ],
+   "change": -0.822
+  },
+  {
+   "workload": "ai.activity real 2160 files",
+   "before_instructions_per_call": [
+    144646456,
+    144738431
+   ],
+   "after_instructions_per_call": [
+    27282082,
+    27262422
+   ],
+   "change": -0.812
+  }
+ ]
+}

@@ -85,6 +85,12 @@ enum AIActivityBenchmarks {
                     Benchmark.blackHole(monitor.loadActivities())
                 }
             }
+            Benchmark.instructions("ai.activity refresh \(count) unchanged [listing]") {
+                Benchmark.blackHole(listing.loadActivities())
+            }
+            Benchmark.instructions("ai.activity refresh \(count) unchanged [current]") {
+                Benchmark.blackHole(monitor.loadActivities())
+            }
             for index in 0 ..< count {
                 try? FileManager.default.removeItem(at: directory.appendingPathComponent("session-\(index).json"))
             }
@@ -197,6 +203,12 @@ enum AIActivityBenchmarks {
                     Benchmark.blackHole(scaleMonitor.loadActivities())
                 }
             }
+            Benchmark.instructions("ai.activity refresh \(count) files unchanged [listing]") {
+                Benchmark.blackHole(listing.loadActivities())
+            }
+            Benchmark.instructions("ai.activity refresh \(count) files unchanged [current]") {
+                Benchmark.blackHole(scaleMonitor.loadActivities())
+            }
             precondition(
                 scaleMonitor.lastLoadStatistics.filesDecoded == 0,
                 "unchanged files were re-decoded at scale"
@@ -229,6 +241,12 @@ enum AIActivityBenchmarks {
                 Benchmark.measure("ai.activity real \(files) files [current \(round)]", iterations: 30, warmup: 3) {
                     Benchmark.blackHole(realMonitor.loadActivities())
                 }
+            }
+            Benchmark.instructions("ai.activity real \(files) files [listing]") {
+                Benchmark.blackHole(realListing.loadActivities())
+            }
+            Benchmark.instructions("ai.activity real \(files) files [current]") {
+                Benchmark.blackHole(realMonitor.loadActivities())
             }
         }
     }

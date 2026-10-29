@@ -159,6 +159,11 @@ final class LockedMediaNotificationController {
     @ObservationIgnored private var eligiblePayload: LockedMediaNotificationPayload?
     @ObservationIgnored private var lastPayload: LockedMediaNotificationPayload?
     @ObservationIgnored private var customPresentationIsAvailable = false
+    /// Whether a song notification could still be pending or delivered: one
+    /// left by a previous process until the first removal, then only after a
+    /// submission. `clear()` runs on every unlocked layout pass, and each
+    /// removal is two requests to usernoted.
+    @ObservationIgnored private var mayHaveNotification = true
     @ObservationIgnored private(set) var deliveryTask: Task<Void, Never>?
 
     init(client: LockedMediaNotificationClient = .live) {
@@ -283,6 +288,8 @@ final class LockedMediaNotificationController {
 
     private func removeNotification() {
         lastPayload = nil
+        guard mayHaveNotification else { return }
+        mayHaveNotification = false
         client.remove([Self.requestIdentifier])
     }
 
@@ -305,6 +312,7 @@ final class LockedMediaNotificationController {
 
         client.remove([Self.requestIdentifier])
         guard self.generation == generation else { return }
+        mayHaveNotification = true
         do {
             try await client.add(UNNotificationRequest(
                 identifier: Self.requestIdentifier,

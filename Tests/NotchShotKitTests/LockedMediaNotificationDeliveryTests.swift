@@ -177,6 +177,27 @@ struct LockedMediaNotificationDeliveryTests {
         #expect(center.addedTitles.isEmpty)
         #expect(center.authorizationRequests == 0)
     }
+
+    @Test("Repeated clears ask usernoted once until something is submitted again")
+    func repeatedClearsRemoveOnce() async {
+        let center = NotificationClientFixture()
+        let controller = LockedMediaNotificationController(client: center.client)
+        // The first removal still covers a song left by a previous process.
+        for _ in 0..<5 { controller.clear() }
+        controller.setCustomPresentationAvailable(true)
+        controller.setCustomPresentationAvailable(false)
+        #expect(center.removeCalls == 1)
+
+        controller.update(snapshot: song(), screenIsLocked: true, enabled: true)
+        await controller.deliveryTask?.value
+        #expect(center.deliveredTitles == ["Synthetic song"])
+        let afterSubmission = center.removeCalls
+        controller.clear()
+        #expect(center.removeCalls == afterSubmission + 1)
+        #expect(center.deliveredTitles.isEmpty)
+        for _ in 0..<5 { controller.clear() }
+        #expect(center.removeCalls == afterSubmission + 1)
+    }
 }
 
 @MainActor
@@ -188,6 +209,7 @@ private final class NotificationClientFixture {
     var authorizationRequests = 0
     var addedTitles: [String] = []
     var deliveredTitles: [String] = []
+    var removeCalls = 0
     let settingsCalls = CallGate()
     let addCalls = CallGate()
     private var pendingSettings: [CheckedContinuation<LockedMediaNotificationSettings, Never>] = []
@@ -198,7 +220,10 @@ private final class NotificationClientFixture {
             settings: { await self.readSettings() },
             requestAuthorization: { self.authorizationRequests += 1 },
             add: { try await self.add($0) },
-            remove: { _ in self.deliveredTitles.removeAll() }
+            remove: { _ in
+                self.removeCalls += 1
+                self.deliveredTitles.removeAll()
+            }
         )
     }
 
