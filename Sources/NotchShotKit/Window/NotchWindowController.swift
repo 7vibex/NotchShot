@@ -257,6 +257,7 @@ public final class NotchWindowController {
     private var hasLockedActivityContent = false
     private var hasLockedChargingContent = false
     private var mediaPanelRowCount = 0
+    private var tabPageHeightHold: CGFloat = 0
 
     public init(makeContent: @escaping (NotchDisplayContext) -> AnyView) {
         self.makeContent = makeContent
@@ -648,8 +649,10 @@ public final class NotchWindowController {
         hasMediaContent: Bool,
         hasLockedActivityContent: Bool,
         hasLockedChargingContent: Bool = false,
-        mediaPanelRowCount: Int = 0
+        mediaPanelRowCount: Int = 0,
+        tabPageHeightHold: CGFloat = 0
     ) {
+        self.tabPageHeightHold = tabPageHeightHold
         self.currentActivity = activity
         self.isPeeking = isPeeking
         self.resultCount = resultCount
@@ -663,15 +666,24 @@ public final class NotchWindowController {
 
     /// The island a display should currently draw.
     private func currentLayout(for context: NotchDisplayContext) -> NotchLayout {
-        NotchLayout.layout(
-            for: effectiveActivity(for: context),
+        let activity = effectiveActivity(for: context)
+        return NotchLayout.layout(
+            for: activity,
             metrics: context.metrics,
             isPeeking: isPeeking && context.displayID == activeDisplayID,
             resultCount: resultCount,
             hasStack: hasStack,
             mediaPanelRows: mediaPanelRowCount,
-            indicatorWings: showsIndicatorWings(on: context)
+            indicatorWings: showsIndicatorWings(on: context),
+            heldHeight: NotchTab.holdsHeight(of: activity, in: Preferences.shared.notchTabs) ? tabPageHeightHold : 0
         )
+    }
+
+    /// How tall the shell is on the display the user is working on, so a
+    /// page switch can hold that height.
+    public var activeShellHeight: CGFloat? {
+        guard let displayID = activeDisplayID, let entry = entries[displayID] else { return nil }
+        return currentLayout(for: entry.context).size.height
     }
 
     /// Must match `NotchRootView.showsIndicatorWings`, or the strips are

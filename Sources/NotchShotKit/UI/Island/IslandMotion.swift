@@ -186,6 +186,14 @@ struct IslandSatelliteBud: ViewModifier, Animatable {
 
     static let pinchPoint: CGFloat = 0.72
 
+    /// Width as a fraction of the resting width: tucked in at the start,
+    /// drawn out toward the shell up to the pinch, round again at rest.
+    static func stretch(_ progress: CGFloat) -> CGFloat {
+        let p = max(0, progress)
+        guard p >= pinchPoint else { return 0.72 + 0.36 * (p / pinchPoint) }
+        return 1.08 - 0.08 * min(1, (p - pinchPoint) / (1 - pinchPoint))
+    }
+
     nonisolated var animatableData: CGFloat {
         get { progress }
         set { progress = newValue }
@@ -200,9 +208,19 @@ struct IslandSatelliteBud: ViewModifier, Animatable {
         let pinch = min(1, p / Self.pinchPoint)
         // `travel` is the gap plus half the satellite's drawn width.
         let bodyWidth = max(0, 2 * (abs(travel) - gap))
+        let stretch = Self.stretch(p)
+        // The black body is solid from the first frame: it is the shell
+        // pulling apart, not a second shape fading in. Held by the neck it
+        // stretches back toward the shell and thins, and once the neck
+        // pinches off it rounds out. Only what is drawn on it fades in, so
+        // the glyph doesn't slide out across the primary's own content.
         content
-            .opacity(Double(min(1, p * 2.2)))
-            .scaleEffect(x: 0.72 + 0.28 * min(p, 1), y: 0.86 + 0.14 * min(p, 1))
+            .environment(\.islandSatelliteEmergence, Double(min(1, max(0, (p - 0.3) / 0.45))))
+            .scaleEffect(
+                x: stretch,
+                y: (0.86 + 0.14 * min(p, 1)) * (1 - 0.6 * max(0, stretch - 1)),
+                anchor: slot == .leading ? .leading : .trailing
+            )
             .background {
                 if pinch < 1 {
                     GeometryReader { proxy in
@@ -219,6 +237,12 @@ struct IslandSatelliteBud: ViewModifier, Animatable {
             }
             .offset(x: travel * (1 - min(p, 1)))
     }
+}
+
+extension EnvironmentValues {
+    /// How far a satellite has come out of the shell, 0 to 1. Its glyph and
+    /// edge follow this, while its black body is there from the start.
+    @Entry var islandSatelliteEmergence: Double = 1
 }
 
 /// A horizontal bridge whose top and bottom curve inward. `waist` 1 is a full

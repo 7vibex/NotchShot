@@ -107,8 +107,15 @@ public struct NotchRootView: View {
             mediaPanelRows: coordinator.mediaPanelRowCount,
             shelfStyle: Preferences.shared.shelfPresentationStyle,
             indicatorWings: showsIndicatorWings,
-            isScrollingCapture: coordinator.isScrollingCaptureActive
+            isScrollingCapture: coordinator.isScrollingCaptureActive,
+            heldHeight: holdsTabPageHeight ? coordinator.tabPageHeightHold : 0
         )
+    }
+
+    /// Must match the window controller's `currentLayout`, or the pill and
+    /// its click target part ways.
+    private var holdsTabPageHeight: Bool {
+        isActiveDisplay && NotchTab.holdsHeight(of: effectiveActivity, in: Preferences.shared.notchTabs)
     }
 
     /// The camera band the open island's cards put their header in.
@@ -631,7 +638,7 @@ public struct NotchRootView: View {
                 // The island lays its own content out from the top. Centring
                 // made outgoing expanded content slide down as the shell
                 // shrank underneath it during a collapse.
-                alignment: drawsInCameraBand || isShowingIsland ? .top : .center
+                alignment: drawsInCameraBand || isShowingIsland || coordinator.tabPageHeightHold > 0 ? .top : .center
             )
             .offset(y: contentTopOffset)
             .frame(
@@ -674,7 +681,10 @@ public struct NotchRootView: View {
         case .result: "result"
         case .systemLevel(let level): "systemLevel(\(level.kind.rawValue))"
         case .context(let snapshot): "context(\(snapshot.kind.rawValue))"
-        case .systemNotification(let snapshot): "systemNotification(\(snapshot.id))"
+        // One slot for every banner: a new one slides into the stack that
+        // is already open and the others move down, rather than the whole
+        // card being removed and inserted again.
+        case .systemNotification: "systemNotification"
         case .error: "error"
         case .dictation: "dictation"
         case .island: "island"

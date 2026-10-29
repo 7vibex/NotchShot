@@ -184,6 +184,9 @@ extension AppCoordinator {
         if resolved != activity {
             activity = resolved
         }
+        if !isSwitchingTab, !NotchTab.holdsHeight(of: activity, in: Preferences.shared.notchTabs) {
+            tabPageHeightHold = 0
+        }
         reconcileSystemNotificationTimer(for: resolved)
         windowController?.update(
             activity: activity,
@@ -195,7 +198,8 @@ extension AppCoordinator {
                 || context.timer.current != nil
                 || (!media.isSessionActive && LockedChargingPolicy.reading() != nil),
             hasLockedChargingContent: !media.isSessionActive && LockedChargingPolicy.reading() != nil,
-            mediaPanelRowCount: mediaPanelRowCount
+            mediaPanelRowCount: mediaPanelRowCount,
+            tabPageHeightHold: tabPageHeightHold
         )
     }
 

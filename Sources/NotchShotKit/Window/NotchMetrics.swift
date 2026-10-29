@@ -329,6 +329,10 @@ public struct NotchLayout: Sendable, Equatable {
         return layout
     }
 
+    /// `heldHeight` keeps an open page at least that tall. Switching pages
+    /// from the tab pill holds the height the pill was clicked at, so a
+    /// shorter page doesn't pull the pill out from under the pointer and
+    /// close the notch; the hold ends when the notch closes.
     public static func layout(
         for activity: NotchActivity,
         metrics: NotchMetrics,
@@ -338,7 +342,36 @@ public struct NotchLayout: Sendable, Equatable {
         mediaPanelRows: Int = 0,
         shelfStyle: ShelfPresentationStyle = .detail,
         indicatorWings: Bool = false,
-        isScrollingCapture: Bool = false
+        isScrollingCapture: Bool = false,
+        heldHeight: CGFloat = 0
+    ) -> NotchLayout {
+        var layout = naturalLayout(
+            for: activity,
+            metrics: metrics,
+            isPeeking: isPeeking,
+            resultCount: resultCount,
+            hasStack: hasStack,
+            mediaPanelRows: mediaPanelRows,
+            shelfStyle: shelfStyle,
+            indicatorWings: indicatorWings,
+            isScrollingCapture: isScrollingCapture
+        )
+        if heldHeight > layout.size.height {
+            layout.size.height = min(heldHeight, maximumSize.height)
+        }
+        return layout
+    }
+
+    private static func naturalLayout(
+        for activity: NotchActivity,
+        metrics: NotchMetrics,
+        isPeeking: Bool,
+        resultCount: Int,
+        hasStack: Bool,
+        mediaPanelRows: Int,
+        shelfStyle: ShelfPresentationStyle,
+        indicatorWings: Bool,
+        isScrollingCapture: Bool
     ) -> NotchLayout {
         let closed = CGSize(
             width: max(metrics.notchSize.width, 1),

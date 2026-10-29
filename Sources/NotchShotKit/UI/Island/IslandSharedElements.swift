@@ -180,6 +180,9 @@ private struct IslandGlyphTravel: ViewModifier, Animatable {
 struct IslandActivityGlyph: View {
     var activity: IslandActivity
     @Bindable var coordinator: AppCoordinator
+    /// Drawn alone in a minimal satellite, with no wing beside it for a
+    /// value, so it has to carry the live data itself.
+    var isMinimal = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var accent: Color {
@@ -224,6 +227,17 @@ struct IslandActivityGlyph: View {
                 symbol(side: side)
             }
         case .external:
+            IslandRingGlyph(
+                progress: activity.progress,
+                lifecycle: activity.lifecycle,
+                accent: accent,
+                side: side
+            ) {
+                symbol(side: side)
+            }
+        case .transfer where isMinimal:
+            // Alone beside the island there is no far side to hold the ring,
+            // so the mark wears it.
             IslandRingGlyph(
                 progress: activity.progress,
                 lifecycle: activity.lifecycle,

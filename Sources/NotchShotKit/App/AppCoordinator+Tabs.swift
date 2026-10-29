@@ -32,6 +32,14 @@ extension AppCoordinator {
 
     public func showTab(_ tab: NotchTab) {
         guard isTabAvailable(tab) else { return }
+        if tab != .clipboard, let height = windowController?.activeShellHeight {
+            tabPageHeightHold = max(tabPageHeightHold, height)
+        }
+        isSwitchingTab = true
+        defer {
+            isSwitchingTab = false
+            refreshActivity()
+        }
         switch tab {
         case .capture:
             leaveCurrentTab()

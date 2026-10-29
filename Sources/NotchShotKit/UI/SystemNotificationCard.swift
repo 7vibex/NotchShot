@@ -86,7 +86,7 @@ struct SystemNotificationCard: View {
             ForEach(Array(rows.enumerated()), id: \.element.groupKey) { index, row in
                 if index > 0 {
                     Rectangle()
-                        .fill(Color.islandInk(0.10))
+                        .fill(Color.islandInk(NotchIsland.Ink.hairline))
                         .frame(height: 1)
                         .padding(.leading, SystemNotificationRow.avatarSize + NotchAlertStyle.leadingGap)
                 }
@@ -102,7 +102,7 @@ struct SystemNotificationCard: View {
                         : nil
                 )
                 .transition(.asymmetric(
-                    insertion: .move(edge: .top).combined(with: .opacity),
+                    insertion: reduceMotion ? .opacity : .move(edge: .top).combined(with: .opacity),
                     removal: .opacity
                 ))
             }

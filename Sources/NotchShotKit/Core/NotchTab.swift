@@ -51,6 +51,12 @@ public enum NotchTab: String, CaseIterable, Sendable {
         }
         return tab.flatMap { tabs.contains($0) ? $0 : nil }
     }
+
+    /// Whether `activity` is one of the pill's pages, the only presentations
+    /// a page switch's held height applies to.
+    public static func holdsHeight(of activity: NotchActivity, in tabs: [NotchTab]) -> Bool {
+        current(for: activity, in: tabs) != nil
+    }
 }
 
 /// What the pill's last slot holds. It used to be a fixed "More" that opened

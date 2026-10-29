@@ -313,8 +313,12 @@ struct IslandSatelliteView: View {
     @Bindable var coordinator: AppCoordinator
     @State private var isHovered = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.islandSatelliteEmergence) private var emergence
 
     private var width: CGFloat { diameter + valueWidth }
+    /// With no room for a value beside it, the satellite is Apple's
+    /// minimal presentation, which shows live data rather than a logo.
+    private var isMinimal: Bool { valueWidth == 0 }
 
     var body: some View {
         Button {
@@ -331,12 +335,13 @@ struct IslandSatelliteView: View {
                                 : Color.islandInk(isHovered ? NotchIsland.Ink.recessed : NotchIsland.Ink.hairline),
                             lineWidth: 1
                         )
+                        .opacity(emergence)
                     }
                 HStack(spacing: 4) {
                     // Drawn in place. Routing satellite icons through the
                     // shared layer made them fly in from wherever they were
                     // last seen whenever satellites reappeared after a collapse.
-                    IslandActivityGlyph(activity: activity, coordinator: coordinator)
+                    IslandActivityGlyph(activity: activity, coordinator: coordinator, isMinimal: isMinimal)
                         .frame(width: max(12, diameter - 12), height: max(12, diameter - 12))
                     if valueWidth > 0 {
                         IslandSatelliteValue(activity: activity, coordinator: coordinator)
@@ -346,25 +351,31 @@ struct IslandSatelliteView: View {
                 }
                 .padding(.leading, valueWidth > 0 ? 6 : 0)
                 .frame(width: width, alignment: valueWidth > 0 ? .leading : .center)
+                .opacity(emergence)
                 .allowsHitTesting(false)
                 .accessibilityHidden(true)
             }
             .frame(width: width, height: diameter)
-            // An agent beside the music that is blocked on the user wears a
-            // badge, the way an app icon does, rather than a lit border.
+            // An agent's state rides on its icon as a badge, the way the
+            // agent rows mark theirs, rather than as a lit border: orange
+            // when it is blocked on the user, red when it failed, and, with
+            // no room for a value beside the icon, a white pulse while it
+            // works, so the satellite shows what the agent is doing and not
+            // just whose it is.
             .overlay(alignment: .topTrailing) {
-                if needsAnswer {
+                if let badge = agentBadge {
                     LayerPulsingDot(
                         diameter: 9,
-                        color: .orange,
+                        color: badge.color,
                         pulseOpacity: 0.45,
                         halfPeriod: 1.1,
-                        pulses: !reduceMotion,
+                        pulses: badge.pulses && !reduceMotion,
                         outlineColor: .black,
                         outlineWidth: 2
                     )
                     .frame(width: 9, height: 9)
                     .offset(x: 1, y: -1)
+                    .opacity(emergence)
                     .transition(.opacity)
                 }
             }
@@ -388,6 +399,16 @@ struct IslandSatelliteView: View {
     /// An agent beside the music that is blocked on the user.
     private var needsAnswer: Bool {
         activity.kind == .ai && activity.lifecycle == .waiting
+    }
+
+    private var agentBadge: (color: Color, pulses: Bool)? {
+        guard activity.kind == .ai else { return nil }
+        switch activity.lifecycle {
+        case .waiting: return (.orange, true)
+        case .failed: return (AgentStateMark.failedInk, false)
+        case .active where isMinimal: return (.white, true)
+        default: return nil
+        }
     }
 }
 
