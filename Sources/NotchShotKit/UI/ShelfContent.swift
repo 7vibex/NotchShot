@@ -11,9 +11,24 @@ struct ShelfContent: View {
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @State private var hoveredAction: ShareAction?
     @State private var gridOverflow = ShelfScrollOverflow()
+    /// A page turn whose direction has landed and whose move is under way.
+    @State private var pageTurn: ShelfPageTurn?
+    @State private var pageTurns = 0
+    /// The newest capture once a view switch has shown it. From then on it
+    /// has arrived, and the other layout draws it in place instead of having
+    /// it rise from the screen again; a new capture is not this, so it rises.
+    @State private var settledNewestID: ShelfItem.ID?
 
     private var items: [ShelfItem] { coordinator.shelfItems }
     private var selected: ShelfItem? { coordinator.selectedShelfItem }
+    private var style: ShelfPresentationStyle { Preferences.shared.shelfPresentationStyle }
+    private var newestIsArriving: Bool { items.first?.id != settledNewestID }
+
+    /// The grid strip: its 48 pt tiles with room for the selection ring.
+    private static let gridStripHeight: CGFloat = 50
+    /// The strip, then the action toolbar under it, as `NotchLayout` sizes
+    /// the grid shelf.
+    private static let gridLayoutHeight = gridStripHeight + 10 + NotchIconButton.minimumHitSize
 
     var body: some View {
         VStack(spacing: 0) {
@@ -22,38 +37,54 @@ struct ShelfContent: View {
             ScrollView(.vertical) {
                 VStack(spacing: 10) {
                     if let selected {
-                        if Preferences.shared.shelfPresentationStyle == .grid {
-                            grid
-                            actions(for: selected)
-                        } else {
-                            HStack(alignment: .top, spacing: 12) {
-                                thumbnail(for: selected)
-                                VStack(alignment: .leading, spacing: 0) {
-                                    details(for: selected)
-                                    Spacer(minLength: 0)
+                        // Grid and Detail overlap while one gives way to the
+                        // other, each at its own fixed size. The frame is the
+                        // size of the layout being switched to, so the rows
+                        // under it are in place from the first frame.
+                        ZStack(alignment: .top) {
+                            if style == .grid {
+                                VStack(spacing: 10) {
+                                    grid
                                     actions(for: selected)
                                 }
-                                .frame(height: NotchLayout.shelfDetailRowHeight)
+                                .transition(ShelfMotion.layoutTransition(reduceMotion: reduceMotion))
+                            } else {
+                                HStack(alignment: .top, spacing: 12) {
+                                    thumbnail(for: selected)
+                                    VStack(alignment: .leading, spacing: 0) {
+                                        pagedDetails(for: selected)
+                                        Spacer(minLength: 0)
+                                        actions(for: selected)
+                                    }
+                                    .frame(height: NotchLayout.shelfDetailRowHeight)
+                                }
+                                .transition(ShelfMotion.layoutTransition(reduceMotion: reduceMotion))
                             }
                         }
+                        .frame(
+                            height: style == .grid ? Self.gridLayoutHeight : NotchLayout.shelfDetailRowHeight,
+                            alignment: .top
+                        )
                     }
 
                     if !coordinator.stack.isEmpty || coordinator.stack.isCollecting {
                         stackBar
                     }
 
-                    if items.count > 1, Preferences.shared.shelfPresentationStyle == .detail {
+                    if items.count > 1, style == .detail {
                         pager
+                            .transition(ShelfMotion.layoutTransition(reduceMotion: reduceMotion))
                     }
                 }
             }
             .scrollBounceBehavior(.basedOnSize)
             // Switching view mode resizes the island on a spring while the
-            // rows swap at once, so for the length of that animation the
-            // content is taller than the panel and a scroller rode the whole
-            // transition. `.hidden` was not enough: with a mouse attached the
-            // system uses legacy scrollers, which `.hidden` lets through and
-            // which would also steal layout width from a fixed-size island.
+            // layouts crossfade, so for the length of that animation the
+            // content can be taller than the panel and a scroller rode the
+            // whole transition. `.hidden` was not enough: with a mouse
+            // attached the system uses legacy scrollers, which `.hidden` lets
+            // through and which would also steal layout width from a
+            // fixed-size island.
             .scrollIndicators(.never)
             .accessibilityLabel("Capture shelf content")
             .padding(.horizontal, 14)
@@ -66,18 +97,53 @@ struct ShelfContent: View {
         // corners randomly turning blue whenever the panel took key focus.
         .focusEffectDisabled()
         .onKeyPress(.leftArrow) {
-            coordinator.advanceShelfSelection(by: -1)
+            turnPage(.step(-1))
             return .handled
         }
         .onKeyPress(.rightArrow) {
-            coordinator.advanceShelfSelection(by: 1)
+            turnPage(.step(1))
             return .handled
         }
         .onKeyPress(.escape) {
             coordinator.hideShelf()
             return .handled
         }
+        .onChange(of: pageTurn) { _, turn in
+            guard let turn else { return }
+            withAnimation(NotchMotion.content(reduceMotion: reduceMotion)) {
+                move(turn.move)
+            } completion: {
+                // Later changes (a new capture, one removed) are not page
+                // turns, and crossfade.
+                if pageTurn?.serial == turn.serial { pageTurn = nil }
+            }
+        }
         .animation(NotchMotion.selection(reduceMotion: reduceMotion), value: coordinator.selectedShelfIndex)
+    }
+
+    // MARK: Paging
+
+    /// Moves the selection, the next capture coming in from the side it lies
+    /// on. The move itself waits for the direction to land (`ShelfPageTurn`).
+    private func turnPage(_ move: ShelfPageTurn.Move) {
+        let turn = ShelfPageTurn(move: move, from: coordinator.selectedShelfIndex, serial: pageTurns + 1)
+        guard items.count > 1, turn.edge != nil else {
+            self.move(move)
+            return
+        }
+        pageTurns += 1
+        pageTurn = turn
+    }
+
+    private func move(_ move: ShelfPageTurn.Move) {
+        switch move {
+        case .step(let step): coordinator.advanceShelfSelection(by: step)
+        case .to(let index): coordinator.selectShelfItem(at: index)
+        }
+    }
+
+    private var pageTransition: AnyTransition {
+        ShelfMotion.pageTransition(edge: pageTurn?.edge, reduceMotion: reduceMotion)
     }
 
     // MARK: Pieces
@@ -120,6 +186,10 @@ struct ShelfContent: View {
                     ForEach(ShelfPresentationStyle.allCases) { style in
                         let isSelected = Preferences.shared.shelfPresentationStyle == style
                         Button {
+                            guard !isSelected else { return }
+                            // The newest capture has arrived by now: the
+                            // other layout shows it in place.
+                            settledNewestID = items.first?.id
                             Preferences.shared.shelfPresentationStyle = style
                         } label: {
                             Text(style.title)
@@ -162,17 +232,21 @@ struct ShelfContent: View {
 
     private var grid: some View {
         ScrollView(.horizontal) {
-            LazyHGrid(rows: [GridItem(.fixed(48))], spacing: 6) {
+            // Five tiles at most (`AppCoordinator.maximumShelfItems`), so a
+            // plain stack: a lazy grid could rebuild a tile scrolled back into
+            // view, replaying its arrival and losing the ring's anchor.
+            HStack(spacing: 6) {
                 ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
                     Button {
                         coordinator.selectShelfItem(at: index)
                     } label: {
-                        ShelfGridCell(
-                            item: item,
-                            isSelected: index == coordinator.selectedShelfIndex
-                        )
+                        ShelfGridCell(item: item)
+                            // A fresh capture rises into the strip, as it
+                            // does into the detail thumbnail.
+                            .shelfArrival(id: item.id, isArriving: index == 0 && newestIsArriving)
                     }
                     .buttonStyle(NotchPressButtonStyle())
+                    .shelfSelectionAnchor(isSelected: index == coordinator.selectedShelfIndex)
                     .contextMenu { shelfMenuContent(for: item) }
                     .accessibilityLabel(item.asset.displayName)
                     .accessibilityValue(
@@ -180,6 +254,11 @@ struct ShelfContent: View {
                     )
                     .accessibilityAddTraits(index == coordinator.selectedShelfIndex ? [.isSelected] : [])
                 }
+            }
+            // The selected tile's white outline: one ring that slides from
+            // tile to tile rather than jumping between them.
+            .shelfSelectionRing(selection: coordinator.selectedShelfIndex, reduceMotion: reduceMotion) {
+                NotchIsland.cardShape.stroke(Color.white, lineWidth: 2)
             }
         }
         .scrollIndicators(.never)
@@ -202,7 +281,7 @@ struct ShelfContent: View {
                     .frame(width: gridOverflow.trailing ? 36 : 0)
             }
         }
-        .frame(height: 50)
+        .frame(height: Self.gridStripHeight)
     }
 
     private func thumbnail(for item: ShelfItem) -> some View {
@@ -213,19 +292,26 @@ struct ShelfContent: View {
                 coordinator.perform(.open, on: item)
             }
         } label: {
-            Group {
-                if let thumbnail = item.thumbnail {
-                    Image(nsImage: thumbnail)
-                        .resizable()
-                        .aspectRatio(contentMode: .fit)
-                } else {
-                    RoundedRectangle(cornerRadius: 6)
-                        .fill(.white.opacity(0.1))
-                        .overlay {
-                            Image(systemName: item.asset.kind.symbolName)
-                                .foregroundStyle(.white.opacity(0.5))
-                        }
+            // The picture turns with the page inside a card that stays put,
+            // so paging never replays the card's arrival.
+            ZStack {
+                Group {
+                    if let thumbnail = item.thumbnail {
+                        Image(nsImage: thumbnail)
+                            .resizable()
+                            .aspectRatio(contentMode: .fit)
+                    } else {
+                        RoundedRectangle(cornerRadius: 6)
+                            .fill(.white.opacity(0.1))
+                            .overlay {
+                                Image(systemName: item.asset.kind.symbolName)
+                                    .foregroundStyle(.white.opacity(0.5))
+                            }
+                    }
                 }
+                .frame(width: 128, height: NotchLayout.shelfDetailRowHeight)
+                .id(item.id)
+                .transition(pageTransition)
             }
             .frame(width: 128, height: NotchLayout.shelfDetailRowHeight)
             .background(Color.islandInk(NotchIsland.Ink.fill), in: NotchIsland.cardShape)
@@ -236,7 +322,7 @@ struct ShelfContent: View {
             }
             .contentShape(NotchIsland.cardShape)
             // A fresh capture rises into the notch instead of simply appearing.
-            .islandArrivalFromScreen(id: coordinator.shelfItems.first?.id)
+            .shelfArrival(id: items.first?.id, isArriving: newestIsArriving)
         }
         .buttonStyle(NotchPressButtonStyle())
         // Dragging the thumbnail is the fastest route into Finder, Mail,
@@ -257,6 +343,18 @@ struct ShelfContent: View {
         .accessibilityHint(item.asset.kind.isImage
             ? "Opens a larger preview. The image can also be dragged to another app."
             : "Opens this file in its default app. The file can also be dragged to another app.")
+    }
+
+    /// The details turn with the picture beside them; the actions under
+    /// them stay where they are.
+    private func pagedDetails(for item: ShelfItem) -> some View {
+        ZStack(alignment: .topLeading) {
+            details(for: item)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .id(item.id)
+                .transition(pageTransition)
+        }
+        .clipped()
     }
 
     /// Name, then one metadata line, then a single line of recognised text
@@ -637,7 +735,7 @@ struct ShelfContent: View {
                 HStack(spacing: 6) {
                     ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
                         Button {
-                            coordinator.selectShelfItem(at: index)
+                            turnPage(.to(index))
                         } label: {
                             Group {
                                 if let thumbnail = item.thumbnail {
@@ -650,17 +748,17 @@ struct ShelfContent: View {
                             .clipShape(RoundedRectangle(cornerRadius: 4))
                             .overlay {
                                 RoundedRectangle(cornerRadius: 4)
-                                    .strokeBorder(
-                                        index == coordinator.selectedShelfIndex
-                                            ? Color.white : .white.opacity(0.18),
-                                        lineWidth: index == coordinator.selectedShelfIndex ? 2 : 1
-                                    )
+                                    .strokeBorder(.white.opacity(0.18), lineWidth: 1)
                             }
                         }
                         .buttonStyle(NotchPressButtonStyle())
+                        .shelfSelectionAnchor(isSelected: index == coordinator.selectedShelfIndex)
                         .accessibilityLabel("Capture \(index + 1) of \(items.count)")
                         .accessibilityAddTraits(index == coordinator.selectedShelfIndex ? [.isSelected] : [])
                     }
+                }
+                .shelfSelectionRing(selection: coordinator.selectedShelfIndex, reduceMotion: reduceMotion) {
+                    RoundedRectangle(cornerRadius: 4).strokeBorder(Color.white, lineWidth: 2)
                 }
             }
             .scrollIndicators(.never)
@@ -693,10 +791,10 @@ private struct ShelfScrollOverflow: Equatable {
 
 /// A capture is recognised by its picture, not its file name, so the tile is
 /// all thumbnail and the name only appears under the pointer. The selected
-/// tile gets a white outline: the old navy fill sank into the island's black.
+/// tile gets a white outline (the old navy fill sank into the island's
+/// black), drawn by the strip over the tiles so it can slide between them.
 private struct ShelfGridCell: View {
     let item: ShelfItem
-    let isSelected: Bool
 
     @State private var isHovered = false
 
@@ -750,10 +848,7 @@ private struct ShelfGridCell: View {
         }
         .clipShape(shape)
         .overlay {
-            shape.stroke(
-                isSelected ? Color.white : Color.white.opacity(0.10),
-                lineWidth: isSelected ? 2 : 1
-            )
+            shape.stroke(Color.white.opacity(0.10), lineWidth: 1)
         }
         .contentShape(shape)
         .onHover { isHovered = $0 }
