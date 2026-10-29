@@ -455,6 +455,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         case .capturePreviousArea: coordinator.capture(.previousArea)
         case .captureScrolling: coordinator.capture(.scrolling)
         case .captureText: coordinator.capture(.ocr)
+        case .lookUp: coordinator.capture(.lookUp)
         case .startRecording: coordinator.startRecording()
         case .stopRecording:
             if coordinator.isRecordingActive {

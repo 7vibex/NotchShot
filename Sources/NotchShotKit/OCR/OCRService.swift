@@ -35,6 +35,7 @@ public struct DetectedItem: Sendable, Equatable, Identifiable {
         case email
         case phone
         case address
+        case date
         case qrCode
         case barcode
 
@@ -44,6 +45,7 @@ public struct DetectedItem: Sendable, Equatable, Identifiable {
             case .email: "envelope"
             case .phone: "phone"
             case .address: "mappin.and.ellipse"
+            case .date: "calendar"
             case .qrCode: "qrcode"
             case .barcode: "barcode"
             }
@@ -53,11 +55,14 @@ public struct DetectedItem: Sendable, Equatable, Identifiable {
     public let id: UUID
     public let kind: Kind
     public let value: String
+    /// When a `.date` item happens. Nil for every other kind.
+    public let date: DetectedDate?
 
-    public init(id: UUID = UUID(), kind: Kind, value: String) {
+    public init(id: UUID = UUID(), kind: Kind, value: String, date: DetectedDate? = nil) {
         self.id = id
         self.kind = kind
         self.value = value
+        self.date = date
     }
 
     /// URL to open when the user clicks the item.
@@ -78,9 +83,22 @@ public struct DetectedItem: Sendable, Equatable, Identifiable {
                 return nil
             }
             return url
-        case .address, .barcode:
+        case .address, .date, .barcode:
             return nil
         }
+    }
+}
+
+/// The time a detected date refers to, as the data detector resolved it.
+public struct DetectedDate: Sendable, Equatable {
+    public var start: Date
+    public var end: Date?
+    public var isAllDay: Bool
+
+    public init(start: Date, end: Date? = nil, isAllDay: Bool = false) {
+        self.start = start
+        self.end = end
+        self.isAllDay = isAllDay
     }
 }
 
@@ -220,10 +238,13 @@ public actor OCRService {
                 markdownText = markdownText.isEmpty ? payload : markdownText + "\n" + payload
             }
         }
+        // Dates go last: the shelf offers the first item as its one click,
+        // and a date there could only be copied, hiding the link behind it.
+        let items = Self.uniqued(allItems)
         return OCRResult(
             regions: regions,
             fullText: fullText,
-            detectedItems: Self.uniqued(allItems),
+            detectedItems: items.filter { $0.kind != .date } + items.filter { $0.kind == .date },
             tables: tables,
             structuredText: structuredText,
             markdownText: markdownText
@@ -257,8 +278,8 @@ public actor OCRService {
         in container: DocumentObservation.Container,
         imageSize: CGSize
     ) -> [StructuredDetection] {
-        dataMatches(in: container).compactMap { detected in
-            guard let item = detectedItem(from: detected.match.details) else { return nil }
+        dataMatches(in: container).compactMap { detected, transcript in
+            guard let item = detectedItem(from: detected.match, in: transcript) else { return nil }
             return StructuredDetection(
                 item: item,
                 rect: pixelRect(from: detected.boundingRegion.boundingBox, imageSize: imageSize)
@@ -266,10 +287,14 @@ public actor OCRService {
         }
     }
 
+    /// Each match with the transcript its range points into: a table cell or
+    /// list item has its own text, so the document's transcript would be the
+    /// wrong string to read a cell's match from.
     private static func dataMatches(
         in container: DocumentObservation.Container
-    ) -> [DocumentObservation.Container.DataDetectorMatch] {
-        var matches = container.text.detectedData
+    ) -> [(match: DocumentObservation.Container.DataDetectorMatch, transcript: String)] {
+        let transcript = container.text.transcript
+        var matches = container.text.detectedData.map { (match: $0, transcript: transcript) }
         for table in container.tables {
             for row in table.rows {
                 for cell in row {
@@ -286,9 +311,10 @@ public actor OCRService {
     }
 
     private static func detectedItem(
-        from details: DataDetector.Match.SemanticDetails
+        from match: DataDetector.Match,
+        in transcript: String
     ) -> DetectedItem? {
-        switch details {
+        switch match.details {
         case .link(let link):
             return DetectedItem(kind: .link, value: link.url.absoluteString)
         case .emailAddress(let email):
@@ -297,9 +323,32 @@ public actor OCRService {
             return DetectedItem(kind: .phone, value: phone.phoneNumber)
         case .postalAddress(let address):
             return DetectedItem(kind: .address, value: address.fullAddress)
+        case .calendarEvent(let event):
+            guard let start = event.startDate else { return nil }
+            // The words on screen ("Tue at 3 PM") rather than the resolved
+            // date, so the row says what the user can see in the area.
+            let value = match.range.flatMap { matchedText(in: transcript, range: $0) }
+                ?? start.formatted(date: .abbreviated, time: event.allDay ? .omitted : .shortened)
+            return DetectedItem(
+                kind: .date,
+                value: value,
+                date: DetectedDate(start: start, end: event.endDate, isAllDay: event.allDay)
+            )
         default:
             return nil
         }
+    }
+
+    /// The text a match covers, or nil when its range does not fit the
+    /// transcript it was given.
+    static func matchedText(in transcript: String, range: Range<String.Index>) -> String? {
+        guard range.lowerBound >= transcript.startIndex,
+              range.upperBound <= transcript.endIndex else { return nil }
+        let text = transcript[range]
+            .split(whereSeparator: \.isNewline)
+            .joined(separator: " ")
+            .trimmingCharacters(in: .whitespaces)
+        return text.isEmpty ? nil : text
     }
 
     private static func barcodes(

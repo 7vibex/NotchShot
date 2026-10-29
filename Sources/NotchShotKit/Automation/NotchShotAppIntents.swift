@@ -116,6 +116,29 @@ public struct CaptureScrollingAppIntent: AppIntent {
     }
 }
 
+public struct LookUpAreaAppIntent: AppIntent {
+    public static let title: LocalizedStringResource = "Look Up an Area"
+    public static let description = IntentDescription(
+        "Select an area of the screen and see its links, dates, numbers and text in the notch."
+    )
+    public static let supportedModes: IntentModes = .foreground(.immediate)
+
+    public init() {}
+
+    @MainActor
+    public func perform() async throws -> some IntentResult {
+#if !NOTCHSHOT_METADATA_EXTRACTION
+        try NotchShotIntentRunner.run(.capture(URLCaptureCommand(
+            intent: .lookUp,
+            displayNumber: nil,
+            presetID: nil,
+            action: .defaultBehavior
+        )))
+#endif
+        return .result()
+    }
+}
+
 public struct RecordAreaAppIntent: AppIntent {
     public static let title: LocalizedStringResource = "Record Area"
     public static let description = IntentDescription(
@@ -195,6 +218,12 @@ public struct NotchShotAppShortcuts: AppShortcutsProvider {
             phrases: ["Capture scrolling content with \(.applicationName)"],
             shortTitle: "Scrolling Capture",
             systemImageName: "arrow.up.and.down.text.horizontal"
+        )
+        AppShortcut(
+            intent: LookUpAreaAppIntent(),
+            phrases: ["Look up an area with \(.applicationName)"],
+            shortTitle: "Look Up",
+            systemImageName: "text.magnifyingglass"
         )
         AppShortcut(
             intent: RecordAreaAppIntent(),

@@ -718,6 +718,7 @@ public struct NotchRootView: View {
         case .recording: "recording"
         case .processing: "processing"
         case .result: "result"
+        case .lookUp(let card): "lookUp(\(card.result.id))"
         case .systemLevel(let level): "systemLevel(\(level.kind.rawValue))"
         case .context(let snapshot): "context(\(snapshot.kind.rawValue))"
         // One slot for every banner: a new one slides into the stack that
@@ -812,6 +813,8 @@ public struct NotchRootView: View {
             ProcessingContent(message: message, coordinator: coordinator)
         case .result:
             ShelfContent(coordinator: coordinator)
+        case .lookUp(let card):
+            LookUpCardView(card: card, coordinator: coordinator)
         case .systemLevel(let level):
             SystemLevelContent(
                 level: level,
@@ -869,6 +872,8 @@ public struct NotchRootView: View {
         case .recording: "Recording, \(coordinator.recordingStatus.elapsedDescription)"
         case .processing(let message): message
         case .result: "\(coordinator.shelfItems.count) recent captures"
+        case .lookUp(let card):
+            card.result.isEmpty ? "Look Up found no text" : "Look Up, \(card.result.summary)"
         case .systemLevel(let level):
             level.kind == .volume && level.isMuted
                 ? "Muted"

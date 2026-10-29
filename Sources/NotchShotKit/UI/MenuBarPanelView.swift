@@ -186,6 +186,12 @@ struct MenuBarPanelView: View {
             .disabled(!coordinator.hasPreviousArea)
             Button {
                 onDismiss()
+                coordinator.capture(.lookUp, timer: .none)
+            } label: {
+                Label("Look Up an Area", systemImage: CaptureIntent.lookUp.symbolName)
+            }
+            Button {
+                onDismiss()
                 coordinator.restoreLastDismissed()
             } label: {
                 Label("Restore Last Capture", systemImage: "arrow.uturn.backward")

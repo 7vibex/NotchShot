@@ -62,7 +62,9 @@ More in [Screenshots](Screenshots/README.md).
 - **Background composer** — presets, padding, radius, shadow, aspect presets, optical
   balancing.
 - **OCR** — on-device Vision recognition with paragraphs, lists, table copy as TSV,
-  data detectors, QR/barcodes, translation and search indexing.
+  data detectors, QR/barcodes, translation and search indexing. **Look Up** reads a
+  selected area into the notch: open its links, add its dates to Calendar, call, mail
+  or map what it finds, and copy or translate its text.
 - **Shelf** — floating pinned captures, drag-and-drop tray (**Shelf / AirDrop / Share /
   ZIP**), rename, move, compress, Quick Look, trash separation, configurable actions.
 - **Live Activities** — up to three concurrent activities in the notch (music, recording,
@@ -76,7 +78,7 @@ More in [Screenshots](Screenshots/README.md).
   stack, export presets, App Shortcuts, notes/lyrics/weather/stats/terminal/launcher,
   window snapping, dictation, voice notes, notification mirroring, LocalSend.
 - **Automation** — `notchshot://` URL scheme (capture, record, OCR, pin, open latest) and
-  seven App Shortcuts.
+  eight App Shortcuts.
 
 ## Build and run
 

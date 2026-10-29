@@ -387,6 +387,11 @@ extension AppCoordinator {
 
     /// Deliberate expansion: click, shortcut, or a drag entering the notch.
     public func toggleExpanded() {
+        // An open Look Up card is what the toggle would close.
+        if arbiter.lookUp != nil {
+            dismissLookUp()
+            return
+        }
         arbiter.userExpanded.toggle()
         refreshActivity()
         if arbiter.userExpanded {

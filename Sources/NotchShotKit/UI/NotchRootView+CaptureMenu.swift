@@ -11,7 +11,7 @@ struct CaptureMenuContent: View {
     @State private var timer: CaptureTimer = .none
 
     private let primaryIntents: [CaptureIntent] = [.area, .window, .display]
-    private let secondaryIntents: [CaptureIntent] = [.scrolling, .ocr, .previousArea]
+    private let secondaryIntents: [CaptureIntent] = [.scrolling, .ocr, .lookUp, .previousArea]
 
     var body: some View {
         VStack(spacing: 7) {

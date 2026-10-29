@@ -47,7 +47,7 @@ public actor CaptureService {
             guard let windowID = request.windowID else { throw NotchShotError.windowNotFound }
             return try await captureWindow(windowID, showsCursor: request.includesCursor)
 
-        case .area, .ocr, .scrolling:
+        case .area, .ocr, .lookUp, .scrolling:
             guard let rect = request.rect else { throw NotchShotError.captureFailed("No area selected") }
             lastAreaRect = rect
             // The user drew this rect on a frozen frame: hand back exactly

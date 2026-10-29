@@ -62,6 +62,8 @@ extension AppCoordinator {
     /// there with no way left to see them.
     public func showShelf() {
         guard !shelfItems.isEmpty else { return }
+        // Look Up sits above the shelf; asking for the shelf puts it away.
+        dismissLookUp()
         selectedShelfIndex = min(selectedShelfIndex, max(0, shelfItems.count - 1))
         arbiter.hasResult = true
         // Deliberately *not* on the dismissal timer: a shelf the user opened on

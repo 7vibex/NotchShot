@@ -5,9 +5,9 @@ import Testing
 
 @Suite("Automation export inspection")
 struct AutomationExportInspectionTests {
-    @Test("All seven user-facing shortcuts remain exported")
+    @Test("All eight user-facing shortcuts remain exported")
     func shortcutCount() {
-        #expect(NotchShotAppShortcuts.appShortcuts.count == 7)
+        #expect(NotchShotAppShortcuts.appShortcuts.count == 8)
         _ = NotchShotKitAppIntentsPackage()
         _ = CaptureScrollingAppIntent()
     }

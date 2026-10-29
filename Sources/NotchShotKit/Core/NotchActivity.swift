@@ -27,6 +27,8 @@ public enum NotchActivity: Sendable, Equatable {
     case processing(String)
     /// A finished capture is sitting in the shelf.
     case result
+    /// What Look Up found in the area the user selected.
+    case lookUp(LookUpCard)
     /// Mirroring a system volume or brightness change.
     case systemLevel(SystemLevel)
     /// A normalized, privacy-bounded calendar, power, audio, or document event.
@@ -76,6 +78,7 @@ public enum NotchActivity: Sendable, Equatable {
         case .recording: "recording"
         case .processing(let s): "processing(\(s))"
         case .result: "result"
+        case .lookUp(let card): "lookUp(\(card.result.id))"
         case .systemLevel(let level): "systemLevel(\(level.kind.rawValue))"
         case .context(let snapshot): "context(\(snapshot.kind.rawValue))"
         case .systemNotification(let snapshot): "systemNotification(\(snapshot.id))"
@@ -121,6 +124,7 @@ public struct ActivityArbiter: Sendable {
     public var selection: CaptureIntent?
     public var countdown: (remaining: Int, intent: CaptureIntent)?
     public var hasResult = false
+    public var lookUp: LookUpCard?
     public var isDraggingFiles = false
     public var userExpanded = false
     public var systemLevel: SystemLevel?
@@ -148,8 +152,8 @@ public struct ActivityArbiter: Sendable {
     /// win, and the order is the product rule:
     ///
     ///     error → selecting → countdown → dictation → recording → processing →
-    ///     file drop → result → expanded → notification → system level →
-    ///     interrupting context → media → passive context → idle
+    ///     file drop → look up → result → expanded → notification →
+    ///     system level → interrupting context → media → passive context → idle
     ///
     /// With the multi-activity island enabled, a recording the island presents
     /// resolves to `.island` at the recording rung (so processing, a result, or
@@ -176,6 +180,9 @@ public struct ActivityArbiter: Sendable {
         }
         if let isProcessing { return .processing(isProcessing) }
         if isDraggingFiles { return .fileDrop }
+        // Look Up answers the request the user just made, so it sits above a
+        // shelf that may still be up from an earlier capture.
+        if let lookUp { return .lookUp(lookUp) }
         if hasResult { return .result }
         if userExpanded { return .expanded }
         if let systemNotification { return .systemNotification(systemNotification) }

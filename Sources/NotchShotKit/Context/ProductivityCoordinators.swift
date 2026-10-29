@@ -161,12 +161,21 @@ public struct PlannerDraft: Sendable, Equatable {
     public var title: String
     public var date: Date
     public var duration: TimeInterval
+    /// Events only: a date with no time of day, such as "4 November".
+    public var isAllDay: Bool
 
-    public init(kind: PlannerItemKind, title: String, date: Date, duration: TimeInterval = 30 * 60) {
+    public init(
+        kind: PlannerItemKind,
+        title: String,
+        date: Date,
+        duration: TimeInterval = 30 * 60,
+        isAllDay: Bool = false
+    ) {
         self.kind = kind
         self.title = title
         self.date = date
         self.duration = duration
+        self.isAllDay = isAllDay
     }
 }
 
@@ -295,6 +304,7 @@ public final class PlannerEntryService {
             }
             let event = EKEvent(eventStore: store)
             event.title = draft.title
+            event.isAllDay = draft.isAllDay
             event.startDate = draft.date
             event.endDate = draft.date.addingTimeInterval(max(60, draft.duration))
             event.calendar = calendar

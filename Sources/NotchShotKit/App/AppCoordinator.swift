@@ -109,6 +109,10 @@ public final class AppCoordinator {
     var scrollingSession: ScrollingCaptureSession?
     var scrollingSessionID: UUID?
     var errorTask: Task<Void, Never>?
+    /// Closes a Look Up card that found nothing, once it has been read.
+    @ObservationIgnored var lookUpDismissTask: Task<Void, Never>?
+    /// Closes the Look Up card on a click anywhere outside NotchShot.
+    @ObservationIgnored var lookUpClickMonitor: Any?
     var systemLevelTask: Task<Void, Never>?
     var systemNotificationTask: Task<Void, Never>?
     var systemNotificationTaskID: UUID?

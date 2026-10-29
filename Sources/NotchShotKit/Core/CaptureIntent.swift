@@ -8,6 +8,9 @@ public enum CaptureIntent: String, Sendable, Codable, CaseIterable, Identifiable
     case display
     case scrolling
     case ocr
+    /// Select an area and see what can be done with it: its links, dates,
+    /// numbers and text, in the notch.
+    case lookUp
     case previousArea
 
     public var id: String { rawValue }
@@ -19,6 +22,7 @@ public enum CaptureIntent: String, Sendable, Codable, CaseIterable, Identifiable
         case .display: "Capture Full Screen"
         case .scrolling: "Scrolling Capture"
         case .ocr: "Capture Text (OCR)"
+        case .lookUp: "Look Up"
         case .previousArea: "Capture Previous Area"
         }
     }
@@ -30,6 +34,7 @@ public enum CaptureIntent: String, Sendable, Codable, CaseIterable, Identifiable
         case .display: "Screen"
         case .scrolling: "Scrolling"
         case .ocr: "OCR"
+        case .lookUp: "Look Up"
         case .previousArea: "Previous"
         }
     }
@@ -41,6 +46,7 @@ public enum CaptureIntent: String, Sendable, Codable, CaseIterable, Identifiable
         case .display: "display"
         case .scrolling: "arrow.up.and.down.text.horizontal"
         case .ocr: "text.viewfinder"
+        case .lookUp: "text.magnifyingglass"
         case .previousArea: "arrow.uturn.backward.square"
         }
     }
@@ -48,7 +54,7 @@ public enum CaptureIntent: String, Sendable, Codable, CaseIterable, Identifiable
     /// Intents that put an interactive overlay on screen before capturing.
     public var needsSelection: Bool {
         switch self {
-        case .area, .window, .scrolling, .ocr: true
+        case .area, .window, .scrolling, .ocr, .lookUp: true
         case .display, .previousArea: false
         }
     }
@@ -136,6 +142,6 @@ enum FrozenSelectionPolicy {
         freezeWasShown
             && timer == .none
             && !includesCursor
-            && (intent == .area || intent == .ocr)
+            && (intent == .area || intent == .ocr || intent == .lookUp)
     }
 }

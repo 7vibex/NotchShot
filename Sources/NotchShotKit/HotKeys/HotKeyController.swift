@@ -11,6 +11,7 @@ public enum HotKeyAction: String, Sendable, CaseIterable, Identifiable, Codable 
     case capturePreviousArea
     case captureScrolling
     case captureText
+    case lookUp
     case startRecording
     case stopRecording
     case toggleNotch
@@ -33,6 +34,7 @@ public enum HotKeyAction: String, Sendable, CaseIterable, Identifiable, Codable 
         case .capturePreviousArea: "Capture Previous Area"
         case .captureScrolling: "Scrolling Capture"
         case .captureText: "Capture Text (OCR)"
+        case .lookUp: "Look Up"
         case .startRecording: "Start Recording"
         case .stopRecording: "Stop Recording"
         case .toggleNotch: "Open the Notch"
@@ -88,6 +90,10 @@ public enum HotKeyAction: String, Sendable, CaseIterable, Identifiable, Codable 
         case .stopRecording: HotKeyBinding(keyCode: UInt32(kVK_Escape), modifiers: UInt32(cmdKey | shiftKey | optionKey))
         case .toggleNotch: HotKeyBinding(keyCode: UInt32(kVK_ANSI_N), modifiers: UInt32(cmdKey | shiftKey | optionKey))
         case .restoreLastCapture: nil
+        // No default: every free ⌥⇧⌘ letter is a guess at what the user has
+        // left unclaimed; it is one click from the capture menu until they
+        // pick their own.
+        case .lookUp: nil
         // No default: the clipboard history is off until the user turns it on,
         // so claiming a global combination for it before then would reserve a
         // shortcut for a feature that does nothing.

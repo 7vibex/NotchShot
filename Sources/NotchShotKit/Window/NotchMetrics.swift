@@ -541,6 +541,16 @@ public struct NotchLayout: Sendable, Equatable {
                 ),
                 cornerRadius: 28
             )
+        case .lookUp(let card):
+            // Nothing found is one quiet status line beside the camera.
+            guard !card.result.isEmpty else {
+                return banded(width: wingWidth(130, floatingWidth: 340), bodyHeight: statusLip, cornerRadius: 18)
+            }
+            return banded(
+                width: LookUpCardMetrics.width,
+                bodyHeight: LookUpCardMetrics.bodyHeight(for: card),
+                cornerRadius: 26
+            )
         case .systemLevel:
             // A physical notch already provides the black centre of the HUD.
             // Keep feedback inside its two visible wings instead of growing a

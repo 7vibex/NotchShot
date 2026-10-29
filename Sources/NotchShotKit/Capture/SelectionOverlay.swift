@@ -9,6 +9,7 @@ public enum SelectionMode: Sendable, Equatable {
     case window
     case scrollingRegion
     case textRegion
+    case lookUpRegion
 
     var wantsWindowHighlight: Bool { self == .window }
 
@@ -18,6 +19,7 @@ public enum SelectionMode: Sendable, Equatable {
         case .window: "Click a window · drag for an area · ⎋ cancels"
         case .scrollingRegion: "Select the scrollable region · ⎋ cancels"
         case .textRegion: "Select the text to recognise · ⎋ cancels"
+        case .lookUpRegion: "Select what to look up · ⎋ cancels"
         }
     }
 }

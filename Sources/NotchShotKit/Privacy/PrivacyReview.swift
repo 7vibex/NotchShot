@@ -110,7 +110,7 @@ public actor PrivacyReviewService {
                         rect: region.rect.insetBy(dx: -4, dy: -3),
                         confidence: region.confidence
                     ))
-                case .link, .qrCode, .barcode:
+                case .link, .date, .qrCode, .barcode:
                     break
                 }
             }

@@ -87,6 +87,7 @@ extension AppCoordinator {
         if Preferences.shared.pendingFirstCaptureIntent == intent {
             Preferences.shared.pendingFirstCaptureIntent = nil
         }
+        dismissLookUp()
         collapse()
 
         var request = CaptureRequest(
@@ -173,13 +174,17 @@ extension AppCoordinator {
         do {
             let image = try await CaptureService.shared.capture(request, excludedWindows: excluded)
             guard isCurrentCapture(operationID) else { return }
-            if request.intent == .area || request.intent == .ocr || request.intent == .scrolling {
+            if [.area, .ocr, .lookUp, .scrolling].contains(request.intent) {
                 // The service recorded the rect; the menu can now offer Repeat.
                 hasPreviousArea = true
             }
 
             if intent == .ocr {
                 await handleTextCapture(image, operationID: operationID)
+                return
+            }
+            if intent == .lookUp {
+                await handleLookUpCapture(image, operationID: operationID)
                 return
             }
 
@@ -510,6 +515,7 @@ extension AppCoordinator {
         case .window: .window
         case .scrolling: .scrollingRegion
         case .ocr: .textRegion
+        case .lookUp: .lookUpRegion
         default: .area
         }
 
