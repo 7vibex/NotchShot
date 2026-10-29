@@ -12,6 +12,7 @@ public final class FloatingCaptureWindow: NSPanel {
     private let imageView = NSImageView()
     private var isLocked = false
     private var currentOpacity: CGFloat = 1
+    private let presentation = FloatingWindowPresenter()
 
     public init(asset: CaptureAsset, image: NSImage, at origin: CGPoint?) {
         self.asset = asset
@@ -52,6 +53,8 @@ public final class FloatingCaptureWindow: NSPanel {
         hasShadow = true
         backgroundColor = .clear
         isOpaque = false
+        // `FloatingWindowPresenter` plays the appear and disappear.
+        animationBehavior = .none
         // Keeps its own aspect ratio while the user drags a corner.
         aspectRatio = CGSize(width: width, height: height)
         minSize = CGSize(width: 120, height: 90)
@@ -65,16 +68,48 @@ public final class FloatingCaptureWindow: NSPanel {
         imageView.layer?.masksToBounds = true
         imageView.layer?.borderWidth = 1
         imageView.layer?.borderColor = NSColor.white.withAlphaComponent(0.18).cgColor
+        // The container below speaks for the pin, menu included.
+        imageView.setAccessibilityElement(false)
 
-        let container = NSView(frame: CGRect(origin: .zero, size: frame.size))
+        let container = PinnedCaptureContentView(frame: CGRect(origin: .zero, size: frame.size))
         container.autoresizingMask = [.width, .height]
+        container.wantsLayer = true
         container.addSubview(imageView)
+        container.setAccessibilityElement(true)
+        container.setAccessibilityRole(.image)
+        container.setAccessibilityLabel("Pinned capture: \(asset.displayName)")
         contentView = container
 
         setAccessibilityLabel("Pinned capture: \(asset.displayName)")
     }
 
     public override var canBecomeKey: Bool { !isLocked }
+
+    // MARK: Presentation
+
+    func present() {
+        presentation.present(self, alpha: currentOpacity)
+    }
+
+    func dismiss(animated: Bool) {
+        presentation.dismiss(self, animated: animated)
+    }
+
+    /// Escape puts a focused pin away, as it would a popover. A locked pin
+    /// cannot become key, so it never receives the key.
+    public override func cancelOperation(_ sender: Any?) {
+        closePin()
+    }
+
+    public override func keyDown(with event: NSEvent) {
+        // Nothing in the pin takes first responder, so no view turns Escape
+        // into `cancelOperation` on its way up; the window does it.
+        if event.keyCode == 53, event.modifierFlags.isDisjoint(with: [.command, .control, .option, .shift]) {
+            closePin()
+        } else {
+            super.keyDown(with: event)
+        }
+    }
 
     // MARK: Controls
 
@@ -101,8 +136,9 @@ public final class FloatingCaptureWindow: NSPanel {
 
     public var locked: Bool { isLocked }
 
-    public override func rightMouseDown(with event: NSEvent) {
-        guard !isLocked else { return }
+    /// The pin's actions. `PinnedCaptureContentView` hands it out for a
+    /// right-click, a Control-click and VoiceOver's Show Menu alike.
+    func makeContextMenu() -> NSMenu {
         let menu = NSMenu()
 
         menu.addItem(withTitle: "Copy", action: #selector(copyImage), keyEquivalent: "").target = self
@@ -143,8 +179,7 @@ public final class FloatingCaptureWindow: NSPanel {
 
         menu.addItem(.separator())
         menu.addItem(withTitle: "Close", action: #selector(closePin), keyEquivalent: "").target = self
-
-        NSMenu.popUpContextMenu(menu, with: event, for: contentView ?? NSView())
+        return menu
     }
 
     @objc private func copyImage() {
@@ -209,7 +244,7 @@ public final class FloatingCaptureManager {
 
         let window = FloatingCaptureWindow(asset: asset, image: image, at: origin)
         WindowExclusionRegistry.shared.register(window)
-        window.orderFrontRegardless()
+        window.present()
         windows.append(window)
 
         while windows.count > maximumPins {
@@ -218,16 +253,19 @@ public final class FloatingCaptureManager {
         return window
     }
 
-    public func close(_ window: FloatingCaptureWindow) {
+    /// The pin leaves the list at once and fades out on its own. While it
+    /// fades it is still one of the app's visible windows, so captures keep
+    /// excluding it after it leaves the registry.
+    public func close(_ window: FloatingCaptureWindow, animated: Bool = true) {
         WindowExclusionRegistry.shared.unregister(window)
-        window.orderOut(nil)
         windows.removeAll { $0 === window }
+        window.dismiss(animated: animated)
     }
 
-    public func closeAll() {
+    public func closeAll(animated: Bool = true) {
         for window in windows {
             WindowExclusionRegistry.shared.unregister(window)
-            window.orderOut(nil)
+            window.dismiss(animated: animated)
         }
         windows.removeAll()
     }
@@ -238,5 +276,36 @@ public final class FloatingCaptureManager {
         for window in windows where window.locked {
             window.setLocked(false)
         }
+    }
+}
+
+/// A pin's content view. It takes every click itself, so a right-click and a
+/// Control-click both find the pin's menu here, and the image view inside
+/// stays purely visual. AppKit only shows a context menu on Control-click
+/// for a view that answers `menu(for:)`; a `rightMouseDown` override alone
+/// never sees one.
+final class PinnedCaptureContentView: NSView {
+    private var pin: FloatingCaptureWindow? { window as? FloatingCaptureWindow }
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        super.hitTest(point) == nil ? nil : self
+    }
+
+    override func menu(for event: NSEvent) -> NSMenu? {
+        // Belt and braces: a locked pin ignores the pointer altogether.
+        guard let pin, !pin.locked else { return nil }
+        return pin.makeContextMenu()
+    }
+
+    /// VoiceOver's Show Menu. Offered on a locked pin too: the pointer can't
+    /// reach one, and Lock in this menu is how VoiceOver unlocks it.
+    override func accessibilityPerformShowMenu() -> Bool {
+        guard let pin else { return false }
+        pin.makeContextMenu().popUp(
+            positioning: nil,
+            at: CGPoint(x: bounds.midX, y: bounds.midY),
+            in: self
+        )
+        return true
     }
 }

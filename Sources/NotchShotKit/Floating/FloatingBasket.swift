@@ -135,6 +135,8 @@ public final class FloatingBasketWindow: NSPanel {
         isOpaque = false
         titleVisibility = .hidden
         titlebarAppearsTransparent = true
+        // `FloatingWindowPresenter` plays the appear and disappear.
+        animationBehavior = .none
         // Exclude from future captures while it is visible — the same
         // registry that hides the notch, floating pins, and History.
         MainActor.assumeIsolated {
@@ -199,6 +201,7 @@ public final class FloatingBasketManager {
     public static let shared = FloatingBasketManager()
 
     private var window: FloatingBasketWindow?
+    private let presentation = FloatingWindowPresenter()
     private var jiggle = JiggleDetector()
     private var autoHideWorkItem: DispatchWorkItem?
     private var isVisible = false
@@ -254,8 +257,14 @@ public final class FloatingBasketManager {
 
         window.setFrame(NSRect(origin: origin, size: size), display: true)
         window.setContent(AnyView(FloatingBasketView(manager: self, coordinator: hostCoordinator)))
-        window.orderFrontRegardless()
-        window.makeKeyAndOrderFront(nil)
+        // `hide()` takes the window out of the registry, and it is reused.
+        WindowExclusionRegistry.shared.register(window)
+        // Also cancels a hide still fading out, so a quick jiggle after
+        // closing keeps the basket on screen.
+        presentation.present(window) { basket in
+            basket.orderFrontRegardless()
+            basket.makeKeyAndOrderFront(nil)
+        }
         isVisible = true
         scheduleAutoHide()
         NSHapticFeedbackManager.defaultPerformer.perform(.generic, performanceTime: .now)
@@ -264,9 +273,11 @@ public final class FloatingBasketManager {
     public func hide() {
         autoHideWorkItem?.cancel()
         autoHideWorkItem = nil
-        window?.orderOut(nil)
-        window?.unregisterFromExclusion()
         isVisible = false
+        guard let window else { return }
+        presentation.dismiss(window) { [weak window] in
+            window?.unregisterFromExclusion()
+        }
     }
 
     public func toggle() {
