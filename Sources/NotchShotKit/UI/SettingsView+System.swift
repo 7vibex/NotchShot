@@ -392,20 +392,33 @@ struct PrivacySettings: View {
                                 }
                                 .buttonStyle(.borderedProminent)
                             }
-                            Button("Open Settings") {
-                                coordinator.permissions.openSettings(for: kind)
+                            // A granted permission has nothing to change in
+                            // System Settings; the troubleshooting note below
+                            // keeps a way there for one that only looks granted.
+                            if !isGranted(kind) {
+                                Button("Open Settings") {
+                                    coordinator.permissions.openSettings(for: kind)
+                                }
                             }
                         }
                     }
                 }
                 if coordinator.permissions.hasUnstableSigningIdentity {
                     VStack(alignment: .leading, spacing: 6) {
-                        Text("This build is ad-hoc signed, so macOS cannot keep any permission.")
+                        Text("If a permission is on but NotchShot still can't use it")
                             .font(.caption)
                             .fontWeight(.semibold)
-                        Text("An ad-hoc signature's identity is the app's own code hash, so every rebuild looks like a brand-new app to macOS. The switches above stay on in Privacy & Security — they belong to the build that asked — while this one is refused, which is why screenshots fail and the macOS volume and brightness overlay came back. Rebuild with a certificate: Scripts/build_app.sh --release --identity \"Apple Development: …\"")
+                        Text("macOS can keep a permission for an earlier copy of NotchShot, so its switch stays on while this copy is refused. Screenshots then fail, and the macOS volume and brightness overlay comes back. Quit and reopen NotchShot first. If that doesn't help, select NotchShot in Privacy & Security, remove it with the minus button, add it again with the plus button, then reopen NotchShot.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
+                        HStack {
+                            Button("Open Privacy & Security") {
+                                coordinator.permissions.openSettings(for: .screenRecording)
+                            }
+                            Button("Quit & Reopen") {
+                                coordinator.permissions.relaunchApplication()
+                            }
+                        }
                     }
                 }
                 if coordinator.permissions.isScreenRecordingGrantStale {
@@ -413,7 +426,7 @@ struct PrivacySettings: View {
                         Text("Screen Recording looks approved but macOS is still refusing it.")
                             .font(.caption)
                             .fontWeight(.semibold)
-                        Text("That happens when the entry in Privacy & Security belongs to an earlier build signed with a different identity. Switching it off and on again does not help — the record has to be cleared so macOS asks fresh.")
+                        Text("macOS is holding on to an answer it gave an earlier copy of NotchShot, and switching it off and on again won't change that. Reset it here: NotchShot reopens, and macOS asks again the next time you take a screenshot.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                         Button("Reset Screen Recording Permission") {
@@ -574,6 +587,17 @@ struct PrivacySettings: View {
         case .inputMonitoring:
             coordinator.permissions.inputMonitoringGranted ? "Granted" : "Not granted"
         default: "As needed"
+        }
+    }
+
+    /// Automation is asked per target app and can't be read without
+    /// prompting, so it never counts as granted here.
+    private func isGranted(_ kind: PermissionKind) -> Bool {
+        switch kind {
+        case .screenRecording: coordinator.permissions.screenRecording.isUsable
+        case .microphone: coordinator.permissions.microphone.isUsable
+        case .inputMonitoring: coordinator.permissions.inputMonitoringGranted
+        default: false
         }
     }
 

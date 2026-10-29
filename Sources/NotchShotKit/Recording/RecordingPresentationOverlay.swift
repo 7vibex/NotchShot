@@ -14,6 +14,19 @@ public struct RecordingPresentationOptions: Sendable, Equatable {
     public var isEmpty: Bool { !showsCamera && !showsKeystrokes }
 }
 
+/// What the presenter panel shows at a given moment.
+///
+/// The panel is deliberately part of the recording, so anything it draws ends
+/// up in the video. Between shortcuts the keystroke area draws nothing at all,
+/// and a panel with no camera bubble has nothing left to show.
+struct RecordingPresenterVisibility: Equatable {
+    var showsCamera: Bool
+    var isShowingShortcut: Bool
+
+    var isKeyAreaVisible: Bool { isShowingShortcut }
+    var isPanelVisible: Bool { showsCamera || isShowingShortcut }
+}
+
 /// The narrow surface recording paths depend on for the presenter overlay.
 ///
 /// Injected on `AppCoordinator` so terminal cleanup can be pinned without
@@ -39,9 +52,15 @@ public final class RecordingPresentationOverlayController {
 
     private var panel: NSPanel?
     private var cameraView: RecordingCameraPreviewView?
+    private var keyArea: NSView?
     private var keyLabel: NSTextField?
     private var monitors: [Any] = []
     private var hideKeyTask: Task<Void, Never>?
+    private var showsCamera = false
+    private var isShowingShortcut = false
+    /// Bumped on every show or hide of the keystroke area, so a fade-out that
+    /// finishes after the next shortcut arrived does not hide it.
+    private var keyAreaGeneration = 0
 
     public var isVisible: Bool { panel?.isVisible == true }
 
@@ -87,48 +106,90 @@ public final class RecordingPresentationOverlayController {
         panel.hidesOnDeactivate = false
         panel.isReleasedWhenClosed = false
 
-        let root = NSVisualEffectView(frame: CGRect(origin: .zero, size: frame.size))
-        root.material = .hudWindow
-        root.blendingMode = .behindWindow
-        root.state = .active
+        // A clear root with the camera bubble and the keystroke area as separate
+        // surfaces, so the keystroke area can be absent from the recording
+        // without leaving an empty box under the camera.
+        let root = NSView(frame: CGRect(origin: .zero, size: frame.size))
         root.wantsLayer = true
-        root.layer?.cornerRadius = 18
-        root.layer?.masksToBounds = true
-        root.layer?.borderWidth = 1
-        root.layer?.borderColor = NSColor.white.withAlphaComponent(0.14).cgColor
         panel.contentView = root
+        let visibility = RecordingPresenterVisibility(
+            showsCamera: options.showsCamera,
+            isShowingShortcut: false
+        )
+        showsCamera = options.showsCamera
+        isShowingShortcut = false
 
-        var bottom: CGFloat = 10
+        var cameraBottom: CGFloat = 0
         if options.showsKeystrokes {
-            let label = NSTextField(labelWithString: "Shortcuts appear here")
+            let areaHeight: CGFloat = options.showsCamera ? 40 : height
+            let area = Self.makeSurface(frame: CGRect(x: 0, y: 0, width: width, height: areaHeight))
+            let label = NSTextField(labelWithString: "")
             label.alignment = .center
             label.font = .monospacedSystemFont(ofSize: 14, weight: .semibold)
             label.textColor = .white
             label.lineBreakMode = .byTruncatingMiddle
-            label.frame = CGRect(x: 12, y: 10, width: width - 24, height: 28)
-            root.addSubview(label)
+            let labelHeight = ceil(label.fittingSize.height)
+            label.frame = CGRect(
+                x: 12,
+                y: ((areaHeight - labelHeight) / 2).rounded(),
+                width: width - 24,
+                height: labelHeight
+            )
+            area.addSubview(label)
+            root.addSubview(area)
+            keyArea = area
             keyLabel = label
-            bottom = 48
+            cameraBottom = areaHeight + 8
+            if options.showsCamera {
+                // Absent until the first shortcut; the camera bubble stays.
+                area.alphaValue = 0
+                area.isHidden = true
+            }
             installKeyMonitors()
         }
 
         if options.showsCamera {
-            let camera = RecordingCameraPreviewView(
-                frame: CGRect(x: 10, y: bottom, width: width - 20, height: height - bottom - 10)
-            )
+            let bubble = Self.makeSurface(frame: CGRect(
+                x: 0,
+                y: cameraBottom,
+                width: width,
+                height: height - cameraBottom
+            ))
+            let camera = RecordingCameraPreviewView(frame: bubble.bounds.insetBy(dx: 10, dy: 10))
             camera.wantsLayer = true
             camera.layer?.cornerRadius = 14
             camera.layer?.masksToBounds = true
-            root.addSubview(camera)
+            bubble.addSubview(camera)
+            root.addSubview(bubble)
             cameraView = camera
             await camera.start()
         }
+
+        // Without a camera the keystroke area is the whole panel, so the
+        // window itself stays invisible, and out of the pointer's way, until
+        // the first shortcut.
+        panel.alphaValue = visibility.isPanelVisible ? 1 : 0
+        panel.ignoresMouseEvents = !visibility.isPanelVisible
 
         self.panel = panel
         WindowExclusionRegistry.shared.register(panel)
         WindowExclusionRegistry.shared.setIncludedInCaptures(true, for: panel)
         panel.orderFrontRegardless()
         return true
+    }
+
+    /// The overlay's HUD surface: the camera bubble, or the keystroke area.
+    private static func makeSurface(frame: CGRect) -> NSView {
+        let surface = NSVisualEffectView(frame: frame)
+        surface.material = .hudWindow
+        surface.blendingMode = .behindWindow
+        surface.state = .active
+        surface.wantsLayer = true
+        surface.layer?.cornerRadius = min(18, frame.height / 2)
+        surface.layer?.masksToBounds = true
+        surface.layer?.borderWidth = 1
+        surface.layer?.borderColor = NSColor.white.withAlphaComponent(0.14).cgColor
+        return surface
     }
 
     public func stop() {
@@ -138,7 +199,11 @@ public final class RecordingPresentationOverlayController {
         monitors.removeAll()
         cameraView?.stop()
         cameraView = nil
+        keyArea = nil
         keyLabel = nil
+        showsCamera = false
+        isShowingShortcut = false
+        keyAreaGeneration &+= 1
         if let panel {
             WindowExclusionRegistry.shared.unregister(panel)
             panel.orderOut(nil)
@@ -165,12 +230,50 @@ public final class RecordingPresentationOverlayController {
     private func show(_ event: NSEvent) {
         guard event.type == .keyDown, let description = Self.safeDescription(for: event) else { return }
         keyLabel?.stringValue = description
+        setShortcutVisible(true)
         hideKeyTask?.cancel()
         hideKeyTask = Task { [weak self] in
             try? await Task.sleep(for: .seconds(1.4))
             guard !Task.isCancelled else { return }
-            self?.keyLabel?.stringValue = ""
+            self?.setShortcutVisible(false)
         }
+    }
+
+    /// Fades the keystroke area in or out. The keys stay in the label while it
+    /// fades, so the recording never shows an empty box.
+    private func setShortcutVisible(_ visible: Bool) {
+        guard let panel, let keyArea, visible != isShowingShortcut else { return }
+        isShowingShortcut = visible
+        keyAreaGeneration &+= 1
+        let generation = keyAreaGeneration
+        let visibility = RecordingPresenterVisibility(
+            showsCamera: showsCamera,
+            isShowingShortcut: visible
+        )
+        let fadesWindow = !showsCamera
+        panel.ignoresMouseEvents = !visibility.isPanelVisible
+        if visible { keyArea.isHidden = false }
+        NSAnimationContext.runAnimationGroup({ context in
+            context.duration = visible ? 0.12 : 0.24
+            context.timingFunction = CAMediaTimingFunction(name: visible ? .easeOut : .easeIn)
+            if fadesWindow {
+                // The area is the whole panel: fading the window takes its
+                // shadow along with it.
+                panel.animator().alphaValue = visibility.isPanelVisible ? 1 : 0
+            } else {
+                keyArea.animator().alphaValue = visibility.isKeyAreaVisible ? 1 : 0
+            }
+        }, completionHandler: { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self, self.keyAreaGeneration == generation, let panel = self.panel else { return }
+                // Hidden as well, so nothing of it is drawn between shortcuts
+                // even if the blur behind it does not follow the view's opacity.
+                if !fadesWindow, !visible { self.keyArea?.isHidden = true }
+                // The window shadow is traced from the content once, not on
+                // every frame, so it has to be told the shape changed.
+                panel.invalidateShadow()
+            }
+        })
     }
 
     /// Ordinary characters are intentionally omitted. A presenter overlay is

@@ -32,6 +32,7 @@ public struct CaptureTranslationView: View {
     private static let maximumSourceCharacters = 50_000
 
     private let asset: CaptureAsset
+    @Environment(\.dismiss) private var dismiss
     @State private var sourceText = ""
     @State private var translatedText = ""
     @State private var targetCode = "en"
@@ -84,13 +85,22 @@ public struct CaptureTranslationView: View {
                 if isTranslating {
                     ProgressView("Preparing the language model…")
                 }
-                HStack {
-                    Spacer()
+            }
+
+            // Outside the branches above, so the sheet can be closed while the
+            // text is still loading or after translation failed.
+            HStack {
+                Spacer()
+                if !isLoadingSource, errorMessage == nil {
                     Button("Copy Translation") {
                         ImageExport.copyToPasteboard(text: translatedText)
                     }
                     .disabled(translatedText.isEmpty)
                 }
+                // Escape, not Return: Return would close the sheet from under
+                // someone who meant to press Translate.
+                Button("Done") { dismiss() }
+                    .keyboardShortcut(.cancelAction)
             }
         }
         .padding(18)
