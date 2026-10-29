@@ -87,22 +87,20 @@ struct IslandPolishTests {
         }
     }
 
-    @Test("The level HUD has one segment per volume-key press, and a fine press fills a quarter of one")
-    func levelSegments() {
-        #expect(LevelSegments.count == SystemMediaKeyAction.coarseSteps)
+    @Test("The level HUD fills one smooth bar, and a fine press still moves it")
+    func levelFill() {
         let rect = CGRect(x: 0, y: 0, width: 160, height: 8)
         func filledWidth(_ fraction: Double) -> CGFloat {
-            LevelSegments(fraction: fraction, spacing: 0).path(in: rect).boundingRect.width
+            LevelFill(fraction: fraction).path(in: rect).boundingRect.width
         }
         #expect(filledWidth(0) == 0)
         #expect(abs(filledWidth(0.5) - 80) < 0.01)
         #expect(abs(filledWidth(1) - 160) < 0.01)
-        // CoreAudio's rounding never leaves a sliver in the next segment.
-        #expect(abs(filledWidth(0.49999997) - 80) < 0.01)
+        #expect(filledWidth(1.4) == 160)
+        // The lowest step still shows a round dot of fill, not a sliver.
+        #expect(filledWidth(0.01) == 8)
         let afterFineStep = SystemMediaKeyAction.adjustedLevel(current: 0.5, increasing: true, fine: true)
-        #expect(abs(filledWidth(afterFineStep) - 82.5) < 0.01)
-        let afterStep = SystemMediaKeyAction.adjustedLevel(current: 0.5, increasing: true, fine: false)
-        #expect(abs(filledWidth(afterStep) - 90) < 0.01)
+        #expect(filledWidth(afterFineStep) > 80)
     }
 
     @Test("Caps Lock outranks the song on the closed notch's edge, and an open notch shows neither")

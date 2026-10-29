@@ -385,14 +385,20 @@ struct SystemLevelContent: View {
         .animation(NotchMotion.fade(reduceMotion: false), value: level.isMuted)
     }
 
-    // A big icon and the segments, as macOS 27.2's own HUD draws it. The
-    // "Volume" / "Brightness" word repeated what the symbol already says,
-    // and the percentage repeated what the segments count.
+    // A big icon, one smooth bar and the number. The "Volume" / "Brightness"
+    // word repeated what the symbol already says. A row of one segment per
+    // key press read as dots at this size, so the bar is a single capsule.
     private var pillContent: some View {
         HStack(spacing: 14) {
             levelSymbol(size: 22)
                 .frame(width: 30)
-            LevelBar(fraction: fillFraction, isMuted: level.isMuted, height: 8, spacing: 3, bump: level.bump)
+            LevelBar(fraction: fillFraction, isMuted: level.isMuted, height: 8, bump: level.bump)
+            IslandNumericText(
+                text: "\(Int((fillFraction * 100).rounded()))",
+                font: .system(size: NotchIsland.TextSize.body, weight: .semibold, design: .rounded),
+                color: Color.islandInk(NotchIsland.Ink.secondary)
+            )
+            .frame(width: 28, alignment: .trailing)
         }
         .padding(.horizontal, 18)
         .accessibilityElement(children: .ignore)
@@ -412,7 +418,7 @@ struct SystemLevelContent: View {
                 .frame(width: physicalNotchWidth)
                 .accessibilityHidden(true)
 
-            LevelBar(fraction: fillFraction, isMuted: level.isMuted, height: 8, spacing: 1.5, bump: level.bump)
+            LevelBar(fraction: fillFraction, isMuted: level.isMuted, height: 6, bump: level.bump)
                 .padding(.leading, 10)
                 .padding(.trailing, 14)
                 .frame(maxWidth: .infinity)
@@ -450,13 +456,12 @@ struct SystemLevelContent: View {
     }
 }
 
-/// The level as a row of segments, one per key press, so a press visibly
-/// adds or removes exactly one. Muted keeps the track and drops the fill.
+/// A thick track with a white fill, so the level reads at a glance from the
+/// corner of the eye. Muted keeps the track and drops the fill.
 private struct LevelBar: View {
     var fraction: Double
     var isMuted: Bool
     var height: CGFloat
-    var spacing: CGFloat
     /// A press past the end: the bar stretches toward it and springs back,
     /// as iOS's sliders do, so a key at 100% answers instead of doing nothing.
     var bump: SystemLevelBump? = nil
@@ -469,12 +474,12 @@ private struct LevelBar: View {
 
     var body: some View {
         let stretchAnchor: UnitPoint = stretchEdge == .bottom ? .trailing : .leading
-        LevelSegments(fraction: 1, spacing: spacing)
+        Capsule()
             .fill(Color.islandInk(NotchIsland.Ink.track))
             .overlay {
                 // White on grey, as the system's level indicators are. The
                 // accent colour made the bar read as a selected control.
-                LevelSegments(fraction: fraction, spacing: spacing)
+                LevelFill(fraction: fraction)
                     .fill(Color.white)
                     .opacity(isMuted ? 0 : 1)
             }
@@ -514,14 +519,11 @@ private struct LevelBarStretch {
     var height: CGFloat = 1
 }
 
-/// One rounded segment per volume-key step, filled up to `fraction`. A fine
-/// step (Option-Shift) fills a quarter of one. Animatable, so the fill glides
-/// into the next segment instead of a whole one popping on.
-struct LevelSegments: Shape {
-    static let count = SystemMediaKeyAction.coarseSteps
-
+/// The filled part of the level bar: a capsule from the leading edge, never
+/// narrower than it is tall so the lowest step still shows as a dot of fill.
+/// Animatable, so the fill glides from one key press to the next.
+struct LevelFill: Shape {
     var fraction: Double
-    var spacing: CGFloat
 
     var animatableData: Double {
         get { fraction }
@@ -529,34 +531,11 @@ struct LevelSegments: Shape {
     }
 
     func path(in rect: CGRect) -> Path {
-        var path = Path()
-        let count = Self.count
-        let width = (rect.width - spacing * CGFloat(count - 1)) / CGFloat(count)
-        guard width > 0 else { return path }
-        let radius = min(width, rect.height) * 0.35
-        let filled = min(max(fraction, 0), 1) * Double(count)
-        for index in 0..<count {
-            // CoreAudio hands back 0.49999997 for a half: snap slivers so a
-            // level on a step boundary never shows a hairline in the next.
-            var share = min(max(filled - Double(index), 0), 1)
-            if share < 0.02 { break }
-            if share > 0.98 { share = 1 }
-            let segment = CGRect(
-                x: rect.minX + CGFloat(index) * (width + spacing),
-                y: rect.minY,
-                width: width,
-                height: rect.height
-            )
-            let rounded = Path(roundedRect: segment, cornerRadius: radius, style: .continuous)
-            if share == 1 {
-                path.addPath(rounded)
-            } else {
-                var part = segment
-                part.size.width *= share
-                path.addPath(rounded.intersection(Path(part)))
-            }
-        }
-        return path
+        let share = min(max(fraction, 0), 1)
+        guard share > 0, rect.width > 0 else { return Path() }
+        var filled = rect
+        filled.size.width = min(rect.width, max(rect.height, rect.width * share))
+        return Path(roundedRect: filled, cornerRadius: rect.height / 2, style: .continuous)
     }
 }
 
