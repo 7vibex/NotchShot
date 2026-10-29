@@ -183,7 +183,7 @@ private struct MenuBarQuickTileFace: View {
                     Image(systemName: systemImage)
                         .font(.system(size: 15, weight: .semibold))
                         .foregroundStyle(.white)
-                        .contentTransition(.symbolEffect(.replace))
+                        .contentTransition(NotchSymbolMotion.swap(reduceMotion: reduceMotion))
                 }
                 .brightness(isOn ? highlight : 0)
             Text(caption)

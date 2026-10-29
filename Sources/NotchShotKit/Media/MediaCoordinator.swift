@@ -55,6 +55,10 @@ public final class MediaCoordinator {
     }
     /// Set when every backend failed, for the settings UI to explain.
     public private(set) var lastFailureReason: String?
+    /// The last skip asked for from NotchShot, so the next cover can slide
+    /// in from that side. A hardware media key skips without passing through
+    /// here, and its cover crossfades as before.
+    public private(set) var lastSkip: MediaSkip?
 
     private var source: (any MediaSource)?
     private var streamTask: Task<Void, Never>?
@@ -380,6 +384,11 @@ public final class MediaCoordinator {
 
     public func send(_ command: MediaCommand) {
         guard let source else { return }
+        switch command {
+        case .nextTrack: lastSkip = MediaSkip(isForward: true, date: Date())
+        case .previousTrack: lastSkip = MediaSkip(isForward: false, date: Date())
+        default: break
+        }
         Task {
             do {
                 try await source.send(command)

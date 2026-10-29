@@ -130,6 +130,12 @@ public enum MediaCommandKind: String, Sendable, Codable, Hashable {
     case seek
 }
 
+/// A skip the user asked for, and when.
+public struct MediaSkip: Sendable, Equatable {
+    public var isForward: Bool
+    public var date: Date
+}
+
 public enum MediaCommand: Sendable, Equatable {
     case play
     case pause

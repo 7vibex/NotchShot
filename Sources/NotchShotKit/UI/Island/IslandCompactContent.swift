@@ -79,11 +79,7 @@ struct IslandCompactContent: View {
     @ViewBuilder
     private var leadingDetail: some View {
         if activity.kind == .recording, !isFloating {
-            IslandClockText(
-                text: coordinator.recordingStatus.elapsedDescription,
-                font: .system(size: 11, weight: .semibold, design: .rounded),
-                color: .red
-            )
+            IslandRecordingClock(coordinator: coordinator, size: 11)
         } else if activity.kind == .call {
             IslandCallElapsed(
                 startedAt: activity.startedAt,
@@ -103,13 +99,9 @@ struct IslandCompactContent: View {
             )
         case .recording:
             if isFloating {
-                IslandClockText(
-                    text: coordinator.recordingStatus.elapsedDescription,
-                    font: .system(size: 12, weight: .semibold, design: .rounded),
-                    color: .red
-                )
+                IslandRecordingClock(coordinator: coordinator, size: 12)
             } else {
-                IslandMiniWaveform(samples: coordinator.recordingStatus.systemWaveform, tint: .red)
+                IslandRecordingWaveform(coordinator: coordinator)
                     .frame(width: 30, height: 14)
             }
         case .timer:
@@ -161,21 +153,38 @@ struct IslandCompactContent: View {
 }
 
 /// A tiny real meter from recorded samples; flat when the tap is silent.
+/// The bars ease between readings on the render server.
 struct IslandMiniWaveform: View {
     var samples: [Float]
     var tint: Color
 
     var body: some View {
-        let recent = Array(samples.suffix(8))
-        HStack(alignment: .center, spacing: 1.5) {
-            ForEach(recent.indices, id: \.self) { index in
-                Capsule()
-                    .fill(tint.opacity(0.85))
-                    .frame(width: 2, height: max(2, CGFloat(recent[index]) * 14))
-            }
-        }
-        .animation(.linear(duration: 0.1), value: recent)
-        .accessibilityHidden(true)
+        LayerBarMeter(samples: samples, tint: tint.opacity(0.85))
+            .accessibilityHidden(true)
+    }
+}
+
+/// Reads the recording's status itself, so its ten readings a second
+/// re-evaluate only this and not the whole compact island.
+private struct IslandRecordingWaveform: View {
+    var coordinator: AppCoordinator
+
+    var body: some View {
+        IslandMiniWaveform(samples: coordinator.recordingStatus.systemWaveform, tint: .red)
+    }
+}
+
+/// The recording's elapsed time, isolated for the same reason.
+private struct IslandRecordingClock: View {
+    var coordinator: AppCoordinator
+    var size: CGFloat
+
+    var body: some View {
+        IslandClockText(
+            text: coordinator.recordingStatus.elapsedDescription,
+            font: .system(size: size, weight: .semibold, design: .rounded),
+            color: .red
+        )
     }
 }
 

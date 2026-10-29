@@ -91,8 +91,10 @@ struct LookUpCardView: View {
                             .overlay(alignment: .top) {
                                 if !card.result.items.isEmpty { LookUpSeparator() }
                             }
+                            .islandReveal(stage: 2)
                     }
                     actions
+                        .islandReveal(stage: 2)
                 }
                 .padding(.horizontal, NotchAlertStyle.horizontalInset)
             }
@@ -163,6 +165,7 @@ struct LookUpCardView: View {
                     showsSeparator: index > 0,
                     onAction: { coordinator.performLookUpAction(item) }
                 )
+                .islandReveal(stage: min(index + 1, 2))
             }
         }
         if items.count > LookUpCardMetrics.maximumVisibleRows {

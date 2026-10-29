@@ -38,11 +38,18 @@ struct CountdownContent: View {
             IslandBandHeader(trailingInset: 16) {
                 IslandBandTitle(systemImage: intent.symbolName, title: intent.shortTitle, tint: .white)
             } trailing: {
-                Text("\(remaining)")
-                    .font(.system(size: 22, weight: .bold, design: .rounded))
-                    .foregroundStyle(.white)
-                    .monospacedDigit()
-                    .contentTransition(.numericText(countsDown: true))
+                // The ring drains through each second on the render server.
+                // The digit changes in place: rolling digits render on the CPU
+                // for most of a second per change, which is every change here.
+                ZStack {
+                    LayerTickRing(tick: remaining, diameter: 26, lineWidth: 2.5)
+                    Text("\(remaining)")
+                        .font(.system(size: NotchIsland.TextSize.title, weight: .bold, design: .rounded))
+                        .foregroundStyle(.white)
+                        .monospacedDigit()
+                        .contentTransition(.identity)
+                }
+                .frame(width: 26, height: 26)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
             .contentShape(Rectangle())
@@ -308,26 +315,18 @@ struct RecordingLevelMeter: View {
                     .foregroundStyle(Color.islandInk(NotchIsland.Ink.tertiary))
                     .frame(maxWidth: .infinity, alignment: .leading)
             } else {
-                GeometryReader { proxy in
-                    ZStack(alignment: .leading) {
-                        Capsule().fill(Color.islandInk(NotchIsland.Ink.track))
-                        LinearGradient(
-                            stops: [
-                                .init(color: IslandSystemColor.green, location: 0),
-                                .init(color: IslandSystemColor.green, location: 0.62),
-                                .init(color: .yellow, location: 0.8),
-                                .init(color: IslandSystemColor.red, location: 1),
-                            ],
-                            startPoint: .leading,
-                            endPoint: .trailing
+                // The fill eases between readings on the render server; a
+                // SwiftUI width animation here ran almost without pause.
+                Capsule()
+                    .fill(Color.islandInk(NotchIsland.Ink.track))
+                    .overlay {
+                        LayerLevelFill(
+                            fraction: Double(fraction),
+                            colors: [IslandSystemColor.green, IslandSystemColor.green, .yellow, IslandSystemColor.red],
+                            locations: [0, 0.62, 0.8, 1]
                         )
-                        .mask(alignment: .leading) {
-                            Capsule().frame(width: max(fraction > 0.01 ? 6 : 0, proxy.size.width * fraction))
-                        }
                     }
-                }
-                .frame(height: 6)
-                .animation(reduceMotion ? nil : .linear(duration: 0.08), value: fraction)
+                    .frame(height: 6)
             }
         }
         .frame(height: 14)
@@ -371,7 +370,7 @@ struct SystemLevelContent: View {
                 // Muting is a state, not a level: the phone answers its switch
                 // with the Silent pill rather than an empty slider.
                 IslandSilentContent(physicalNotchWidth: physicalNotchWidth)
-                    .transition(.opacity.combined(with: .scale(scale: 0.92)))
+                    .transition(reduceMotion ? .opacity : .opacity.combined(with: .scale(scale: 0.92)))
             } else if let physicalNotchWidth {
                 compactNotchContent(physicalNotchWidth: physicalNotchWidth)
             } else {
@@ -443,7 +442,7 @@ struct SystemLevelContent: View {
                 .foregroundStyle(.white)
                 // The symbol swaps as the level crosses each threshold; a plain
                 // swap would pop, so cross-fade it.
-                .contentTransition(.symbolEffect(.replace))
+                .contentTransition(NotchSymbolMotion.swap(reduceMotion: reduceMotion))
         }
     }
 

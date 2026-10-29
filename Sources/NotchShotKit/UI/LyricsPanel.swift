@@ -47,21 +47,37 @@ struct LyricsPanel: View {
             switch state {
             case .idle, .loading:
                 HStack(spacing: 8) {
-                    ProgressView().controlSize(.small)
+                    IslandSpinner(size: 12)
                     Text("Finding lyrics…")
                         .font(.system(size: 12, weight: .medium))
                         .foregroundStyle(Color.islandInk(NotchIsland.Ink.tertiary))
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .transition(.opacity)
             case .unavailable(let text, _):
                 message(text)
+                    .transition(.opacity)
             case .loaded(_, let lyrics) where lyrics.isInstrumental:
                 message("Instrumental")
+                    .transition(.opacity)
             case .loaded(_, let lyrics):
                 lines(lyrics)
+                    .transition(.opacity)
             }
         }
         .frame(height: height)
+        // The lines arrive as a crossfade from "Finding lyrics", not a cut.
+        .animation(NotchMotion.fade(reduceMotion: reduceMotion), value: Self.phase(of: state))
+    }
+
+    enum Phase: Equatable { case finding, message, lines }
+
+    static func phase(of state: LyricsPanelState) -> Phase {
+        switch state {
+        case .idle, .loading: .finding
+        case .unavailable: .message
+        case .loaded(_, let lyrics): lyrics.isInstrumental ? .message : .lines
+        }
     }
 
     private func message(_ text: String) -> some View {
@@ -201,25 +217,26 @@ struct LyricsPanel: View {
 
 /// The sung line filling from left to right as it is sung, like karaoke:
 /// the dim line underneath, the bright copy revealed over it. One linear
-/// animation per line, started when the line starts and frozen on pause.
+/// glide per line on the render server, started when the line starts and
+/// frozen on pause; a SwiftUI animation this long re-rendered the notch on
+/// every frame of every line.
 struct LyricSweepLabel: View {
     var text: String
     var startFraction: Double
     var duration: TimeInterval
     var isRunning: Bool
 
-    @State private var progress: Double = 0
-
     var body: some View {
         label(NotchIsland.Ink.secondary)
             .overlay(alignment: .leading) {
-                label(NotchIsland.Ink.primary)
-                    .mask(alignment: .leading) {
-                        Rectangle().scaleEffect(x: progress, y: 1, anchor: .leading)
-                    }
+                LayerSweepReveal(
+                    progress: startFraction,
+                    remaining: isRunning ? max(0.05, duration * (1 - startFraction)) : nil,
+                    key: text
+                ) {
+                    label(NotchIsland.Ink.primary)
+                }
             }
-            .onAppear(perform: start)
-            .onChange(of: isRunning) { _, _ in start() }
     }
 
     private func label(_ ink: Double) -> some View {
@@ -229,13 +246,5 @@ struct LyricSweepLabel: View {
             .lineLimit(2)
             .multilineTextAlignment(.leading)
             .frame(maxWidth: .infinity, alignment: .leading)
-    }
-
-    private func start() {
-        var still = Transaction()
-        still.disablesAnimations = true
-        withTransaction(still) { progress = startFraction }
-        guard isRunning else { return }
-        withAnimation(.linear(duration: max(0.05, duration * (1 - startFraction)))) { progress = 1 }
     }
 }

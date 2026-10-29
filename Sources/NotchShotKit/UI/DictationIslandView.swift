@@ -183,13 +183,13 @@ struct DictationIslandContent: View {
     ) -> some View {
         HStack(spacing: 6) {
             if spinner {
-                ProgressView()
-                    .controlSize(.small)
-                    .tint(.white)
+                IslandSpinner(size: 12)
             } else if let symbol {
                 Image(systemName: symbol)
                     .font(.system(size: 11, weight: .semibold))
                     .foregroundStyle(tint)
+                    .modifier(SymbolDrawsOnAppear())
+                    .id(symbol)
             }
             Text(title)
                 .font(.system(size: 11, weight: .medium))

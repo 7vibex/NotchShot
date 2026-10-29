@@ -76,8 +76,10 @@ enum LiveLyricLinePolicy {
     }
 }
 
-/// The pinned lyric under the closed notch: one short line on a black pill,
-/// which crossfades with a slight rise as each new line starts.
+/// The pinned lyric under the closed notch: one short line on a black pill.
+/// The pill stays and resizes to each new line, which rises into it; the
+/// whole capsule used to be replaced, so two pills of different widths
+/// crossfaded on every line.
 struct PinnedLyricPill: View {
     var text: String
     var maxWidth: CGFloat
@@ -85,20 +87,27 @@ struct PinnedLyricPill: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
-        Text(text)
-            .font(.system(size: 12, weight: .semibold))
-            .foregroundStyle(.white.opacity(0.92))
-            .lineLimit(1)
-            .truncationMode(.tail)
-            .padding(.horizontal, 12)
-            .frame(height: 22)
-            .background(.black, in: Capsule())
-            .frame(maxWidth: maxWidth)
-            .id(text)
-            .transition(reduceMotion
-                ? .opacity
-                : .opacity.combined(with: .offset(y: -5)).combined(with: IslandMotion.blur(3)))
-            .allowsHitTesting(false)
-            .accessibilityLabel("Lyric: \(text)")
+        ZStack {
+            Text(text)
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(.white.opacity(0.92))
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .id(text)
+                .transition(reduceMotion
+                    ? .opacity
+                    : .asymmetric(
+                        insertion: .opacity.combined(with: .offset(y: 6)).combined(with: IslandMotion.blur(2)),
+                        removal: .opacity.combined(with: .offset(y: -6))
+                    ))
+        }
+        .padding(.horizontal, 12)
+        .frame(height: 22)
+        .background(.black, in: Capsule())
+        .clipShape(Capsule())
+        .frame(maxWidth: maxWidth)
+        .allowsHitTesting(false)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Lyric: \(text)")
     }
 }

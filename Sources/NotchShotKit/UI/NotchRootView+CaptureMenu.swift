@@ -76,6 +76,7 @@ struct CaptureMenuContent: View {
                 .help("Record the screen, a window, or an area")
                 .accessibilityLabel("Record")
             }
+            .islandReveal(stage: 1)
 
             // One shape for all three: the borderless menu style drops a
             // custom label's background on macOS, so More used to draw as
@@ -183,6 +184,7 @@ struct CaptureMenuContent: View {
                         : "Nothing is on the shelf yet"
                 )
             }
+            .islandReveal(stage: 2)
         }
         .padding(.horizontal, 12)
         .padding(.top, metrics.hasPhysicalNotch ? 0 : 10)

@@ -68,6 +68,7 @@ enum NotchStatusGlyphPolicy {
 
 struct NotchStatusGlyphRow: View {
     var glyphs: [NotchStatusGlyph]
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         HStack(spacing: 3) {
@@ -77,7 +78,7 @@ struct NotchStatusGlyphRow: View {
                     .foregroundStyle(glyph == .keyboardLocked
                         ? IslandSystemColor.orange
                         : Color.islandInk(NotchIsland.Ink.secondary))
-                    .transition(.opacity.combined(with: .scale(scale: 0.6)))
+                    .transition(reduceMotion ? .opacity : .opacity.combined(with: .scale(scale: 0.6)))
             }
         }
         .accessibilityElement(children: .ignore)

@@ -122,6 +122,7 @@ public final class ExtrasPreferences {
     public var showsArtworkGlare = true { didSet { write(showsArtworkGlare, "artworkGlare") } }
     /// The song's progress as a thin line along the closed player's edge.
     public var showsSongProgressRim = true { didSet { write(showsSongProgressRim, "songProgressRim") } }
+    public var showsAgentProgressRim = true { didSet { write(showsAgentProgressRim, "agentProgressRim") } }
 
     // MARK: App volume
 
@@ -190,6 +191,7 @@ public final class ExtrasPreferences {
         swipesBetweenTracks = bool("swipeTracks", true)
         showsArtworkGlare = bool("artworkGlare", true)
         showsSongProgressRim = bool("songProgressRim", true)
+        showsAgentProgressRim = bool("agentProgressRim", true)
         appVolumesEnabled = bool("appVolumes", false)
         appVolumes = (readJSON("appVolumeLevels") as [String: Double]?)?
             .compactMapValues { $0.isFinite && $0 >= 0 && $0 < 1 ? $0 : nil } ?? [:]

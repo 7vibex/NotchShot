@@ -268,7 +268,7 @@ struct IslandActivityGlyph: View {
             .fontWeight(.semibold)
             .foregroundStyle(symbolColor)
             .frame(width: side * 0.46, height: side * 0.46)
-            .contentTransition(reduceMotion ? .identity : .symbolEffect(.replace))
+            .contentTransition(reduceMotion ? .identity : .symbolEffect(.replace.magic(fallback: .replace)))
             .animation(IslandMotion.liveValue(reduceMotion: reduceMotion), value: terminalSymbol)
     }
 
@@ -362,6 +362,12 @@ struct IslandRecordingGlyph: View {
     var isPaused: Bool
     var side: CGFloat
 
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    private var swap: AnyTransition {
+        reduceMotion ? .opacity : .opacity.combined(with: .scale(scale: 0.6))
+    }
+
     var body: some View {
         ZStack {
             if isPaused {
@@ -370,6 +376,7 @@ struct IslandRecordingGlyph: View {
                     .scaledToFit()
                     .foregroundStyle(.red)
                     .frame(width: side * 0.5, height: side * 0.5)
+                    .transition(swap)
             } else {
                 // Breathes on the render server for the whole recording.
                 LayerPulsingDot(diameter: side * 0.5, color: .red, pulseOpacity: 0.4, halfPeriod: 0.9)
@@ -383,9 +390,11 @@ struct IslandRecordingGlyph: View {
                     .foregroundStyle(.red)
                     .frame(width: side * 0.9, height: side * 0.9)
                     .modifier(SymbolDrawsOnAppear())
+                    .transition(swap)
             }
         }
         .frame(width: side, height: side)
+        .animation(NotchMotion.selection(reduceMotion: reduceMotion), value: isPaused)
     }
 }
 
@@ -404,32 +413,41 @@ struct IslandArtworkGlyph: View {
 
     static let baseSide: CGFloat = 56
 
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
     var body: some View {
         let base = Self.baseSide
         let shape = RoundedRectangle(cornerRadius: base / 5, style: .continuous)
-        Group {
-            if let image = coordinator.media.artwork {
-                Image(nsImage: image)
-                    .resizable()
-                    .interpolation(.high)
-                    .antialiased(true)
-                    .scaledToFill()
-            } else {
-                ZStack {
-                    Color.islandInk(NotchIsland.Ink.fill * 2)
-                    Image(systemName: "music.note")
+        ZStack {
+            Group {
+                if let image = coordinator.media.artwork {
+                    Image(nsImage: image)
                         .resizable()
-                        .scaledToFit()
-                        .foregroundStyle(Color.islandInk(NotchIsland.Ink.secondary))
-                        .padding(base * 0.26)
+                        .interpolation(.high)
+                        .antialiased(true)
+                        .scaledToFill()
+                } else {
+                    ZStack {
+                        Color.islandInk(NotchIsland.Ink.fill * 2)
+                        Image(systemName: "music.note")
+                            .resizable()
+                            .scaledToFit()
+                            .foregroundStyle(Color.islandInk(NotchIsland.Ink.secondary))
+                            .padding(base * 0.26)
+                    }
                 }
             }
+            .frame(width: base, height: base)
+            // A skip from the open player pushes the next cover in from
+            // the side it asked for; any other change crossfades.
+            .id(coordinator.media.artwork.map(ObjectIdentifier.init))
+            .transition(MediaCoverMotion.transition(
+                edge: side >= 40 ? MediaCoverMotion.edge(after: coordinator.media.lastSkip) : nil,
+                reduceMotion: reduceMotion
+            ))
         }
         .frame(width: base, height: base)
         .clipShape(shape)
-        // A track change crossfades the cover rather than cutting to it.
-        .id(coordinator.media.artwork.map(ObjectIdentifier.init))
-        .transition(.opacity.animation(.easeInOut(duration: 0.3)))
         .artworkPresence(
             isPlaying: coordinator.media.snapshot.isPlaying,
             accent: Color(nsColor: coordinator.media.artworkAccentColor),
@@ -443,6 +461,23 @@ struct IslandArtworkGlyph: View {
         }
         .scaleEffect(max(side, 1) / base)
         .frame(width: side, height: side)
+    }
+}
+
+enum MediaCoverMotion {
+    /// How long after a skip the next cover still counts as its answer: a
+    /// slow source can take a couple of seconds to report the new track.
+    static let skipWindow: TimeInterval = 4
+
+    /// The edge the next cover enters from, or nil to crossfade.
+    static func edge(after skip: MediaSkip?, now: Date = Date()) -> Edge? {
+        guard let skip, now.timeIntervalSince(skip.date) < skipWindow else { return nil }
+        return skip.isForward ? .trailing : .leading
+    }
+
+    static func transition(edge: Edge?, reduceMotion: Bool) -> AnyTransition {
+        guard let edge, !reduceMotion else { return .opacity.animation(.easeInOut(duration: 0.3)) }
+        return .push(from: edge).animation(NotchMotion.content(reduceMotion: false))
     }
 }
 

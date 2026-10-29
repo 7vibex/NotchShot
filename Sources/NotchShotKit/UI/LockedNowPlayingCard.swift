@@ -284,7 +284,7 @@ struct LockedNowPlayingPresentation: View {
         HStack(spacing: 44) {
             transportSymbol("backward.fill", size: 20)
             transportSymbol(snapshot.isPlaying ? "pause.fill" : "play.fill", size: 28)
-                .contentTransition(.symbolEffect(.replace))
+                .contentTransition(NotchSymbolMotion.swap(reduceMotion: reduceMotion))
                 .frame(width: 34)
             transportSymbol("forward.fill", size: 20)
         }
@@ -384,12 +384,13 @@ enum LockedBackdropField {
 /// player, so the Lock Screen has one surface instead of two.
 struct LockedChargeChip: View {
     var power: PowerSourceReading
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         HStack(spacing: 3) {
             Image(systemName: power.isChargingOnHold ? "pause.fill" : "bolt.fill")
                 .font(.system(size: 9, weight: .bold))
-                .contentTransition(.symbolEffect(.replace))
+                .contentTransition(NotchSymbolMotion.swap(reduceMotion: reduceMotion))
             Text("\(power.percentage)%")
                 .font(.system(size: 11, weight: .semibold, design: .rounded))
                 .monospacedDigit()
@@ -431,6 +432,7 @@ struct LockedChargingPresentation: View {
     var reduceTransparencyOverride: Bool? = nil
 
     @Environment(\.accessibilityReduceTransparency) private var environmentReduceTransparency
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var reduceTransparency: Bool { reduceTransparencyOverride ?? environmentReduceTransparency }
     private var tint: Color { power.isChargingOnHold ? IslandSystemColor.orange : IslandSystemColor.green }
@@ -451,7 +453,7 @@ struct LockedChargingPresentation: View {
                 )
                 Image(systemName: power.isChargingOnHold ? "pause.fill" : "bolt.fill")
                     .font(.system(size: 24, weight: .bold))
-                    .contentTransition(.symbolEffect(.replace))
+                    .contentTransition(NotchSymbolMotion.swap(reduceMotion: reduceMotion))
                     .foregroundStyle(.white)
                     .shadow(color: .black.opacity(0.35), radius: 2, y: 1)
                     .offset(x: -4)

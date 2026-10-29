@@ -52,6 +52,16 @@ public enum NotchTab: String, CaseIterable, Sendable {
         return tab.flatMap { tabs.contains($0) ? $0 : nil }
     }
 
+    /// Which way a switch between two pages travels: 1 toward later tabs,
+    /// -1 toward earlier ones, 0 when either end isn't a page in the pill.
+    public static func step(from old: NotchTab?, to new: NotchTab?, in tabs: [NotchTab]) -> Int {
+        guard let old, let new, old != new,
+              let from = tabs.firstIndex(of: old),
+              let to = tabs.firstIndex(of: new)
+        else { return 0 }
+        return to > from ? 1 : -1
+    }
+
     /// Whether `activity` is one of the pill's pages, the only presentations
     /// a page switch's held height applies to.
     public static func holdsHeight(of activity: NotchActivity, in tabs: [NotchTab]) -> Bool {

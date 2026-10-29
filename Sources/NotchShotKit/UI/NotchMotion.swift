@@ -155,6 +155,8 @@ struct MarchingDashStroke<S: Shape>: View {
     var lineWidth: CGFloat = 1.5
     var dash: [CGFloat] = [6, 4]
     var isMarching = true
+    /// Draws only the half of the stroke inside the shape.
+    var insideOnly = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     /// Points per second the dashes travel.
@@ -164,13 +166,18 @@ struct MarchingDashStroke<S: Shape>: View {
         if reduceMotion || !isMarching {
             stroke(phase: 0)
         } else {
-            // Only ticks while this view is on screen, which is only while a
-            // drag is over the target.
-            TimelineView(.animation) { context in
-                let period = dash.reduce(0, +)
-                let travelled = context.date.timeIntervalSinceReferenceDate * Self.speed
-                stroke(phase: -CGFloat(travelled.truncatingRemainder(dividingBy: Double(max(period, 1)))))
-            }
+            // The dashes travel on the render server; a SwiftUI timeline
+            // re-rendered the notch on every frame of a drag.
+            LayerDashStroke(
+                shape: shape,
+                color: color,
+                lineWidth: lineWidth,
+                dash: dash,
+                speed: Self.speed,
+                insideOnly: insideOnly
+            )
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
         }
     }
 

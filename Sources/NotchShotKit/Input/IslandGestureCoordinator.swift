@@ -12,6 +12,8 @@ public final class IslandGestureState {
     public internal(set) var isTracking = false
     /// How far the closed player leans toward a track-skip swipe, -1…1.
     public internal(set) var trackPull: CGFloat = 0
+    /// How far the closed notch is being pulled open, 0…1.
+    public internal(set) var openPull: CGFloat = 0
     public init() {}
 }
 
@@ -83,10 +85,20 @@ final class IslandGestureCoordinator {
     private var compactGesture: CompactGesture?
     private var timerStepper = IslandScrollStepper()
     private var trackSwipe = TrackSwipeDecision()
+    private var openPull = OpenPullDecision()
 
     private enum CompactGesture {
         case timerMinutes
         case trackSkip
+        /// Two fingers pulling the closed notch down, the way the Mac's own
+        /// island opens.
+        case pullOpen
+    }
+
+    /// What a pull-down on the closed notch opens.
+    private enum PullOpenTarget {
+        case captureMenu
+        case islandPrimary
     }
 
     init(coordinator: AppCoordinator) {
@@ -144,8 +156,30 @@ final class IslandGestureCoordinator {
             } else {
                 ownsGesture = false
                 compactGesture = compactGestureKind(for: event, coordinator: coordinator)
+                    ?? (pullOpenTarget(for: event, coordinator: coordinator) != nil ? .pullOpen : nil)
                 timerStepper.reset()
                 trackSwipe = TrackSwipeDecision()
+            }
+            openPull = OpenPullDecision()
+        }
+
+        // Every sideways gesture on the closed notch also watches for a
+        // decisive pull downward, and hands over to it when it sees one.
+        if compactGesture != .pullOpen, !event.phase.contains(.ended), !event.phase.contains(.cancelled),
+           pullOpenTarget(for: event, coordinator: coordinator) != nil {
+            openPull.add(deltaX: event.scrollingDeltaX, downward: -Self.upwardDelta(event))
+            if openPull.isVertical == true {
+                if ownsGesture {
+                    tracker.cancel()
+                    ownsGesture = false
+                    resetTracking()
+                }
+                if compactGesture == .trackSkip {
+                    coordinator.islandGesture.trackPull = 0
+                }
+                compactGesture = .pullOpen
+                coordinator.islandGesture.openPull = openPull.stretch
+                return true
             }
         }
 
@@ -243,6 +277,24 @@ final class IslandGestureCoordinator {
         }
     }
 
+    /// What pulling the closed notch down would open, if anything. A timer
+    /// keeps vertical scrolls for its minutes.
+    private func pullOpenTarget(for event: NSEvent, coordinator: AppCoordinator) -> PullOpenTarget? {
+        guard event.hasPreciseScrollingDeltas, NSEvent.pressedMouseButtons == 0, event.window is NotchPanel else {
+            return nil
+        }
+        switch coordinator.activity {
+        case .idle:
+            return .captureMenu
+        case .island(let descriptor):
+            guard !descriptor.isExpanded, descriptor.overlay == nil, descriptor.hasPrimary,
+                  descriptor.primaryKind != .timer else { return nil }
+            return .islandPrimary
+        default:
+            return nil
+        }
+    }
+
     private func handleCompact(_ gesture: CompactGesture, event: NSEvent, coordinator: AppCoordinator) -> Bool {
         let ended = event.phase.contains(.ended) || event.phase.contains(.cancelled)
         switch gesture {
@@ -269,6 +321,27 @@ final class IslandGestureCoordinator {
                 }
             } else {
                 coordinator.islandGesture.trackPull = trackSwipe.pull
+            }
+        case .pullOpen:
+            if !ended {
+                openPull.add(deltaX: event.scrollingDeltaX, downward: -Self.upwardDelta(event))
+                coordinator.islandGesture.openPull = openPull.stretch
+            } else {
+                let target = event.phase.contains(.ended) && openPull.opens
+                    ? pullOpenTarget(for: event, coordinator: coordinator)
+                    : nil
+                withAnimation(target == nil ? IslandMotion.pullSettle : IslandMotion.skipRelease) {
+                    coordinator.islandGesture.openPull = 0
+                }
+                switch target {
+                case .captureMenu:
+                    coordinator.openCaptureMenuFromLongPress()
+                case .islandPrimary:
+                    coordinator.expandIslandPrimary()
+                    coordinator.noteIslandOpenedByPointer()
+                case nil:
+                    break
+                }
             }
         }
         if ended {

@@ -7,6 +7,8 @@ import SwiftUI
 enum NotchRimKind: Equatable {
     case capsLock
     case songProgress
+    /// An agent's reported progress, step by step, on the closed island.
+    case agentProgress
 }
 
 enum NotchRimPolicy {
@@ -15,11 +17,14 @@ enum NotchRimPolicy {
         isCapsLockOn: Bool,
         showsCapsLockGlow: Bool,
         isShowingCompactPlayer: Bool,
-        showsSongProgress: Bool
+        showsSongProgress: Bool,
+        isShowingAgentProgress: Bool = false,
+        showsAgentProgress: Bool = true
     ) -> NotchRimKind? {
         guard !isOpen else { return nil }
         if isCapsLockOn, showsCapsLockGlow { return .capsLock }
         if isShowingCompactPlayer, showsSongProgress { return .songProgress }
+        if isShowingAgentProgress, showsAgentProgress { return .agentProgress }
         return nil
     }
 
@@ -80,6 +85,20 @@ struct NotchSongProgressRim: View {
     }
 }
 
+/// How far the closed island's agent has got, as the same line along its
+/// bottom edge. Steps ease from one to the next; nothing moves between them.
+struct NotchAgentProgressRim: View {
+    var coordinator: AppCoordinator
+    var bottomRadius: CGFloat
+
+    var body: some View {
+        if let fraction = coordinator.islandPresentation.primary?.progress.fraction {
+            LayerProgressRim(progress: fraction, remaining: nil, inset: bottomRadius)
+                .accessibilityHidden(true)
+        }
+    }
+}
+
 /// One linear Core Animation glide to the end of the track, restarted only
 /// when the song is paused, played, seeked or changed. SwiftUI never draws a
 /// frame of it, so a playing song costs the app nothing per frame.
@@ -114,11 +133,6 @@ final class LayerProgressRimView: NSView {
 
     init() {
         super.init(frame: .zero)
-        let host = CALayer()
-        // Top-left origin for the sublayers, so the edge is measured from
-        // the top the way SwiftUI lays the shell out.
-        host.isGeometryFlipped = true
-        layer = host
         wantsLayer = true
         glow.strokeColor = NSColor.white.withAlphaComponent(0.2).cgColor
         glow.lineWidth = 4
@@ -128,12 +142,18 @@ final class LayerProgressRimView: NSView {
             shape.fillColor = nil
             shape.lineCap = .round
             shape.strokeEnd = 0
-            host.addSublayer(shape)
+            layer?.addSublayer(shape)
         }
     }
 
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
+
+    // Top-left origin for the sublayers, so the edge is measured from the
+    // top the way SwiftUI lays the shell out. A hosted layer set to
+    // `isGeometryFlipped` was flipped a second time by SwiftUI's own flipped
+    // hosting view and drew the line along the top of the notch.
+    override var isFlipped: Bool { true }
 
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
 
@@ -163,6 +183,9 @@ final class LayerProgressRimView: NSView {
         let now = Date()
         let current = Self.value(at: now, from: progress, remaining: remaining, since: configuredAt)
         let left = remaining.map { max(0, $0 - now.timeIntervalSince(configuredAt)) }
+        // Where the line is drawn right now, so a held line eases to a new
+        // value (an agent's next step, a seek while paused) instead of jumping.
+        let shown = Double(line.presentation()?.strokeEnd ?? line.strokeEnd)
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         for shape in [glow, line] {
@@ -174,6 +197,13 @@ final class LayerProgressRimView: NSView {
                 animation.toValue = 1
                 animation.duration = left
                 animation.timingFunction = CAMediaTimingFunction(name: .linear)
+                shape.add(animation, forKey: "glide")
+            } else if window != nil, abs(shown - current) > 0.002 {
+                let animation = CABasicAnimation(keyPath: "strokeEnd")
+                animation.fromValue = shown
+                animation.toValue = current
+                animation.duration = 0.35
+                animation.timingFunction = CAMediaTimingFunction(name: .easeOut)
                 shape.add(animation, forKey: "glide")
             }
         }
@@ -194,7 +224,7 @@ final class LayerProgressRimView: NSView {
     override func viewDidChangeBackingProperties() {
         super.viewDidChangeBackingProperties()
         let scale = window?.backingScaleFactor ?? 2
-        [layer, glow, line].forEach { $0?.contentsScale = scale }
+        [glow, line].forEach { $0.contentsScale = scale }
     }
 
     /// Along the shell's bottom edge, which is `bleed` above this view's own.

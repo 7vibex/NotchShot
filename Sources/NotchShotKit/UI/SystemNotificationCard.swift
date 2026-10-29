@@ -107,12 +107,14 @@ struct SystemNotificationCard: View {
                 ))
             }
             if snapshot.overflowCount > 0 {
-                Text("\(snapshot.overflowCount) more")
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(Color.islandInk(NotchIsland.Ink.tertiary))
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.leading, SystemNotificationRow.avatarSize + NotchAlertStyle.leadingGap)
-                    .padding(.top, 2)
+                // The edges of the notifications behind, as the phone stacks
+                // them, rather than a line of text saying how many.
+                NotificationStackEdges(layers: min(snapshot.overflowCount, 2))
+                    .padding(.top, 6)
+                    .transition(.opacity)
+                    .help("\(snapshot.overflowCount) more")
+                    .accessibilityElement()
+                    .accessibilityLabel("\(snapshot.overflowCount) more notifications")
             }
         }
         .padding(.horizontal, NotchAlertStyle.horizontalInset - 4)
@@ -129,6 +131,32 @@ struct SystemNotificationCard: View {
                 ? "Notification from \(snapshot.sourceName)"
                 : "\(rows.count) notifications"
         )
+    }
+}
+
+/// The lower edges of up to two notifications waiting behind the stack, each
+/// narrower and dimmer than the one in front.
+struct NotificationStackEdges: View {
+    var layers: Int
+
+    static let inset: CGFloat = 18
+    static let heights: [CGFloat] = [5, 4]
+    static let inks: [Double] = [NotchIsland.Ink.hairline, NotchIsland.Ink.fill]
+
+    var body: some View {
+        VStack(spacing: 2) {
+            ForEach(0..<max(0, min(layers, Self.heights.count)), id: \.self) { layer in
+                UnevenRoundedRectangle(
+                    bottomLeadingRadius: 5,
+                    bottomTrailingRadius: 5,
+                    style: .continuous
+                )
+                .fill(Color.islandInk(Self.inks[layer]))
+                .frame(height: Self.heights[layer])
+                .padding(.horizontal, Self.inset * CGFloat(layer + 1))
+            }
+        }
+        .frame(maxWidth: .infinity)
     }
 }
 

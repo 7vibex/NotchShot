@@ -210,6 +210,37 @@ struct IslandScrollStepper: Equatable {
 
 /// A sideways swipe over the closed player: decided once, when the fingers
 /// lift, so a scroll that wanders never skips twice.
+/// Two fingers pulling the closed notch down. Picks its axis in the first
+/// few points: only a pull that is clearly downward is one, so a sideways
+/// swipe or an upward flick never stretches the shell.
+struct OpenPullDecision {
+    /// Points of downward travel that open the notch on release.
+    static let threshold: CGFloat = 36
+    /// Travel before the axis is decided.
+    static let slop: CGFloat = 6
+
+    private(set) var downward: CGFloat = 0
+    private(set) var sideways: CGFloat = 0
+    /// Nil until the movement has picked an axis.
+    private(set) var isVertical: Bool?
+
+    mutating func add(deltaX: CGFloat, downward delta: CGFloat) {
+        downward += delta
+        sideways += abs(deltaX)
+        if isVertical == nil, max(abs(downward), sideways) >= Self.slop {
+            isVertical = downward > 0 && downward > sideways * 1.5
+        }
+    }
+
+    /// How far the shell gives, 0…1, easing off as the pull goes on.
+    var stretch: CGFloat {
+        guard isVertical == true else { return 0 }
+        return tanh(max(0, downward) / (Self.threshold * 1.5))
+    }
+
+    var opens: Bool { isVertical == true && downward >= Self.threshold }
+}
+
 struct TrackSwipeDecision: Equatable {
     /// About a third of the closed player's width.
     static let threshold: CGFloat = 40

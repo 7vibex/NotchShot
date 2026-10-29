@@ -226,6 +226,7 @@ struct ExtrasSettings: View {
                 Toggle("Swipe the closed player to change track", isOn: $extras.swipesBetweenTracks)
                 Toggle("Cover catches the light under the pointer", isOn: $extras.showsArtworkGlare)
                 Toggle("Song progress along the closed player's edge", isOn: $extras.showsSongProgressRim)
+                Toggle("Agent progress along the closed notch's edge", isOn: $extras.showsAgentProgressRim)
                 Text("The live meter and song recognition listen to the Mac's own sound, never the microphone, and ask for System Audio Recording the first time. Nothing is recorded or saved. Recognition sends an audio signature to Shazam. The pinned lyric needs lyrics turned on under Media. Swiping works on a trackpad when the player is the only activity.")
                     .font(.caption)
                     .foregroundStyle(.secondary)

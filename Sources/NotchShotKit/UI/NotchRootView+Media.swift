@@ -29,7 +29,7 @@ struct MediaControlButton: View {
             Image(systemName: systemName)
                 .font(.system(size: symbolSize, weight: .semibold))
                 .foregroundStyle(Color.islandInk(opacity))
-                .contentTransition(.symbolEffect(.replace))
+                .contentTransition(NotchSymbolMotion.swap(reduceMotion: reduceMotion))
                 .animation(NotchShotMotion.selection(reduceMotion: reduceMotion), value: systemName)
                 .frame(width: diameter, height: diameter)
                 .background {
@@ -587,8 +587,13 @@ struct MediaContent: View {
                 Button(action: onRefresh) {
                     Image(systemName: "arrow.clockwise")
                         .font(.system(size: 9, weight: .semibold))
+                        .symbolEffect(.rotate, isActive: isRefreshing && !reduceMotion)
                         .frame(width: 18, height: 18)
+                        // A 28 pt target around the 18 pt glyph, without
+                        // pushing the header taller.
+                        .padding(5)
                         .contentShape(Rectangle())
+                        .padding(-5)
                 }
                 .buttonStyle(NotchPressButtonStyle())
                 .disabled(isRefreshing)
@@ -888,7 +893,7 @@ private struct AudioOutputDeviceRow: View {
                     .foregroundStyle(Color.islandInk(
                         isSelected ? NotchIsland.Ink.primary : NotchIsland.Ink.recessed
                     ))
-                    .contentTransition(.symbolEffect(.replace))
+                    .contentTransition(NotchSymbolMotion.swap(reduceMotion: reduceMotion))
             }
             .padding(.horizontal, NotchIsland.Spacing.element)
             .frame(maxWidth: .infinity, minHeight: NotchLayout.mediaPanelRowHeight)

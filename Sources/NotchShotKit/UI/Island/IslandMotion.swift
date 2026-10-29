@@ -75,24 +75,39 @@ enum IslandMotion {
         )
     }
 
+    /// The one way content arrives in the island: out of the camera edge,
+    /// growing from just under full size, a beat after the shell starts to
+    /// open. A spring, so an interrupted open keeps its velocity.
+    ///
+    /// No blur: Apple's content-replace blurs a glyph or a line, but blurring
+    /// a whole page rasterized it offscreen on every frame of the open — about
+    /// a quarter of the open's cost, measured. Pages come into focus by their
+    /// rows arriving in turn instead (`islandReveal(stage:)`).
+    static func arrival(delay: Double, drop: CGFloat = 6) -> AnyTransition {
+        .opacity
+            .combined(with: .scale(scale: arrivalScale, anchor: .top))
+            .combined(with: .offset(y: -drop))
+            .animation(NotchMotion.content(reduceMotion: false).delay(delay))
+    }
+
+    static let arrivalScale: CGFloat = 0.94
+
+    /// How far a page travels when the pill switches to its neighbour.
+    static let pageTravel: CGFloat = 28
+
+    /// How much taller the closed shell stretches at a full pull-down.
+    static let pullOpenStretch: CGFloat = 0.28
+
     /// Compact ↔ expanded content: expanded content arrives slightly late and
     /// leaves immediately, so the shell visibly leads on the way in and settles
-    /// last on the way out.
-    ///
-    /// Apple's guidance for the island is a content-replace transition (blur,
-    /// scale and opacity together) rather than a crossfade, keeping each
-    /// element where it was relative to the shell. Content grows out of the
-    /// camera edge, the way the shell itself does.
+    /// last on the way out. Content grows out of the camera edge, the way the
+    /// shell itself does.
     static func levelTransition(reduceMotion: Bool) -> AnyTransition {
         guard !reduceMotion else { return .opacity.animation(NotchMotion.fade(reduceMotion: true)) }
         // Outgoing content is gone before incoming content is visible, so the
-        // compact and expanded versions of the same value never overlap. The
-        // arrival is a spring so an interrupted open keeps its velocity.
+        // compact and expanded versions of the same value never overlap.
         return .asymmetric(
-            insertion: .opacity
-                .combined(with: .scale(scale: 0.94, anchor: .top))
-                .combined(with: blur(5))
-                .animation(NotchMotion.content(reduceMotion: false).delay(0.1)),
+            insertion: arrival(delay: 0.1, drop: 0),
             removal: .opacity
                 .combined(with: .scale(scale: 0.98, anchor: .top))
                 .animation(.easeIn(duration: 0.07))

@@ -343,7 +343,7 @@ struct ContextContent: View {
                         .frame(minHeight: NotchShotDesignSystem.minimumControlTarget)
                         .contentShape(Rectangle())
                 } else if note.state == .transcribing {
-                    ProgressView().controlSize(.small)
+                    IslandSpinner(size: 12)
                     Text("Finalizing the on-device transcript…")
                         .font(.caption2)
                         .foregroundStyle(.white.opacity(0.62))

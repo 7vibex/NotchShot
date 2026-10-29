@@ -17,6 +17,9 @@ public struct NotchRootView: View {
     @Environment(\.colorSchemeContrast) private var colorSchemeContrast
 
     @State private var isTargetedForDrop = false
+    /// The page the pill showed before this update, so a switch knows which
+    /// way it travels while it is being drawn.
+    @State private var shownTab: NotchTab?
     @State private var islandPress = IslandPressState()
     @State private var selectedFileDropAction: FileDropAction = .shelf
     @State private var fileDropItemCount = 0
@@ -208,9 +211,12 @@ public struct NotchRootView: View {
                     ZStack {
                         if let line {
                             PinnedLyricPill(text: line, maxWidth: max(layout.size.width + 120, 320))
+                                .transition(reduceMotion
+                                    ? .opacity
+                                    : .opacity.combined(with: .scale(scale: 0.9, anchor: .top)))
                         }
                     }
-                    .animation(reduceMotion ? nil : .spring(response: 0.42, dampingFraction: 0.88), value: line)
+                    .animation(NotchMotion.content(reduceMotion: reduceMotion), value: line)
                 }
                 .padding(.top, 5)
             }
@@ -220,12 +226,9 @@ public struct NotchRootView: View {
                     // Glass at partial opacity reads as a grey smudge, so the
                     // pill never lingers half-faded: it leaves before the shell
                     // starts closing and arrives once the shell has mostly
-                    // opened, coming into focus like the island's content.
+                    // opened, the way the island's content does.
                     .transition(reduceMotion ? .opacity : .asymmetric(
-                        insertion: .opacity
-                            .combined(with: .offset(y: -8))
-                            .combined(with: IslandMotion.blur(4))
-                            .animation(NotchMotion.content(reduceMotion: false).delay(0.12)),
+                        insertion: IslandMotion.arrival(delay: 0.12, drop: 8),
                         removal: .opacity
                             .animation(.easeIn(duration: 0.1))
                     ))
@@ -252,6 +255,7 @@ public struct NotchRootView: View {
             }
         }
         .animation(shapeAnimation, value: visibleTab)
+        .onChange(of: visibleTab, initial: true) { _, tab in shownTab = tab }
         // Hover is *not* handled here. SwiftUI's onHover fires for the whole
         // panel — which is far larger than the island — and fighting the window
         // controller's own hit test made the notch open on its own. The
@@ -359,7 +363,7 @@ public struct NotchRootView: View {
                     if isTargetedForDrop {
                         // Clipped to the shell below, so the visible half of a
                         // 3 pt stroke reads as the old 1.5 pt border.
-                        MarchingDashStroke(shape: shape, color: .accentColor, lineWidth: 3, dash: [8, 6])
+                        MarchingDashStroke(shape: shape, color: .accentColor, lineWidth: 3, dash: [8, 6], insideOnly: true)
                     } else if !isRecording, !shellIsSeeThrough {
                         // Glass draws its own edge.
                         mediaShellKeyline
@@ -427,6 +431,10 @@ public struct NotchRootView: View {
                     NotchSongProgressRim(media: coordinator.media, bottomRadius: layout.cornerRadius)
                         .frame(width: layout.size.width, height: layout.size.height + NotchRimPolicy.bleed)
                         .transition(.opacity)
+                case .agentProgress:
+                    NotchAgentProgressRim(coordinator: coordinator, bottomRadius: layout.cornerRadius)
+                        .frame(width: layout.size.width, height: layout.size.height + NotchRimPolicy.bleed)
+                        .transition(.opacity)
                 case nil:
                     EmptyView()
                 }
@@ -492,6 +500,7 @@ public struct NotchRootView: View {
         )
         .offset(x: reduceMotion || !isTargetedForDrop ? 0 : fileDropPull * 4)
         .modifier(TrackSkipStretch(gesture: coordinator.islandGesture, reduceMotion: reduceMotion))
+        .modifier(PullOpenStretch(gesture: coordinator.islandGesture, reduceMotion: reduceMotion))
         // A drop is swallowed: the island swells a little and settles.
         .keyframeAnimator(initialValue: CGFloat(1), trigger: dropGulps) { content, scale in
             content.scaleEffect(scale, anchor: .top)
@@ -618,8 +627,13 @@ public struct NotchRootView: View {
     private var rimKind: NotchRimKind? {
         let extras = ExtrasPreferences.shared
         var isCompactPlayer = false
+        var isAgentWorking = false
         if case .island(let descriptor) = effectiveActivity {
             isCompactPlayer = descriptor.primaryKind == .media && descriptor.overlay == nil
+            if descriptor.primaryKind == .ai, descriptor.overlay == nil,
+               let primary = coordinator.islandPresentation.primary {
+                isAgentWorking = !primary.lifecycle.isTerminal && primary.progress.fraction != nil
+            }
         } else if case .media = effectiveActivity {
             isCompactPlayer = true
         }
@@ -628,7 +642,9 @@ public struct NotchRootView: View {
             isCapsLockOn: coordinator.isCapsLockOn,
             showsCapsLockGlow: extras.showsCapsLock && extras.showsCapsLockGlow,
             isShowingCompactPlayer: isCompactPlayer,
-            showsSongProgress: extras.showsSongProgressRim
+            showsSongProgress: extras.showsSongProgressRim,
+            isShowingAgentProgress: isAgentWorking,
+            showsAgentProgress: extras.showsAgentProgressRim
         )
     }
 
@@ -754,24 +770,27 @@ public struct NotchRootView: View {
 
     /// Incoming content arrives a beat after the shell starts growing, so text
     /// never appears outside the island it belongs to; outgoing content is gone
-    /// quickly so the two never share the shell for long. The light blur on
-    /// arrival is what makes the swap read as the shape morphing rather than a
-    /// crossfade.
+    /// quickly so the two never share the shell for long.
     private var contentTransition: AnyTransition {
         guard !reduceMotion else { return .opacity }
+        // A page switch from the pill slides toward the tab that was picked,
+        // the way paged views do, under a shell held at one height.
+        let step = NotchTab.step(from: shownTab, to: visibleTab, in: Preferences.shared.notchTabs)
+        if step != 0 {
+            let travel = IslandMotion.pageTravel * CGFloat(step)
+            return .asymmetric(
+                insertion: .opacity
+                    .combined(with: .offset(x: travel))
+                    .animation(NotchMotion.content(reduceMotion: false)),
+                removal: .opacity
+                    .combined(with: .offset(x: -travel * 0.6))
+                    .animation(NotchMotion.contentExit(reduceMotion: false))
+            )
+        }
         return .asymmetric(
-            insertion: .opacity
-                .combined(with: .scale(scale: 0.92, anchor: .top))
-                .combined(with: .offset(y: -6))
-                .combined(with: .modifier(
-                    active: IslandContentBlur(radius: 6),
-                    identity: IslandContentBlur(radius: 0)
-                ))
-                .animation(NotchMotion.content(reduceMotion: false).delay(0.06)),
+            insertion: IslandMotion.arrival(delay: 0.06),
             removal: .opacity
                 .combined(with: .scale(scale: 0.96, anchor: .top))
-                // No blur on the way out: blurring outgoing text forced it onto
-                // the CPU for every frame of the close (see `IslandMotion.blur`).
                 .animation(NotchMotion.contentExit(reduceMotion: false))
         )
     }
@@ -959,6 +978,23 @@ private struct TrackSkipStretch: ViewModifier {
             x: 1 + abs(pull) * IslandMotion.skipStretch,
             y: 1 - abs(pull) * IslandMotion.skipStretch / 3,
             anchor: pull < 0 ? .topTrailing : .topLeading
+        )
+    }
+}
+
+/// The closed notch giving under a two-finger pull: it stretches down out of
+/// the camera, a little wider too, and springs back unless the pull opens it.
+/// Reads the pull here so a gesture's ticks re-evaluate only this.
+private struct PullOpenStretch: ViewModifier {
+    var gesture: IslandGestureState
+    var reduceMotion: Bool
+
+    func body(content: Content) -> some View {
+        let pull = reduceMotion ? 0 : gesture.openPull
+        content.scaleEffect(
+            x: 1 + pull * IslandMotion.pullOpenStretch / 8,
+            y: 1 + pull * IslandMotion.pullOpenStretch,
+            anchor: .top
         )
     }
 }
