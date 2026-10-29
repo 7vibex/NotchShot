@@ -115,9 +115,17 @@ struct LyricsPanel: View {
     /// Where the current line sits in the panel.
     private static let readingLine = UnitPoint(x: 0.5, y: 0.35)
 
+    /// Sharp for the sung line, a little softer for each line away, and no
+    /// further after three. Unsynced lyrics have no sung line and stay sharp.
+    static func blurRadius(linesAway: Int?) -> CGFloat {
+        guard let linesAway else { return 0 }
+        return CGFloat(min(linesAway, 3)) * 0.8
+    }
+
     @ViewBuilder
     private func row(_ line: LyricLine, lyrics: Lyrics) -> some View {
         let isCurrent = lyrics.isSynced && line.id == currentIndex
+        let linesAway = lyrics.isSynced ? currentIndex.map { abs(line.id - $0) } : nil
         let isPast = lyrics.isSynced && currentIndex.map { line.id < $0 } == true
         let text = line.text.isEmpty ? "♪" : line.text
         let sweep = isCurrent && !line.text.isEmpty
@@ -153,7 +161,10 @@ struct LyricsPanel: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .scaleEffect(isCurrent || !lyrics.isSynced ? 1 : 0.93, anchor: .leading)
-        .animation(reduceMotion ? nil : .easeOut(duration: 0.3), value: isCurrent)
+        // Lines soften the further they are from the sung one, as Apple
+        // Music's do, so the eye lands on the right line first.
+        .blur(radius: Self.blurRadius(linesAway: linesAway))
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.3), value: linesAway)
 
         if lyrics.isSynced, let time = line.time, snapshot.supportedCommands.contains(.seek) {
             Button { onSeek(time) } label: { label.contentShape(Rectangle()) }

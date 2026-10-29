@@ -142,4 +142,34 @@ struct IslandPolishTests {
         #expect(glide(500, 90) == 1)
         #expect(glide(45, nil) == 0.25)
     }
+
+    @Test("A skip swipe pulls the player toward the fingers, easing off, and lets go within Apple's limit")
+    func skipPull() {
+        var next = TrackSwipeDecision()
+        next.add(deltaX: -TrackSwipeDecision.threshold, deltaY: 0)
+        #expect(next.command == .nextTrack)
+        #expect(next.pull < -0.4 && next.pull > -0.5)
+        next.add(deltaX: -1_000, deltaY: 0)
+        #expect(next.pull >= -1)
+
+        var previous = TrackSwipeDecision()
+        previous.add(deltaX: 20, deltaY: 0)
+        #expect(previous.pull > 0)
+
+        var vertical = TrackSwipeDecision()
+        vertical.add(deltaX: 30, deltaY: 60)
+        #expect(vertical.pull == 0)
+
+        #expect(IslandMotion.skipReleaseSpring.settlingDuration <= 2)
+        #expect(IslandMotion.pullSettleSpring.settlingDuration <= 2)
+    }
+
+    @Test("Lyric lines blur by distance from the sung line, capped, and unsynced lyrics stay sharp")
+    func lyricBlur() {
+        #expect(LyricsPanel.blurRadius(linesAway: nil) == 0)
+        #expect(LyricsPanel.blurRadius(linesAway: 0) == 0)
+        #expect(LyricsPanel.blurRadius(linesAway: 1) > 0)
+        #expect(LyricsPanel.blurRadius(linesAway: 2) > LyricsPanel.blurRadius(linesAway: 1))
+        #expect(LyricsPanel.blurRadius(linesAway: 9) == LyricsPanel.blurRadius(linesAway: 3))
+    }
 }

@@ -136,6 +136,15 @@ enum IslandMotion {
     /// Damping 0.64 is a bounce of about 0.36, inside the 0.4 Apple gives as
     /// the most a UI spring should bounce.
     static let press: Animation = .spring(response: 0.28, dampingFraction: 0.64)
+
+    /// The closed player letting go of a track-skip stretch: a skip springs
+    /// back past rest once, a swipe that fell short settles without one.
+    static let skipReleaseSpring = Spring(response: 0.42, dampingRatio: 0.6)
+    static let pullSettleSpring = Spring(response: 0.3, dampingRatio: 0.9)
+    static let skipRelease = Animation.spring(skipReleaseSpring)
+    static let pullSettle = Animation.spring(pullSettleSpring)
+    /// The most a track-skip swipe stretches the closed player.
+    static let skipStretch: CGFloat = 0.06
 }
 
 /// Blur as a transition modifier. `.blurReplace` cannot be combined with the

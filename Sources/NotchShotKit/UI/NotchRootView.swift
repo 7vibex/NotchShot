@@ -491,6 +491,7 @@ public struct NotchRootView: View {
             anchor: fileDropPull < 0 ? .trailing : .leading
         )
         .offset(x: reduceMotion || !isTargetedForDrop ? 0 : fileDropPull * 4)
+        .modifier(TrackSkipStretch(gesture: coordinator.islandGesture, reduceMotion: reduceMotion))
         // A drop is swallowed: the island swells a little and settles.
         .keyframeAnimator(initialValue: CGFloat(1), trigger: dropGulps) { content, scale in
             content.scaleEffect(scale, anchor: .top)
@@ -939,6 +940,23 @@ public struct NotchRootView: View {
 }
 
 // MARK: - Media
+
+/// The closed player stretching toward the side a skip swipe is heading,
+/// pinned at the far end like the level bar's bump. Reads the pull here, so
+/// a 120 Hz swipe re-evaluates only this modifier, not the root view.
+private struct TrackSkipStretch: ViewModifier {
+    var gesture: IslandGestureState
+    var reduceMotion: Bool
+
+    func body(content: Content) -> some View {
+        let pull = reduceMotion ? 0 : gesture.trackPull
+        content.scaleEffect(
+            x: 1 + abs(pull) * IslandMotion.skipStretch,
+            y: 1 - abs(pull) * IslandMotion.skipStretch / 3,
+            anchor: pull < 0 ? .topTrailing : .topLeading
+        )
+    }
+}
 
 /// Cuts the shell's own area out of the black shadow carrier, so a
 /// see-through shell shows what is behind it instead of the carrier.

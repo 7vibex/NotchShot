@@ -229,4 +229,11 @@ struct TrackSwipeDecision: Equatable {
         guard abs(deltaX) >= Self.threshold, abs(deltaX) > abs(deltaY) * 1.5 else { return nil }
         return deltaX < 0 ? .nextTrack : .previousTrack
     }
+
+    /// How far the closed player leans toward the swipe, -1…1, easing off
+    /// like a rubber band and reaching about half at the skip threshold.
+    var pull: CGFloat {
+        guard abs(deltaX) > abs(deltaY) else { return 0 }
+        return tanh(deltaX / (Self.threshold * 2))
+    }
 }

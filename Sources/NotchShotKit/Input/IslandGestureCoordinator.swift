@@ -1,5 +1,6 @@
 import AppKit
 import Observation
+import SwiftUI
 
 /// The only live gesture value views read. Kept in its own observable object
 /// so a 120 Hz trackpad stream re-evaluates just the views that move with the
@@ -9,6 +10,8 @@ import Observation
 public final class IslandGestureState {
     public internal(set) var offset: CGFloat = 0
     public internal(set) var isTracking = false
+    /// How far the closed player leans toward a track-skip swipe, -1…1.
+    public internal(set) var trackPull: CGFloat = 0
     public init() {}
 }
 
@@ -253,9 +256,19 @@ final class IslandGestureCoordinator {
             }
         case .trackSkip:
             trackSwipe.add(deltaX: event.scrollingDeltaX, deltaY: event.scrollingDeltaY)
-            if event.phase.contains(.ended), let command = trackSwipe.command {
-                coordinator.media.send(command)
+            let skip = event.phase.contains(.ended) ? trackSwipe.command : nil
+            if let skip {
+                coordinator.media.send(skip)
                 IslandHaptics.perform(.trackSkipped)
+            }
+            if ended {
+                // A skip lets go of the stretch with a bounce; a swipe that
+                // fell short just settles.
+                withAnimation(skip == nil ? IslandMotion.pullSettle : IslandMotion.skipRelease) {
+                    coordinator.islandGesture.trackPull = 0
+                }
+            } else {
+                coordinator.islandGesture.trackPull = trackSwipe.pull
             }
         }
         if ended {
