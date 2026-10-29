@@ -240,6 +240,16 @@ struct AgentVibeActivitySurface: View {
     @State private var selectedClaudeSession: ClaudeCodeSession?
     /// The run the user picked for the card; else the one that matters most.
     @State private var selectedRunKey: String?
+    /// Where a run's mark and title travel between its row and the card.
+    @Namespace private var runNamespace
+    /// The run the card showed as of the last update. In the update that
+    /// hands the card to another run it still names the one leaving, whose
+    /// row then fades in under its travelling mark and title instead of
+    /// dropping in like a new run.
+    @State private var cardRunKey: String?
+    /// The runs that needed the user as of the last update, so a run that
+    /// starts needing them can be told apart; nil until the list is drawn.
+    @State private var needingYouKeys: Set<String>?
 
     private var liveActivities: [AIActivitySnapshot] {
         var merged = activities
@@ -256,47 +266,72 @@ struct AgentVibeActivitySurface: View {
     }
 
     var body: some View {
-        if let selectedClaudeSession {
-            ClaudeConversationPanel(session: selectedClaudeSession) {
-                self.selectedClaudeSession = nil
+        // The list and the conversation panel overlap while one pushes the
+        // other out, both hanging from the top.
+        ZStack(alignment: .top) {
+            if let selectedClaudeSession {
+                ClaudeConversationPanel(session: selectedClaudeSession) {
+                    self.selectedClaudeSession = nil
+                }
+                .transition(AgentListMotion.conversationTransition(reduceMotion: reduceMotion))
+            } else {
+                surface
+                    .transition(AgentListMotion.listTransition(reduceMotion: reduceMotion))
             }
-        } else {
-            VStack(alignment: .leading, spacing: 0) {
-                if showsHeader, !liveActivities.isEmpty {
-                    header
-                }
-                if liveActivities.isEmpty && recentActivities.isEmpty {
-                    emptyState
-                } else {
-                    list
-                }
-                if let accessory {
-                    Rectangle()
-                        .fill(Color.islandInk(0.10))
-                        .frame(height: 1)
-                    accessory
-                        .padding(.top, NotchIsland.Spacing.snug)
-                }
-            }
-            .padding(.horizontal, NotchAlertStyle.horizontalInset - 4)
-            .padding(.bottom, NotchIsland.Spacing.element)
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-            .animation(NotchMotion.selection(reduceMotion: reduceMotion), value: liveActivities.map(\.displayIdentifier))
-            .animation(NotchMotion.selection(reduceMotion: reduceMotion), value: interactions.map(\.id))
-            .accessibilityElement(children: .contain)
-            .accessibilityLabel("AI agent activity")
-            .accessibilityValue(accessibilityValue)
         }
+        .onChange(of: needingYouNow, initial: true) { _, keys in
+            needingYouKeys = keys
+        }
+        .onChange(of: leadActivity(in: liveActivities)?.displayIdentifier, initial: true) { _, key in
+            cardRunKey = key
+        }
+    }
+
+    private var surface: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            if showsHeader, !liveActivities.isEmpty {
+                header
+            }
+            if liveActivities.isEmpty && recentActivities.isEmpty {
+                emptyState
+            } else {
+                list
+            }
+            if let accessory {
+                Rectangle()
+                    .fill(Color.islandInk(0.10))
+                    .frame(height: 1)
+                accessory
+                    .padding(.top, NotchIsland.Spacing.snug)
+            }
+        }
+        .padding(.horizontal, NotchAlertStyle.horizontalInset - 4)
+        .padding(.bottom, NotchIsland.Spacing.element)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .animation(NotchMotion.selection(reduceMotion: reduceMotion), value: liveActivities.map(\.displayIdentifier))
+        .animation(NotchMotion.selection(reduceMotion: reduceMotion), value: interactions.map(\.id))
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("AI agent activity")
+        .accessibilityValue(accessibilityValue)
     }
 
     private var list: some View {
         let live = liveActivities
         let lead = leadActivity(in: live)
         let others = live.filter { $0.displayIdentifier != lead?.displayIdentifier }
+        // Under Reduce Motion nothing travels: the card swap crossfades.
+        let namespace = reduceMotion ? nil : runNamespace
         return ScrollView(.vertical) {
-            LazyVStack(alignment: .leading, spacing: 0) {
+            // A plain stack: there are only a handful of runs, and a lazy one
+            // can build the view a mark travels to too late for the two to be
+            // matched, leaving the mark to pop rather than glide.
+            VStack(alignment: .leading, spacing: 0) {
                 if let lead {
-                    runCard(for: lead)
+                    runCard(for: lead, namespace: namespace)
+                        // One card per run, so handing the card to another run
+                        // is a removal and an insertion the mark and title
+                        // can travel across.
+                        .id(lead.displayIdentifier)
                         .transition(.opacity)
                 }
                 ForEach(Array(others.enumerated()), id: \.element.displayIdentifier) { index, activity in
@@ -321,12 +356,15 @@ struct AgentVibeActivitySurface: View {
                             if let onJump { onJump(activity) } else { AgentIconCatalog.activate(activity.source) }
                         },
                         onDismiss: { onDismiss(activity) },
-                        onSelect: { selectedRunKey = activity.displayIdentifier }
+                        onSelect: { choose(activity) },
+                        namespace: namespace,
+                        announcesAttention: startsNeedingYou(activity)
                     )
-                    .transition(.asymmetric(
-                        insertion: .move(edge: .top).combined(with: .opacity),
-                        removal: .opacity
-                    ))
+                    // The run leaving the card fades in under its mark and
+                    // title, which travel back down from the card.
+                    .transition(activity.displayIdentifier == cardRunKey
+                        ? .opacity
+                        : AgentListMotion.rowTransition(reduceMotion: reduceMotion))
                 }
 
                 if !recentActivities.isEmpty {
@@ -355,7 +393,38 @@ struct AgentVibeActivitySurface: View {
             ?? live.first
     }
 
-    private func runCard(for activity: AIActivitySnapshot) -> some View {
+    /// Makes a row's run the card: its mark and title travel up into the
+    /// card while the run that had it settles back into the list.
+    private func choose(_ activity: AIActivitySnapshot) {
+        withAnimation(NotchMotion.content(reduceMotion: reduceMotion)) {
+            selectedRunKey = activity.displayIdentifier
+        }
+    }
+
+    /// The orange badge's meaning, per run: a question or approval waiting,
+    /// or the turn handed back.
+    private func needsYou(_ activity: AIActivitySnapshot) -> Bool {
+        AgentMarkWiggle.needsYou(
+            state: activity.state,
+            isAsking: interaction(for: activity) != nil || claudeSession(for: activity)?.permission != nil
+        )
+    }
+
+    private var needingYouNow: Set<String> {
+        Set(liveActivities.filter(needsYou).map(\.displayIdentifier))
+    }
+
+    /// True only in the update where the run starts needing the user, which
+    /// is when its mark shakes.
+    private func startsNeedingYou(_ activity: AIActivitySnapshot) -> Bool {
+        AgentMarkWiggle.startsNeedingYou(
+            activity.displayIdentifier,
+            needsYou: needsYou(activity),
+            before: needingYouKeys
+        )
+    }
+
+    private func runCard(for activity: AIActivitySnapshot, namespace: Namespace.ID?) -> some View {
         let session = claudeSession(for: activity)
         let interaction = interaction(for: activity)
         return AgentRunCard(
@@ -380,7 +449,10 @@ struct AgentVibeActivitySurface: View {
             onApprove: { onApprovePermission(activity.id) },
             onDeny: { onDenyPermission(activity.id) },
             onOpenConversation: session.map { session in { selectedClaudeSession = session } },
-            onDismiss: { onDismiss(activity) }
+            onDismiss: { onDismiss(activity) },
+            runKey: activity.displayIdentifier,
+            namespace: namespace,
+            announcesAttention: startsNeedingYou(activity)
         )
         .task(id: activity.displayIdentifier) { onShowRun(activity) }
     }
@@ -491,7 +563,13 @@ private struct AgentVibeActivityRow: View {
     let onDismiss: () -> Void
     /// Makes this run the card.
     var onSelect: (() -> Void)?
+    /// Pairs the mark and title with the card's, so they travel between the
+    /// two when the card changes hands.
+    var namespace: Namespace.ID?
+    /// True in the update where this run starts needing the user.
+    var announcesAttention = false
 
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var isHovered = false
 
     /// Whether the row still draws the legacy Claude Allow/Deny buttons:
@@ -506,12 +584,14 @@ private struct AgentVibeActivityRow: View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(alignment: .center, spacing: NotchAlertStyle.leadingGap) {
                 mark
+                    .agentRunMatch(.mark, run: activity.displayIdentifier, in: namespace)
 
                 VStack(alignment: .leading, spacing: 2) {
                     Text(activity.title)
                         .font(NotchAlertStyle.title)
                         .foregroundStyle(Color.islandInk(NotchIsland.Ink.primary))
                         .lineLimit(1)
+                        .agentRunMatch(.title, run: activity.displayIdentifier, in: namespace)
                     Text(bodyText)
                         .font(NotchAlertStyle.body)
                         .foregroundStyle(bodyColor)
@@ -536,7 +616,7 @@ private struct AgentVibeActivityRow: View {
                 AgentInteractionCard(interaction: interaction, onRespond: onRespond)
                     .padding(.leading, Self.markSize + NotchAlertStyle.leadingGap)
                     .padding(.bottom, NotchIsland.Spacing.group)
-                    .transition(.opacity.combined(with: .move(edge: .top)))
+                    .transition(AgentListMotion.answerTransition(reduceMotion: reduceMotion))
             } else if showsLegacyPermissionButtons {
                 HStack(spacing: NotchIsland.Spacing.element) {
                     Spacer(minLength: 0)
@@ -571,7 +651,8 @@ private struct AgentVibeActivityRow: View {
                 source: activity.source,
                 state: activity.state,
                 isAsking: isAsking,
-                size: Self.markSize
+                size: Self.markSize,
+                announcesAttention: announcesAttention
             )
             .contentShape(Rectangle())
         }
@@ -860,7 +941,7 @@ struct AgentVibePeekHeader: View {
 /// an app icon carries a count: orange when it needs you, red when it
 /// failed, a breathing white dot while it works, nothing once it is done.
 /// Never the provider colour: Claude's coral reads as the orange that means
-/// "needs you".
+/// "needs you". The mark shakes once when its run starts needing you.
 struct AgentStateMark: View {
     static let failedInk = Color(red: 1, green: 0.45, blue: 0.42)
     private static let failedBadge = Color(red: 1, green: 0.36, blue: 0.33)
@@ -871,6 +952,10 @@ struct AgentStateMark: View {
     /// A working run held by Pause: the dot stops pulsing and greys.
     var isPaused = false
     let size: CGFloat
+    /// True in the update where the run starts needing you: the cue for
+    /// the one shake. The list works it out, since a mark created for the
+    /// card in that same update has no earlier state of its own to compare.
+    var announcesAttention = false
 
     /// The colour a state's word or glyph takes on the island's black.
     static func ink(for state: AIActivityState) -> Color {
@@ -898,13 +983,14 @@ struct AgentStateMark: View {
                     .offset(x: -inset, y: -inset)
             }
             .frame(width: size, height: size)
+            .modifier(AgentAttentionWiggle(cue: announcesAttention))
             .accessibilityHidden(true)
     }
 
     @ViewBuilder
     private var stateBadge: some View {
         let ring = Circle().stroke(Color.black, lineWidth: outline)
-        if isAsking || state == .waiting {
+        if AgentMarkWiggle.needsYou(state: state, isAsking: isAsking) {
             Circle().fill(Color.orange).overlay(ring)
         } else if state == .failed {
             Circle().fill(Self.failedBadge).overlay(ring)

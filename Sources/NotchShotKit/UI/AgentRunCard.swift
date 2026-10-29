@@ -135,7 +135,14 @@ struct AgentRunCard: View {
     var onDeny: () -> Void
     var onOpenConversation: (() -> Void)?
     var onDismiss: () -> Void
+    /// The run's key in the list, which pairs the card's mark and title with
+    /// its row's, so they travel between the two when the card changes hands.
+    var runKey = ""
+    var namespace: Namespace.ID?
+    /// True in the update where the run starts needing the user.
+    var announcesAttention = false
 
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var isHovered = false
 
     var body: some View {
@@ -164,7 +171,8 @@ struct AgentRunCard: View {
                     state: model.state,
                     isAsking: model.isAsking,
                     isPaused: model.isPaused,
-                    size: Self.markSize
+                    size: Self.markSize,
+                    announcesAttention: announcesAttention
                 )
                 .contentShape(Rectangle())
             }
@@ -172,12 +180,14 @@ struct AgentRunCard: View {
             .disabled(!canOpen)
             .help(openHelp)
             .accessibilityLabel(openHelp)
+            .agentRunMatch(.mark, run: runKey, in: namespace)
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(model.title)
                     .font(NotchAlertStyle.title)
                     .foregroundStyle(Color.islandInk(NotchIsland.Ink.primary))
                     .lineLimit(1)
+                    .agentRunMatch(.title, run: runKey, in: namespace)
                 Text(model.headline)
                     .font(NotchAlertStyle.body)
                     .foregroundStyle(model.state == .failed && !model.isAsking
@@ -252,7 +262,7 @@ struct AgentRunCard: View {
         if let interaction {
             AgentInteractionCard(interaction: interaction, onRespond: onRespond)
                 .padding(.bottom, NotchIsland.Spacing.group)
-                .transition(.opacity.combined(with: .move(edge: .top)))
+                .transition(AgentListMotion.answerTransition(reduceMotion: reduceMotion))
         } else {
             if !model.rows.isEmpty {
                 steps
