@@ -27,8 +27,11 @@ enum SystemMediaKeyAction: Sendable, Equatable {
         }
     }
 
+    /// Presses from empty to full; Option-Shift moves a quarter of one.
+    static let coarseSteps = 16
+
     static func adjustedLevel(current: Double, increasing: Bool, fine: Bool) -> Double {
-        let step = fine ? 1.0 / 64.0 : 1.0 / 16.0
+        let step = 1.0 / Double(fine ? coarseSteps * 4 : coarseSteps)
         return min(max(current + (increasing ? step : -step), 0), 1)
     }
 }

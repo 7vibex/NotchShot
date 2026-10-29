@@ -78,6 +78,9 @@ extension AppCoordinator {
     // MARK: System level HUD
 
     func showSystemLevel(_ level: SystemLevel) {
+        // One tap per press, felt under a finger resting on the trackpad,
+        // the way each step of the system slider clicks.
+        if level.isKeyStep { IslandHaptics.perform(.valueStep) }
         var routed = level
         if routed.displayID == nil {
             routed.displayID = windowController?.activeDisplayID

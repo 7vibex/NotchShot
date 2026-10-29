@@ -45,6 +45,9 @@ public struct SystemLevel: Sendable, Equatable {
     /// A key pressed against the end of the scale, which the bar answers
     /// with a rubber-band stretch instead of nothing.
     public var bump: SystemLevelBump? = nil
+    /// A volume or brightness key NotchShot applied itself, as opposed to a
+    /// change from another app or a menu bar slider. Each one gets a tap.
+    public var isKeyStep = false
 
     public var symbolName: String { kind.symbolName(for: value, isMuted: isMuted) }
 }
@@ -445,7 +448,7 @@ public final class SystemLevelMonitor {
         let actualMuted = readMuted() ?? false
         lastVolume = actualVolume
         lastMuted = actualMuted
-        publish(SystemLevel(kind: .volume, value: actualVolume, isMuted: actualMuted, bump: bump))
+        publish(SystemLevel(kind: .volume, value: actualVolume, isMuted: actualMuted, bump: bump, isKeyStep: true))
         return true
     }
 
@@ -603,7 +606,7 @@ public final class SystemLevelMonitor {
            CGDisplayIsBuiltin(target) == 0,
            let level = DisplayBrightnessController.shared.step(target, increasing: increasing, fine: fine) {
             brightnessIntent.noteKeyEvent(at: ProcessInfo.processInfo.systemUptime)
-            publish(SystemLevel(kind: .brightness, value: level, isMuted: false, displayID: target))
+            publish(SystemLevel(kind: .brightness, value: level, isMuted: false, displayID: target, isKeyStep: true))
             return true
         }
         guard Preferences.shared.mirrorsBrightnessChanges,
@@ -625,7 +628,8 @@ public final class SystemLevelMonitor {
             value: target,
             isMuted: false,
             displayID: reading.displayID,
-            bump: bump
+            bump: bump,
+            isKeyStep: true
         ))
         return true
     }

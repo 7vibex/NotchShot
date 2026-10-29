@@ -86,4 +86,60 @@ struct IslandPolishTests {
             }
         }
     }
+
+    @Test("The level HUD has one segment per volume-key press, and a fine press fills a quarter of one")
+    func levelSegments() {
+        #expect(LevelSegments.count == SystemMediaKeyAction.coarseSteps)
+        let rect = CGRect(x: 0, y: 0, width: 160, height: 8)
+        func filledWidth(_ fraction: Double) -> CGFloat {
+            LevelSegments(fraction: fraction, spacing: 0).path(in: rect).boundingRect.width
+        }
+        #expect(filledWidth(0) == 0)
+        #expect(abs(filledWidth(0.5) - 80) < 0.01)
+        #expect(abs(filledWidth(1) - 160) < 0.01)
+        // CoreAudio's rounding never leaves a sliver in the next segment.
+        #expect(abs(filledWidth(0.49999997) - 80) < 0.01)
+        let afterFineStep = SystemMediaKeyAction.adjustedLevel(current: 0.5, increasing: true, fine: true)
+        #expect(abs(filledWidth(afterFineStep) - 82.5) < 0.01)
+        let afterStep = SystemMediaKeyAction.adjustedLevel(current: 0.5, increasing: true, fine: false)
+        #expect(abs(filledWidth(afterStep) - 90) < 0.01)
+    }
+
+    @Test("Caps Lock outranks the song on the closed notch's edge, and an open notch shows neither")
+    func rimPriority() {
+        #expect(NotchRimPolicy.kind(
+            isOpen: false, isCapsLockOn: true, showsCapsLockGlow: true,
+            isShowingCompactPlayer: true, showsSongProgress: true
+        ) == .capsLock)
+        #expect(NotchRimPolicy.kind(
+            isOpen: false, isCapsLockOn: true, showsCapsLockGlow: false,
+            isShowingCompactPlayer: true, showsSongProgress: true
+        ) == .songProgress)
+        #expect(NotchRimPolicy.kind(
+            isOpen: false, isCapsLockOn: false, showsCapsLockGlow: true,
+            isShowingCompactPlayer: false, showsSongProgress: true
+        ) == nil)
+        #expect(NotchRimPolicy.kind(
+            isOpen: true, isCapsLockOn: true, showsCapsLockGlow: true,
+            isShowingCompactPlayer: true, showsSongProgress: true
+        ) == nil)
+    }
+
+    @Test("The progress rim glides to the end of the song while playing and holds while paused")
+    func progressRimGlide() {
+        let start = Date(timeIntervalSinceReferenceDate: 0)
+        let glide = { (seconds: TimeInterval, remaining: TimeInterval?) in
+            LayerProgressRimView.value(
+                at: start.addingTimeInterval(seconds),
+                from: 0.25,
+                remaining: remaining,
+                since: start
+            )
+        }
+        #expect(glide(0, 90) == 0.25)
+        #expect(abs(glide(45, 90) - 0.625) < 0.0001)
+        #expect(glide(90, 90) == 1)
+        #expect(glide(500, 90) == 1)
+        #expect(glide(45, nil) == 0.25)
+    }
 }

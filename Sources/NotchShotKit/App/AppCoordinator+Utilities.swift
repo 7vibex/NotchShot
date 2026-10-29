@@ -14,6 +14,7 @@ extension AppCoordinator {
             self?.presentIslandEvent(Self.inputSourceEvent(name: source.shortName, badge: source.badge))
         }
         keyboardState.update(capsLock: extras.showsCapsLock, inputSource: extras.showsInputSource)
+        isCapsLockOn = extras.showsCapsLock && KeyboardStateMonitor.readCapsLock()
 
         if extras.showsDownloads {
             downloads.start()
@@ -39,6 +40,7 @@ extension AppCoordinator {
 
     func stopUtilities() {
         keyboardState.stop()
+        isCapsLockOn = false
         downloads.stop()
         peripherals.stop()
         displayBrightness.stop()
@@ -47,6 +49,7 @@ extension AppCoordinator {
     // MARK: Keyboard
 
     private func capsLockDidChange(_ isOn: Bool) {
+        isCapsLockOn = isOn
         presentIslandEvent(Self.capsLockEvent(isOn: isOn))
     }
 

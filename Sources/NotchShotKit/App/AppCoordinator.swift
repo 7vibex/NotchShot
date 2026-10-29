@@ -28,6 +28,8 @@ public final class AppCoordinator {
     /// The shell height a page switch from the tab pill holds until the notch
     /// closes; see `NotchLayout.layout(heldHeight:)`.
     public internal(set) var tabPageHeightHold: CGFloat = 0
+    /// Whether Caps Lock is on, while Extras watches the key.
+    public internal(set) var isCapsLockOn = false
     /// Set for the length of a page switch, whose first step briefly leaves
     /// every page.
     var isSwitchingTab = false

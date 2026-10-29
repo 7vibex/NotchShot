@@ -414,6 +414,27 @@ public struct NotchRootView: View {
                     cutsOut: shellIsSeeThrough
                 ))
         }
+        // Caps Lock or the song, along the closed island's edge. Outside the
+        // clip, so the glow can spill onto the menu bar.
+        .overlay(alignment: .top) {
+            ZStack {
+                switch rimKind {
+                case .capsLock:
+                    NotchCapsLockRim(shape: shape)
+                        .frame(width: layout.size.width, height: layout.size.height)
+                        .transition(.opacity)
+                case .songProgress:
+                    NotchSongProgressRim(media: coordinator.media, bottomRadius: layout.cornerRadius)
+                        .frame(width: layout.size.width, height: layout.size.height + NotchRimPolicy.bleed)
+                        .transition(.opacity)
+                case nil:
+                    EmptyView()
+                }
+            }
+            .frame(width: layout.size.width, height: layout.size.height, alignment: .top)
+            .animation(NotchMotion.fade(reduceMotion: false), value: rimKind)
+            .allowsHitTesting(false)
+        }
         // The swallow's ripple: one thin ring leaving the glass edge.
         .overlay {
             shape
@@ -591,6 +612,23 @@ public struct NotchRootView: View {
         case .island(let descriptor): return descriptor.primaryKind == .recording && descriptor.overlay == nil
         default: return false
         }
+    }
+
+    private var rimKind: NotchRimKind? {
+        let extras = ExtrasPreferences.shared
+        var isCompactPlayer = false
+        if case .island(let descriptor) = effectiveActivity {
+            isCompactPlayer = descriptor.primaryKind == .media && descriptor.overlay == nil
+        } else if case .media = effectiveActivity {
+            isCompactPlayer = true
+        }
+        return NotchRimPolicy.kind(
+            isOpen: effectiveActivity.isExpanded || isTargetedForDrop,
+            isCapsLockOn: coordinator.isCapsLockOn,
+            showsCapsLockGlow: extras.showsCapsLock && extras.showsCapsLockGlow,
+            isShowingCompactPlayer: isCompactPlayer,
+            showsSongProgress: extras.showsSongProgressRim
+        )
     }
 
     private var isShowingMedia: Bool {

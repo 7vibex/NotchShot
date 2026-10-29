@@ -666,6 +666,8 @@ public struct FloatingBasketView: View {
 
     private func handleDrop(_ providers: [NSItemProvider]) {
         let expectedItemCount = providers.count
+        // The same tap as a drop on the notch: the file is on the shelf.
+        IslandHaptics.perform(.dropSwallowed)
         Task {
             var urls: [URL] = []
             for provider in providers {

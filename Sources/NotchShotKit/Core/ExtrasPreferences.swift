@@ -85,6 +85,9 @@ public final class ExtrasPreferences {
     /// A burst with the new language when the keyboard input source changes.
     /// Only shown when more than one layout is enabled.
     public var showsInputSource = true { didSet { write(showsInputSource, "inputSource") } }
+    /// A soft green light around the closed notch for as long as Caps Lock
+    /// is on. Needs `showsCapsLock`, which watches the key.
+    public var showsCapsLockGlow = true { didSet { write(showsCapsLockGlow, "capsLockGlow") } }
 
     // MARK: Network and accessories
 
@@ -117,6 +120,8 @@ public final class ExtrasPreferences {
     public var swipesBetweenTracks = true { didSet { write(swipesBetweenTracks, "swipeTracks") } }
     /// A soft sheen that follows the pointer across the open player's cover.
     public var showsArtworkGlare = true { didSet { write(showsArtworkGlare, "artworkGlare") } }
+    /// The song's progress as a thin line along the closed player's edge.
+    public var showsSongProgressRim = true { didSet { write(showsSongProgressRim, "songProgressRim") } }
 
     // MARK: App volume
 
@@ -184,6 +189,7 @@ public final class ExtrasPreferences {
         showsUnlockAnimation = bool("unlockAnimation", true)
         swipesBetweenTracks = bool("swipeTracks", true)
         showsArtworkGlare = bool("artworkGlare", true)
+        showsSongProgressRim = bool("songProgressRim", true)
         appVolumesEnabled = bool("appVolumes", false)
         appVolumes = (readJSON("appVolumeLevels") as [String: Double]?)?
             .compactMapValues { $0.isFinite && $0 >= 0 && $0 < 1 ? $0 : nil } ?? [:]
@@ -197,6 +203,7 @@ public final class ExtrasPreferences {
         idleAnimationFileName = defaults.string(forKey: key("idleAnimation"))
         showsCapsLock = bool("capsLock", true)
         showsInputSource = bool("inputSource", true)
+        showsCapsLockGlow = bool("capsLockGlow", true)
         showsDownloads = bool("downloads", true)
         showsArtworkGlow = bool("artworkGlow", true)
         dimsArtworkWhenPaused = bool("dimPausedArtwork", true)
