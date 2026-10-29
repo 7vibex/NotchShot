@@ -40,10 +40,10 @@ struct BatteryAlertCard: View {
                 tint: accent,
                 width: 30
             )
-            .frame(width: 34, height: 34)
+            .frame(width: NotchIsland.Mark.size, height: NotchIsland.Mark.size)
         } trailing: {
-            NotchAlertTextButton(
-                title: "Settings",
+            NotchCapsuleButton(
+                "Settings",
                 help: PowerModePresentationPolicy.settingsAccessibilityLabel(
                     isLowPowerModeEnabled: isLowPowerModeEnabled
                 ),

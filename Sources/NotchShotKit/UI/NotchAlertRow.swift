@@ -79,7 +79,7 @@ extension NotchAlertRow where Trailing == EmptyView {
 
 /// Shared measurements and type for notch alerts.
 enum NotchAlertStyle {
-    static let markSize: CGFloat = 36
+    static let markSize = NotchIsland.Mark.size
     static let leadingGap: CGFloat = 12
     /// Inset from the island's edge. The island's bottom corners are 22 pt, so
     /// anything closer than this sits in the curve.
@@ -122,42 +122,3 @@ struct NotchAlertIconButton: View {
     }
 }
 
-/// A capsule text control. `prominent` is white with black text, the island's
-/// one call to action; otherwise a quiet fill.
-struct NotchAlertTextButton: View {
-    var title: String
-    var prominent = false
-    var height: CGFloat = 28
-    var expands = false
-    var help: String? = nil
-    var action: () -> Void
-
-    var body: some View {
-        Button(action: action) {
-            Text(title)
-                .font(.system(size: 12, weight: .semibold))
-                .foregroundStyle(prominent ? Color.black : Color.islandInk(NotchIsland.Ink.primary))
-                .padding(.horizontal, 12)
-                .frame(maxWidth: expands ? .infinity : nil)
-                .frame(height: height)
-                .modifier(AlertTextButtonSurface(prominent: prominent))
-                .frame(minHeight: NotchIsland.Hit.control)
-                .contentShape(Rectangle())
-        }
-        .buttonStyle(NotchPressButtonStyle())
-        .help(help ?? title)
-        .accessibilityLabel(help ?? title)
-    }
-}
-
-private struct AlertTextButtonSurface: ViewModifier {
-    var prominent: Bool
-
-    func body(content: Content) -> some View {
-        if prominent {
-            content.background(Color.white, in: Capsule())
-        } else {
-            content.islandControlSurface(Capsule())
-        }
-    }
-}

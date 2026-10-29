@@ -89,7 +89,7 @@ private struct IslandExpandedHeader<Trailing: View>: View {
                     .lineLimit(1)
                 if let subtitle, !subtitle.isEmpty {
                     Text(subtitle)
-                        .font(.system(size: 10.5, weight: .medium))
+                        .font(.system(size: 11, weight: .medium))
                         .foregroundStyle(Color.islandInk(NotchIsland.Ink.secondary))
                         .lineLimit(1)
                 }
@@ -111,7 +111,7 @@ struct IslandProgressBar: View {
     var body: some View {
         GeometryReader { proxy in
             ZStack(alignment: .leading) {
-                Capsule().fill(Color.islandInk(NotchIsland.Ink.fill * 1.5))
+                Capsule().fill(Color.islandInk(NotchIsland.Ink.track))
                 switch progress {
                 case .determinate(let fraction):
                     Capsule()
@@ -132,31 +132,6 @@ struct IslandProgressBar: View {
         .accessibilityElement()
         .accessibilityLabel("Progress")
         .accessibilityValue(progress.fraction.map { "\(Int(($0 * 100).rounded(.down))) percent" } ?? "In progress")
-    }
-}
-
-/// A text button styled for the island's black surface with a full hit target.
-struct IslandTextButton: View {
-    var title: String
-    var systemImage: String
-    var role: ButtonRole?
-    var action: () -> Void
-
-    @State private var isHovered = false
-
-    var body: some View {
-        Button(role: role, action: action) {
-            Label(title, systemImage: systemImage)
-                .font(.system(size: 11.5, weight: .semibold))
-                .padding(.horizontal, NotchIsland.Spacing.row)
-                .frame(minHeight: 28)
-                .islandControlSurface(Capsule(), isHovered: isHovered)
-                .frame(minHeight: NotchIsland.Hit.control)
-                .contentShape(Rectangle())
-        }
-        .buttonStyle(NotchPressButtonStyle())
-        .onHover { isHovered = $0 }
-        .foregroundStyle(role == .destructive ? Color.red : Color.islandInk(NotchIsland.Ink.primary))
     }
 }
 
@@ -269,12 +244,16 @@ struct IslandRoundButton: View {
     var action: () -> Void
 
     @State private var isHovered = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         Button(action: action) {
+            // Pause turning into play, a microphone gaining its slash: the
+            // glyph morphs into the next one rather than being swapped.
             Image(systemName: systemName)
                 .font(.system(size: diameter * 0.38, weight: .bold))
                 .foregroundStyle(solid ? .white : (filled ? tint : Color.islandInk(NotchIsland.Ink.primary)))
+                .contentTransition(NotchSymbolMotion.swap(reduceMotion: reduceMotion))
                 .frame(width: diameter, height: diameter)
                 .modifier(RoundButtonSurface(tint: tint, filled: filled, solid: solid, isHovered: isHovered))
                 .contentShape(Circle())
@@ -423,14 +402,14 @@ private struct IslandTransferExpanded: View {
                 .islandReveal(stage: 1)
             HStack(spacing: NotchIsland.Spacing.element) {
                 Text(detailLine)
-                    .font(.system(size: 10.5, weight: .medium))
+                    .font(.system(size: 11, weight: .medium))
                     .monospacedDigit()
                     .foregroundStyle(Color.islandInk(NotchIsland.Ink.secondary))
                     .lineLimit(1)
                     .contentTransition(.numericText())
                 Spacer(minLength: 0)
                 if transfer?.canCancel == true {
-                    IslandTextButton(title: "Cancel", systemImage: "xmark", role: .destructive) {
+                    NotchCapsuleButton("Cancel", systemImage: "xmark", prominence: .destructive) {
                         coordinator.performIslandAction(.cancel, on: activity.id)
                     }
                 }
@@ -513,12 +492,12 @@ private struct IslandExternalExpanded: View {
                 .islandReveal(stage: 1)
             HStack(spacing: NotchIsland.Spacing.element) {
                 Text(detailLine)
-                    .font(.system(size: 10.5, weight: .medium))
+                    .font(.system(size: 11, weight: .medium))
                     .monospacedDigit()
                     .foregroundStyle(Color.islandInk(NotchIsland.Ink.secondary))
                     .lineLimit(1)
                 Spacer(minLength: 0)
-                IslandTextButton(title: "Hide", systemImage: "eye.slash") {
+                NotchCapsuleButton("Hide", systemImage: "eye.slash") {
                     coordinator.performIslandAction(.dismiss, on: activity.id)
                 }
                 .help("Hides this activity from the island. The reporting tool keeps running.")

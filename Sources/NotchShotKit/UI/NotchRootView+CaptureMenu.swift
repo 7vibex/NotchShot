@@ -285,7 +285,7 @@ private struct CaptureMenuPill: View {
                 .lineLimit(1)
                 .truncationMode(.tail)
             Image(systemName: "chevron.down")
-                .font(.system(size: 7, weight: .bold))
+                .font(.system(size: 8, weight: .bold))
                 .foregroundStyle(Color.islandInk(NotchIsland.Ink.tertiary))
         }
         .padding(.leading, 8)
@@ -375,10 +375,6 @@ private struct CaptureTileLabel: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var isHovered = false
 
-    /// Concentric with the island: 32 pt corners less the 12 pt inset,
-    /// rounded down so the tile still reads as a tile.
-    static let cornerRadius: CGFloat = 16
-
     var body: some View {
         VStack(spacing: 5) {
             // A fixed box: each symbol has its own height, and "Screen"
@@ -393,15 +389,15 @@ private struct CaptureTileLabel: View {
                 .foregroundStyle(.white)
         }
         .frame(maxWidth: .infinity, minHeight: 54)
-        .contentShape(RoundedRectangle(cornerRadius: Self.cornerRadius, style: .continuous))
+        .contentShape(NotchIsland.cardShape)
         .background(
             Color.islandInk(isHovered ? NotchIsland.Surface.hover : NotchIsland.Surface.control),
-            in: RoundedRectangle(cornerRadius: Self.cornerRadius, style: .continuous)
+            in: NotchIsland.cardShape
         )
         // A lit top edge so the tiles read as raised above the strip.
         .overlay(
-            RoundedRectangle(cornerRadius: Self.cornerRadius, style: .continuous)
-                .strokeBorder(
+            NotchIsland.cardShape
+                .stroke(
                     LinearGradient(
                         colors: [.white.opacity(0.12), .white.opacity(0.04)],
                         startPoint: .top,

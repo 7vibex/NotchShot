@@ -120,7 +120,7 @@ struct AgentRunCardModel: Equatable {
 /// black like the rows, with no box of its own.
 struct AgentRunCard: View {
     /// The rows' mark size, so the card's text column lines up with theirs.
-    static let markSize: CGFloat = 34
+    static let markSize = NotchIsland.Mark.size
     private static let textInset = markSize + NotchAlertStyle.leadingGap
 
     let model: AgentRunCardModel
@@ -147,7 +147,7 @@ struct AgentRunCard: View {
         }
         .contentShape(Rectangle())
         .onHover { isHovered = $0 }
-        .animation(.easeOut(duration: 0.15), value: isHovered)
+        .animation(NotchMotion.hoverSwap, value: isHovered)
         .accessibilityElement(children: .contain)
         .accessibilityLabel("\(model.source.title), \(model.title)")
         .accessibilityValue(accessibilityValue)
@@ -182,7 +182,7 @@ struct AgentRunCard: View {
                     .font(NotchAlertStyle.body)
                     .foregroundStyle(model.state == .failed && !model.isAsking
                         ? AgentStateMark.failedInk
-                        : Color.islandInk(0.82))
+                        : Color.islandInk(NotchIsland.Ink.body))
                     .lineLimit(model.isAsking ? 2 : 1)
                     .truncationMode(.middle)
             }
@@ -283,7 +283,7 @@ struct AgentRunCard: View {
                         ZStack(alignment: .leading) {
                             Capsule().fill(Self.track)
                             Capsule()
-                                .fill(Color.islandInk(0.82))
+                                .fill(Color.islandInk(NotchIsland.Ink.body))
                                 .frame(width: max(3, proxy.size.width * min(max(progress, 0), 1)))
                         }
                     }
@@ -305,11 +305,11 @@ struct AgentRunCard: View {
         .accessibilityValue(model.metaTrailing ?? "")
     }
 
-    private static let track = Color.islandInk(NotchIsland.Ink.hairline * 1.4)
+    private static let track = Color.islandInk(NotchIsland.Ink.track)
 
     private func segmentColor(_ state: AIActivityStepState) -> Color {
         switch state {
-        case .completed: Color.islandInk(0.82)
+        case .completed: Color.islandInk(NotchIsland.Ink.body)
         case .working: Color.islandInk(NotchIsland.Ink.tertiary)
         case .pending: Self.track
         case .failed: AgentStateMark.failedInk
@@ -353,22 +353,22 @@ struct AgentRunCard: View {
     private var controlRow: some View {
         HStack(spacing: NotchIsland.Spacing.element) {
             if showsPermissionButtons {
-                AgentCapsuleButton(title: "Deny", isPrimary: false, action: onDeny)
+                NotchCapsuleButton("Deny", action: onDeny)
                     .accessibilityLabel("Deny Claude Code permission")
-                AgentCapsuleButton(title: model.permissionReviewTitle ?? "Review in Terminal", isPrimary: true, action: onApprove)
+                NotchCapsuleButton(model.permissionReviewTitle ?? "Review in Terminal", prominence: .primary, action: onApprove)
                     .accessibilityLabel("Review Claude Code action")
             } else {
                 let controls = model.controls
                 if controls.showsResume {
-                    AgentCapsuleButton(title: "Resume", isPrimary: true) { onControl(.resume) }
+                    NotchCapsuleButton("Resume", prominence: .primary) { onControl(.resume) }
                         .help("Let \(model.source.title) carry on")
                 } else if controls.canPause {
-                    AgentCapsuleButton(title: "Pause") { onControl(.pause) }
+                    NotchCapsuleButton("Pause") { onControl(.pause) }
                         .help("Pause before \(model.source.title)'s next step")
                 }
                 if controls.canStop || controls.state != nil {
                     let stopping = controls.state == .stopping
-                    AgentCapsuleButton(title: stopping ? "Stopping…" : "Stop") { onControl(.stop) }
+                    NotchCapsuleButton(stopping ? "Stopping…" : "Stop") { onControl(.stop) }
                         .disabled(stopping)
                         .opacity(stopping ? 0.55 : 1)
                         .help("End this turn before the next step")
@@ -402,7 +402,7 @@ private struct AgentRunOpenButton: View {
             HStack(spacing: 3) {
                 Text("Open run")
                 Image(systemName: "arrow.up.forward")
-                    .font(.system(size: 8.5, weight: .semibold))
+                    .font(.system(size: 9, weight: .semibold))
                     .accessibilityHidden(true)
             }
             .font(.system(size: 11, weight: .medium))

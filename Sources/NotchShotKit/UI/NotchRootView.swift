@@ -639,6 +639,15 @@ public struct NotchRootView: View {
                 height: baseLayout.size.height,
                 alignment: .top
             )
+            // What `NotchIsland.cardShape` measures its corners against: the
+            // shell's own bottom corners (and, on a floating island, its top).
+            .containerShape(UnevenRoundedRectangle(
+                topLeadingRadius: context.metrics.hasPhysicalNotch ? 0 : baseLayout.cornerRadius,
+                bottomLeadingRadius: baseLayout.cornerRadius,
+                bottomTrailingRadius: baseLayout.cornerRadius,
+                topTrailingRadius: context.metrics.hasPhysicalNotch ? 0 : baseLayout.cornerRadius,
+                style: .continuous
+            ))
             // The island's own clip is `NotchShape`, whose top fillets
             // flare *outside* the island's rect to meet the bezel — so a
             // shape clip alone still lets content paint into those wings,

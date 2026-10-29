@@ -150,6 +150,7 @@ extension AppCoordinator {
                 }
                 ImageExport.copyToPasteboard(fileURL: item.asset.url)
             }
+            confirmShelfAction(.copy, on: item)
 
         case .open:
             guard SafeAssetFile.isCurrentAndSafe(item.asset) else {
@@ -543,8 +544,21 @@ extension AppCoordinator {
             } else {
                 try fileManager.moveItem(at: stagingURL, to: url)
             }
+            confirmShelfAction(.save, on: item)
         } catch {
             present(error: NotchShotError.destinationUnwritable(url.path))
+        }
+    }
+
+    /// Marks a finished action on its shelf button for a moment. A later
+    /// confirmation replaces this one, and only the newest is cleared.
+    func confirmShelfAction(_ action: ShareAction, on item: ShelfItem) {
+        let confirmation = ShelfActionConfirmation(action: action, itemID: item.id)
+        shelfConfirmation = confirmation
+        Task { [weak self] in
+            try? await Task.sleep(for: ShelfActionConfirmation.duration)
+            guard let self, self.shelfConfirmation == confirmation else { return }
+            self.shelfConfirmation = nil
         }
     }
 

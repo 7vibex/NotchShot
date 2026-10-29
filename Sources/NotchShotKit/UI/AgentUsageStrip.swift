@@ -62,18 +62,18 @@ struct AgentUsageMeterView: View {
     var body: some View {
         HStack(spacing: 5) {
             Text(meter.kind.shortTitle)
-                .font(.system(size: 10.5, weight: .medium))
+                .font(.system(size: 11, weight: .medium))
                 .foregroundStyle(Color.islandInk(NotchIsland.Ink.tertiary))
             ZStack(alignment: .leading) {
-                Capsule().fill(Color.islandInk(NotchIsland.Ink.hairline * 1.4))
+                Capsule().fill(Color.islandInk(NotchIsland.Ink.track))
                 Capsule()
-                    .fill(AgentUsageMeterView.tint(for: meter.usedPercent, resting: Color.islandInk(0.82)))
+                    .fill(AgentUsageMeterView.tint(for: meter.usedPercent, resting: Color.islandInk(NotchIsland.Ink.body)))
                     .frame(width: max(3, 30 * meter.usedPercent / 100))
                     .animation(NotchMotion.liveValue(reduceMotion: reduceMotion), value: meter.usedPercent)
             }
             .frame(width: 30, height: 3)
             Text("\(Int(meter.usedPercent.rounded()))%")
-                .font(.system(size: 10.5, weight: .semibold, design: .rounded))
+                .font(.system(size: 11, weight: .semibold, design: .rounded))
                 .monospacedDigit()
                 .foregroundStyle(AgentUsageMeterView.tint(
                     for: meter.usedPercent,

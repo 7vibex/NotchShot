@@ -83,13 +83,46 @@ enum NotchIsland {
         static let card: CGFloat = 13
     }
 
+    /// A card or tile inside the open island. The island's content frame
+    /// declares the shell as its container shape, so a tile's corners are the
+    /// shell's radius less the tile's distance from the edge: a tile tucked
+    /// into the bottom corner curves with the shell, one further in settles
+    /// on `Radius.control`. Every card on every page follows the same rule
+    /// instead of picking its own number.
+    static var cardShape: ConcentricRectangle {
+        ConcentricRectangle(corners: .concentric(minimum: .fixed(Radius.control)), isUniform: true)
+    }
+
+    /// Text sizes, in whole points. Half sizes crept in one feature at a time
+    /// until a single page carried five sizes a point apart; every label now
+    /// picks a role. `badge` is for counts and glyphs inside a mark, never
+    /// for prose.
+    enum TextSize {
+        static let title: CGFloat = 13
+        static let body: CGFloat = 12
+        static let meta: CGFloat = 11
+        static let caption: CGFloat = 10
+        static let badge: CGFloat = 9
+    }
+
+    /// The leading mark of a row (an app icon, an agent tile, an alert glyph)
+    /// is one size everywhere, so stacked rows of different kinds share a
+    /// text column.
+    enum Mark {
+        static let size: CGFloat = 34
+    }
+
     /// The opacity ladder for white-on-black. Text below `tertiary` fails
     /// contrast on the island's fill, so these are the floor for anything
     /// readable — decoration only, below that.
     enum Ink {
         static let primary: Double = 1.0
+        /// A row's message line: dimmer than its title, brighter than meta.
+        static let body: Double = 0.82
         static let secondary: Double = 0.68
         static let tertiary: Double = 0.48
+        /// The unfilled part of any progress bar or scrubber.
+        static let track: Double = 0.2
         static let hairline: Double = 0.12
         static let fill: Double = 0.08
         static let recessed: Double = 0.24
@@ -107,6 +140,10 @@ enum NotchIsland {
         static let hover: Double = 0.11
         static let selected: Double = 0.14
         static let edge: Double = 0.08
+        /// A secondary capsule button (Reply, Pause, Hide). Brighter than a
+        /// control tile because it has no edge to define it.
+        static let capsule: Double = 0.15
+        static let capsuleHover: Double = 0.22
     }
 
     // Motion lives in `NotchMotion`: the shell is still more elastic than

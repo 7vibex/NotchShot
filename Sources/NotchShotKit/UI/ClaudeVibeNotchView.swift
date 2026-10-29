@@ -135,7 +135,7 @@ struct ClaudeVibeActivitySurface: View {
                     .font(.system(size: 12, weight: .bold))
                     .foregroundStyle(Color.islandInk(NotchIsland.Ink.primary))
                 Text(subtitle ?? headerSubtitle)
-                    .font(.system(size: 8.5, weight: .medium, design: .rounded))
+                    .font(.system(size: 9, weight: .medium, design: .rounded))
                     .foregroundStyle(Color.islandInk(NotchIsland.Ink.tertiary))
                     .lineLimit(1)
             }
@@ -202,11 +202,11 @@ private struct ClaudeVibeSessionRow: View {
             VStack(alignment: .leading, spacing: NotchIsland.Spacing.tight) {
                 HStack(spacing: NotchIsland.Spacing.tight) {
                     Text(session.title)
-                        .font(.system(size: 10.5, weight: .semibold))
+                        .font(.system(size: 11, weight: .semibold))
                         .foregroundStyle(Color.islandInk(NotchIsland.Ink.primary))
                         .lineLimit(1)
                     Text(ClaudeVibeSessionPresentation.statusText(for: session))
-                        .font(.system(size: 8.5, weight: .semibold))
+                        .font(.system(size: 9, weight: .semibold))
                         .foregroundStyle(stateTint)
                         .lineLimit(1)
                 }
@@ -290,7 +290,7 @@ private struct ClaudeVibeSessionRow: View {
             if session.permission != nil {
                 Button("Deny", action: onDeny)
                     .buttonStyle(NotchPressButtonStyle())
-                    .font(.system(size: 8.5, weight: .semibold))
+                    .font(.system(size: 9, weight: .semibold))
                     .foregroundStyle(Color.islandInk(NotchIsland.Ink.secondary))
                     .frame(minWidth: 42, minHeight: NotchIsland.Hit.control)
                     .background(Color.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
@@ -298,7 +298,7 @@ private struct ClaudeVibeSessionRow: View {
 
                 Button(session.permission?.reviewActionTitle ?? "Review in Terminal", action: onApprove)
                     .buttonStyle(NotchPressButtonStyle())
-                    .font(.system(size: 8.5, weight: .bold))
+                    .font(.system(size: 9, weight: .bold))
                     .foregroundStyle(.black)
                     .frame(minWidth: 46, minHeight: NotchIsland.Hit.control)
                     .background(.orange, in: RoundedRectangle(cornerRadius: 8))
@@ -353,7 +353,7 @@ struct ClaudeVibeCompactStrip: View {
                 HStack(spacing: NotchIsland.Spacing.element) {
                     leading
                     Text("Claude Code")
-                        .font(.system(size: 10.5, weight: .semibold))
+                        .font(.system(size: 11, weight: .semibold))
                         .foregroundStyle(Color.islandInk(NotchIsland.Ink.secondary))
                         .lineLimit(1)
                     Spacer(minLength: NotchIsland.Spacing.tight)
@@ -425,9 +425,9 @@ struct ClaudeVibePeekHeader: View {
                 ClaudeVibeCrabIcon(size: 22)
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Claude Code")
-                        .font(.system(size: 11.5, weight: .bold))
+                        .font(.system(size: 12, weight: .bold))
                     Text(activity.title)
-                        .font(.system(size: 9.5))
+                        .font(.system(size: 10))
                         .foregroundStyle(.white.opacity(0.64))
                         .lineLimit(1)
                 }

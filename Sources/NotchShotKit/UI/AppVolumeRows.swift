@@ -70,7 +70,7 @@ private struct AppVolumeSlider: View {
         GeometryReader { proxy in
             let width = max(proxy.size.width, 1)
             ZStack(alignment: .leading) {
-                Capsule().fill(Color.islandInk(NotchIsland.Ink.recessed))
+                Capsule().fill(Color.islandInk(NotchIsland.Ink.track))
                 Capsule()
                     .fill(level > 0 ? Color.white : Color.clear)
                     .frame(width: max(level > 0 ? 6 : 0, width * level))

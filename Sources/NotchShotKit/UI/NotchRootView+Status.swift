@@ -102,10 +102,10 @@ struct ProcessingContent: View {
 
             if isScrolling {
                 HStack(spacing: NotchIsland.Spacing.element) {
-                    IslandTextButton(title: "Capture Frame", systemImage: "camera.fill") {
+                    NotchCapsuleButton("Capture Frame", systemImage: "camera.fill") {
                         coordinator.captureScrollingFrame()
                     }
-                    IslandTextButton(title: "Finish", systemImage: "checkmark") {
+                    NotchCapsuleButton("Finish", systemImage: "checkmark") {
                         coordinator.finishScrollingCapture()
                     }
                     .keyboardShortcut(.return, modifiers: [])
@@ -151,8 +151,8 @@ struct ErrorContent: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
 
                 if coordinator.permissions.pendingRemediation != nil {
-                    IslandTextButton(
-                        title: coordinator.permissions.requiresScreenRecordingRelaunch
+                    NotchCapsuleButton(
+                        coordinator.permissions.requiresScreenRecordingRelaunch
                             ? "Quit & Reopen" : "Open Settings",
                         systemImage: coordinator.permissions.requiresScreenRecordingRelaunch
                             ? "arrow.clockwise" : "gearshape"
@@ -293,6 +293,7 @@ struct RecordingLevelMeter: View {
             Image(systemName: isEnabled ? symbolName : (symbolName.hasPrefix("mic") ? "mic.slash.fill" : "speaker.slash.fill"))
                 .font(.system(size: 10, weight: .semibold))
                 .foregroundStyle(iconColor)
+                .contentTransition(NotchSymbolMotion.swap(reduceMotion: reduceMotion))
                 .frame(width: 14)
 
             if isEnabled, !isAvailable {
@@ -309,7 +310,7 @@ struct RecordingLevelMeter: View {
             } else {
                 GeometryReader { proxy in
                     ZStack(alignment: .leading) {
-                        Capsule().fill(Color.islandInk(0.14))
+                        Capsule().fill(Color.islandInk(NotchIsland.Ink.track))
                         LinearGradient(
                             stops: [
                                 .init(color: IslandSystemColor.green, location: 0),
@@ -478,7 +479,7 @@ private struct LevelBar: View {
         let stretchAnchor: UnitPoint = stretchEdge == .bottom ? .trailing : .leading
         GeometryReader { geometry in
             ZStack(alignment: .leading) {
-                Capsule().fill(Color.islandInk(0.2))
+                Capsule().fill(Color.islandInk(NotchIsland.Ink.track))
                 // White on grey, as the phone's level indicators are. The
                 // accent colour made the bar read as a selected control.
                 Capsule()

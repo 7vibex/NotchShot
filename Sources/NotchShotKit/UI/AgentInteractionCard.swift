@@ -36,8 +36,8 @@ private struct AgentApprovalCard: View {
         VStack(alignment: .leading, spacing: NotchIsland.Spacing.element) {
             if let summary = request.summary, !summary.isEmpty {
                 Text(summary)
-                    .font(.system(size: 11.5, design: .monospaced))
-                    .foregroundStyle(Color.islandInk(0.82))
+                    .font(.system(size: 12, design: .monospaced))
+                    .foregroundStyle(Color.islandInk(NotchIsland.Ink.body))
                     .lineLimit(3)
                     .truncationMode(.middle)
                     .padding(.horizontal, NotchIsland.Spacing.row)
@@ -52,13 +52,13 @@ private struct AgentApprovalCard: View {
 
             HStack(spacing: NotchIsland.Spacing.snug) {
                 Spacer(minLength: 0)
-                AgentCapsuleButton(title: "Deny") { onRespond(.deny) }
+                NotchCapsuleButton("Deny") { onRespond(.deny) }
                     .accessibilityLabel("Deny \(request.tool)")
                 if request.offersSessionApproval {
-                    AgentCapsuleButton(title: "Allow for This Run") { onRespond(.allowForSession) }
+                    NotchCapsuleButton("Allow for This Run") { onRespond(.allowForSession) }
                         .help("Allow \(request.tool) for the rest of this run")
                 }
-                AgentCapsuleButton(title: request.reviewActionTitle ?? "Allow", isPrimary: true) { onRespond(.allowOnce) }
+                NotchCapsuleButton(request.reviewActionTitle ?? "Allow", prominence: .primary) { onRespond(.allowOnce) }
                     .keyboardShortcut(.defaultAction)
                     .accessibilityLabel("\(request.reviewActionTitle ?? "Allow") \(request.tool)")
             }
@@ -114,7 +114,7 @@ private struct AgentQuestionCard: View {
                     elsewhereButton
                     Spacer(minLength: 0)
                     if !sendsFromField {
-                        AgentCapsuleButton(title: "Send", isPrimary: true) { onSubmit(answers) }
+                        NotchCapsuleButton("Send", prominence: .primary) { onSubmit(answers) }
                             .disabled(!form.isComplete(answers))
                             .opacity(form.isComplete(answers) ? 1 : 0.4)
                             .keyboardShortcut(.defaultAction)
@@ -136,7 +136,7 @@ private struct AgentQuestionCard: View {
             HStack(spacing: 3) {
                 Text(elsewhereTitle)
                 Image(systemName: "arrow.up.forward")
-                    .font(.system(size: 8.5, weight: .semibold))
+                    .font(.system(size: 9, weight: .semibold))
                     .accessibilityHidden(true)
             }
             .font(.system(size: 11, weight: .medium))
@@ -221,40 +221,6 @@ private struct AgentQuestionCard: View {
 
 // MARK: - Controls
 
-/// The list's one button shape. Neutral is the island's soft grey capsule
-/// (the notification Reply); primary is white with black text, the way the
-/// system marks the affirmative choice on a dark surface.
-struct AgentCapsuleButton: View {
-    let title: String
-    var isPrimary = false
-    let action: () -> Void
-
-    @State private var isHovered = false
-    @Environment(\.isEnabled) private var isEnabled
-
-    var body: some View {
-        Button(action: action) {
-            Text(title)
-                .font(.system(size: 12, weight: .semibold))
-                .lineLimit(1)
-                .foregroundStyle(isPrimary ? Color.black : Color.islandInk(NotchIsland.Ink.primary))
-                .padding(.horizontal, NotchIsland.Spacing.group)
-                .frame(height: 28)
-                .background(fill, in: Capsule(style: .continuous))
-                .frame(minHeight: NotchIsland.Hit.control)
-                .contentShape(Rectangle())
-        }
-        .buttonStyle(NotchPressButtonStyle())
-        .onHover { isHovered = $0 && isEnabled }
-        .fixedSize()
-    }
-
-    private var fill: Color {
-        if isPrimary { return .white.opacity(isHovered ? 0.86 : 1) }
-        return Color.islandInk(isHovered ? 0.22 : 0.15)
-    }
-}
-
 /// A suggested reply. Picking one fills it white, like a selected segment.
 private struct AgentReplyChip: View {
     let title: String
@@ -269,7 +235,7 @@ private struct AgentReplyChip: View {
             HStack(spacing: 5) {
                 if showsCheck, isSelected {
                     Image(systemName: "checkmark")
-                        .font(.system(size: 9.5, weight: .bold))
+                        .font(.system(size: 10, weight: .bold))
                         .accessibilityHidden(true)
                 }
                 Text(title)
@@ -280,7 +246,7 @@ private struct AgentReplyChip: View {
             .padding(.horizontal, NotchIsland.Spacing.group)
             .frame(height: 28)
             .background(
-                isSelected ? Color.white : Color.islandInk(isHovered ? 0.22 : 0.15),
+                isSelected ? Color.white : Color.islandInk(isHovered ? NotchIsland.Surface.capsuleHover : NotchIsland.Surface.capsule),
                 in: Capsule(style: .continuous)
             )
             .contentShape(Capsule(style: .continuous))

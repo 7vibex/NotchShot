@@ -67,6 +67,7 @@ struct DictationIslandContent: View {
                 Image(systemName: statusSymbol)
                     .font(.system(size: 10, weight: .semibold))
                     .foregroundStyle(statusColor)
+                    .contentTransition(NotchSymbolMotion.swap(reduceMotion: reduceMotion))
                     .accessibilityHidden(true)
                 Text(statusText)
                     .font(.system(size: 10, weight: .medium))
@@ -101,6 +102,7 @@ struct DictationIslandContent: View {
                 Image(systemName: statusSymbol)
                     .font(.system(size: 11, weight: .semibold))
                     .foregroundStyle(statusColor)
+                    .contentTransition(NotchSymbolMotion.swap(reduceMotion: reduceMotion))
                     .accessibilityHidden(true)
             }
 
@@ -142,7 +144,7 @@ struct DictationIslandContent: View {
                     .progressViewStyle(.linear)
                     .tint(.white.opacity(0.85))
                 Text("\(Int((progress * 100).rounded()))%")
-                    .font(.system(size: 10.5, weight: .medium, design: .rounded))
+                    .font(.system(size: 11, weight: .medium, design: .rounded))
                     .monospacedDigit()
                     .foregroundStyle(.white.opacity(0.65))
             }
@@ -276,10 +278,10 @@ struct DictationIslandContent: View {
             .padding(.horizontal, 10)
             .padding(.vertical, 5)
             .background {
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                NotchIsland.cardShape
                     .fill(reduceTransparency ? Color(white: 0.16) : .white.opacity(0.07))
                     .overlay {
-                        RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        NotchIsland.cardShape
                             .stroke(.white.opacity(increaseContrast ? 0.32 : 0.08), lineWidth: 1)
                     }
             }
@@ -289,7 +291,7 @@ struct DictationIslandContent: View {
         // Head truncation keeps the most recent words visible, which is the end
         // of the sentence the user is still speaking.
         Text(transcriptAttributed)
-        .font(.system(size: 11.5))
+        .font(.system(size: 12))
         .lineLimit(snapshot.isHoverExpanded ? 2 : 1)
         .truncationMode(.head)
         .multilineTextAlignment(.leading)
@@ -484,7 +486,7 @@ struct DictationTimerLabel: View {
 
     var body: some View {
         Text(Self.format(dictation.elapsedSeconds))
-            .font(.system(size: 10.5, weight: .medium, design: .rounded))
+            .font(.system(size: 11, weight: .medium, design: .rounded))
             .monospacedDigit()
             .foregroundStyle(.white.opacity(0.85))
             .accessibilityLabel("Elapsed time \(Self.format(dictation.elapsedSeconds))")

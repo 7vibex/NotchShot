@@ -91,14 +91,14 @@ struct ShelfContent: View {
                     .font(.system(size: 11))
                     .foregroundStyle(Color.islandInk(NotchIsland.Ink.secondary))
                 Text("\(items.count) \(items.count == 1 ? "File" : "Files")")
-                    .font(.system(size: 11.5, weight: .semibold))
+                    .font(.system(size: 12, weight: .semibold))
                     .foregroundStyle(.white)
                     .fixedSize()
 
                 // A single capture's size is already on its details line.
                 if items.count > 1 {
                     Text(totalSizeDescription)
-                        .font(.system(size: 10.5, weight: .medium, design: .rounded))
+                        .font(.system(size: 11, weight: .medium, design: .rounded))
                         .foregroundStyle(Color.islandInk(NotchIsland.Ink.tertiary))
                         .monospacedDigit()
                         .lineLimit(1)
@@ -123,7 +123,7 @@ struct ShelfContent: View {
                             Preferences.shared.shelfPresentationStyle = style
                         } label: {
                             Text(style.title)
-                                .font(.system(size: 10.5, weight: .semibold))
+                                .font(.system(size: 11, weight: .semibold))
                                 .foregroundStyle(Color.islandInk(isSelected ? NotchIsland.Ink.primary : NotchIsland.Ink.tertiary))
                                 .padding(.horizontal, 8)
                                 .frame(height: 22)
@@ -228,13 +228,13 @@ struct ShelfContent: View {
                 }
             }
             .frame(width: 128, height: NotchLayout.shelfDetailRowHeight)
-            .background(Color.islandInk(NotchIsland.Ink.fill), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+            .background(Color.islandInk(NotchIsland.Ink.fill), in: NotchIsland.cardShape)
+            .clipShape(NotchIsland.cardShape)
             .overlay {
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .strokeBorder(.white.opacity(0.14))
+                NotchIsland.cardShape
+                    .stroke(.white.opacity(0.14))
             }
-            .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+            .contentShape(NotchIsland.cardShape)
             // A fresh capture rises into the notch instead of simply appearing.
             .islandArrivalFromScreen(id: coordinator.shelfItems.first?.id)
         }
@@ -281,7 +281,7 @@ struct ShelfContent: View {
                         .foregroundStyle(Color.islandInk(NotchIsland.Ink.tertiary))
                 }
             }
-            .font(.system(size: 10.5, weight: .medium))
+            .font(.system(size: 11, weight: .medium))
             .monospacedDigit()
             .lineLimit(1)
             .animation(nil, value: hoveredAction)
@@ -291,7 +291,7 @@ struct ShelfContent: View {
                     coordinator.openDetectedItem(detected)
                 } label: {
                     Label(detected.value, systemImage: detected.kind.symbolName)
-                        .font(.system(size: 10.5, weight: .medium))
+                        .font(.system(size: 11, weight: .medium))
                         .lineLimit(1)
                         .truncationMode(.middle)
                 }
@@ -300,7 +300,7 @@ struct ShelfContent: View {
                 .help("Open \(detected.value)")
             } else if let text = item.ocrResult?.fullText, !text.isEmpty {
                 Text(text)
-                    .font(.system(size: 10.5))
+                    .font(.system(size: 11))
                     .foregroundStyle(Color.islandInk(NotchIsland.Ink.secondary))
                     .lineLimit(1)
             }
@@ -460,8 +460,11 @@ struct ShelfContent: View {
         return Button {
             coordinator.perform(action, on: item)
         } label: {
-            Image(systemName: action.symbolName)
-                .font(.system(size: 13, weight: .medium))
+            ShelfActionGlyph(
+                symbolName: action.symbolName,
+                isConfirmed: coordinator.shelfConfirmation?.action == action
+                    && coordinator.shelfConfirmation?.itemID == item.id
+            )
                 .frame(
                     width: NotchIconButton.minimumHitSize,
                     height: NotchIconButton.minimumHitSize
@@ -469,7 +472,7 @@ struct ShelfContent: View {
                 .foregroundStyle(Color.islandInk(isHovered ? NotchIsland.Ink.primary : NotchIsland.Ink.secondary))
                 .background(
                     Color.islandInk(isHovered ? NotchIsland.Surface.hover : 0),
-                    in: RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    in: NotchIsland.cardShape
                 )
                 .contentShape(Rectangle())
         }
@@ -603,7 +606,8 @@ struct ShelfContent: View {
             } label: {
                 Image(systemName: coordinator.stack.isCollecting ? "pause.circle.fill" : "plus.circle.fill")
                     .font(.system(size: 13))
-                    .foregroundStyle(coordinator.stack.isCollecting ? Color.accentColor : .white)
+                    .foregroundStyle(.white)
+                    .contentTransition(NotchSymbolMotion.swap(reduceMotion: false))
                     .frame(
                         width: NotchIconButton.minimumHitSize,
                         height: NotchIconButton.minimumHitSize
@@ -622,7 +626,7 @@ struct ShelfContent: View {
         .padding(.horizontal, 8)
         .padding(.vertical, 5)
         .background {
-            RoundedRectangle(cornerRadius: 8).fill(.white.opacity(0.07))
+            NotchIsland.cardShape.fill(.white.opacity(0.07))
         }
         .animation(NotchMotion.selection(reduceMotion: reduceMotion), value: coordinator.stack.count)
     }
@@ -697,7 +701,7 @@ private struct ShelfGridCell: View {
     @State private var isHovered = false
 
     var body: some View {
-        let shape = RoundedRectangle(cornerRadius: 9, style: .continuous)
+        let shape = NotchIsland.cardShape
         Group {
             if let thumbnail = item.thumbnail {
                 Image(nsImage: thumbnail)
@@ -735,7 +739,7 @@ private struct ShelfGridCell: View {
             if let duration = item.asset.duration {
                 let total = Int(duration.rounded())
                 Text(String(format: "%d:%02d", total / 60, total % 60))
-                    .font(.system(size: 8, weight: .bold))
+                    .font(.system(size: NotchIsland.TextSize.badge, weight: .bold))
                     .monospacedDigit()
                     .foregroundStyle(.white)
                     .padding(.horizontal, 4)
@@ -746,7 +750,7 @@ private struct ShelfGridCell: View {
         }
         .clipShape(shape)
         .overlay {
-            shape.strokeBorder(
+            shape.stroke(
                 isSelected ? Color.white : Color.white.opacity(0.10),
                 lineWidth: isSelected ? 2 : 1
             )
@@ -758,4 +762,30 @@ private struct ShelfGridCell: View {
     }
 
     static let width: CGFloat = 72
+}
+
+/// A shelf action's glyph. When the action has just finished, a checkmark
+/// draws itself on in its place, as the system's own confirmations arrive,
+/// and gives the glyph back a moment later.
+private struct ShelfActionGlyph: View {
+    var symbolName: String
+    var isConfirmed: Bool
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        ZStack {
+            if isConfirmed {
+                Image(systemName: "checkmark")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(Color.islandInk(NotchIsland.Ink.primary))
+                    // Drawing has no travel, so it stays under Reduce Motion.
+                    .transition(.symbolEffect(.drawOn))
+            } else {
+                Image(systemName: symbolName)
+                    .font(.system(size: 13, weight: .medium))
+                    .transition(.opacity)
+            }
+        }
+        .animation(NotchMotion.content(reduceMotion: reduceMotion), value: isConfirmed)
+    }
 }

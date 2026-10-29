@@ -130,6 +130,11 @@ enum NotchMotion {
         reduceMotion ? nil : .spring(duration: 0.20, bounce: tuning.hoverBounce)
     }
 
+    /// Something swapped in or brightened under the pointer: a row's time
+    /// giving way to its buttons, a capsule's fill. It has no travel, so it
+    /// runs the same under Reduce Motion.
+    static let hoverSwap = Animation.easeOut(duration: 0.15)
+
     static func press(reduceMotion: Bool) -> Animation? {
         reduceMotion ? nil : .spring(duration: 0.12, bounce: min(0.1, tuning.hoverBounce))
     }
@@ -176,5 +181,32 @@ struct MarchingDashStroke<S: Shape>: View {
         )
         .allowsHitTesting(false)
         .accessibilityHidden(true)
+    }
+}
+
+/// How SF Symbols change on the island. A glyph that stands for a state
+/// (play and pause, a microphone and its slash) morphs into the next one, as
+/// the system's own controls do, instead of being swapped for it.
+enum NotchSymbolMotion {
+    /// Magic Replace keeps what the two symbols share and draws the rest on
+    /// or off: the slash across a microphone draws itself in.
+    static func swap(reduceMotion: Bool) -> ContentTransition {
+        reduceMotion ? .opacity : .symbolEffect(.replace.magic(fallback: .replace))
+    }
+}
+
+/// Draws a symbol on the first time it appears, the way the system's own
+/// confirmations arrive, rather than letting it pop in with the view around
+/// it. A symbol whose view is inserted on its own can use
+/// `.transition(.symbolEffect(.drawOn))` instead; this is for one that
+/// arrives as part of a larger view.
+struct SymbolDrawsOnAppear: ViewModifier {
+    @State private var isDrawn = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    func body(content: Content) -> some View {
+        content
+            .symbolEffect(.drawOff.nonReversed, isActive: !isDrawn && !reduceMotion)
+            .onAppear { isDrawn = true }
     }
 }

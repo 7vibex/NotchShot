@@ -103,7 +103,7 @@ struct MediaQueueRow: View {
 
                 if !entry.artist.isEmpty {
                     Text(entry.artist)
-                        .font(.system(size: 9.5, weight: .medium))
+                        .font(.system(size: 10, weight: .medium))
                         .foregroundStyle(Color.islandInk(NotchIsland.Ink.tertiary))
                         .lineLimit(1)
                         .truncationMode(.tail)
@@ -115,7 +115,7 @@ struct MediaQueueRow: View {
         .padding(.horizontal, NotchIsland.Spacing.row)
         .frame(maxWidth: .infinity, minHeight: NotchLayout.mediaPanelRowHeight)
         .background {
-            RoundedRectangle(cornerRadius: NotchIsland.Radius.control, style: .continuous)
+            NotchIsland.cardShape
                 .fill(Color.islandInk(NotchIsland.Ink.fill))
         }
         .accessibilityElement(children: .combine)
@@ -961,7 +961,7 @@ private struct MediaScrubber: View {
             GeometryReader { geometry in
                 ZStack(alignment: .leading) {
                     Capsule()
-                        .fill(Color.islandInk(NotchIsland.Ink.recessed))
+                        .fill(Color.islandInk(NotchIsland.Ink.track))
                         .frame(height: isDragging ? 7 : 5)
                         .animation(NotchMotion.hover(reduceMotion: reduceMotion), value: isDragging)
                     MediaPlaybackFill(

@@ -358,8 +358,17 @@ struct IslandRecordingGlyph: View {
                     .frame(width: side * 0.5, height: side * 0.5)
             } else {
                 // Breathes on the render server for the whole recording.
-                LayerPulsingDot(diameter: side * 0.62, color: .red, pulseOpacity: 0.4, halfPeriod: 0.9)
-                    .frame(width: side * 0.62, height: side * 0.62)
+                LayerPulsingDot(diameter: side * 0.5, color: .red, pulseOpacity: 0.4, halfPeriod: 0.9)
+                    .frame(width: side * 0.5, height: side * 0.5)
+                // A record button's ring, drawn on once as the recording
+                // starts and still after that.
+                Image(systemName: "circle")
+                    .resizable()
+                    .fontWeight(.semibold)
+                    .scaledToFit()
+                    .foregroundStyle(.red)
+                    .frame(width: side * 0.9, height: side * 0.9)
+                    .modifier(SymbolDrawsOnAppear())
             }
         }
         .frame(width: side, height: side)

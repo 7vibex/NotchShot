@@ -122,7 +122,7 @@ struct SystemNotificationCard: View {
             onHoverChange(hovering)
         }
         .animation(NotchMotion.selection(reduceMotion: reduceMotion), value: rows.map(\.id))
-        .animation(.easeOut(duration: 0.15), value: isHovered)
+        .animation(NotchMotion.hoverSwap, value: isHovered)
         .accessibilityElement(children: .contain)
         .accessibilityLabel(
             rows.count == 1
@@ -134,7 +134,7 @@ struct SystemNotificationCard: View {
 
 /// One sender in the stack.
 private struct SystemNotificationRow: View {
-    static let avatarSize: CGFloat = 38
+    static let avatarSize = NotchIsland.Mark.size
 
     let snapshot: SystemNotificationSnapshot
     var showsTime: Bool
@@ -188,7 +188,7 @@ private struct SystemNotificationRow: View {
                 HStack(alignment: .firstTextBaseline, spacing: 6) {
                     Text(snapshot.body.isEmpty ? snapshot.sourceName : snapshot.body)
                         .font(NotchAlertStyle.body)
-                        .foregroundStyle(Color.islandInk(0.82))
+                        .foregroundStyle(Color.islandInk(NotchIsland.Ink.body))
                         .lineLimit(bodyLineLimit)
                         .truncationMode(.tail)
                         .fixedSize(horizontal: false, vertical: true)
@@ -212,58 +212,47 @@ private struct SystemNotificationRow: View {
             if let oneTimeCode {
                 // Always shown: copying the code is why this banner was
                 // looked at. White, as the island's primary actions are.
-                Button {
+                // The checkmark draws itself on, as the system's own
+                // confirmations do, then the chip returns to the code.
+                NotchCapsuleButton(
+                    copiedCode ? "Copied" : "Copy \(oneTimeCode)",
+                    systemImage: copiedCode ? "checkmark" : nil,
+                    prominence: .primary,
+                    size: .compact,
+                    help: "Copy the code. The clipboard is cleared after 90 seconds",
+                    accessibilityLabel: copiedCode
+                        ? "Code copied"
+                        : "Copy code \(oneTimeCode.map(String.init).joined(separator: " "))"
+                ) {
                     OneTimeCodeClipboard.copy(oneTimeCode)
-                    copiedCode = true
+                    withAnimation(NotchMotion.content(reduceMotion: false)) { copiedCode = true }
                     Task {
                         try? await Task.sleep(for: .seconds(1.6))
-                        copiedCode = false
+                        withAnimation(NotchMotion.fade(reduceMotion: false)) { copiedCode = false }
                     }
-                } label: {
-                    Label(
-                        copiedCode ? "Copied" : "Copy \(oneTimeCode)",
-                        systemImage: copiedCode ? "checkmark" : "doc.on.doc"
-                    )
-                    .labelStyle(.titleOnly)
-                    .font(.system(size: 11, weight: .semibold).monospacedDigit())
-                    .foregroundStyle(.black)
-                    .padding(.horizontal, 10)
-                    .frame(height: 22)
-                    .background(Color.white, in: Capsule())
-                    .contentShape(Capsule())
-                    .contentTransition(.opacity)
                 }
-                .buttonStyle(NotchPressButtonStyle())
-                .fixedSize()
-                .help("Copy the code. The clipboard is cleared after 90 seconds")
-                .accessibilityLabel(copiedCode ? "Code copied" : "Copy code \(oneTimeCode.map(String.init).joined(separator: " "))")
             }
             if let onReply, isHovered {
                 // Shown under the pointer only, so a resting stack reads as
                 // messages rather than a row of buttons. It is added rather
                 // than faded in: a transparent button still took its width
                 // and cut the message short at rest.
-                Button(action: onReply) {
-                    Text("Reply")
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(Color.islandInk(NotchIsland.Ink.primary))
-                        .padding(.horizontal, 9)
-                        .frame(height: 22)
-                        .background(Color.islandInk(0.16), in: Capsule())
-                        .contentShape(Capsule())
-                }
-                .buttonStyle(NotchPressButtonStyle())
+                NotchCapsuleButton(
+                    "Reply",
+                    size: .compact,
+                    help: "Reply in \(snapshot.sourceName)",
+                    accessibilityLabel: "Reply to \(snapshot.title)",
+                    action: onReply
+                )
                 .transition(.opacity)
-                .help("Reply in \(snapshot.sourceName)")
-                .accessibilityLabel("Reply to \(snapshot.title)")
             }
         }
         .padding(.vertical, 7)
         .padding(.horizontal, SystemNotificationCardLayout.rowHorizontalPadding)
-        .animation(.easeOut(duration: 0.15), value: isHovered)
+        .animation(NotchMotion.hoverSwap, value: isHovered)
         .background(
             Color.islandInk(isHovered && canOpen ? 0.06 : 0),
-            in: RoundedRectangle(cornerRadius: 12, style: .continuous)
+            in: NotchIsland.cardShape
         )
         .contentShape(Rectangle())
         .onTapGesture { if canOpen { onOpen() } }

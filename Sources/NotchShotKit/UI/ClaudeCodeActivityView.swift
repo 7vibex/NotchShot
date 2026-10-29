@@ -137,11 +137,11 @@ struct ClaudeConversationPanel: View {
 
             VStack(alignment: .leading, spacing: 1) {
                 Text(session.title)
-                    .font(.system(size: 10.5, weight: .bold))
+                    .font(.system(size: 11, weight: .bold))
                     .foregroundStyle(Color.islandInk(NotchIsland.Ink.primary))
                     .lineLimit(1)
                 Text(session.workspaceName)
-                    .font(.system(size: 8.5, weight: .medium, design: .rounded))
+                    .font(.system(size: 9, weight: .medium, design: .rounded))
                     .foregroundStyle(Color.islandInk(NotchIsland.Ink.tertiary))
                     .lineLimit(1)
             }

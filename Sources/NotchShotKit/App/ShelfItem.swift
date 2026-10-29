@@ -1,6 +1,15 @@
 import AppKit
 import Observation
 
+/// A shelf action that has just completed on one item.
+public struct ShelfActionConfirmation: Equatable, Sendable {
+    static let duration = Duration.milliseconds(1400)
+
+    public let action: ShareAction
+    public let itemID: UUID
+    let token = UUID()
+}
+
 /// A finished capture sitting in the notch shelf.
 @MainActor
 @Observable

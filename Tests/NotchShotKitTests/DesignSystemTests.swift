@@ -66,6 +66,35 @@ struct DesignSystemTests {
         }
     }
 
+    @Test("Notch views size text in whole points from one short scale")
+    func notchTextUsesWholePointSizes() throws {
+        #expect([
+            NotchIsland.TextSize.title,
+            NotchIsland.TextSize.body,
+            NotchIsland.TextSize.meta,
+            NotchIsland.TextSize.caption,
+            NotchIsland.TextSize.badge,
+        ] == [13, 12, 11, 10, 9])
+
+        let uiRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appending(path: "Sources/NotchShotKit/UI")
+        // Windows (Settings, History, the menu-bar panel) follow the system
+        // type scale; this covers what draws inside the notch.
+        let windowFiles = ["Settings", "Onboarding", "HistoryView", "ClipboardView", "AppUninstallView",
+                           "DocumentSummaryView", "CapturePreviewView", "MenuBar"]
+        let halfPoint = try Regex(#"size: \d+\.5\b"#)
+        let enumerator = try #require(FileManager.default.enumerator(at: uiRoot, includingPropertiesForKeys: nil))
+        for case let fileURL as URL in enumerator where fileURL.pathExtension == "swift" {
+            let name = fileURL.lastPathComponent
+            guard !windowFiles.contains(where: name.hasPrefix) else { continue }
+            let source = try String(contentsOf: fileURL, encoding: .utf8)
+            #expect(source.firstMatch(of: halfPoint) == nil, "\(name) has a half-point size")
+        }
+    }
+
     @Test("Activity cards use native glass without an opaque black wash")
     func activityCardsUseNativeGlass() throws {
         #expect(NotchActivityGlassPolicy.usesLiquidGlass(

@@ -83,7 +83,7 @@ struct IslandBandTitle: View {
                     .accessibilityHidden(true)
             }
             Text(title)
-                .font(.system(size: 11.5, weight: .semibold))
+                .font(.system(size: 12, weight: .semibold))
                 .foregroundStyle(Color.islandInk(NotchIsland.Ink.primary))
                 .lineLimit(1)
                 .truncationMode(.tail)

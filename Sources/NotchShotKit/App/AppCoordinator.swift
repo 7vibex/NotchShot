@@ -22,6 +22,9 @@ public final class AppCoordinator {
     public internal(set) var activity: NotchActivity = .idle
     public internal(set) var shelfItems: [ShelfItem] = []
     public internal(set) var selectedShelfIndex = 0
+    /// A shelf action that just finished (a copy, a save), so its button can
+    /// show a checkmark for a moment instead of finishing silently.
+    public internal(set) var shelfConfirmation: ShelfActionConfirmation?
     public internal(set) var recordingStatus = RecordingStatus()
     public internal(set) var isRecordingPaused = false
     public internal(set) var scrollingFrameCount = 0

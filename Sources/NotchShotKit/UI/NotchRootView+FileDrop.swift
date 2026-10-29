@@ -109,7 +109,7 @@ struct FileDropActionTray: View {
                     .foregroundStyle(.cyan)
 
                 Text(itemCountDescription)
-                    .font(.system(size: 11.5, weight: .semibold))
+                    .font(.system(size: 12, weight: .semibold))
                     .foregroundStyle(Color.islandInk(NotchIsland.Ink.primary))
 
                 Spacer(minLength: NotchIsland.Spacing.element)
@@ -217,12 +217,12 @@ struct FileDropActionTray: View {
 
             VStack(spacing: NotchIsland.Spacing.hairline) {
                 Text(action.title)
-                    .font(.system(size: 11.5, weight: .semibold))
+                    .font(.system(size: 12, weight: .semibold))
                     .foregroundStyle(Color.islandInk(NotchIsland.Ink.primary))
                     .lineLimit(1)
 
                 Text(action.subtitle)
-                    .font(.system(size: 9.5, weight: .medium))
+                    .font(.system(size: 10, weight: .medium))
                     .foregroundStyle(Color.islandInk(NotchIsland.Ink.tertiary))
                     .multilineTextAlignment(.center)
                     .lineLimit(2)
@@ -243,7 +243,7 @@ struct FileDropActionTray: View {
         .padding(.vertical, NotchIsland.Spacing.row)
         .frame(maxWidth: .infinity, minHeight: 108)
         .background {
-            RoundedRectangle(cornerRadius: NotchIsland.Radius.card + 3, style: .continuous)
+            NotchIsland.cardShape
                 .fill(
                     isSelected
                         ? accent.opacity(reduceTransparency ? 0.28 : 0.18)
@@ -251,8 +251,8 @@ struct FileDropActionTray: View {
                 )
         }
         .overlay {
-            RoundedRectangle(cornerRadius: NotchIsland.Radius.card + 3, style: .continuous)
-                .strokeBorder(
+            NotchIsland.cardShape
+                .stroke(
                     isSelected ? accent : Color.islandInk(NotchIsland.Ink.recessed),
                     style: StrokeStyle(
                         lineWidth: isSelected ? 1.6 : 1,

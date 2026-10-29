@@ -39,17 +39,15 @@ struct NetworkStatusCard: View {
                 NotchAlertStyle.symbol("wifi.slash", color: accent, size: 24)
             }
             HStack(spacing: NotchIsland.Spacing.element) {
-                NotchAlertTextButton(
-                    title: "OK",
-                    height: Self.buttonHeight,
+                NotchCapsuleButton(
+                    "OK",
                     expands: true,
                     help: "Dismiss this alert",
                     action: onDismiss
                 )
-                NotchAlertTextButton(
-                    title: "Network Settings",
-                    prominent: true,
-                    height: Self.buttonHeight,
+                NotchCapsuleButton(
+                    "Network Settings",
+                    prominence: .primary,
                     expands: true,
                     help: "Open Network Settings",
                     action: onOpenNetworkSettings

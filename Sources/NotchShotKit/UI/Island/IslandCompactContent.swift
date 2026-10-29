@@ -210,7 +210,7 @@ enum IslandAccessibility {
     /// The colour of a live value. Agents stay neutral while they work:
     /// Claude's coral would read as the orange that means "needs you".
     static func valueTint(for activity: IslandActivity, accent: Color) -> Color {
-        activity.kind == .ai ? Color.islandInk(0.82) : accent
+        activity.kind == .ai ? Color.islandInk(NotchIsland.Ink.body) : accent
     }
 
     static func lifecycleColor(_ lifecycle: IslandLifecycle, accent: Color) -> Color {

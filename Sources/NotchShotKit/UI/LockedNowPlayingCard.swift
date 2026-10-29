@@ -306,7 +306,7 @@ struct LockedNowPlayingPresentation: View {
 
     private func timeLabel(_ value: TimeInterval?, countdown: Bool = false) -> some View {
         Text((countdown && value != nil ? "-" : "") + Self.formatted(value))
-            .font(.system(size: 10.5, weight: .semibold, design: .rounded))
+            .font(.system(size: 11, weight: .semibold, design: .rounded))
             .foregroundStyle(.white.opacity(0.62))
             .monospacedDigit()
     }
@@ -388,9 +388,10 @@ struct LockedChargeChip: View {
     var body: some View {
         HStack(spacing: 3) {
             Image(systemName: power.isChargingOnHold ? "pause.fill" : "bolt.fill")
-                .font(.system(size: 8.5, weight: .bold))
+                .font(.system(size: 9, weight: .bold))
+                .contentTransition(.symbolEffect(.replace))
             Text("\(power.percentage)%")
-                .font(.system(size: 10.5, weight: .semibold, design: .rounded))
+                .font(.system(size: 11, weight: .semibold, design: .rounded))
                 .monospacedDigit()
         }
         .foregroundStyle(power.isChargingOnHold ? IslandSystemColor.orange : IslandSystemColor.green)
@@ -450,6 +451,7 @@ struct LockedChargingPresentation: View {
                 )
                 Image(systemName: power.isChargingOnHold ? "pause.fill" : "bolt.fill")
                     .font(.system(size: 24, weight: .bold))
+                    .contentTransition(.symbolEffect(.replace))
                     .foregroundStyle(.white)
                     .shadow(color: .black.opacity(0.35), radius: 2, y: 1)
                     .offset(x: -4)

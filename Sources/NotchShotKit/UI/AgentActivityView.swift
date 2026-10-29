@@ -136,7 +136,7 @@ struct AgentStepList: View {
                             .accessibilityHidden(true)
 
                         Text(step.label)
-                            .font(.system(size: 9.5, weight: step.state == .working ? .semibold : .medium))
+                            .font(.system(size: 10, weight: step.state == .working ? .semibold : .medium))
                             .foregroundStyle(labelColor(for: step.state))
                             .lineLimit(1)
 
@@ -144,7 +144,7 @@ struct AgentStepList: View {
 
                         if index == visible.count - 1, overflow > 0 {
                             Text("+\(overflow)")
-                                .font(.system(size: 8.5, weight: .semibold, design: .rounded))
+                                .font(.system(size: 9, weight: .semibold, design: .rounded))
                                 .foregroundStyle(Color.islandInk(NotchIsland.Ink.tertiary))
                         }
                     }
@@ -166,7 +166,7 @@ struct AgentStepList: View {
                 .frame(width: 10)
                 .accessibilityHidden(true)
             Text(activity.title)
-                .font(.system(size: 9.5, weight: .semibold))
+                .font(.system(size: 10, weight: .semibold))
                 .foregroundStyle(Color.islandInk(NotchIsland.Ink.secondary))
                 .lineLimit(2)
         }
@@ -295,14 +295,14 @@ struct AgentActivityRow: View {
             agentButton
 
             Text(activity.source.title)
-                .font(.system(size: 10.5, weight: .semibold))
+                .font(.system(size: 11, weight: .semibold))
                 .foregroundStyle(Color.islandInk(NotchIsland.Ink.primary))
                 .fixedSize()
 
             AgentStatePill(state: activity.state, tint: stateTint, isDimmed: true)
 
             Text(activity.title)
-                .font(.system(size: 10.5))
+                .font(.system(size: 11))
                 .foregroundStyle(Color.islandInk(NotchIsland.Ink.secondary))
                 .lineLimit(1)
 
@@ -337,7 +337,7 @@ struct AgentActivityRow: View {
             agentButton
 
             Text(activity.source.title)
-                .font(.system(size: 10.5, weight: .bold))
+                .font(.system(size: 11, weight: .bold))
                 .foregroundStyle(Color.islandInk(NotchIsland.Ink.primary))
                 .fixedSize()
 
@@ -379,21 +379,21 @@ struct AgentActivityRow: View {
     private var taskSummary: some View {
         VStack(alignment: .leading, spacing: NotchIsland.Spacing.tight) {
             Text(activity.title)
-                .font(.system(size: 9.5, weight: .semibold))
+                .font(.system(size: 10, weight: .semibold))
                 .foregroundStyle(Color.islandInk(NotchIsland.Ink.primary))
                 .lineLimit(2)
                 .fixedSize(horizontal: false, vertical: true)
 
             if let detail = activity.detail, !detail.isEmpty {
                 Text(detail)
-                    .font(.system(size: 8.5, weight: .medium))
+                    .font(.system(size: 9, weight: .medium))
                     .foregroundStyle(Color.islandInk(NotchIsland.Ink.secondary))
                     .lineLimit(3)
             }
 
             if let workspace = activity.workspace, !workspace.isEmpty {
                 Label(AgentWorkspaceFormatter.display(workspace), systemImage: "folder")
-                    .font(.system(size: 8, weight: .medium, design: .rounded))
+                    .font(.system(size: NotchIsland.TextSize.caption, weight: .medium, design: .rounded))
                     .foregroundStyle(Color.islandInk(NotchIsland.Ink.tertiary))
                     .lineLimit(1)
                     .truncationMode(.head)

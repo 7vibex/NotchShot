@@ -86,7 +86,7 @@ struct PinnedLyricPill: View {
 
     var body: some View {
         Text(text)
-            .font(.system(size: 11.5, weight: .semibold))
+            .font(.system(size: 12, weight: .semibold))
             .foregroundStyle(.white.opacity(0.92))
             .lineLimit(1)
             .truncationMode(.tail)

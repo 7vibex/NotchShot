@@ -66,6 +66,11 @@ struct IslandCallExpanded: View {
     private var showsMeetingControls: Bool { ExtrasPreferences.shared.meetingControlsEnabled }
     /// Four controls share the wing when meeting controls are on.
     private var controlDiameter: CGFloat { showsMeetingControls ? 30 : 34 }
+    /// A meeting app's own state can't be read, so its slash follows the
+    /// shortcuts NotchShot sent; the system mute is read from the device.
+    private var isMicrophoneMuted: Bool {
+        profile == nil ? coordinator.systemInputMuted : coordinator.meetingMutedApps.contains(activity.id.key)
+    }
 
     var body: some View {
         IslandWrappingRow(
@@ -104,7 +109,7 @@ struct IslandCallExpanded: View {
                     // decoration, the button is the thing people reach for.
                     let microphone = MeetingControls.microphonePresentation(for: activity.id.key)
                     IslandRoundButton(
-                        systemName: "mic.fill",
+                        systemName: isMicrophoneMuted ? "mic.slash.fill" : "mic.fill",
                         label: microphone.label,
                         tint: .white,
                         filled: false,

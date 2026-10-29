@@ -474,7 +474,7 @@ private struct AgentRowSeparator: View {
 }
 
 private struct AgentVibeActivityRow: View {
-    static let markSize: CGFloat = 34
+    static let markSize = NotchIsland.Mark.size
 
     let activity: AIActivitySnapshot
     let claudeSession: ClaudeCodeSession?
@@ -540,9 +540,9 @@ private struct AgentVibeActivityRow: View {
             } else if showsLegacyPermissionButtons {
                 HStack(spacing: NotchIsland.Spacing.element) {
                     Spacer(minLength: 0)
-                    AgentCapsuleButton(title: "Deny", isPrimary: false, action: onDeny)
+                    NotchCapsuleButton("Deny", action: onDeny)
                         .accessibilityLabel("Deny Claude Code permission")
-                    AgentCapsuleButton(title: claudeSession?.permission?.reviewActionTitle ?? "Review in Terminal", isPrimary: true, action: onApprove)
+                    NotchCapsuleButton(claudeSession?.permission?.reviewActionTitle ?? "Review in Terminal", prominence: .primary, action: onApprove)
                         .accessibilityLabel("Review Claude Code action")
                 }
                 .padding(.leading, Self.markSize + NotchAlertStyle.leadingGap)
@@ -551,7 +551,7 @@ private struct AgentVibeActivityRow: View {
         }
         .contentShape(Rectangle())
         .onHover { isHovered = $0 }
-        .animation(.easeOut(duration: 0.15), value: isHovered)
+        .animation(NotchMotion.hoverSwap, value: isHovered)
         .accessibilityElement(children: .contain)
         .accessibilityLabel("\(activity.source.title), \(activity.title)")
         .accessibilityValue(AgentVibePresentation.statusText(
@@ -597,15 +597,15 @@ private struct AgentVibeActivityRow: View {
 
     private var bodyColor: Color {
         if activity.state == .failed, !isAsking { return AgentStateMark.failedInk }
-        return Color.islandInk(0.82)
+        return Color.islandInk(NotchIsland.Ink.body)
     }
 
     private func progressBar(_ value: Double) -> some View {
         GeometryReader { proxy in
             ZStack(alignment: .leading) {
-                Capsule().fill(Color.islandInk(NotchIsland.Ink.hairline * 1.4))
+                Capsule().fill(Color.islandInk(NotchIsland.Ink.track))
                 Capsule()
-                    .fill(Color.islandInk(0.82))
+                    .fill(Color.islandInk(NotchIsland.Ink.body))
                     .frame(width: max(3, proxy.size.width * min(max(value, 0), 1)))
             }
         }
@@ -711,7 +711,7 @@ private struct AgentVibeRecentRow: View {
         .frame(minHeight: 30)
         .contentShape(Rectangle())
         .onHover { isHovered = $0 }
-        .animation(.easeOut(duration: 0.15), value: isHovered)
+        .animation(NotchMotion.hoverSwap, value: isHovered)
         .accessibilityElement(children: .contain)
         .accessibilityLabel("\(activity.source.title), \(activity.title)")
     }
@@ -749,7 +749,7 @@ struct AgentVibeCompactStrip: View {
                 HStack(spacing: NotchIsland.Spacing.element) {
                     leading
                     Text(activity.source.title)
-                        .font(.system(size: 10.5, weight: .semibold))
+                        .font(.system(size: 11, weight: .semibold))
                         .foregroundStyle(Color.islandInk(NotchIsland.Ink.secondary))
                         .lineLimit(1)
                     Spacer(minLength: NotchIsland.Spacing.tight)
@@ -785,7 +785,7 @@ struct AgentVibeCompactStrip: View {
                 .foregroundStyle(tint)
         case .percent(let value):
             Text("\(value)%")
-                .font(.system(size: 10.5, weight: .bold, design: .rounded))
+                .font(.system(size: 11, weight: .bold, design: .rounded))
                 .foregroundStyle(tint)
         }
     }
@@ -804,7 +804,7 @@ struct AgentVibePeekHeader: View {
     var body: some View {
         Button(action: onOpen) {
             HStack(spacing: NotchAlertStyle.leadingGap) {
-                AgentStateMark(source: activity.source, state: activity.state, size: 32)
+                AgentStateMark(source: activity.source, state: activity.state, size: NotchIsland.Mark.size)
 
                 VStack(alignment: .leading, spacing: 1) {
                     Text(activity.title)
@@ -813,7 +813,7 @@ struct AgentVibePeekHeader: View {
                         .lineLimit(1)
                     Text(AgentVibePresentation.bodyText(for: activity))
                         .font(NotchAlertStyle.body)
-                        .foregroundStyle(activity.state == .failed ? AgentStateMark.failedInk : Color.islandInk(0.82))
+                        .foregroundStyle(activity.state == .failed ? AgentStateMark.failedInk : Color.islandInk(NotchIsland.Ink.body))
                         .lineLimit(1)
                         .truncationMode(.tail)
                 }
@@ -875,7 +875,7 @@ struct AgentStateMark: View {
     /// The colour a state's word or glyph takes on the island's black.
     static func ink(for state: AIActivityState) -> Color {
         switch state {
-        case .working: Color.islandInk(0.82)
+        case .working: Color.islandInk(NotchIsland.Ink.body)
         case .waiting: .orange
         case .finished: .green
         case .failed: failedInk

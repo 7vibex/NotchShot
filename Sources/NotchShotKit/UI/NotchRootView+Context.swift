@@ -509,10 +509,10 @@ struct IdleContent: View {
                     }
                 } trailing: {
                     HStack(spacing: 6) {
-                        IdleShortcutButton(title: "Area", systemImage: "square.dashed", help: "Capture an area") {
+                        NotchCapsuleButton("Area", systemImage: "square.dashed", help: "Capture an area") {
                             coordinator.capture(.area)
                         }
-                        IdleShortcutButton(title: "Record", systemImage: "circle.fill", iconTint: .red, help: "Record the screen") {
+                        NotchCapsuleButton("Record", systemImage: "record.circle.fill", iconTint: .red, help: "Record the screen") {
                             coordinator.startRecording()
                         }
                     }
@@ -552,39 +552,6 @@ struct IdleContent: View {
     }
 
     private var privacy: PrivacyIndicatorMonitor { .shared }
-}
-
-/// A labelled capsule for the hover bar's two one-click shortcuts.
-private struct IdleShortcutButton: View {
-    var title: String
-    var systemImage: String
-    var iconTint: Color = .white
-    var help: String
-    var action: () -> Void
-
-    @State private var isHovered = false
-
-    var body: some View {
-        Button(action: action) {
-            HStack(spacing: 5) {
-                Image(systemName: systemImage)
-                    .font(.system(size: systemImage == "circle.fill" ? 8 : 11, weight: .bold))
-                    .foregroundStyle(iconTint)
-                Text(title)
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(.white)
-            }
-            .padding(.horizontal, 10)
-            .frame(height: 26)
-            .islandControlSurface(Capsule(), isHovered: isHovered)
-            .frame(minHeight: NotchShotDesignSystem.minimumControlTarget)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(NotchPressButtonStyle())
-        .onHover { isHovered = $0 }
-        .help(help)
-        .accessibilityLabel(help)
-    }
 }
 
 /// macOS's own colours: orange for the microphone, green for a camera.
