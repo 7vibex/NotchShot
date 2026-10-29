@@ -307,19 +307,7 @@ public final class AIActivityMonitor {
     private struct FileSignature: Equatable {
         var size: Int
         var modified: Date?
-        var identity: NSObject?
-
-        static func == (lhs: FileSignature, rhs: FileSignature) -> Bool {
-            guard lhs.size == rhs.size, lhs.modified == rhs.modified else { return false }
-            switch (lhs.identity, rhs.identity) {
-            case (nil, nil):
-                return true
-            case let (left?, right?):
-                return left === right || left.isEqual(right)
-            default:
-                return false
-            }
-        }
+        var identity: FileIdentity?
     }
 
     private struct CachedActivity {
@@ -407,42 +395,18 @@ public final class AIActivityMonitor {
 
     public func loadActivities() -> [AIActivitySnapshot] {
         var statistics = AIActivityLoadStatistics()
-        let keys: Set<URLResourceKey> = [
-            .isRegularFileKey,
-            .isSymbolicLinkKey,
-            .fileSizeKey,
-            .contentModificationDateKey,
-            .fileResourceIdentifierKey,
-        ]
-        guard let urls = try? FileManager.default.contentsOfDirectory(
-            at: directory,
-            includingPropertiesForKeys: Array(keys),
-            options: [.skipsHiddenFiles]
-        ) else {
+        guard let candidates = Self.newestEntries(in: directory, limit: 32) else {
             fileCache.removeAll()
             lastLoadStatistics = statistics
             return []
         }
 
-        // The sort key is read once per file, and only it and an index move
-        // while sorting. Reading it back out of the resource values inside the
-        // comparator repeated a bridged lookup for every comparison, and
-        // sorting the values themselves moved a dictionary with every swap.
-        // Nothing prunes the hooks' status files: at the couple of thousand a
-        // heavy user collects, that was most of each one-second poll, on the
-        // main actor.
-        let entries = urls.map { url in (url: url, values: try? url.resourceValues(forKeys: keys)) }
-        let candidates = entries.indices
-            .map { (index: $0, modified: entries[$0].values?.contentModificationDate ?? .distantPast) }
-            .sorted { $0.modified > $1.modified }
-            .prefix(32)
-            .map { entries[$0.index] }
-
         var result: [AIActivitySnapshot] = []
         var livePaths = Set<String>()
         livePaths.reserveCapacity(candidates.count)
-        for (url, values) in candidates {
+        for candidate in candidates {
             statistics.filesConsidered += 1
+            let url = candidate.url
             let path = url.standardizedFileURL.path
             livePaths.insert(path)
             // File-kind, size, and ownership are re-validated from this poll's
@@ -450,10 +414,10 @@ public final class AIActivityMonitor {
             // or a different kind of file can never serve a cached value.
             guard url.pathExtension.lowercased() == "json",
                   ownsURL(url),
-                  let values,
-                  values.isRegularFile == true,
-                  values.isSymbolicLink != true,
-                  let size = values.fileSize,
+                  candidate.isReadable,
+                  candidate.isRegularFile,
+                  !candidate.isSymbolicLink,
+                  let size = candidate.size,
                   size >= 0,
                   size <= AIActivityPolicy.maximumFileBytes else {
                 fileCache[path] = nil
@@ -461,8 +425,8 @@ public final class AIActivityMonitor {
             }
             let signature = FileSignature(
                 size: size,
-                modified: values.contentModificationDate,
-                identity: values.fileResourceIdentifier as? NSObject
+                modified: candidate.modified,
+                identity: candidate.identity
             )
             if let cached = fileCache[path], cached.signature == signature {
                 statistics.filesReused += 1
@@ -486,30 +450,134 @@ public final class AIActivityMonitor {
     }
 
     func activityURLs() -> [URL] {
-        let keys: Set<URLResourceKey> = [
-            .isRegularFileKey,
-            .isSymbolicLinkKey,
-            .fileSizeKey,
-            .contentModificationDateKey,
-        ]
-        guard let urls = try? FileManager.default.contentsOfDirectory(
-            at: directory,
-            includingPropertiesForKeys: Array(keys),
-            options: [.skipsHiddenFiles]
-        ) else { return [] }
+        Self.newestEntries(in: directory, limit: 32)?.map(\.url) ?? []
+    }
 
-        // `contentsOfDirectory` returns no meaningful order, so taking the
-        // first 32 could fill the budget with stale or invalid files and hide
-        // the session the user is actually running. Newest first instead.
-        return urls
-            .map { url -> (URL, Date) in
-                let modified = (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?
-                    .contentModificationDate
-                return (url, modified ?? .distantPast)
+    /// One directory entry as the newest-entry scan read it.
+    struct DirectoryEntry {
+        var url: URL
+        /// False when the file system reported an error for this entry; the
+        /// other fields are then unreliable.
+        var isReadable: Bool
+        var isRegularFile: Bool
+        var isSymbolicLink: Bool
+        var modified: Date?
+        /// The data length, for files.
+        var size: Int?
+        var identity: FileIdentity?
+    }
+
+    /// Which file a path named when it was read: an atomic replacement at the
+    /// same path is a different file even with the same size and date.
+    struct FileIdentity: Equatable {
+        var device: Int32
+        var file: UInt64
+    }
+
+    /// The newest `limit` entries of `directory`, newest first: the same
+    /// entries, in the same order, as listing it with `.skipsHiddenFiles` and
+    /// stable-sorting by `contentModificationDate`. Dot files and `UF_HIDDEN`
+    /// entries are skipped, a symbolic link ranks by its own date, an entry
+    /// whose attributes cannot be read ranks last, and equal dates keep
+    /// listing order. `nil` when the directory cannot be listed.
+    ///
+    /// Listing order means nothing, so taking the first 32 could fill the
+    /// budget with stale or invalid files and hide the session the user is
+    /// actually running. But nothing prunes the hooks' status files, and this
+    /// ranks the couple of thousand a heavy user collects every second, on the
+    /// main actor. A URL and a bridged resource dictionary per file was most of
+    /// that. One `getattrlistbulk` pass reads only what ranking and validation
+    /// need, and keeps a running top `limit`, so only the winners get a URL.
+    nonisolated static func newestEntries(in directory: URL, limit: Int) -> [DirectoryEntry]? {
+        let descriptor = open(directory.path, O_RDONLY | O_DIRECTORY | O_CLOEXEC)
+        guard descriptor >= 0 else { return nil }
+        defer { close(descriptor) }
+
+        var request = attrlist()
+        request.bitmapcount = u_short(ATTR_BIT_MAP_COUNT)
+        request.commonattr = attrgroup_t(ATTR_CMN_RETURNED_ATTRS) | attrgroup_t(ATTR_CMN_ERROR)
+            | attrgroup_t(ATTR_CMN_NAME) | attrgroup_t(ATTR_CMN_DEVID) | attrgroup_t(ATTR_CMN_OBJTYPE)
+            | attrgroup_t(ATTR_CMN_MODTIME) | attrgroup_t(bitPattern: ATTR_CMN_FLAGS)
+            | attrgroup_t(ATTR_CMN_FILEID)
+        request.fileattr = attrgroup_t(ATTR_FILE_DATALENGTH)
+
+        // Newest first; a new entry goes after every entry at least as new, so
+        // ties keep listing order exactly as a stable sort would.
+        var newest: [(rank: Double, entry: DirectoryEntry)] = []
+        newest.reserveCapacity(limit + 1)
+        let unreadable = Date.distantPast.timeIntervalSinceReferenceDate
+        let capacity = 64 * 1024
+        let buffer = UnsafeMutableRawPointer.allocate(byteCount: capacity, alignment: 16)
+        defer { buffer.deallocate() }
+
+        while true {
+            let count = getattrlistbulk(descriptor, &request, buffer, capacity, 0)
+            guard count > 0 else {
+                if count < 0 { return nil }
+                break
             }
-            .sorted { $0.1 > $1.1 }
-            .prefix(32)
-            .map(\.0)
+            var start = buffer
+            for _ in 0 ..< count {
+                let entryStart = start
+                start += Int(entryStart.loadUnaligned(as: UInt32.self))
+                // Attributes follow in the order getattrlistbulk(2) documents:
+                // the returned set, the error, then each group's attributes in
+                // ascending bit order, common before file.
+                var field = entryStart + MemoryLayout<UInt32>.size
+                let returned = field.loadUnaligned(as: attribute_set_t.self)
+                field += MemoryLayout<attribute_set_t>.size
+                func has(_ attribute: attrgroup_t) -> Bool { returned.commonattr & attribute != 0 }
+                func read<Value>(_: Value.Type) -> Value {
+                    defer { field += MemoryLayout<Value>.size }
+                    return field.loadUnaligned(as: Value.self)
+                }
+
+                var isReadable = true
+                if has(attrgroup_t(ATTR_CMN_ERROR)) { isReadable = read(UInt32.self) == 0 }
+                guard has(attrgroup_t(ATTR_CMN_NAME)) else { continue }
+                let nameField = field
+                let nameReference = read(attrreference_t.self)
+                let device = has(attrgroup_t(ATTR_CMN_DEVID)) ? read(dev_t.self) : nil
+                let type = has(attrgroup_t(ATTR_CMN_OBJTYPE)) ? read(fsobj_type_t.self) : nil
+                var rank = unreadable
+                var modified: Date?
+                if has(attrgroup_t(ATTR_CMN_MODTIME)) {
+                    let time = read(timespec.self)
+                    // Foundation's own conversion, so equal dates tie here too.
+                    rank = Double(time.tv_sec) - Date.timeIntervalBetween1970AndReferenceDate
+                        + 1.0e-9 * Double(time.tv_nsec)
+                    modified = Date(timeIntervalSinceReferenceDate: rank)
+                }
+                if has(attrgroup_t(bitPattern: ATTR_CMN_FLAGS)), read(UInt32.self) & UInt32(UF_HIDDEN) != 0 {
+                    continue
+                }
+                let file = has(attrgroup_t(ATTR_CMN_FILEID)) ? read(UInt64.self) : nil
+                let size = returned.fileattr & attrgroup_t(ATTR_FILE_DATALENGTH) != 0
+                    ? read(off_t.self) : nil
+                if !isReadable { rank = unreadable }
+
+                if newest.count == limit, let last = newest.last, rank <= last.rank { continue }
+                let name = (nameField + Int(nameReference.attr_dataoffset))
+                    .assumingMemoryBound(to: CChar.self)
+                guard name.pointee != CChar(UInt8(ascii: ".")) else { continue }
+                let entry = DirectoryEntry(
+                    url: directory.appendingPathComponent(
+                        String(cString: name),
+                        isDirectory: type == fsobj_type_t(VDIR.rawValue)
+                    ),
+                    isReadable: isReadable,
+                    isRegularFile: type == fsobj_type_t(VREG.rawValue),
+                    isSymbolicLink: type == fsobj_type_t(VLNK.rawValue),
+                    modified: modified,
+                    size: size.map(Int.init),
+                    identity: device.flatMap { device in file.map { FileIdentity(device: device, file: $0) } }
+                )
+                let index = newest.firstIndex { $0.rank < rank } ?? newest.endIndex
+                newest.insert((rank, entry), at: index)
+                if newest.count > limit { newest.removeLast() }
+            }
+        }
+        return newest.map(\.entry)
     }
 
     private func decodeContents(_ url: URL) -> AIActivitySnapshot? {

@@ -178,6 +178,7 @@ public final class NotchWindowController {
     /// notification can therefore end up behind a shield that appeared after
     /// it, which looks exactly like the card never being drawn at all.
     private var lockedPresenceTimer: Timer?
+    private var lastLoggedLockedPresentation: String?
     /// Cadence the live timer was created with, so a tick that changes nothing
     /// does not tear the timer down and build it again.
     private var presenceTimerInterval: TimeInterval?
@@ -717,7 +718,14 @@ public final class NotchWindowController {
             }
             // Marked public: this is the line that says whether the card was
             // even asked for, and it is unreadable in a bug report otherwise.
-            Log.window.notice("Locked presentation: show=\(self.shouldShowLockedPanel, privacy: .public), songOptIn=\(Preferences.shared.showsMediaWhileLocked, privacy: .public), stackOptIn=\(Preferences.shared.showsActivityStackWhileLocked, privacy: .public), hasMedia=\(self.hasMediaContent, privacy: .public), level=\(NotchPanel.lockedMediaLevel.rawValue, privacy: .public)")
+            // Logged when it changes, and once per lock: every island refresh
+            // lands here, and agents at work refresh it several times a second,
+            // which wrote thousands of identical lines an hour.
+            let presentation = "show=\(shouldShowLockedPanel), songOptIn=\(Preferences.shared.showsMediaWhileLocked), stackOptIn=\(Preferences.shared.showsActivityStackWhileLocked), hasMedia=\(hasMediaContent), level=\(NotchPanel.lockedMediaLevel.rawValue)"
+            if presentation != lastLoggedLockedPresentation {
+                lastLoggedLockedPresentation = presentation
+                Log.window.notice("Locked presentation: \(presentation, privacy: .public)")
+            }
             if isScreenLocked {
                 startLockedPresenceTimer()
             } else {
@@ -729,6 +737,7 @@ public final class NotchWindowController {
             return
         }
         stopLockedPresenceTimer()
+        lastLoggedLockedPresentation = nil
         LockedMediaNotificationController.shared.clear()
         LockedMediaNotificationController.shared.setCustomPresentationAvailable(false)
         for entry in entries.values {

@@ -137,4 +137,84 @@ struct AIActivityRefreshCachingTests {
         #expect(monitor.loadActivities().isEmpty)
         #expect(monitor.lastLoadStatistics == AIActivityLoadStatistics())
     }
+
+    @Test("The newest-entry scan picks what a sorted directory listing would")
+    func newestEntriesMatchListing() throws {
+        let directory = try makeDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let base = Date(timeIntervalSinceReferenceDate: 800_000_000.123_456)
+        func file(_ name: String, age: TimeInterval) throws {
+            let url = directory.appendingPathComponent(name)
+            try Data("{}".utf8).write(to: url)
+            try FileManager.default.setAttributes([.modificationDate: base - age], ofItemAtPath: url.path)
+        }
+        // More than the budget, with runs of equal dates that only listing
+        // order can break.
+        for index in 0 ..< 60 {
+            try file("s\(index).json", age: TimeInterval(index / 3))
+        }
+        try file("notes.txt", age: 0.5)
+        // Hidden either way must never take a slot, however new.
+        try file(".dot.json", age: -100)
+        try file("flagged.json", age: -100)
+        #expect(chflags(directory.appendingPathComponent("flagged.json").path, UInt32(UF_HIDDEN)) == 0)
+        // A link ranks by its own date, not its target's; a folder still ranks.
+        try FileManager.default.createSymbolicLink(
+            at: directory.appendingPathComponent("link.json"),
+            withDestinationURL: directory.appendingPathComponent("s59.json")
+        )
+        try FileManager.default.createDirectory(
+            at: directory.appendingPathComponent("folder.json"),
+            withIntermediateDirectories: false
+        )
+
+        let listing = try FileManager.default.contentsOfDirectory(
+            at: directory,
+            includingPropertiesForKeys: [.contentModificationDateKey],
+            options: [.skipsHiddenFiles]
+        )
+        func modified(_ url: URL) -> Date {
+            let values = try? url.resourceValues(forKeys: [.contentModificationDateKey])
+            return values?.contentModificationDate ?? .distantPast
+        }
+        let dates = listing.map(modified)
+        let ranked: [String] = listing.indices
+            .sorted { dates[$0] != dates[$1] ? dates[$0] > dates[$1] : $0 < $1 }
+            .map { listing[$0].standardizedFileURL.path }
+
+        for limit in [0, 1, 32, 200] {
+            let scanned = try #require(AIActivityMonitor.newestEntries(in: directory, limit: limit))
+            #expect(scanned.map(\.url.standardizedFileURL.path) == Array(ranked.prefix(limit)), "limit \(limit)")
+        }
+
+        // What validation reads must agree with what Foundation reports.
+        let keys: Set<URLResourceKey> = [
+            .isRegularFileKey, .isSymbolicLinkKey, .isDirectoryKey, .fileSizeKey, .contentModificationDateKey,
+        ]
+        for entry in try #require(AIActivityMonitor.newestEntries(in: directory, limit: 200)) {
+            let values = try entry.url.resourceValues(forKeys: keys)
+            let name = entry.url.lastPathComponent
+            #expect(entry.isReadable, "\(name)")
+            #expect(entry.isRegularFile == (values.isRegularFile ?? false), "\(name)")
+            #expect(entry.isSymbolicLink == (values.isSymbolicLink ?? false), "\(name)")
+            #expect(entry.url.hasDirectoryPath == (values.isDirectory ?? false), "\(name)")
+            #expect(entry.modified == values.contentModificationDate, "\(name)")
+            if entry.isRegularFile { #expect(entry.size == values.fileSize, "\(name)") }
+            #expect(entry.identity != nil, "\(name)")
+        }
+
+        // Identical bytes and date, but a different file: identity alone tells.
+        func identity(of name: String) throws -> AIActivityMonitor.FileIdentity? {
+            try #require(AIActivityMonitor.newestEntries(in: directory, limit: 200)?
+                .first { $0.url.lastPathComponent == name }).identity
+        }
+        let before = try identity(of: "s0.json")
+        try FileManager.default.removeItem(at: directory.appendingPathComponent("s0.json"))
+        try file("s0.json", age: 0)
+        #expect(try identity(of: "s0.json") != before)
+        #expect(AIActivityMonitor.newestEntries(
+            in: directory.appendingPathComponent("missing", isDirectory: true),
+            limit: 32
+        ) == nil)
+    }
 }

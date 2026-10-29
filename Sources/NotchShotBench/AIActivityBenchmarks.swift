@@ -73,6 +73,18 @@ enum AIActivityBenchmarks {
             Benchmark.measure("ai.activity refresh \(count) unchanged [reread]", iterations: 50, warmup: 5) {
                 Benchmark.blackHole(Baselines.aiActivityLoadBefore(directory: directory))
             }
+            // A small directory is the common case: the scan must not lose
+            // there what it wins at scale. Interleaved, both caches warm.
+            let listing = Baselines.AIActivityListingLoaderBefore(directory: directory, ownsURL: { _ in true })
+            precondition(listing.loadActivities().map(\.id) == monitor.loadActivities().map(\.id))
+            for round in 1 ... 3 {
+                Benchmark.measure("ai.activity refresh \(count) unchanged [listing \(round)]", iterations: 50, warmup: 5) {
+                    Benchmark.blackHole(listing.loadActivities())
+                }
+                Benchmark.measure("ai.activity refresh \(count) unchanged [current \(round)]", iterations: 50, warmup: 5) {
+                    Benchmark.blackHole(monitor.loadActivities())
+                }
+            }
             for index in 0 ..< count {
                 try? FileManager.default.removeItem(at: directory.appendingPathComponent("session-\(index).json"))
             }
@@ -147,6 +159,7 @@ enum AIActivityBenchmarks {
             ownsURL: { _ in true }
         )
         let before = Baselines.AIActivityCachedLoaderBefore(directory: scaleDirectory, ownsURL: { _ in true })
+        let listing = Baselines.AIActivityListingLoaderBefore(directory: scaleDirectory, ownsURL: { _ in true })
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
         var written = 0
@@ -171,11 +184,18 @@ enum AIActivityBenchmarks {
             let baseline = before.loadActivities()
             precondition(current.count == 32, "the scale fixture should fill the 32-file budget")
             precondition(
-                current.map(\.id) == baseline.map(\.id),
-                "ranking by a precomputed key changed which files were selected or their order"
+                current.map(\.id) == baseline.map(\.id)
+                    && current.map(\.id) == listing.loadActivities().map(\.id),
+                "the newest-entry scan changed which files were selected or their order"
             )
-            Benchmark.measure("ai.activity refresh \(count) files unchanged [current]", iterations: 30, warmup: 3) {
-                Benchmark.blackHole(scaleMonitor.loadActivities())
+            // Interleaved, so background load lands on both sides alike.
+            for round in 1 ... 3 {
+                Benchmark.measure("ai.activity refresh \(count) files unchanged [listing \(round)]", iterations: 30, warmup: 3) {
+                    Benchmark.blackHole(listing.loadActivities())
+                }
+                Benchmark.measure("ai.activity refresh \(count) files unchanged [current \(round)]", iterations: 30, warmup: 3) {
+                    Benchmark.blackHole(scaleMonitor.loadActivities())
+                }
             }
             precondition(
                 scaleMonitor.lastLoadStatistics.filesDecoded == 0,
@@ -186,5 +206,30 @@ enum AIActivityBenchmarks {
             }
         }
         try? FileManager.default.removeItem(at: scaleDirectory)
+
+        // Optionally a real directory, read only: `loadActivities()` lists and
+        // decodes but never writes, and history goes to the run directory.
+        if let path = ProcessInfo.processInfo.environment["NOTCHSHOT_BENCH_AI_DIRECTORY"] {
+            let real = URL(fileURLWithPath: path, isDirectory: true)
+            let realMonitor = AIActivityMonitor(
+                directory: real,
+                historyURL: Fixtures.runDirectory.appendingPathComponent("real-history.json"),
+                ownsURL: { _ in true }
+            )
+            let realListing = Baselines.AIActivityListingLoaderBefore(directory: real, ownsURL: { _ in true })
+            let files = (try? FileManager.default.contentsOfDirectory(atPath: path).count) ?? 0
+            precondition(
+                realMonitor.loadActivities().map(\.id) == realListing.loadActivities().map(\.id),
+                "the newest-entry scan disagrees with the listing on the real directory"
+            )
+            for round in 1 ... 3 {
+                Benchmark.measure("ai.activity real \(files) files [listing \(round)]", iterations: 30, warmup: 3) {
+                    Benchmark.blackHole(realListing.loadActivities())
+                }
+                Benchmark.measure("ai.activity real \(files) files [current \(round)]", iterations: 30, warmup: 3) {
+                    Benchmark.blackHole(realMonitor.loadActivities())
+                }
+            }
+        }
     }
 }
