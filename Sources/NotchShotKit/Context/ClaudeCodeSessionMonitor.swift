@@ -90,9 +90,6 @@ public struct ClaudeCodeSession: Codable, Equatable, Identifiable, Sendable {
 
     /// The current turn's tool calls, oldest first.
     public var actions: [AgentRunAction] = []
-    /// Every tool call this turn, including those that scrolled out of
-    /// `actions`.
-    public var toolCallCount = 0
     /// Claude's own task list, from `TodoWrite` or `TaskCreate`/`TaskUpdate`.
     public var plan: [AIActivityStep] = []
     /// As the hook or the transcript named it.

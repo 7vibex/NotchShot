@@ -200,21 +200,6 @@ public enum AgentRunTimeline {
 /// The card's words for tool calls: "Editing src/billing/invoice.ts" while
 /// it runs, "Read 12 files" once a run of reads is done.
 public enum AgentRunPhrasing {
-    public static func symbol(for kind: AgentRunAction.Kind) -> String {
-        switch kind {
-        case .read: "doc.text.magnifyingglass"
-        case .edit: "square.and.pencil"
-        case .write: "doc.badge.plus"
-        case .search, .find: "magnifyingglass"
-        case .list: "folder"
-        case .command: "terminal"
-        case .fetch, .webSearch: "globe"
-        case .agent: "person.2"
-        case .question: "questionmark.bubble"
-        case .other: "wrench.and.screwdriver"
-        }
-    }
-
     public static func text(for group: [AgentRunAction], finished: Bool) -> String {
         guard let action = group.last else { return "" }
         let count = group.count

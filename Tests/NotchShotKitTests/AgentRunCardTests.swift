@@ -249,7 +249,7 @@ struct AgentRunCardTests {
         _ = apply("pretooluse", ["tool_use_id": "t2", "tool_target": "a.swift"], tool: "Edit", at: 3)
         // Without PostToolUse, the edit ended the read.
         #expect(session.actions[0].endedAt == t0.addingTimeInterval(3))
-        #expect(session.toolCallCount == 2)
+        #expect(session.actions.count == 2)
         #expect(ClaudeCodeRunTracker.detail(forStartOf: "Edit", in: session) == "Editing a.swift")
 
         _ = apply("stop", [:], at: 5)
@@ -298,7 +298,7 @@ struct AgentRunCardTests {
 
     // MARK: Card text
 
-    @Test("The card's headline, model line and step count follow the run")
+    @Test("The card's headline, model, plan and done steps follow the run")
     func cardModel() {
         var session = ClaudeCodeSession(id: "s", cwd: "/Users/example/billing", phase: .working, title: "Fix invoices", startedAt: t0, updatedAt: t0)
         session.turnStartedAt = t0
@@ -308,7 +308,12 @@ struct AgentRunCardTests {
             ["label": "E", "status": "pending"], ["label": "F", "status": "pending"],
         ])
         AgentRunTimeline.begin(
-            AgentRunAction(id: "e", tool: "Edit", target: "src/billing/invoice.ts", startedAt: t0),
+            AgentRunAction(id: "r", tool: "Read", target: "src/billing/invoice.ts", startedAt: t0),
+            in: &session.actions,
+            endsOpenCalls: true
+        )
+        AgentRunTimeline.begin(
+            AgentRunAction(id: "e", tool: "Edit", target: "src/billing/invoice.ts", startedAt: t0.addingTimeInterval(2)),
             in: &session.actions,
             endsOpenCalls: true
         )
@@ -320,9 +325,11 @@ struct AgentRunCardTests {
             modelName: "Claude Sonnet 5.5",
             controls: controls
         )
+        #expect(model.title == "Fix invoices")
         #expect(model.headline == "Editing src/billing/invoice.ts")
-        #expect(model.headlineSymbol == "square.and.pencil")
-        #expect(model.metaLeading == "Claude Sonnet 5.5 · billing")
+        // The step under way is the headline; the list holds the done ones.
+        #expect(model.rows.map(\.text) == ["Read src/billing/invoice.ts"])
+        #expect(model.modelLabel == "Sonnet 5.5")
         #expect(model.metaTrailing == "Step 3 of 6")
         #expect(model.endedAt == nil)
         #expect(model.isRunning)
@@ -335,14 +342,14 @@ struct AgentRunCardTests {
             controls: AgentRunControls(canPause: true, canStop: true, state: .paused(before: "Running tests"))
         )
         #expect(model.headline == "Paused before running tests")
+        #expect(model.isPaused)
         #expect(!model.isRunning)
         #expect(model.controls.showsResume)
 
         session.plan = []
-        session.toolCallCount = 14
-        model = AgentRunCardModel(activity: session.aiActivity, claudeSession: session, interaction: nil, modelName: nil, controls: .none)
-        #expect(model.metaTrailing == "Step 14")
-        #expect(model.metaLeading == "billing")
+        model = AgentRunCardModel(activity: session.aiActivity, claudeSession: session, interaction: nil, modelName: "GPT-5", controls: .none)
+        #expect(model.metaTrailing == nil)
+        #expect(model.modelLabel == "GPT-5")
     }
 
     // MARK: Holding a paused hook

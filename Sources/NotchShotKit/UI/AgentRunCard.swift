@@ -6,17 +6,18 @@ struct AgentRunCardModel: Equatable {
     var source: AISource
     var state: AIActivityState
     var isAsking: Bool
-    var headline: String
-    var headlineSymbol: String
     var title: String
+    /// What the run is doing now, or why it stopped.
+    var headline: String
     /// The run's clock: running from `startedAt`, or stopped at `endedAt`.
     var startedAt: Date?
     var endedAt: Date?
-    var metaLeading: String
+    /// "Sonnet 5.5": the agent's own name is already on its mark.
+    var modelLabel: String?
     var plan: [AIActivityStep]
     var progress: Double?
+    /// The steps already done, newest last. The one under way is the headline.
     var rows: [AgentRunRow]
-    var toolCallCount: Int
     var controls: AgentRunControls
     /// Claude's permission button title: approval opens a review first.
     var permissionReviewTitle: String?
@@ -36,15 +37,12 @@ struct AgentRunCardModel: Equatable {
         self.controls = controls
         progress = activity.progress
         plan = claudeSession.map(\.plan) ?? activity.steps
-        rows = claudeSession.map { AgentRunTimeline.rows(for: $0.actions) } ?? []
-        toolCallCount = claudeSession?.toolCallCount ?? 0
+        rows = claudeSession.map { Array(AgentRunTimeline.rows(for: $0.actions, limit: 4).filter { !$0.isCurrent }.suffix(3)) } ?? []
 
-        let workspace = claudeSession?.workspaceName
-            ?? activity.workspace.map { URL(fileURLWithPath: $0).lastPathComponent }
-        metaLeading = [modelName, workspace]
-            .compactMap { $0?.isEmpty == false ? $0 : nil }
-            .joined(separator: " · ")
-        if metaLeading.isEmpty { metaLeading = activity.source.title }
+        let name = modelName?.isEmpty == false ? modelName : nil
+        modelLabel = name.map { name in
+            activity.source == .claude && name.hasPrefix("Claude ") ? String(name.dropFirst(7)) : name
+        }
 
         if let session = claudeSession {
             startedAt = session.turnStartedAt ?? session.startedAt
@@ -54,7 +52,7 @@ struct AgentRunCardModel: Equatable {
             endedAt = activity.state == .working ? nil : activity.updatedAt
         }
 
-        (headline, headlineSymbol) = Self.headline(
+        headline = Self.headline(
             activity: activity,
             claudeSession: claudeSession,
             interaction: interaction,
@@ -67,62 +65,63 @@ struct AgentRunCardModel: Equatable {
         claudeSession: ClaudeCodeSession?,
         interaction: AgentInteraction?,
         control: AgentRunControlState?
-    ) -> (String, String) {
+    ) -> String {
         if let interaction {
             switch interaction.kind {
-            case .approval(let request): return ("Wants to use " + request.tool, "hand.raised")
-            case .question: return (AgentVibePresentation.bodyText(for: activity, interaction: interaction), "questionmark.bubble")
+            case .approval(let request): return "Wants to use " + request.tool
+            case .question: return AgentVibePresentation.bodyText(for: activity, interaction: interaction)
             }
         }
         if let permission = claudeSession?.permission {
-            return ("Wants to use " + permission.toolName, "hand.raised")
+            return "Wants to use " + permission.toolName
         }
         switch control {
         case .paused(let next)?:
-            guard let next, let first = next.first else { return ("Paused", "pause.circle") }
-            return ("Paused before " + first.lowercased() + next.dropFirst(), "pause.circle")
-        case .pausing?: return ("Pausing before the next step", "pause.circle")
-        case .stopping?: return ("Stopping before the next step", "stop.circle")
+            guard let next, let first = next.first else { return "Paused" }
+            return "Paused before " + first.lowercased() + next.dropFirst()
+        case .pausing?: return "Pausing before the next step"
+        case .stopping?: return "Stopping before the next step"
         case nil: break
         }
         switch activity.state {
         case .working:
             if let session = claudeSession {
-                if let current = AgentRunTimeline.currentText(for: session.actions) {
-                    return (current.text, AgentRunPhrasing.symbol(for: current.kind))
-                }
-                return ("Thinking", "ellipsis")
+                return AgentRunTimeline.currentText(for: session.actions)?.text ?? "Thinking"
             }
-            return (AgentVibePresentation.bodyText(for: activity), "ellipsis")
+            return AgentVibePresentation.bodyText(for: activity)
         case .waiting:
-            return (AgentVibePresentation.bodyText(for: activity, claudeSession: claudeSession), "checkmark.circle")
+            return AgentVibePresentation.bodyText(for: activity, claudeSession: claudeSession)
         case .finished:
-            return ("Done", "checkmark.circle")
+            return "Done"
         case .failed:
-            return (AgentVibePresentation.bodyText(for: activity), "exclamationmark.triangle")
+            return AgentVibePresentation.bodyText(for: activity)
         }
     }
 
-    /// "Step 3 of 6", "All 6 done", "42%", or how many calls a run without
-    /// a plan has made.
+    /// "Step 3 of 6", "All 6 done" or "42%".
     var metaTrailing: String? {
         if let position = AgentRunPlan.position(of: plan) {
             return AgentRunPlan.isComplete(plan)
                 ? "All \(position.total) done"
                 : "Step \(position.current) of \(position.total)"
         }
-        if let progress { return "\(Int((min(max(progress, 0), 1) * 100).rounded()))%" }
-        return toolCallCount > 0 ? "Step \(toolCallCount)" : nil
+        return progress.map { "\(Int((min(max($0, 0), 1) * 100).rounded()))%" }
     }
+
+    var isPaused: Bool { controls.state != nil && controls.state != .stopping }
 
     var isRunning: Bool { state == .working && !isAsking && !(controls.state?.isPaused ?? false) }
 }
 
-/// The lead agent run as a card: what it is doing now and for how long,
-/// which model and project, its plan as segments, its last few steps with
-/// their times, and Pause, Stop and Open run.
+/// The lead agent run. It is the agent rows' own layout with more under it:
+/// the mark, the run's title and what it is doing now, the clock and model
+/// where a row has its time; then, along the text column, the plan, the
+/// steps already done, and Pause, Stop and Open run. It sits on the island's
+/// black like the rows, with no box of its own.
 struct AgentRunCard: View {
-    static let accent = Color(red: 0.45, green: 0.62, blue: 1.0)
+    /// The rows' mark size, so the card's text column lines up with theirs.
+    static let markSize: CGFloat = 34
+    private static let textInset = markSize + NotchAlertStyle.leadingGap
 
     let model: AgentRunCardModel
     let interaction: AgentInteraction?
@@ -142,40 +141,13 @@ struct AgentRunCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             header
-            meta
-                .padding(.top, 10)
-            if showsBar {
-                bar
-                    .padding(.top, 8)
-            }
-            if let interaction {
-                AgentInteractionCard(interaction: interaction, onRespond: onRespond)
-                    .padding(.top, 14)
-                    .transition(.opacity.combined(with: .move(edge: .top)))
-            } else {
-                if !model.rows.isEmpty {
-                    steps
-                        .padding(.top, 14)
-                }
-                if showsControlRow {
-                    controlRow
-                        .padding(.top, 10)
-                }
-            }
-        }
-        .padding(.horizontal, 16)
-        .padding(.top, 12)
-        .padding(.bottom, showsControlRow && interaction == nil ? 8 : 14)
-        .background {
-            let shape = RoundedRectangle(cornerRadius: 22, style: .continuous)
-            shape
-                .fill(Color.islandInk(0.045))
-                .overlay { shape.strokeBorder(Color.islandInk(0.10), lineWidth: 1) }
+                .padding(.vertical, NotchIsland.Spacing.row)
+            details
+                .padding(.leading, Self.textInset)
         }
         .contentShape(Rectangle())
         .onHover { isHovered = $0 }
         .animation(.easeOut(duration: 0.15), value: isHovered)
-        .help(model.title)
         .accessibilityElement(children: .contain)
         .accessibilityLabel("\(model.source.title), \(model.title)")
         .accessibilityValue(accessibilityValue)
@@ -184,41 +156,67 @@ struct AgentRunCard: View {
     // MARK: Header
 
     private var header: some View {
-        HStack(spacing: 10) {
-            AgentRunRing(
-                source: model.source,
-                state: model.state,
-                isAsking: model.isAsking,
-                isPaused: model.controls.state != nil && model.controls.state != .stopping
-            )
-            Image(systemName: model.headlineSymbol)
-                .font(.system(size: 14, weight: .regular))
-                .foregroundStyle(Color.islandInk(0.62))
-                .frame(width: 18)
-                .accessibilityHidden(true)
-            Text(model.headline)
-                .font(.system(size: 14, weight: .medium))
-                .foregroundStyle(model.state == .failed && !model.isAsking
-                    ? AgentStateMark.failedInk
-                    : Color.islandInk(0.86))
-                .lineLimit(1)
-                .truncationMode(.middle)
-                .frame(maxWidth: .infinity, alignment: .leading)
-
-            ZStack(alignment: .trailing) {
-                clock
-                    .opacity(isHovered ? 0 : 1)
-                HStack(spacing: 0) {
-                    if let onOpenConversation {
-                        IslandBandButton(systemName: "text.bubble", label: "Show conversation", action: onOpenConversation)
-                    }
-                    IslandBandButton(systemName: "xmark", label: "Hide \(model.source.title) activity", action: onDismiss)
-                }
-                .opacity(isHovered ? 1 : 0)
-                .allowsHitTesting(isHovered)
+        HStack(alignment: .center, spacing: NotchAlertStyle.leadingGap) {
+            // The mark is the way to the run, as on the rows.
+            Button(action: onOpen) {
+                AgentStateMark(
+                    source: model.source,
+                    state: model.state,
+                    isAsking: model.isAsking,
+                    isPaused: model.isPaused,
+                    size: Self.markSize
+                )
+                .contentShape(Rectangle())
             }
-            .frame(height: 34)
+            .buttonStyle(NotchPressButtonStyle())
+            .disabled(!canOpen)
+            .help(openHelp)
+            .accessibilityLabel(openHelp)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(model.title)
+                    .font(NotchAlertStyle.title)
+                    .foregroundStyle(Color.islandInk(NotchIsland.Ink.primary))
+                    .lineLimit(1)
+                Text(model.headline)
+                    .font(NotchAlertStyle.body)
+                    .foregroundStyle(model.state == .failed && !model.isAsking
+                        ? AgentStateMark.failedInk
+                        : Color.islandInk(0.82))
+                    .lineLimit(model.isAsking ? 2 : 1)
+                    .truncationMode(.middle)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+            trailing
         }
+    }
+
+    /// The clock and the model at rest; the row controls under the pointer,
+    /// in the same place, as the rows do it.
+    private var trailing: some View {
+        ZStack(alignment: .trailing) {
+            VStack(alignment: .trailing, spacing: 2) {
+                clock
+                if let modelLabel = model.modelLabel {
+                    Text(modelLabel)
+                        .font(NotchAlertStyle.meta)
+                        .foregroundStyle(Color.islandInk(NotchIsland.Ink.tertiary))
+                        .lineLimit(1)
+                }
+            }
+            .opacity(isHovered ? 0 : 1)
+
+            HStack(spacing: 2) {
+                if let onOpenConversation {
+                    IslandBandButton(systemName: "text.bubble", label: "Show conversation", action: onOpenConversation)
+                }
+                IslandBandButton(systemName: "xmark", label: "Hide \(model.source.title) activity", action: onDismiss)
+            }
+            .opacity(isHovered ? 1 : 0)
+            .allowsHitTesting(isHovered)
+        }
+        .frame(minWidth: 52, alignment: .trailing)
     }
 
     @ViewBuilder
@@ -237,138 +235,123 @@ struct AgentRunCard: View {
     private func clockText(_ seconds: TimeInterval) -> some View {
         IslandClockText(
             text: AgentRunPhrasing.clock(seconds),
-            font: .system(size: 14, weight: .medium),
-            color: Color.islandInk(model.endedAt == nil ? 0.62 : 0.42)
+            font: NotchAlertStyle.meta,
+            color: Color.islandInk(model.endedAt == nil ? NotchIsland.Ink.secondary : NotchIsland.Ink.tertiary)
         )
         .accessibilityLabel("Running for \(AgentRunPhrasing.duration(seconds, running: true))")
     }
 
-    // MARK: Meta and plan
+    // MARK: Details
 
-    private var meta: some View {
-        HStack(spacing: 8) {
-            Text(model.metaLeading)
-                .lineLimit(1)
-                .truncationMode(.tail)
-            Spacer(minLength: 8)
+    @ViewBuilder
+    private var details: some View {
+        if showsBar {
+            bar
+                .padding(.bottom, NotchIsland.Spacing.row)
+        }
+        if let interaction {
+            AgentInteractionCard(interaction: interaction, onRespond: onRespond)
+                .padding(.bottom, NotchIsland.Spacing.group)
+                .transition(.opacity.combined(with: .move(edge: .top)))
+        } else {
+            if !model.rows.isEmpty {
+                steps
+                    .padding(.bottom, showsControlRow ? NotchIsland.Spacing.tight : NotchIsland.Spacing.row)
+            }
+            if showsControlRow {
+                controlRow
+            }
+        }
+    }
+
+    private var showsBar: Bool { !model.plan.isEmpty || model.progress != nil }
+
+    /// The plan as one segment per step, in the rows' white, with where the
+    /// run stands at the end.
+    private var bar: some View {
+        HStack(spacing: NotchIsland.Spacing.element) {
+            Group {
+                if !model.plan.isEmpty {
+                    HStack(spacing: 3) {
+                        ForEach(model.plan) { step in
+                            Capsule(style: .continuous)
+                                .fill(segmentColor(step.state))
+                        }
+                    }
+                } else if let progress = model.progress {
+                    GeometryReader { proxy in
+                        ZStack(alignment: .leading) {
+                            Capsule().fill(Self.track)
+                            Capsule()
+                                .fill(Color.islandInk(0.82))
+                                .frame(width: max(3, proxy.size.width * min(max(progress, 0), 1)))
+                        }
+                    }
+                }
+            }
+            .frame(height: 3)
+
             if let trailing = model.metaTrailing {
                 Text(trailing)
+                    .font(NotchAlertStyle.meta)
                     .monospacedDigit()
+                    .foregroundStyle(Color.islandInk(NotchIsland.Ink.tertiary))
                     .lineLimit(1)
                     .fixedSize()
             }
         }
-        .font(.system(size: 12, weight: .medium))
-        .foregroundStyle(Color.islandInk(0.5))
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(model.plan.isEmpty ? "Progress" : "Plan")
+        .accessibilityValue(model.metaTrailing ?? "")
     }
 
-    private var showsBar: Bool {
-        !model.plan.isEmpty || model.progress != nil || model.isRunning
-    }
-
-    @ViewBuilder
-    private var bar: some View {
-        if !model.plan.isEmpty {
-            HStack(spacing: 5) {
-                ForEach(model.plan) { step in
-                    Capsule(style: .continuous)
-                        .fill(segmentColor(step.state))
-                        .frame(height: 4)
-                }
-            }
-            .accessibilityElement()
-            .accessibilityLabel("Plan")
-            .accessibilityValue(model.metaTrailing ?? "")
-        } else if let progress = model.progress {
-            GeometryReader { proxy in
-                ZStack(alignment: .leading) {
-                    Capsule().fill(Color.islandInk(0.12))
-                    Capsule()
-                        .fill(Self.accent)
-                        .frame(width: max(4, proxy.size.width * min(max(progress, 0), 1)))
-                }
-            }
-            .frame(height: 4)
-            .accessibilityElement()
-            .accessibilityLabel("Progress")
-            .accessibilityValue(model.metaTrailing ?? "")
-        } else {
-            // Working with no plan to measure against: a sweep on a layer,
-            // so it costs the app nothing per frame.
-            LayerProgressSweep(tint: Self.accent.opacity(0.8), segment: 0.22, pass: 1.4)
-                .frame(height: 4)
-                .background(Capsule().fill(Color.islandInk(0.12)))
-                .clipShape(Capsule())
-                .accessibilityHidden(true)
-        }
-    }
+    private static let track = Color.islandInk(NotchIsland.Ink.hairline * 1.4)
 
     private func segmentColor(_ state: AIActivityStepState) -> Color {
         switch state {
-        case .completed: Self.accent
-        case .working: Self.accent.opacity(0.42)
-        case .pending: Color.islandInk(0.12)
+        case .completed: Color.islandInk(0.82)
+        case .working: Color.islandInk(NotchIsland.Ink.tertiary)
+        case .pending: Self.track
         case .failed: AgentStateMark.failedInk
         }
     }
 
-    // MARK: Steps
-
     private var steps: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: NotchIsland.Spacing.tight) {
             ForEach(model.rows) { row in
-                HStack(spacing: 10) {
-                    Image(systemName: AgentRunPhrasing.symbol(for: row.kind))
-                        .font(.system(size: 13, weight: .regular))
-                        .foregroundStyle(Color.islandInk(0.5))
-                        .frame(width: 18)
-                        .accessibilityHidden(true)
+                HStack(spacing: NotchIsland.Spacing.element) {
                     Text(row.text)
-                        .font(.system(size: 13, weight: .regular))
-                        .foregroundStyle(Color.islandInk(row.isCurrent ? 0.55 : 0.86))
+                        .font(NotchAlertStyle.body)
+                        .foregroundStyle(Color.islandInk(NotchIsland.Ink.secondary))
                         .lineLimit(1)
                         .truncationMode(.middle)
                         .frame(maxWidth: .infinity, alignment: .leading)
-                    rowTime(row)
+                    Text(row.failed
+                        ? "Failed"
+                        : AgentRunPhrasing.duration(row.duration(now: row.endedAt ?? row.startedAt), running: false))
+                        .font(NotchAlertStyle.meta)
+                        .monospacedDigit()
+                        .foregroundStyle(row.failed ? AgentStateMark.failedInk : Color.islandInk(NotchIsland.Ink.tertiary))
+                        .fixedSize()
                 }
-                .frame(height: 20)
                 .accessibilityElement(children: .combine)
             }
         }
     }
 
-    @ViewBuilder
-    private func rowTime(_ row: AgentRunRow) -> some View {
-        if row.failed {
-            Text("Failed")
-                .font(.system(size: 12, weight: .medium))
-                .foregroundStyle(AgentStateMark.failedInk)
-        } else if row.isCurrent, model.endedAt == nil {
-            TimelineView(.periodic(from: row.startedAt, by: 1)) { context in
-                durationText(row.duration(now: context.date), running: true)
-            }
-        } else {
-            durationText(row.duration(now: model.endedAt ?? row.startedAt), running: row.isCurrent)
-        }
-    }
-
-    private func durationText(_ seconds: TimeInterval, running: Bool) -> some View {
-        IslandClockText(
-            text: AgentRunPhrasing.duration(seconds, running: running),
-            font: .system(size: 12, weight: .medium),
-            color: Color.islandInk(0.42)
-        )
-    }
-
     // MARK: Controls
 
+    /// Only when there is something to press besides the way to the run,
+    /// which the mark already is.
     private var showsControlRow: Bool {
-        showsPermissionButtons || canOpen || model.controls.canPause || model.controls.canStop
+        showsPermissionButtons || model.controls.canPause || model.controls.canStop
             || model.controls.state != nil
     }
 
+    /// The answer rows' capsules: Resume is the white one, as the island's
+    /// one call to action; Pause and Stop are quiet.
     private var controlRow: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: NotchIsland.Spacing.element) {
             if showsPermissionButtons {
                 AgentCapsuleButton(title: "Deny", isPrimary: false, action: onDeny)
                     .accessibilityLabel("Deny Claude Code permission")
@@ -377,19 +360,21 @@ struct AgentRunCard: View {
             } else {
                 let controls = model.controls
                 if controls.showsResume {
-                    AgentRunControlButton(symbol: "play", title: "Resume") { onControl(.resume) }
+                    AgentCapsuleButton(title: "Resume", isPrimary: true) { onControl(.resume) }
+                        .help("Let \(model.source.title) carry on")
                 } else if controls.canPause {
-                    AgentRunControlButton(symbol: "pause", title: "Pause") { onControl(.pause) }
+                    AgentCapsuleButton(title: "Pause") { onControl(.pause) }
+                        .help("Pause before \(model.source.title)'s next step")
                 }
                 if controls.canStop || controls.state != nil {
-                    AgentRunControlButton(
-                        symbol: "stop",
-                        title: controls.state == .stopping ? "Stopping…" : "Stop"
-                    ) { onControl(.stop) }
-                    .disabled(controls.state == .stopping)
+                    let stopping = controls.state == .stopping
+                    AgentCapsuleButton(title: stopping ? "Stopping…" : "Stop") { onControl(.stop) }
+                        .disabled(stopping)
+                        .opacity(stopping ? 0.55 : 1)
+                        .help("End this turn before the next step")
                 }
             }
-            Spacer(minLength: 8)
+            Spacer(minLength: NotchIsland.Spacing.element)
             if canOpen {
                 AgentRunOpenButton(help: openHelp, action: onOpen)
             }
@@ -399,109 +384,13 @@ struct AgentRunCard: View {
     private var accessibilityValue: String {
         var parts = [model.headline]
         if let trailing = model.metaTrailing { parts.append(trailing) }
-        parts.append(model.metaLeading)
+        if let modelLabel = model.modelLabel { parts.append(modelLabel) }
         return parts.joined(separator: ", ")
     }
 }
 
-/// The agent's mark inside a ring that carries the run's state: an arc
-/// turning while it works, orange while it waits on the user, red when it
-/// failed, a still grey ring while paused.
-private struct AgentRunRing: View {
-    let source: AISource
-    let state: AIActivityState
-    let isAsking: Bool
-    let isPaused: Bool
-
-    private static let diameter: CGFloat = 30
-
-    var body: some View {
-        ZStack {
-            if state == .working, !isAsking, !isPaused {
-                // A layer animation: a SwiftUI loop would redraw the notch
-                // every frame for as long as the agent works.
-                LayerSpinner(
-                    diameter: Self.diameter,
-                    lineWidth: 1.75,
-                    tint: Color(white: 0.8),
-                    trackOpacity: 0.16,
-                    arcLength: 0.3,
-                    period: 1.4
-                )
-            } else {
-                Circle()
-                    .strokeBorder(ringColor, lineWidth: 1.75)
-            }
-            AgentRunMark(source: source, size: 23)
-        }
-        .frame(width: Self.diameter, height: Self.diameter)
-        .accessibilityHidden(true)
-    }
-
-    private var ringColor: Color {
-        if isAsking { return .orange }
-        if state == .failed { return AgentStateMark.failedInk }
-        if isPaused { return Color.islandInk(0.4) }
-        return Color.islandInk(0.16)
-    }
-}
-
-/// Claude's crab on a round graphite disc, the other agents' app icons as
-/// they are.
-private struct AgentRunMark: View {
-    let source: AISource
-    let size: CGFloat
-
-    var body: some View {
-        if source == .claude {
-            Circle()
-                .fill(LinearGradient(
-                    colors: [Color(white: 0.2), Color(white: 0.1)],
-                    startPoint: .top,
-                    endPoint: .bottom
-                ))
-                .overlay { ClaudeVibeCrabIcon(size: (size * 0.52).rounded()) }
-                .frame(width: size, height: size)
-        } else {
-            AgentVibeIdentity(source: source, size: size + 2)
-        }
-    }
-}
-
-/// An outlined capsule with a glyph and a word: Pause, Resume, Stop.
-private struct AgentRunControlButton: View {
-    let symbol: String
-    let title: String
-    let action: () -> Void
-
-    @State private var isHovered = false
-    @Environment(\.isEnabled) private var isEnabled
-
-    var body: some View {
-        Button(action: action) {
-            HStack(spacing: 7) {
-                Image(systemName: symbol)
-                    .font(.system(size: 12, weight: .semibold))
-                Text(title)
-                    .font(.system(size: 13, weight: .semibold))
-                    .lineLimit(1)
-            }
-            .foregroundStyle(Color.islandInk(isEnabled ? 0.92 : 0.45))
-            .padding(.horizontal, 14)
-            .frame(height: 32)
-            .background(Capsule(style: .continuous).fill(Color.islandInk(isHovered ? 0.10 : 0.04)))
-            .overlay(Capsule(style: .continuous).strokeBorder(Color.islandInk(0.16), lineWidth: 1))
-            .frame(minHeight: NotchIsland.Hit.control)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(NotchPressButtonStyle())
-        .onHover { isHovered = $0 && isEnabled }
-        .fixedSize()
-        .accessibilityLabel(title)
-    }
-}
-
-/// "Open run ↗": to the run's terminal tab or its page in Crewline.
+/// "Open run ↗": to the run's terminal tab or its page in Crewline. Drawn
+/// like the questions' "Answer in Terminal ↗".
 private struct AgentRunOpenButton: View {
     let help: String
     let action: () -> Void
@@ -510,15 +399,15 @@ private struct AgentRunOpenButton: View {
 
     var body: some View {
         Button(action: action) {
-            HStack(spacing: 6) {
+            HStack(spacing: 3) {
                 Text("Open run")
-                    .font(.system(size: 13, weight: .medium))
-                Image(systemName: "arrow.up.right")
-                    .font(.system(size: 11, weight: .semibold))
+                Image(systemName: "arrow.up.forward")
+                    .font(.system(size: 8.5, weight: .semibold))
+                    .accessibilityHidden(true)
             }
-            .foregroundStyle(Color.islandInk(isHovered ? 1 : 0.78))
+            .font(.system(size: 11, weight: .medium))
+            .foregroundStyle(Color.islandInk(isHovered ? NotchIsland.Ink.secondary : NotchIsland.Ink.tertiary))
             .frame(minHeight: NotchIsland.Hit.control)
-            .padding(.horizontal, 4)
             .contentShape(Rectangle())
         }
         .buttonStyle(NotchPressButtonStyle())

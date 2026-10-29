@@ -38,7 +38,6 @@ enum ClaudeCodeRunTracker {
         switch normalizedEvent {
         case "userpromptsubmit":
             session.actions = []
-            session.toolCallCount = 0
             session.turnStartedAt = now
             session.turnEndedAt = nil
             session.control = nil
@@ -46,7 +45,7 @@ enum ClaudeCodeRunTracker {
         case "pretooluse":
             if session.turnStartedAt == nil || session.turnEndedAt != nil {
                 // Seen mid-turn, or a turn the user started without a hook.
-                if session.turnEndedAt != nil { session.actions = []; session.toolCallCount = 0 }
+                if session.turnEndedAt != nil { session.actions = [] }
                 session.turnStartedAt = now
                 session.turnEndedAt = nil
             }
@@ -68,7 +67,6 @@ enum ClaudeCodeRunTracker {
                 in: &session.actions,
                 endsOpenCalls: !session.reportsToolEnds
             )
-            session.toolCallCount += 1
         case "posttooluse":
             session.reportsToolEnds = true
             AgentRunTimeline.end(toolUseID: toolUseID, tool: tool, at: now, failed: false, in: &session.actions)

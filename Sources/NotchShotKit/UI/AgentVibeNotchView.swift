@@ -297,12 +297,10 @@ struct AgentVibeActivitySurface: View {
             LazyVStack(alignment: .leading, spacing: 0) {
                 if let lead {
                     runCard(for: lead)
-                        .padding(.top, 2)
-                        .padding(.bottom, others.isEmpty ? 0 : 4)
                         .transition(.opacity)
                 }
                 ForEach(Array(others.enumerated()), id: \.element.displayIdentifier) { index, activity in
-                    if index > 0 { AgentRowSeparator() }
+                    if index > 0 || lead != nil { AgentRowSeparator() }
                     let interaction = interaction(for: activity)
                     AgentVibeActivityRow(
                         activity: activity,
@@ -870,6 +868,8 @@ struct AgentStateMark: View {
     let source: AISource
     let state: AIActivityState
     var isAsking = false
+    /// A working run held by Pause: the dot stops pulsing and greys.
+    var isPaused = false
     let size: CGFloat
 
     /// The colour a state's word or glyph takes on the island's black.
@@ -908,6 +908,8 @@ struct AgentStateMark: View {
             Circle().fill(Color.orange).overlay(ring)
         } else if state == .failed {
             Circle().fill(Self.failedBadge).overlay(ring)
+        } else if state == .working, isPaused {
+            Circle().fill(Color(white: 0.55)).overlay(ring)
         } else if state == .working {
             // A layer animation: a SwiftUI `repeatForever` opacity redrew the
             // whole notch every frame for as long as the agent worked.
