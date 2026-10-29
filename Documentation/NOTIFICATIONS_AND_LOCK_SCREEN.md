@@ -73,8 +73,16 @@ The Productivity Center contains a dedicated Notification Center with:
 
 Settings also exposes **Mirror visible notifications in the notch**, off by
 default and gated by Accessibility permission. A mirrored card shows the
-source app's installed icon when it can be resolved, the sender/title, one-line
-message preview, and compact age. Recognized Messages and WhatsApp cards offer
+source app's installed icon when it can be resolved, the sender/title with its
+compact age, and the message preview: two lines when a lone message needs them,
+one line per sender in a stack, with a quiet thread count beside it. A sender
+that is only a number gets a person silhouette, and its digits are never
+offered as a sign-in code. Under it, **Show only in the notch** (off by
+default) closes Apple's banner once the notch is showing it, by performing the
+banner's own Close action, which is what its × does. A banner the notch cannot
+show at that moment (no panel, or the notch hidden for the frontmost app) is
+left alone. Once Apple's banner is closed its reply field is gone, so Reply
+opens the app instead. Recognized Messages and WhatsApp cards offer
 **Open [app] to reply**, which activates the installed app and dismisses the
 transient NotchShot mirror. The action does not address a conversation or send
 text; those operations stay in the messaging app that owns them.

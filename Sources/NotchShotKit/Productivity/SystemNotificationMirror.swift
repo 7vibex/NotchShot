@@ -216,7 +216,11 @@ public final class SystemNotificationMirror {
     public static let shared = SystemNotificationMirror()
 
     public private(set) var status: SystemNotificationMirrorStatus = .disabled
-    public var onNotification: ((SystemNotificationSnapshot) -> Void)?
+    /// Answers whether the notch took the banner. Only a banner the notch is
+    /// actually showing may have Apple's copy closed.
+    public var onNotification: ((SystemNotificationSnapshot) -> Bool)?
+    /// Closes Apple's banner once the notch has it, so it shows in one place.
+    public var hidesPresentedBanners = false
 
     private static let notificationCenterBundleID = "com.apple.notificationcenterui"
     private nonisolated static let notificationBannerSubrole = "AXNotificationCenterBanner"
@@ -230,6 +234,11 @@ public final class SystemNotificationMirror {
     private var observedPID: pid_t?
     private var scanTimer: Timer?
     private var visibleFingerprints: Set<String> = []
+    /// Banners the notch took whose Apple copy is being closed, with the
+    /// attempts made. One still sliding in can refuse the first, so a later
+    /// scan tries again while it is on screen, a few times at most.
+    private var closingAttempts: [String: Int] = [:]
+    private static let maximumCloseAttempts = 3
     /// Banners on screen that offer Reply, by fingerprint, with the AX
     /// action's exact name. Rebuilt on every scan, so a banner that has gone
     /// can never be acted on.
@@ -311,6 +320,14 @@ public final class SystemNotificationMirror {
         for banner in banners {
             let content = banner.content
             currentFingerprints.insert(content.fingerprint)
+            if let attempts = closingAttempts[content.fingerprint] {
+                // Still showing after a close: try again, or give up.
+                if attempts < Self.maximumCloseAttempts {
+                    closingAttempts[content.fingerprint] = attempts + 1
+                    close(banner)
+                }
+                continue
+            }
             if let action = banner.replyAction {
                 replyTargets[content.fingerprint] = (banner.element, action)
             }
@@ -321,9 +338,25 @@ public final class SystemNotificationMirror {
                 body: content.body
             )
             snapshot.replyKey = banner.replyAction == nil ? nil : content.fingerprint
-            onNotification?(snapshot)
+            let isPresented = onNotification?(snapshot) == true
+            if isPresented, hidesPresentedBanners, banner.closeAction != nil {
+                // Its reply field goes with it; Reply then opens the app.
+                replyTargets[content.fingerprint] = nil
+                closingAttempts[content.fingerprint] = 1
+                close(banner)
+            }
         }
         visibleFingerprints = currentFingerprints
+        closingAttempts = closingAttempts.filter { currentFingerprints.contains($0.key) }
+    }
+
+    /// Performs the banner's own Close, as its × does, off the main thread.
+    private func close(_ banner: ScannedBanner) {
+        guard let action = banner.closeAction else { return }
+        let element = banner.element
+        scanQueue.async {
+            _ = AXUIElementPerformAction(element.element, action as CFString)
+        }
     }
 
     /// The Accessibility walk itself. Runs on `scanQueue`, never the main
@@ -359,6 +392,23 @@ public final class SystemNotificationMirror {
         }
     }
 
+    /// The banner's own close action, the × that appears under the pointer.
+    /// Matched exactly, unlike Reply, so an app's custom button such as
+    /// "Close Ticket" is never pressed by mistake.
+    nonisolated static func closeAction(in actionNames: [String]) -> String? {
+        let closeWords: Set<String> = [
+            "close", "schließen", "fermer", "cerrar", "chiudi", "fechar", "sluit", "sluiten",
+            "закрыть", "閉じる", "关闭", "關閉", "닫기",
+        ]
+        return actionNames.first { name in
+            let label = name
+                .components(separatedBy: "\n")
+                .first { $0.hasPrefix("Name:") }
+                .map { String($0.dropFirst("Name:".count)) } ?? name
+            return closeWords.contains(label.trimmingCharacters(in: .whitespaces).lowercased())
+        }
+    }
+
     private nonisolated static func readBanners(in application: AXUIElement) -> [ScannedBanner] {
         let windows = elements(application, attribute: kAXWindowsAttribute as CFString)
         var budget = maximumAXElements
@@ -379,7 +429,12 @@ public final class SystemNotificationMirror {
             }
             var names: CFArray?
             let actions = AXUIElementCopyActionNames(banner, &names) == .success ? (names as? [String] ?? []) : []
-            return ScannedBanner(content: content, replyAction: replyAction(in: actions), element: AXElementBox(element: banner))
+            return ScannedBanner(
+                content: content,
+                replyAction: replyAction(in: actions),
+                closeAction: closeAction(in: actions),
+                element: AXElementBox(element: banner)
+            )
         }
     }
 
@@ -475,6 +530,7 @@ public final class SystemNotificationMirror {
         needsRescan = false
         detachObserver()
         visibleFingerprints.removeAll()
+        closingAttempts.removeAll()
     }
 
     private func detachObserver() {
@@ -535,10 +591,11 @@ public final class SystemNotificationMirror {
     }
 }
 
-/// One banner read by a scan: its text, and how to reply to it if it can.
+/// One banner read by a scan: its text, and how to reply to or close it.
 private struct ScannedBanner: @unchecked Sendable {
     var content: SystemNotificationBannerContent
     var replyAction: String?
+    var closeAction: String?
     var element: AXElementBox
 }
 

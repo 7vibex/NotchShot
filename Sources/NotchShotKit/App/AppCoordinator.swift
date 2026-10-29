@@ -181,8 +181,9 @@ public final class AppCoordinator {
             self?.refreshActivity()
         }
         systemNotifications.onNotification = { [weak self] snapshot in
-            self?.receiveSystemNotification(snapshot)
+            self?.receiveSystemNotification(snapshot) ?? false
         }
+        systemNotifications.hidesPresentedBanners = Preferences.shared.hidesMirroredSystemBanners
         systemNotifications.setSessionActive(media.isSessionActive)
         systemNotifications.setEnabled(Preferences.shared.mirrorsSystemNotificationBanners)
         context.onSnapshotChange = { [weak self] snapshot in

@@ -183,6 +183,58 @@ struct ExtrasFeatureTests {
         #expect(SystemNotificationMirror.replyAction(in: ["AXPress", "Name:Close\nTarget:0x0"]) == nil)
     }
 
+    @Test("Only a banner's own close action hides it, never an app's button")
+    func closeAction() {
+        let actions = ["AXPress", "Name:Reply\nTarget:0x0\nSelector:(null)", "Name:Close\nTarget:0x0\nSelector:(null)"]
+        #expect(SystemNotificationMirror.closeAction(in: actions) == actions[2])
+        #expect(SystemNotificationMirror.closeAction(in: ["Name:Schließen\nTarget:0x0"]) != nil)
+        // An app's own action that happens to start with the word.
+        #expect(SystemNotificationMirror.closeAction(in: ["Name:Close Ticket\nTarget:0x0"]) == nil)
+        #expect(SystemNotificationMirror.closeAction(in: ["AXPress", "Name:Show Details\nTarget:0x0"]) == nil)
+    }
+
+    @Test("A texted code comes from the message, not a short-code sender")
+    func oneTimeCodeFromShortCodeSender() {
+        let texted = SystemNotificationSnapshot(
+            sourceName: "Messages",
+            title: "54321",
+            body: "Your verification code is 482913. Don't share it."
+        )
+        #expect(SystemNotificationCardLayout.oneTimeCode(in: texted) == "482913")
+
+        // A sender number is never offered on its own.
+        let noCode = SystemNotificationSnapshot(
+            sourceName: "Messages",
+            title: "54321",
+            body: "Use the sign-in code shown in the app"
+        )
+        #expect(SystemNotificationCardLayout.oneTimeCode(in: noCode) == nil)
+
+        // A worded title still counts when the body is only the number.
+        let split = SystemNotificationSnapshot(sourceName: "Mail", title: "Your login code", body: "482913")
+        #expect(SystemNotificationCardLayout.oneTimeCode(in: split) == "482913")
+    }
+
+    @Test("Only a lone, long message gets a second line, and the notch grows for it")
+    func notificationBodyLines() {
+        let short = SystemNotificationSnapshot(sourceName: "Messages", title: "Mia Chen", body: "On my way!")
+        let long = SystemNotificationSnapshot(
+            sourceName: "Messages",
+            title: "Mia Chen",
+            body: "Are we still on for dinner tonight? I booked the place at 8 and told everyone to meet outside"
+        )
+        var stack = long
+        stack.earlier = [short]
+
+        #expect(SystemNotificationCardLayout.bodyLineLimit(for: short) == 1)
+        #expect(SystemNotificationCardLayout.bodyLineLimit(for: long) == 2)
+        #expect(SystemNotificationCardLayout.bodyLineLimit(for: stack) == 1)
+
+        let oneLine = NotchLayout.systemNotificationContentHeight(rows: 1, hasOverflow: false)
+        let twoLines = NotchLayout.systemNotificationContentHeight(rows: 1, hasOverflow: false, extraBodyLines: 1)
+        #expect(twoLines == oneLine + SystemNotificationCardLayout.secondLineHeight)
+    }
+
     @Test("Meeting shortcuts only for apps that document them")
     func meetingProfiles() {
         #expect(MeetingControls.profile(for: "us.zoom.xos")?.camera != nil)

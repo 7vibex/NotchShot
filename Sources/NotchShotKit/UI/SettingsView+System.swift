@@ -75,12 +75,12 @@ struct NotchSettings: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
-                Toggle("Replace the macOS overlay", isOn: Binding(
+                Toggle("Show only in the notch", isOn: Binding(
                     get: { preferences.suppressesSystemOSD },
                     set: { coordinator.setSystemOSDSuppressed($0) }
                 ))
                 .disabled(!preferences.systemLevelHUDEnabled)
-                Text("Experimental. Needs Input Monitoring on macOS 26.5 and later. VoiceOver keeps Apple's overlay.")
+                Text("Hides the macOS volume and brightness overlay. Experimental. Needs Input Monitoring on macOS 26.5 and later. VoiceOver keeps Apple's overlay.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 if preferences.suppressesSystemOSD,
@@ -245,6 +245,14 @@ struct MediaSettings: View {
                     get: { preferences.mirrorsSystemNotificationBanners },
                     set: { coordinator.setSystemNotificationMirroringEnabled($0) }
                 ))
+                Toggle("Show only in the notch", isOn: Binding(
+                    get: { preferences.hidesMirroredSystemBanners },
+                    set: { coordinator.setMirroredSystemBannersHidden($0) }
+                ))
+                .disabled(!preferences.mirrorsSystemNotificationBanners)
+                Text("Closes the macOS banner once the notch shows it, as its × button does. Reply then opens the app.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
                 LabeledContent("Status", value: coordinator.systemNotifications.status.title)
                 if coordinator.systemNotifications.status.needsAccessibility {
                     Button("Open Accessibility Settings") {

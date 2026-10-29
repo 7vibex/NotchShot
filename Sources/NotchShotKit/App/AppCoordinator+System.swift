@@ -208,6 +208,11 @@ extension AppCoordinator {
         refreshActivity()
     }
 
+    public func setMirroredSystemBannersHidden(_ hidden: Bool) {
+        Preferences.shared.hidesMirroredSystemBanners = hidden
+        systemNotifications.hidesPresentedBanners = hidden
+    }
+
     public func refreshSystemNotificationMirroringPermission() {
         systemNotifications.refreshPermission()
     }
@@ -246,12 +251,21 @@ extension AppCoordinator {
         }
     }
 
-    func receiveSystemNotification(_ snapshot: SystemNotificationSnapshot) {
+    /// True when the notch holds the banner and can show it, which is what
+    /// allows Apple's copy to be closed. A notch hidden for the frontmost app,
+    /// or with no panel, leaves Apple's banner as the only one.
+    @discardableResult
+    func receiveSystemNotification(_ snapshot: SystemNotificationSnapshot) -> Bool {
         guard Preferences.shared.mirrorsSystemNotificationBanners,
-              media.isSessionActive else { return }
-        guard systemNotificationQueue.enqueue(snapshot) else { return }
+              media.isSessionActive else { return false }
+        let canShow = Preferences.shared.notchEnabled
+            && windowController?.hasRenderablePanel == true
+            && windowController?.isHiddenForCurrentApp != true
+        // Already queued with the same text: the notch has it.
+        guard systemNotificationQueue.enqueue(snapshot) else { return canShow }
         arbiter.systemNotification = systemNotificationQueue.presented()
         refreshActivity()
+        return canShow
     }
 
     func reconcileSystemNotificationTimer(for resolved: NotchActivity) {

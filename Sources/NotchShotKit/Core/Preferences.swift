@@ -237,6 +237,12 @@ public final class Preferences {
     public var mirrorsSystemNotificationBanners = false {
         didSet { write(mirrorsSystemNotificationBanners, .mirrorSystemNotifications) }
     }
+    /// Closes Apple's banner once the notch has shown it, so a notification
+    /// appears in one place. Off by default: closing is what clicking the
+    /// banner's × does, and some apps treat that as a dismissal.
+    public var hidesMirroredSystemBanners = false {
+        didSet { write(hidesMirroredSystemBanners, .hideMirroredBanners) }
+    }
     public var appleEventsFallbackEnabled = false { didSet { write(appleEventsFallbackEnabled, .appleEventsFallback) } }
     /// Synced lyrics in the expanded player, looked up on lrclib.net. Off by
     /// default: turning it on sends the playing track's title, artist, album
@@ -547,7 +553,7 @@ public final class Preferences {
         case notchHiddenApps
         case notchEnabled, notchDisplayPlacement, islandOnExternal, mirrorPassiveContext, hoverPeek, hoverPeekDelay, systemLevelHUD
         case mirrorsBrightness, suppressesSystemOSD, usesSystemShortcuts
-        case mediaEnabled, activityStackWhileLocked, lockScreenPlayer, mirrorSystemNotifications
+        case mediaEnabled, activityStackWhileLocked, lockScreenPlayer, mirrorSystemNotifications, hideMirroredBanners
         case appleEventsFallback, adapterPath, adapterIdentity, mediaLyrics
         case calendarGlance, selectedCalendars, hiddenTitleCalendars, calendarTitles, calendarOverMedia
         case customCalendarSelection
@@ -699,6 +705,7 @@ public final class Preferences {
         showsMediaWhileLocked = bool(.lockScreenPlayer, false)
         showsActivityStackWhileLocked = bool(.activityStackWhileLocked, false)
         mirrorsSystemNotificationBanners = bool(.mirrorSystemNotifications, false)
+        hidesMirroredSystemBanners = bool(.hideMirroredBanners, false)
         appleEventsFallbackEnabled = bool(.appleEventsFallback, false)
         lyricsEnabled = bool(.mediaLyrics, false)
         mediaRemoteAdapterPath = string(.adapterPath)

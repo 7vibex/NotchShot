@@ -275,11 +275,17 @@ public struct NotchLayout: Sendable, Equatable {
     static let shelfDetailRowHeight: CGFloat = 84
 
     /// A single banner keeps the original 78 pt card; each further sender
-    /// adds a 52 pt row and its hairline.
-    static func systemNotificationContentHeight(rows: Int, hasOverflow: Bool) -> CGFloat {
+    /// adds a 52 pt row and its hairline. A lone message long enough for a
+    /// second line grows by that line.
+    static func systemNotificationContentHeight(
+        rows: Int,
+        hasOverflow: Bool,
+        extraBodyLines: Int = 0
+    ) -> CGFloat {
         // A row is 52 pt plus its hairline, with 10 pt under the last one so
         // it clears the bottom corners.
         10 + CGFloat(max(1, rows)) * 53 + (hasOverflow ? 18 : 0)
+            + CGFloat(max(0, extraBodyLines)) * SystemNotificationCardLayout.secondLineHeight
     }
 
     /// Bottom lip under a status card that lives entirely in the camera band,
@@ -566,10 +572,11 @@ public struct NotchLayout: Sendable, Equatable {
             // The app and time beside the camera, then one row per sender,
             // stacked like the Dynamic Island's messages.
             return banded(
-                width: 420,
+                width: SystemNotificationCardLayout.width,
                 bodyHeight: systemNotificationContentHeight(
                     rows: snapshot.rows.count,
-                    hasOverflow: snapshot.overflowCount > 0
+                    hasOverflow: snapshot.overflowCount > 0,
+                    extraBodyLines: SystemNotificationCardLayout.bodyLineLimit(for: snapshot) - 1
                 ),
                 cornerRadius: 26
             )
