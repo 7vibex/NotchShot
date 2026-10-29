@@ -1,6 +1,8 @@
 # Actual ScreenCaptureKit interruption and endurance audit — 29 October 2026
 
 Follow-up to the [isolated recovery audit](2026-10-29-recording-recovery-audit.md).
+The [cadence controls follow-up](2026-10-29-recording-cadence-audit.md) investigates
+the measured frame rate and records the locked-desktop validation gap.
 This pass exercises the real `RecordingService` and `SCRecordingOutput`, replacing
 the earlier synthetic-media-only evidence for the checked interruption schedules.
 It does not repeat the app's UI/History publication journeys.

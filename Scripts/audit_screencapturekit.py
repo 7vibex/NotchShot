@@ -78,6 +78,7 @@ def main():
     parser.add_argument("--identity", required=True, help="Its stable codesigning certificate fingerprint")
     parser.add_argument("--duration", type=int, default=1800, choices=range(60, 7201), metavar="60..7200")
     parser.add_argument("--interrupt-after", type=int, default=30, choices=range(1, 61), metavar="1..60")
+    parser.add_argument("--build-only", action="store_true", help="Prepare the signed fixture app without capturing")
     args = parser.parse_args()
     root = args.output.resolve()
     root.mkdir(mode=0o700)  # Never reuse or overwrite an existing test tree.
@@ -101,6 +102,8 @@ def main():
         run(["codesign", "--verify", "--deep", "--strict", str(app)], stdout=log, stderr=log)
     assert requirement(app) == requirement(args.app), "Signing requirement changed; refusing capture"
     print("Strict signature and exact existing designated requirement verified.", flush=True)
+    if args.build_only:
+        return
 
     def capture(name, seconds, interrupt=False):
         directory = root / name
