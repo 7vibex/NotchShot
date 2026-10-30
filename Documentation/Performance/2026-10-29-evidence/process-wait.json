@@ -1,0 +1,16 @@
+{
+ "protocol": "process-wait-probe.swift, release build (-O), 8 TerminalRunner-shaped runs per round with unrelated Process launches in the background; a wait still blocked after 8 s counts as hung. Runs per mode were interleaved (wait, poll, handler per round set). Earlier runs of the same workload before the handler mode existed are included under wait and poll.",
+ "environment": {
+  "os": "macOS 26.7.2 (25G332)",
+  "toolchain": "Apple Swift 6.4 (swiftlang-6.4.0.34.1)",
+  "machine": "the user's Mac, under its normal load (live NotchShot and other sessions running)"
+ },
+ "results": {
+  "wait": {"runs": 568, "hung": 13, "batches": [[120, 6], [64, 1], [144, 3], [240, 3]]},
+  "queue": {"runs": 144, "hung": 3},
+  "poll": {"runs": 384, "hung": 0, "batches": [[144, 0], [240, 0]]},
+  "handler": {"runs": 240, "hung": 0}
+ },
+ "hung_state": "Every hung wait had isRunning == false and the child gone (kill(pid, 0) == ESRCH). The task's state word read 0x100000000: running cleared, terminated-and-delivered never set. Foundation's exit handler sets that bit directly only when a termination handler exists; otherwise it queues a block on the launching thread's run loop, which waitUntilExit on that thread waits for.",
+ "control": "ProcessExitTests also passes 40 repetitions with waitUntilExit() in place of both helpers, so it checks the helpers' results, not the race."
+}

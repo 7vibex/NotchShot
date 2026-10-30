@@ -250,11 +250,11 @@ public final class PermissionCenter {
             process.standardInput = FileHandle.nullDevice
             do {
                 try process.run()
-                process.waitUntilExit()
             } catch {
                 Log.permissions.error("Could not reset Screen Recording: \(error.localizedDescription)")
                 return nil
             }
+            await process.waitForExit()
             return process.terminationStatus
         }.value
         guard status == 0 else {
