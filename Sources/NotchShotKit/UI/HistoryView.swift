@@ -10,6 +10,7 @@ public struct HistoryView: View {
     @State private var selection: UUID?
     @State private var favoritesOnly = false
     @State private var collectionFilter: String?
+    @State private var thumbnails = HistoryThumbnailCache()
 
     public init(coordinator: AppCoordinator) {
         self.coordinator = coordinator
@@ -43,7 +44,7 @@ public struct HistoryView: View {
                     )
                 } else {
                     List(entries, selection: $selection) { entry in
-                        HistoryRow(entry: entry)
+                        HistoryRow(entry: entry, thumbnails: thumbnails)
                             .tag(entry.id)
                             .contextMenu { contextMenu(for: entry) }
                     }
@@ -143,6 +144,7 @@ public struct HistoryView: View {
 
 private struct HistoryRow: View {
     let entry: HistoryEntry
+    let thumbnails: HistoryThumbnailCache
     @State private var thumbnail: NSImage?
 
     var body: some View {
@@ -162,7 +164,7 @@ private struct HistoryRow: View {
                         }
                 }
             }
-            .frame(width: 52, height: 36)
+            .frame(width: HistoryThumbnailCache.rowSize.width, height: HistoryThumbnailCache.rowSize.height)
             .clipShape(RoundedRectangle(cornerRadius: 5))
 
             VStack(alignment: .leading, spacing: 2) {
@@ -197,7 +199,7 @@ private struct HistoryRow: View {
     }
 
     private func loadThumbnail() async {
-        if let url = entry.thumbnailURL, let image = await Self.decodedThumbnail(at: url) {
+        if let url = entry.thumbnailURL, let image = await Self.decodedThumbnail(at: url, cache: thumbnails) {
             thumbnail = image
             return
         }
@@ -218,18 +220,76 @@ private struct HistoryRow: View {
     /// Read and decoded off the main actor. `NSImage(contentsOf:)` here read
     /// the file on it, and the decode then landed in the next commit there:
     /// about 3 ms a row.
-    private static func decodedThumbnail(at url: URL) async -> NSImage? {
-        await Task.detached(priority: .userInitiated) { () -> CGImage? in
-            guard let data = try? Data(contentsOf: url),
-                  let source = CGImageSourceCreateWithData(
-                      data as CFData,
-                      [kCGImageSourceShouldCache: false] as CFDictionary
-                  ) else { return nil }
-            return CGImageSourceCreateImageAtIndex(source, 0, [
-                kCGImageSourceShouldCache: true,
-                kCGImageSourceShouldCacheImmediately: true,
-            ] as CFDictionary)
+    private static func decodedThumbnail(at url: URL, cache: HistoryThumbnailCache) async -> NSImage? {
+        await Task.detached(priority: .userInitiated) {
+            cache.image(at: url, decode: HistoryThumbnailCache.rowImage(from:))
         }.value.map { NSImage(cgImage: $0, size: NSSize(width: $0.width, height: $0.height)) }
+    }
+}
+
+/// Decoded row thumbnails for one History window, freed with it.
+///
+/// Stored thumbnails are up to 512 px, 0.6 MB each at full size, and
+/// scrolling the list kept about half of them alive at once: 51 MB for 179
+/// captures. Rows now decode straight to their drawn size. That decode costs
+/// more per file, and a List row that scrolls out of view loses its state, so
+/// each result is kept here rather than decoded again on every return. The
+/// key includes the file's identity, size and times, so a thumbnail rewritten
+/// in place is decoded afresh.
+final class HistoryThumbnailCache: @unchecked Sendable {
+    static let rowSize = CGSize(width: 52, height: 36)
+
+    // NSCache is thread-safe, and nothing else here changes.
+    private let images = NSCache<NSString, CGImage>()
+
+    init() {
+        // About 400 rows at their drawn size; NSCache also gives way under
+        // memory pressure.
+        images.totalCostLimit = 16 * 1_048_576
+    }
+
+    func image(at url: URL, decode: (Data) -> CGImage?) -> CGImage? {
+        var information = stat()
+        guard stat(url.path, &information) == 0 else { return nil }
+        let key = [
+            url.path,
+            "\(information.st_ino)",
+            "\(information.st_size)",
+            "\(information.st_mtimespec.tv_sec).\(information.st_mtimespec.tv_nsec)",
+            "\(information.st_ctimespec.tv_sec).\(information.st_ctimespec.tv_nsec)",
+        ].joined(separator: "|") as NSString
+        if let image = images.object(forKey: key) { return image }
+        guard let data = try? Data(contentsOf: url), let image = decode(data) else { return nil }
+        images.setObject(image, forKey: key, cost: image.bytesPerRow * image.height)
+        return image
+    }
+
+    static func rowImage(from data: Data) -> CGImage? {
+        guard let source = CGImageSourceCreateWithData(
+            data as CFData,
+            [kCGImageSourceShouldCache: false] as CFDictionary
+        ) else { return nil }
+        var options: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceShouldCacheImmediately: true,
+        ]
+        if let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+           let width = properties[kCGImagePropertyPixelWidth] as? Int,
+           let height = properties[kCGImagePropertyPixelHeight] as? Int,
+           width > 0, height > 0 {
+            options[kCGImageSourceThumbnailMaxPixelSize] = fillingPixelSize(width: width, height: height)
+        }
+        // Without a size, the thumbnail is the full image, as before.
+        return CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary)
+    }
+
+    /// The long edge that still covers the row at 2x, the largest Mac backing
+    /// scale, after its aspect fill. One pixel of headroom keeps the short
+    /// edge from rounding below the frame. Never larger than the image.
+    static func fillingPixelSize(width: Int, height: Int) -> Int {
+        let scale = max(rowSize.width * 2 / CGFloat(width), rowSize.height * 2 / CGFloat(height))
+        let longEdge = max(width, height)
+        return min(longEdge, Int((CGFloat(longEdge) * scale).rounded(.up)) + 1)
     }
 }
 

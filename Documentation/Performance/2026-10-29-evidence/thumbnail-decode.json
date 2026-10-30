@@ -1,0 +1,54 @@
+{
+ "protocol": "swiftc -O build of thumbnail-decode-bench.swift, run on the 179 stored History thumbnails (read only), 4 rounds with variants interleaved; ranges are min-max of the round values. Instructions are on the calling thread (thread_selfcounts). Load average 3.1. coverage_check is a separate pass that decodes each thumbnail both ways and checks the small one still covers 104 x 72 px after aspect fill and is never larger than the original.",
+ "variants": [
+  {
+   "variant": "full decode (before)",
+   "instructions_m_per_thumbnail": [
+    9.44,
+    9.53
+   ],
+   "ms_per_thumbnail": [
+    0.88,
+    1.05
+   ],
+   "decoded_total_mb": 107.7
+  },
+  {
+   "variant": "ImageIO thumbnail (first fix)",
+   "instructions_m_per_thumbnail": [
+    16.39,
+    16.41
+   ],
+   "ms_per_thumbnail": [
+    1.15,
+    1.25
+   ],
+   "decoded_total_mb": 7.17
+  },
+  {
+   "variant": "decode + draw, medium",
+   "instructions_m_per_thumbnail": [
+    21.04,
+    21.1
+   ],
+   "ms_per_thumbnail": [
+    1.83,
+    2.12
+   ],
+   "decoded_total_mb": 7.12
+  },
+  {
+   "variant": "decode + draw, high",
+   "instructions_m_per_thumbnail": [
+    22.77,
+    22.78
+   ],
+   "ms_per_thumbnail": [
+    1.87,
+    1.91
+   ],
+   "decoded_total_mb": 7.12
+  }
+ ],
+ "coverage_check": "ok 179 bad 0; decoded 107.7 MB -> 7.17 MB; decode time 278 ms -> 320 ms (off main)"
+}
