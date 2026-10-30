@@ -217,4 +217,49 @@ struct AIActivityRefreshCachingTests {
             limit: 32
         ) == nil)
     }
+
+    @Test("Pruning removes only old status files outside the newest 32, and the poll reads the same")
+    func pruningKeepsWhatThePollReads() throws {
+        let directory = try makeDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let manager = FileManager.default
+        let now = Date()
+        func age(_ name: String, days: Double) throws {
+            try manager.setAttributes(
+                [.modificationDate: now.addingTimeInterval(-days * 24 * 3_600)],
+                ofItemAtPath: directory.appendingPathComponent(name).path
+            )
+        }
+        // 40 sessions, all but three past the retention. The link ranks by its
+        // own date, so the newest 32 are it and s0–s30, and nine fall outside.
+        for index in 0 ..< 40 {
+            let name = "codex-s\(index).json"
+            try write(snapshot("s\(index)", title: "Session \(index)"), to: directory.appendingPathComponent(name))
+            try age(name, days: index < 3 ? 0 : 9 + Double(index))
+        }
+        try Data("{}".utf8).write(to: directory.appendingPathComponent(".old.tmp"))
+        try age(".old.tmp", days: 1)
+        try Data("{}".utf8).write(to: directory.appendingPathComponent(".fresh.tmp"))
+        try Data("notes".utf8).write(to: directory.appendingPathComponent("notes.txt"))
+        try age("notes.txt", days: 100)
+        try manager.createDirectory(at: directory.appendingPathComponent("Claude Status"), withIntermediateDirectories: false)
+        try age("Claude Status", days: 100)
+        try manager.createSymbolicLink(
+            at: directory.appendingPathComponent("link.json"),
+            withDestinationURL: directory.appendingPathComponent("codex-s39.json")
+        )
+
+        let before = monitor(in: directory).loadActivities()
+        #expect(AIActivityMonitor.pruneStatusFiles(in: directory, now: now, owns: { _ in false }) == 0)
+        let removed = AIActivityMonitor.pruneStatusFiles(in: directory, now: now, owns: { _ in true })
+        let after = monitor(in: directory).loadActivities()
+
+        #expect(removed == 10, "the nine oldest sessions and the abandoned temporary file")
+        #expect(after == before)
+        let left = Set(try manager.contentsOfDirectory(atPath: directory.path))
+        #expect(!left.contains("codex-s39.json") && !left.contains("codex-s31.json") && !left.contains(".old.tmp"))
+        #expect(left.contains("codex-s30.json") && left.contains("codex-s0.json"))
+        #expect(left.isSuperset(of: [".fresh.tmp", "notes.txt", "Claude Status", "link.json"]))
+        #expect(AIActivityMonitor.pruneStatusFiles(in: directory, now: now, owns: { _ in true }) == 0)
+    }
 }

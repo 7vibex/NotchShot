@@ -299,6 +299,7 @@ public final class AIActivityMonitor {
     private let ownsURL: (URL) -> Bool
     private var mayInterruptMedia = true
     private var pollTask: Task<Void, Never>?
+    private var pruneTask: Task<Void, Never>?
     private var enabledSources = Set(AISource.allCases)
 
     /// Validated metadata for a file's last decoded (or last rejected) content.
@@ -347,6 +348,15 @@ public final class AIActivityMonitor {
                 self?.refresh()
             }
         }
+        // Off the main actor, and with the app's own ownership rule rather
+        // than the test seam, so a monitor pointed elsewhere never deletes.
+        let directory = directory
+        pruneTask = Task.detached(priority: .utility) {
+            while !Task.isCancelled {
+                Self.pruneStatusFiles(in: directory, owns: { AppPaths.owns($0) })
+                try? await Task.sleep(for: .seconds(6 * 3_600))
+            }
+        }
     }
 
     public func setEnabledSources(_ sources: Set<AISource>) {
@@ -357,6 +367,8 @@ public final class AIActivityMonitor {
     public func stop() {
         pollTask?.cancel()
         pollTask = nil
+        pruneTask?.cancel()
+        pruneTask = nil
         publish(nil)
     }
 
@@ -453,6 +465,47 @@ public final class AIActivityMonitor {
         Self.newestEntries(in: directory, limit: 32)?.map(\.url) ?? []
     }
 
+    /// Kept as long as `ClaudeUsageMonitor` keeps the statusline's files: 8
+    /// days after the last update.
+    nonisolated static let statusFileRetention: TimeInterval = 8 * 24 * 3_600
+    /// A reporter's temporary file lives for milliseconds; one an hour old was
+    /// left by a reporter that died mid-write.
+    nonisolated static let abandonedTemporaryFileAge: TimeInterval = 3_600
+
+    /// Deletes status files nothing can read again, and returns how many. The
+    /// poll and `dismiss` read only the newest 32, an activity hides 30
+    /// minutes after its last update at the latest, and History keeps its own
+    /// copies. The hooks write a file per session and nothing removed them, so
+    /// every poll ranked thousands (2,146 here, 1,742 of them over 8 days old).
+    /// A reporter resuming a session after that long starts a new file.
+    @discardableResult
+    nonisolated static func pruneStatusFiles(
+        in directory: URL,
+        now: Date = Date(),
+        owns: (URL) -> Bool
+    ) -> Int {
+        guard let newest = newestEntries(in: directory, limit: 32),
+              let names = try? FileManager.default.contentsOfDirectory(atPath: directory.path) else {
+            return 0
+        }
+        let kept = Set(newest.map(\.url.lastPathComponent))
+        var removed = 0
+        for name in names where !kept.contains(name) {
+            let isStatus = !name.hasPrefix(".") && name.lowercased().hasSuffix(".json")
+            let isTemporary = name.hasPrefix(".") && name.hasSuffix(".tmp")
+            guard isStatus || isTemporary else { continue }
+            let url = directory.appendingPathComponent(name, isDirectory: false)
+            var info = stat()
+            // lstat: a symbolic link is judged as itself, never followed.
+            guard owns(url), lstat(url.path, &info) == 0, info.st_mode & S_IFMT == S_IFREG else { continue }
+            let modified = Date(timeIntervalSince1970: TimeInterval(info.st_mtimespec.tv_sec))
+            let limit = isStatus ? statusFileRetention : abandonedTemporaryFileAge
+            guard now.timeIntervalSince(modified) > limit else { continue }
+            if unlink(url.path) == 0 { removed += 1 }
+        }
+        return removed
+    }
+
     /// One directory entry as the newest-entry scan read it.
     struct DirectoryEntry {
         var url: URL
@@ -483,8 +536,8 @@ public final class AIActivityMonitor {
     ///
     /// Listing order means nothing, so taking the first 32 could fill the
     /// budget with stale or invalid files and hide the session the user is
-    /// actually running. But nothing prunes the hooks' status files, and this
-    /// ranks the couple of thousand a heavy user collects every second, on the
+    /// actually running. But the hooks' status files pile up for days before
+    /// `pruneStatusFiles` removes them, and this ranks every one each second, on the
     /// main actor. A URL and a bridged resource dictionary per file was most of
     /// that. One `getattrlistbulk` pass reads only what ranking and validation
     /// need, and keeps a running top `limit`, so only the winners get a URL.
