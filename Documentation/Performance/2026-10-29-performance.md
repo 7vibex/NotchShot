@@ -8,9 +8,10 @@ Also fixed:
 - Unlocked layout passes no longer send two Notification Center removal requests each when there is nothing to remove.
 - A launch on a locked Mac now starts locked. Before, the notch, media, Instant Replay and the notification mirror all ran as unlocked until the next lock.
 - The 5 Hz brightness poll pauses while the session is locked, as it already did while displays sleep. While locked its readings could never reach the screen. In a probe, that poll cost 5.5–7 wakeups and 0.5–0.8 mJ a second.
+- The OSD replacement's strict signature check runs only when the app bundle has changed on disk. It hashes the whole 59 MB bundle on the main thread and ran twice per launch, once per helper pause, and on every redraw of Settings → Notch. One launch spent 0.92 s of main-thread time on the two checks. A check of the bundle's file stamps, 3–14 ms, now decides whether the last answer still holds.
 - Waiting for a child process could hang forever. `Process.waitUntilExit()` on a worker thread never returned in 13 of 568 probe runs, after the child had already exited. A full test run sat in the Terminal runner for five hours this way. The Terminal runner, archive extraction, the Bluetooth battery report and the Screen Recording reset now poll `isRunning` instead, and none of 384 probe runs hung.
 
-This pass profiled the live app twice with the screen locked and once unlocked with the user at the Mac, all on code from before these changes. It does not establish a whole-app speedup, a launch-time change or a battery-life gain. The running app's after-numbers need a rebuild of `dist/` and a relaunch, and were not taken.
+This pass profiled the live app twice with the screen locked and once unlocked with the user at the Mac, all on code from before these changes. Another session then rebuilt `dist/` from `1b6d211` (every change here except the signature check) and relaunched it at 02:47 with the Mac locked. That gave the after-numbers below, including a real lock → launch → unlock. It does not establish a whole-app speedup, a launch-time change or a battery-life gain: the before and after profiles ran under different load and use.
 
 ## The live app, before
 
@@ -61,6 +62,26 @@ At 02:20 on 30 October the screen was unlocked and the user was at the Mac: the 
 In a 10 s sample, NotchShot's own code is about 1% of the main thread. The rest of the time is spent waiting. The largest busy items are the notification mirror's Accessibility scan, every 0.45 s (28–32 samples, on its own queue), the 5 Hz brightness poll (13–14) and the mouse monitors (9).
 
 The footprint is mostly heap: 74 MB of dirty `MALLOC_SMALL`. `heap` counts 38.2 MB of live allocations in 279,952 blocks, so about 36 MB is freed memory that malloc has not returned to the system since the 227.6 MB peak. What caused the peak is unknown. The live heap holds 5 MB of Swift metadata, about 3 MB of SF Symbol (CoreSVG) data and 893 `CFBundle` objects. A probe of the app launcher's `ApplicationCatalog.discover()` rules it out as the source of those bundles: it finds 102 apps, takes 229 ms cold and 9–10 ms warm, runs off the main thread, and keeps about 5 MB. The count is close to the 936 frameworks loaded into the process, and Core Foundation keeps one `CFBundle` per framework once something has asked for it. That is system state, not an app cache. **No change** to either.
+
+### Fourth profile, the new build
+
+The 02:47 process (pid 80372, `1b6d211`), unlocked, with the user at the Mac (last input 0.2 s before the end) and AI Activity still off. Other sessions were building: load average 13–31. One 60 s window, then four 30 s windows, from 02:55:40:
+
+| Metric | New build | Old build (third profile) |
+|---|---:|---:|
+| CPU | 1.5% of one core (60 s); 1.0–4.0% (30 s) | 3.6% (60 s) |
+| Instructions | 32 M/s (60 s); 18–80 M/s (30 s) | 37 M/s (60 s); 32–46 M/s (30 s) |
+| Energy | 4.5 mJ/s (60 s); 2.2–13.0 mJ/s (30 s) | 6.4 mJ/s (60 s); 5.6–7.5 mJ/s (30 s) |
+| Wakeups | 30–37/s | 12–37/s |
+| Physical footprint | 83 MB, then 39–41 MB after a 4 s lock at 02:56:39 | 97.2 MB |
+| Peak since launch | 123.6 MB after 13 minutes | 227.6 MB after 6.5 hours |
+
+The ranges overlap, so the unlocked steady state is **equivalent within noise**, not faster. Nothing in this pass targeted it except the Notification Center removals.
+
+Log counts in the first 16 minutes, over three locked stretches (the first from launch) and three unlocks:
+
+- 2 Notification Center removal lines, both at launch (02:47:01.6). The old process sent about 200 lines a minute, mostly these.
+- 4 `Locked presentation` lines: one per lock, plus one when media appeared. Before: 2,422 in 10 minutes.
 
 ## Results
 
@@ -144,7 +165,13 @@ Evidence:
 - New test `screenLockStateAtLaunch` covers nil, unlocked, locked, a locked key set to false, and switched out.
 - A probe using the same bridging read the live session on this locked Mac as present, locked and on console, so `sessionIsActive` is false.
 
-Not verified: an actual lock → launch → unlock on this Mac. A second app instance would clash with the live one, and the live one is the user's to relaunch.
+Verified on this Mac by the 02:47 relaunch, which happened while the Mac was locked:
+
+- At 02:47:01.432 it logged "Starting with the session locked" and showed no panel.
+- No notification removals went out after the launch cleanup.
+- At the 02:50:15 unlock it rebuilt the panel ("panels: 1") and picked a media source again.
+- After two more lock/unlock cycles, the notch panel (window 4414, 720 × 480 at the top of the screen) is on screen.
+- The OSD helper is suspended under a watchdog that this process started.
 
 ### Brightness poll while locked
 
@@ -166,7 +193,17 @@ corebrightnessd's side of each call comes on top; it runs as root, so `rusage` c
 
 In the first process, AppKit took its full hide path on every locked pass: `_orderOut:calculatingKeyWithOptions:` → `_bestKeyWindowCandidateOnScreen` → a WindowServer query that waits on `SLSConnectionSynchronizeSLSCATransaction`, then a synchronous key-window proposal to the window manager. A probe on this locked Mac reproduces that cost only once: the first hide of a panel that was asked to become key costs 10.9–18.9 ms, and later hides cost 0.07 ms. A panel can't become key while the Mac is locked, so the probe can't check the remaining suspect: the panel was the key window when the lock began, and the hide never completes.
 
-The locked branch now tallies its ordering passes and logs one line at unlock: the pass count, how many took 2 ms or more, the slowest pass, and how often a hidden panel was still visible afterwards. The next lock settles which case it is. Cost: two clock reads and one `isVisible` per locked pass.
+The locked branch now tallies its ordering passes and logs one line at unlock: the pass count, how many took 2 ms or more, the slowest pass, and how often a hidden panel was still visible afterwards. Cost: two clock reads and one `isVisible` per locked pass.
+
+The new build's first three locks:
+
+| Lock | Passes | 2 ms or more | Slowest | Hide failed |
+|---|---:|---:|---:|---:|
+| Launched locked, 02:47–02:50 | 9 | 0 | 0.3 ms | 0 |
+| 02:52:46–02:53:48 | 30 | 2 | 9.7 ms | 0 |
+| 02:56:39–02:56:43 | 3 | 1 | 2.3 ms | 0 |
+
+So the wait is no longer on every locked pass. It shows up once or twice per lock at up to 9.7 ms, which matches the probe's first-hide cost, and no hide failed. The launch that began locked never had a key panel and never waited. That fits the key-at-lock explanation, but doesn't prove it. The old process's every-pass wait didn't recur, so there is nothing to fix for now.
 
 ### Waiting for a child process
 
@@ -192,6 +229,61 @@ Every hung wait had `isRunning == false`, and the child's pid no longer existed.
 
 The relaunch helper in `main.swift` waits on the main thread, and the bench harness on its main thread, so they keep `waitUntilExit()`. The cost of the change is one atomic read per 5 ms during a wait that, outside a kill, lasts a few milliseconds after the output has already ended.
 
+### OSD helper signature check
+
+The 02:41 launch had two 0.45 s main-thread stalls before "launched". Both followed `SecTrustCopyAppleTrustAnchors` and ended in `SecKeyVerifySignature`. They came from `SystemOSDSuppressor.recoveryExecutableURL`, which runs `SecStaticCodeCheckValidity` with strict, all-architecture and nested-code flags on the app, then on the recovery helper. That hashes the whole bundle. The check is reached:
+
+- from `setEnabled(true)` through `isCrashRecoveryAvailable`, then again from `armWatchdog`: twice per launch with the overlay replacement on;
+- once per helper pause (the helper relaunching);
+- from Settings → Notch's `body`, on every redraw, including every toggle on that page.
+
+Its cost depends on load, because the nested-code checks run on worker threads while the main thread waits:
+
+| Where | Two checks | One check |
+|---|---:|---:|
+| 02:41 launch, busy Mac | 0.92 s | |
+| 02:47 launch | ≤ 80 ms | |
+| 02:34 launch | no gap over 0.13 s | |
+| Probe on `dist/NotchShot.app`, load average 13 | | 270–634 ms (median 377 ms, n = 6) |
+
+The answer can only change when a file in the bundle does. `SignatureVerdictCache` now keeps the last verdict with a `BundleFileStamps` of the bundle: the path, inode, size, mode, modification time and change time of all 176 entries. Any difference, or a bundle that can't be read, runs the full check again. The change time catches an edit whose modification time was set back, since `utimes` can't set it. Listing and `lstat`-ing the bundle took 8–14 ms on a busy Mac (load average 13, and during a full test run), and 2.5–3.2 ms warm on a quieter one, and 24 of 24 stamps came back unchanged. Settings now reads the answer once when the page appears and keeps it in `@State`.
+
+Preserved: the same flags, the Team ID comparison, a failed verdict (kept, so a broken helper still blocks suppression), the executable check on every call, and the error log. The verdict lasts only for the process, so every launch still runs one full check. Predicted saving: one check per launch (up to about 0.5 s on a busy Mac), every pause after the first, and all of the Settings redraw cost. The 02:47 build doesn't have this change, so the live launch saving is **not measured**. Moving the remaining check off the main thread would change when suppression starts relative to `setEnabled`, so it wasn't done.
+
+Evidence: [osd-signature-probe.swift](2026-10-29-evidence/osd-signature-probe.swift) and [osd-signature.json](2026-10-29-evidence/osd-signature.json). `SignatureVerdictCacheTests` checks four things:
+
+- One validation for an unchanged bundle.
+- A failed verdict is kept.
+- A same-size edit with the old modification time, an added file, a replaced file and a mode change each validate again.
+- A missing bundle never caches.
+
+### Launch timelines
+
+From the unified log, exec (`xpcproxy`) to the WindowServer connection to the app's "launched" line:
+
+| Launch | Four launches from the unified log, 1.03–3.04 s from exec to "launched". The worst one spent 0.92 s of main-thread time on the OSD signature check. **Fixed** for the second check of each launch (see OSD row). Startup cleanups scale with the store (181 history rows, 176 captures here). History load at 5,000 rows is 100 ms, already tuned and fuzz-tested. | Launch timings after a rebuild with the signature cache. A controlled warm-launch series needs the user's instance stopped: one GUI instance at a time, and a second would share sockets, hotkeys and the system-overlay lease. |
+| OSD signature check | 270–634 ms per check in a probe on a busy Mac, ≤ 80 ms for two in a quiet launch. Reached twice per launch, per helper pause, and on every Settings → Notch redraw. **Fixed:** the verdict is kept until a bundle file's stamp changes (3–14 ms), and Settings reads it once per appearance. Tests cover hits, failed verdicts, four kinds of change and an unreadable bundle. | Live launch timeline after a rebuild. Moving the first check off main is a possible follow-up that changes start-up ordering. |
+|---|---|---|---:|---:|---:|
+| 19:58, pid 15379 | old | locked | 0.88 s | 0.48 s | 1.36 s |
+| 02:34, pid 26921 | new, first run of the binary | unlocked | 1.02 s | 1.00 s | 2.02 s |
+| 02:41, pid 77312 | new | unlocked, busy Mac | 0.14 s | 2.90 s | 3.04 s |
+| 02:47, pid 80372 | new (`1b6d211`) | locked | 0.66 s | 0.37 s | 1.03 s |
+
+The 02:41 launch's extra time is mostly the two signature checks (0.92 s). The unlocked launches also create the panel, set up notifications and order the window in. A locked launch does none of that until unlock. Four launches under different load can't separate the old and new code. **No launch-time claim.**
+
+### Open and close memory
+
+An offscreen harness ([open-close-memory-harness.swift](2026-10-29-evidence/open-close-memory-harness.swift)) hosts `NotchRootView` in a window that is never shown. One cycle opens and closes the island, then hovers in and out, and draws each state. It ran 20 warm-up cycles and then four blocks:
+
+| Run | Live heap after warm-up | After each block |
+|---|---:|---:|
+| 4 × 100 cycles | 10.68 MB | 14.35, 12.95, 12.37, 12.20 MB |
+| 4 × 10 cycles | 10.80 MB | 10.88, 11.74, 11.73, 10.88 MB |
+
+There is no per-cycle growth: after 400 cycles the heap is 1.5 MB above warm-up and falling. A state change and its layout cost under 0.5 ms in debug. On-screen Core Animation, WindowServer and GPU memory aren't covered. Raw values: [open-close-memory.json](2026-10-29-evidence/open-close-memory.json).
+
+The 227.6 MB peak in the old process happened before any footprint watch was running, so its cause is unknown. The new process peaked at 123.6 MB in its first 13 minutes. It released about 42 MB around a 4 s lock, from 83 MB to 40 MB, and stayed there after the unlock. That looks like transient memory given back rather than retained growth.
+
 ## Checks
 
 - `swift test --filter "screenLockStateAtLaunch|screenLockSignalMapping|LockedMedia|LockScreen"` (debug): 18 tests / 3 suites passed, including the new session-dictionary test.
@@ -199,7 +291,8 @@ The relaunch helper in `main.swift` waits on the main thread, and the bench harn
 - `swift test --filter "AIActivity|AI activity|AgentUsage"` (debug): 15 tests / 3 suites passed, including the listing-equivalence test.
 - `swift test --filter "ProcessExitTests|ProductivitySuiteTests|SystemUtilitiesTests|NotchMetricsTests|LockedMediaNotificationDeliveryTests|HistoryAndMediaTests"` (debug): 165 tests / 17 suites passed, including both Terminal runner tests and the new process-exit tests. Control: `ProcessExitTests` also passes 40 repetitions with `waitUntilExit()` restored, so the probe, not the tests, shows the race.
 - Full `swift test --skip PasteboardRaceTests --skip idleClientsRecover` (debug), with every change in this report: **1,277 tests / 209 suites passed** twice in a row (27 s and 24 s). The run before those had one failure: "An oversized answer is refused as it arrives" took 5.6 s against its 5 s bound under full-suite load, and it passes alone in 2.0 s. The run before that one is the five-hour Terminal runner hang described above. `PasteboardRaceTests` writes the system clipboard and was left unexecuted to protect user data. `idleClientsRecover` is a known flake under full-suite load.
-- `swift build -c release` of every product with every change in this report: built in 406 s, with no warnings in the changed files.
+- After the signature check change: `swift test --filter "SignatureVerdictCacheTests|SystemIntegrationSafety|ProcessExitTests"` passed 8 tests / 3 suites. A full `swift test --skip PasteboardRaceTests --skip idleClientsRecover` passed **1,283 tests / 211 suites**. Debug build: no new warnings in the changed files.
+- `swift build -c release` of every product, with every change in this report except the signature check: built in 406 s, with no warnings in the changed files.
 - Release `NotchShotBench ai.activity` twice with instruction counters: every precondition held. The earlier full sweep completed every group.
 
 ## Coverage and leads
@@ -207,19 +300,19 @@ The relaunch helper in `main.swift` waits on the main thread, and the bench harn
 | Surface | Evidence / disposition | Next check |
 |---|---|---|
 | Background polling (AI Activity) | Two live samples, probes, interleaved release A/B on synthetic and real folders, instruction counts. **Retained.** | Live after-number once the user relaunches. |
-| Notification Center removals | Live log rate, sample, usernoted `rusage`, fixture test with control. **Retained.** | Live log count after a relaunch. |
-| Lock Screen log line | Live log rates. **Retained.** | Live log count after a relaunch. |
-| `orderOut` wait while locked | Seen only in the first process: ~11–13 ms per locked refresh, always through AppKit's full key-window hide path. Ruled out: the Lock Screen Space (no attach logged in 6 h, both locked opt-ins off), and a panel whose content changed while hidden (probe: 0.1–0.9 ms, no waits). A probe reproduces the cost only for the first hide of a panel that asked for key (10.9–18.9 ms); a panel can't become key while locked, so the key-at-lock suspect can't be probed. **No fix** (the cause is unconfirmed); the once-per-lock ordering report is added. | Read the "Locked ordering" line after the next lock. |
-| Launch while locked | Window controller, media, Instant Replay and brightness poll started as unlocked; the 19:58 relaunch ran the unlocked path while locked. **Fixed:** seeded from `CGSessionCopyCurrentDictionary`; parser test; live dictionary read as locked through the same bridging. | Lock, launch, unlock on the Mac: the notch stays hidden and inert, then returns. |
-| Brightness poll | A 5 Hz `DisplayServicesGetBrightness` XPC on the main thread, which kept running while locked even though no locked reading can reach the screen. **Fixed:** it pauses while locked and re-baselines on unlock, as around display sleep. Probe: 5.5–7 wakeups/s and 0.5–0.8 mJ/s removed while locked. | Wakeups of the live app while locked after the relaunch (predicted about 5/s fewer). |
+| Notification Center removals | Live log rate, sample, usernoted `rusage`, fixture test with control. New build: 2 removal lines in 16 minutes, both at launch. **Retained, confirmed live.** | — |
+| Lock Screen log line | Live log rates. New build: 4 lines in 16 minutes over three locks (was 2,422 in 10 minutes). **Retained, confirmed live.** | — |
+| `orderOut` wait while locked | First process: ~11–13 ms on every locked refresh, through AppKit's full key-window hide path. New build's ordering report over three locks: 0, 2 and 1 passes of 2 ms or more, slowest 9.7 ms, no failed hides. A probe reproduces that size only for the first hide of a panel that asked for key. **Not recurring, so no fix:** the every-pass wait is gone in this build, cause still unproven. The ordering report stays. | A lock whose ordering line shows most passes slow would bring the key-at-lock case back. |
+| Launch while locked | Window controller, media, Instant Replay and brightness poll started as unlocked; the 19:58 relaunch ran the unlocked path while locked. **Fixed:** seeded from `CGSessionCopyCurrentDictionary`, with a parser test. **Verified on the Mac:** the 02:47 relaunch began locked, showed nothing, and brought the panel back at unlock. | — |
+| Brightness poll | A 5 Hz `DisplayServicesGetBrightness` XPC on the main thread, which kept running while locked even though no locked reading can reach the screen. **Fixed:** it pauses while locked and re-baselines on unlock, as around display sleep. Probe: 5.5–7 wakeups/s and 0.5–0.8 mJ/s removed while locked. | Wakeups of the live app during a long lock (not sampled: the new build's locks were 1–3 minutes, while other work ran). |
 | Island refresh fan-out | Each Claude hook event refreshes the island twice, about 15 ms apart: once from `context.onSnapshotChange`, once from `observeIslandSources` → `scheduleIslandRefresh`. About 1 ms CPU per refresh while locked, and 5 of 314 busy samples in the second profile. **Not changed:** the unlocked cost (SwiftUI) isn't measurable with the screen locked, and refresh ordering is delicate. | Count refreshes per hook and measure CPU with the notch visible. A generation check taken in the observation's `onChange` could skip the redundant pass. |
 | Crewline unpaired retry | Keychain miss every 5 s on main. A warm miss costs 0.18 ms. **Rejected** as negligible. | — |
 | Network | No sockets or traffic in the relaunched app (`lsof`, `nettop`). Lyrics are opt-in and cached (40 entries), with in-flight de-duplication and 8 s / 12 s timeouts. Sparkle runs only in configured release builds. Reachability uses `NWPathMonitor`, which is event-driven. **No change.** | Traffic while lyrics are on and tracks change. |
-| Memory | The relaunched app stayed at 30.5–31.3 MB footprint for 25 minutes while locked. Unlocked and in use at 02:20 it was at 97.2 MB, flat over 3 minutes, with a 227.6 MB peak since launch. `heap`: 38.2 MB live; about 36 MB is freed small-zone memory not yet returned after the peak. The first process was at 68 MB after 5 h (187 MB peak). **No change:** no growth reproduced, and the peak's cause is unknown. | Open/close cycles while unlocked, footprint before and after; what drives the footprint past 200 MB. |
+| Memory | Locked: 30.5–31.3 MB for 25 minutes (old build). Unlocked: 97.2 MB, flat for 3 minutes, peak 227.6 MB (old); 83 MB, then 39–41 MB after a lock, peak 123.6 MB (new). `heap`: 38.2 MB live in the old process; about 36 MB was freed memory not yet returned. Offscreen open/close harness: no per-cycle growth over 400 cycles. **No change:** no growth reproduced. | The cause of a 120–230 MB peak: run a footprint watch with a `heap` capture at the threshold. On-screen open/close with Core Animation. |
 | Launch | One launch observed, at 19:58, of a freshly built and signed binary: exec → WindowServer connection 0.85 s → notch panel 1.13 s → retention cleanups done 1.25 s. The logs don't account for the 0.85 s before AppKit; a first launch of a new 55 MB binary pays cold page-in and signature checks. Startup cleanups scale with the store (181 history rows, 176 captures here). History load at 5,000 rows is 100 ms, already tuned and fuzz-tested. **No change.** | Repeated warm launches. Blocked here: one GUI instance at a time, and a second instance would share sockets, hotkeys and the system-overlay lease. |
-| Opening/scrolling History, capture, clipboard, island engine | Full release sweep: search cache hit ~0, cold search 3–5 ms at 5,000 rows, record 6.9 ms, save 29 ms (off main), PNG encode 33 ms (detached), island sync/present ≤ 10 µs. **No change.** | On-screen scrolling and hitch traces. |
+| Opening/scrolling History, capture, clipboard, island engine | Full release sweep: search cache hit ~0, cold search 3–5 ms at 5,000 rows, record 6.9 ms, save 29 ms (off main), PNG encode 33 ms (detached), island sync/present ≤ 10 µs. **No change.** | On-screen scrolling and hitch traces (needs Instruments or a driven UI; not run). |
 | Rendering loops | Every SwiftUI `repeatForever` and `TimelineView(.animation)` loop in the notch is now a layer. Only 1 Hz countdowns and a 6 Hz Productivity view remain. **No change.** | — |
-| Unlocked steady state, size | Measured once, on the old process, with the user at the Mac and AI Activity off: 3.6% of a core, 32–46 M instructions/s, 5.6–7.5 mJ/s, 12–37 wakeups/s. About 1% of the main thread is NotchShot code. The notification mirror's 0.45 s Accessibility scan is the largest piece (about 3 ms/s on its queue). It also has an `AXObserver`, so the scan might become event-driven, but that changes a polling policy and needs a product decision. **No change.** | The same windows on the new build after a relaunch; agent-active numbers with AI Activity on. |
+| Unlocked steady state, size | Old build: 3.6% of a core, 32–46 M instructions/s, 5.6–7.5 mJ/s, 12–37 wakeups/s. New build: 1.5% (60 s), 18–80 M instructions/s, 2.2–13 mJ/s, 30–37 wakeups/s. The ranges overlap: **equivalent within noise.** About 1% of the main thread is NotchShot code. The notification mirror's 0.45 s Accessibility scan is the largest piece, about 3 ms/s on its queue. It also has an `AXObserver`, so the scan might become event-driven, but that changes a polling policy and needs a product decision. **No change.** | Agent-active numbers with AI Activity on. |
 | Waiting for child processes | A five-hour hang in a full test run, sampled; probe with interleaved modes (13 of 568 old waits never returned, 0 of 384 polled); Foundation's exit path read from disassembly and a hung task's state word. **Fixed** at the four worker-thread sites; helper tests. The tests pass against the old wait too, so the probe is the evidence. | Whether the hang has shown up in the app: an "Extracting" spinner or a Terminal command that never finished. |
 
 ## Reproduction
@@ -238,4 +331,6 @@ The process-wait probe builds on its own. From the repository root:
 cd "$(mktemp -d)"
 swiftc -O -swift-version 5 "$OLDPWD/Documentation/Performance/2026-10-29-evidence/process-wait-probe.swift" -o process-wait-probe
 ./process-wait-probe 6 wait   # then poll, handler, queue; interleave the modes
+swiftc -O "$OLDPWD/Documentation/Performance/2026-10-29-evidence/osd-signature-probe.swift" -o osd-signature-probe
+./osd-signature-probe "$OLDPWD/dist/NotchShot.app" 6   # reads the bundle only
 ```

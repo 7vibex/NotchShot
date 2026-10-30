@@ -11,6 +11,9 @@ import UniformTypeIdentifiers
 struct NotchSettings: View {
     @Bindable var coordinator: AppCoordinator
     @Bindable var preferences: Preferences
+    /// Read once per appearance: the answer comes from a signature check,
+    /// which in `body` ran again on every change made on this page.
+    @State private var isCrashRecoveryAvailable = true
 
     var body: some View {
         Form {
@@ -108,7 +111,7 @@ struct NotchSettings: View {
                         }
                     }
                 }
-                if !coordinator.osd.isCrashRecoveryAvailable {
+                if !isCrashRecoveryAvailable {
                     SettingsWarningRow(message: "The recovery helper is missing, so the macOS overlay can't be replaced. Reinstall NotchShot to restore it.")
                 }
             }
@@ -163,6 +166,7 @@ struct NotchSettings: View {
             }
         }
         .settingsWorkbenchFormStyle()
+        .onAppear { isCrashRecoveryAvailable = coordinator.osd.isCrashRecoveryAvailable }
     }
 
     private func addNotchHiddenApp() {

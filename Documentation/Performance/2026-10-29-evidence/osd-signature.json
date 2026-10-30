@@ -1,0 +1,52 @@
+{
+  "bundle": "dist/NotchShot.app (live build, 176 entries)",
+  "command": "./osd-signature-probe dist/NotchShot.app 6",
+  "date": "2026-10-30T02:54",
+  "earlierQuietRun": {
+    "note": "same measurement before the change, quieter machine",
+    "stampMs": "2.5-3.2 warm, 6.4 first",
+    "strictCheckMs": "286-442"
+  },
+  "machine": "user's Mac, load average 13 (other sessions running)",
+  "run": {
+    "bundle": "dist/NotchShot.app",
+    "entries": 176,
+    "firstStampMs": 10.780542,
+    "stampMs": [
+      10.499166,
+      10.670959,
+      10.884,
+      10.998292,
+      11.230042,
+      11.521916,
+      11.534,
+      11.625459,
+      11.711541,
+      11.715959,
+      11.801917,
+      11.832625,
+      11.8645,
+      11.953125,
+      11.985625,
+      11.987584,
+      12.057333,
+      12.25825,
+      12.338667,
+      12.404417,
+      12.505167,
+      12.737792,
+      12.983542,
+      13.283791
+    ],
+    "stampsUnchanged": "24/24",
+    "strictCheckMs": [
+      270.235791,
+      298.23225,
+      312.55125,
+      442.159375,
+      457.835458,
+      634.009583
+    ],
+    "valid": true
+  }
+}

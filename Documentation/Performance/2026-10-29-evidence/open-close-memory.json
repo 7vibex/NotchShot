@@ -1,0 +1,7 @@
+{
+ "protocol": "open-close-memory-harness.swift (debug test build). NotchRootView hosted in an offscreen borderless NSWindow that is never ordered in, coordinator.rendersAsActiveDisplay = true. One cycle = toggleExpanded() open, toggleExpanded() close, setHovering(true), setHovering(false); each state laid out and drawn with cacheDisplay. 20 warm-up cycles, then four blocks. Live heap = malloc_zone_statistics(nil).size_in_use after a 300 ms settle.",
+ "date": "2026-10-30",
+ "run_100_cycle_blocks": {"warm_up_live_mb": 10.68, "live_mb_after": [14.35, 12.95, 12.37, 12.20], "footprint_mb_warm_up": 111.3, "footprint_mb_after": [110.1, 93.9, 91.7, 91.9]},
+ "run_10_cycle_blocks": {"warm_up_live_mb": 10.80, "live_mb_after": [10.88, 11.74, 11.73, 10.88], "per_state_ms": {"state_change": 0.297, "layout": 0.164, "cacheDisplay": 105.339}, "states": 160},
+ "reading": "No per-cycle growth: live heap rises and falls within about 3.7 MB of warm-up and ends 1.5 MB above it after 400 cycles. The state change and layout cost under 0.5 ms per state in debug; the ~105 ms per state is the harness's offscreen software draw, not the app. Not covered: on-screen Core Animation, WindowServer and GPU memory, and animations, which do not run in a window that is never shown."
+}

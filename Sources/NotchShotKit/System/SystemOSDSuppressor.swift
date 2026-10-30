@@ -241,12 +241,21 @@ public final class SystemOSDSuppressor {
             .appendingPathComponent("Contents/MacOS", isDirectory: true)
             .appendingPathComponent(Self.recoveryExecutableName)
         guard FileManager.default.isExecutableFile(atPath: url.path),
-              Self.hasMatchingValidSignature(helperURL: url) else {
+              signatureVerdict.isValid(
+                  for: BundleFileStamps(bundle: Bundle.main.bundleURL),
+                  validate: { Self.hasMatchingValidSignature(helperURL: url) }
+              ) else {
             Log.app.error("OSD recovery helper is missing or has an invalid signature")
             return nil
         }
         return url
     }
+
+    /// The strict check hashes the whole bundle: 270–630 ms on the main thread
+    /// for this 59 MB app, twice per launch with the overlay replacement on and
+    /// once more for every helper pause. Its answer can only change when a file
+    /// in the bundle does, so it is reused until one has a different stamp.
+    private var signatureVerdict = SignatureVerdictCache()
 
     nonisolated private static func hasMatchingValidSignature(
         helperURL: URL
@@ -487,5 +496,60 @@ public final class SystemOSDSuppressor {
             NSWorkspace.shared.notificationCenter.removeObserver(observer)
         }
         observers.removeAll()
+    }
+}
+
+/// A bundle as it is on disk, entry by entry: enough to tell that nothing was
+/// replaced, rebuilt or edited since a signature check. Listing and `lstat`-ing
+/// this app's 176 entries takes 3–14 ms, depending on load.
+struct BundleFileStamps: Equatable {
+    private struct Stamp: Equatable {
+        var inode: UInt64
+        var size: Int64
+        var mode: UInt16
+        var modifiedSeconds: Int
+        var modifiedNanoseconds: Int
+        // The change time can't be set back the way `utimes` sets the
+        // modification time, so it catches an edit that hides its mtime.
+        var changedSeconds: Int
+        var changedNanoseconds: Int
+    }
+
+    private var entries: [String: Stamp]
+
+    /// Nil when the bundle can't be listed or an entry can't be read, so the
+    /// next check validates again.
+    init?(bundle: URL) {
+        let root = bundle.standardizedFileURL.path
+        guard let enumerator = FileManager.default.enumerator(atPath: root) else { return nil }
+        var entries: [String: Stamp] = [:]
+        for relative in [""] + enumerator.compactMap({ $0 as? String }) {
+            var information = stat()
+            let path = relative.isEmpty ? root : root + "/" + relative
+            guard lstat(path, &information) == 0 else { return nil }
+            entries[relative] = Stamp(
+                inode: UInt64(information.st_ino),
+                size: Int64(information.st_size),
+                mode: UInt16(information.st_mode),
+                modifiedSeconds: Int(information.st_mtimespec.tv_sec),
+                modifiedNanoseconds: Int(information.st_mtimespec.tv_nsec),
+                changedSeconds: Int(information.st_ctimespec.tv_sec),
+                changedNanoseconds: Int(information.st_ctimespec.tv_nsec)
+            )
+        }
+        self.entries = entries
+    }
+}
+
+/// The last strict signature verdict and the bundle state it was made for.
+struct SignatureVerdictCache {
+    private var verdict: (stamps: BundleFileStamps, isValid: Bool)?
+
+    /// Validates again whenever the stamps differ or are unavailable.
+    mutating func isValid(for stamps: BundleFileStamps?, validate: () -> Bool) -> Bool {
+        if let stamps, let verdict, verdict.stamps == stamps { return verdict.isValid }
+        let isValid = validate()
+        verdict = stamps.map { ($0, isValid) }
+        return isValid
     }
 }
