@@ -125,6 +125,9 @@ public actor AppleEventsMediaSource: MediaSource {
 
     public nonisolated let kind: MediaSourceKind = .appleEvents
 
+    /// The apps this source can follow, by bundle identifier.
+    static let playerBundleIdentifiers: Set<String> = Set(Player.allCases.map(\.rawValue))
+
     private enum Player: String, CaseIterable {
         case music = "com.apple.Music"
         case spotify = "com.spotify.client"

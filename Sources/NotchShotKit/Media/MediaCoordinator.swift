@@ -66,6 +66,12 @@ public final class MediaCoordinator {
     private var selectionGeneration: UInt = 0
     private var lastSelection: Date?
     private let reselectCooldown: TimeInterval = 8
+    /// Retries after a running player didn't answer, and the task waiting on
+    /// the next one. Bounded so a player that never answers can't keep
+    /// spending a two-second script timeout.
+    private var fallbackRetries = 0
+    private let fallbackRetryLimit = 3
+    private var fallbackRetryTask: Task<Void, Never>?
     private var workspaceObservers: [NSObjectProtocol] = []
     private var distributedObservers: [NSObjectProtocol] = []
 
@@ -104,6 +110,8 @@ public final class MediaCoordinator {
         selectionGeneration &+= 1
         selectionTask?.cancel()
         selectionTask = nil
+        fallbackRetryTask?.cancel()
+        fallbackRetryTask = nil
         streamTask?.cancel()
         streamTask = nil
         let current = source
@@ -174,6 +182,27 @@ public final class MediaCoordinator {
         ) { [weak self] _ in
             MainActor.assumeIsolated {
                 self?.setSessionActive(true)
+            }
+        })
+
+        // Opening Spotify or Music after the last selection found nothing to
+        // follow. Nothing else re-selects until a wake, so music stayed off
+        // for a whole session when the player started after NotchShot.
+        workspaceObservers.append(center.addObserver(
+            forName: NSWorkspace.didLaunchApplicationNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] notification in
+            let bundleID = (notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication)?
+                .bundleIdentifier
+            MainActor.assumeIsolated {
+                guard let self, let bundleID,
+                      AppleEventsMediaSource.playerBundleIdentifiers.contains(bundleID),
+                      Preferences.shared.appleEventsFallbackEnabled,
+                      self.activeSource == .none else { return }
+                self.fallbackRetries = 0
+                self.lastSelection = nil
+                self.scheduleSelection()
             }
         })
 
@@ -274,15 +303,38 @@ public final class MediaCoordinator {
                 return
             }
             if healthy {
+                fallbackRetries = 0
                 await attach(appleEvents, generation: generation)
                 return
             }
             if PermissionCenter.shared.pendingRemediation == .automation {
                 lastFailureReason = "Music and Spotify access is denied. Allow Automation in System Settings."
+            } else {
+                retryFallbackLater(generation: generation)
             }
         }
 
         await attach(DisabledMediaSource(), generation: generation)
+    }
+
+    /// A running player that didn't answer may only be busy: still
+    /// launching, or held by macOS's first "control Spotify?" prompt, which
+    /// outlasts the check's timeout. Without a retry, music stayed off until
+    /// the next relaunch even after the user clicked Allow.
+    private func retryFallbackLater(generation: UInt) {
+        guard fallbackRetries < fallbackRetryLimit else { return }
+        let playerIsRunning = NSWorkspace.shared.runningApplications.contains {
+            $0.bundleIdentifier.map(AppleEventsMediaSource.playerBundleIdentifiers.contains) ?? false
+        }
+        guard playerIsRunning else { return }
+        fallbackRetries += 1
+        fallbackRetryTask?.cancel()
+        fallbackRetryTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(15))
+            guard let self, !Task.isCancelled, self.selectionGeneration == generation else { return }
+            self.fallbackRetryTask = nil
+            self.scheduleSelection()
+        }
     }
 
     private func attach(_ newSource: any MediaSource, generation: UInt) async {
@@ -292,7 +344,9 @@ public final class MediaCoordinator {
         }
         source = newSource
         activeSource = newSource.kind
-        Log.media.info("Media source: \(newSource.kind.rawValue)")
+        // Public: which bridge is live is the first question when music
+        // doesn't show, and the name says nothing about the user.
+        Log.media.info("Media source: \(newSource.kind.rawValue, privacy: .public)")
 
         let stream = await newSource.updates()
         guard isCurrentSelection(generation), source?.kind == newSource.kind else {
