@@ -211,7 +211,7 @@ public actor AppleEventsMediaSource: MediaSource {
         pollsInBackground = background
     }
 
-    private func nextPollInterval() -> Duration {
+    func nextPollInterval() -> Duration {
         pollsInBackground ? Self.backgroundPollInterval : Self.pollInterval
     }
 

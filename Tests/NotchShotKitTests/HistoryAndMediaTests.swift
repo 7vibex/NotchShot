@@ -814,6 +814,17 @@ struct AppleEventsMediaTimelineTests {
         #expect(cache.data(for: "b") == Data([3]))
         #expect(cache.data(for: "c") == Data([4]))
     }
+
+    /// No poll runs: the source is only created, never asked for updates.
+    @Test("A source told the Mac is locked with nothing shown waits 10 s between polls")
+    func backgroundPollInterval() async {
+        let source = AppleEventsMediaSource()
+        #expect(await source.nextPollInterval() == .seconds(2))
+        await source.setPollsInBackground(true)
+        #expect(await source.nextPollInterval() == .seconds(10))
+        await source.setPollsInBackground(false)
+        #expect(await source.nextPollInterval() == .seconds(2))
+    }
 }
 
 @Suite("Adapter payload parsing")
