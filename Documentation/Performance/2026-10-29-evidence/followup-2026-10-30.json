@@ -384,5 +384,128 @@
    "at_20_12": "footprint 37.0 MB; 7.8 M instr/s, 0.56% core, 3.1 wakeups/s, 0.6 mJ/s (10 s window)",
    "lifetime_at_20_12": "cpu 83.53 s, instructions 115.20 G, energy 10.54 J, wakeups 47689, disk written 144.0 KB, peak footprint 83.5 MB"
   }
+ },
+ "evening_followup": {
+  "spotify_poll_events": {
+   "method": "/usr/bin/log show --info, subsystem com.apple.appleevents; polls split on gaps over 1 s; first and last partial polls dropped",
+   "old": {
+    "process": "pid 1696, dist/ build of a85a425",
+    "window": "22:40:00-22:42:00",
+    "sends": 540,
+    "to_spotify": 486,
+    "to_itself": 54,
+    "polls": 54,
+    "sends_per_full_poll": 10,
+    "first_send_to_last_reply_ms": {
+     "median": 127,
+     "min": 120,
+     "max": 275
+    },
+    "full_polls": 52
+   },
+   "new": {
+    "process": "pid 68210, dist/ build of f966908 (before a comment-only edit)",
+    "window": "22:56:30 to 22:57:35",
+    "sends": 224,
+    "to_spotify": 224,
+    "to_itself": 0,
+    "polls": 32,
+    "sends_per_full_poll": 7,
+    "first_send_to_last_reply_ms": {
+     "median": 94,
+     "min": 86,
+     "max": 103
+    },
+    "full_polls": 30
+   },
+   "old_poll_shape": "probe getd; getd state; 5 track getd; getd state as text; syso,ntoc to Spotify; syso,ntoc to NotchShot",
+   "new_poll_shape": "probe getd; getd state as text; 5 track getd",
+   "first_media_after_launch": {
+    "15:53 build": "first line 15:53:06.965, hasMedia=true 15:53:07.475 (0.51 s)",
+    "22:56 build": "first line 22:56:05.837, launched 22:56:05.885, hasMedia=true 22:56:06.369 (0.53 s)"
+   },
+   "locked_rusage_after": [
+    "22:57:47 6.1 M instr/s, 0.44% core, 3.3 wakeups/s, 0.5 mJ/s",
+    "22:58:47 6.2 M instr/s, 0.47% core, 3.2 wakeups/s, 0.5 mJ/s",
+    "22:59:48 6.1 M instr/s, 0.47% core, 3.1 wakeups/s, 0.5 mJ/s"
+   ],
+   "time_profiler_30s_script_thread_ms": {
+    "old new-locked 15:58": 68,
+    "new new2-locked 22:52 (dedup only, before the character id change)": 74
+   }
+  },
+  "island_refresh_per_hook": {
+   "harness": "refresh-harness.swift, debug, offscreen NotchRootView, synthetic PreToolUse hooks, main-thread instructions for 150 ms after each hook, 5 rounds of 20 hooks per run",
+   "old_tree": "e0f14f7 exported to a scratch folder",
+   "new_tree": "working tree before f966908",
+   "order": "old r1, new r1, old r2, new r2, old r3, new r3",
+   "runs": {
+    "old_run1": [
+     "round 1: per hook median 15.69 M, min 15.54 M, max 16.25 M; direct refreshes 20 of 20",
+     "round 2: per hook median 15.63 M, min 15.58 M, max 15.72 M; direct refreshes 20 of 20",
+     "round 3: per hook median 15.74 M, min 15.58 M, max 18.09 M; direct refreshes 20 of 20",
+     "round 4: per hook median 16.28 M, min 15.70 M, max 19.17 M; direct refreshes 20 of 20",
+     "round 5: per hook median 16.07 M, min 15.73 M, max 17.04 M; direct refreshes 20 of 20"
+    ],
+    "old_run2": [
+     "round 1: per hook median 15.84 M, min 15.64 M, max 16.51 M; direct refreshes 20 of 20",
+     "round 2: per hook median 15.73 M, min 15.66 M, max 16.49 M; direct refreshes 20 of 20",
+     "round 3: per hook median 15.79 M, min 15.64 M, max 17.37 M; direct refreshes 20 of 20",
+     "round 4: per hook median 15.79 M, min 15.63 M, max 17.71 M; direct refreshes 20 of 20",
+     "round 5: per hook median 15.71 M, min 15.62 M, max 16.46 M; direct refreshes 20 of 20"
+    ],
+    "old_run3": [
+     "round 1: per hook median 15.70 M, min 15.58 M, max 16.73 M; direct refreshes 20 of 20",
+     "round 2: per hook median 15.84 M, min 15.64 M, max 16.86 M; direct refreshes 20 of 20",
+     "round 3: per hook median 16.15 M, min 15.63 M, max 17.09 M; direct refreshes 20 of 20",
+     "round 4: per hook median 15.88 M, min 15.69 M, max 16.87 M; direct refreshes 20 of 20",
+     "round 5: per hook median 16.02 M, min 15.65 M, max 16.92 M; direct refreshes 20 of 20"
+    ],
+    "new_run1": [
+     "round 1: per hook median 9.62 M, min 9.14 M, max 10.58 M; direct refreshes 20 of 20",
+     "round 2: per hook median 9.63 M, min 9.13 M, max 11.45 M; direct refreshes 20 of 20",
+     "round 3: per hook median 9.34 M, min 9.10 M, max 10.38 M; direct refreshes 20 of 20",
+     "round 4: per hook median 9.28 M, min 9.08 M, max 10.16 M; direct refreshes 20 of 20",
+     "round 5: per hook median 9.16 M, min 9.07 M, max 9.48 M; direct refreshes 20 of 20"
+    ],
+    "new_run2": [
+     "round 1: per hook median 9.23 M, min 9.06 M, max 10.67 M; direct refreshes 20 of 20",
+     "round 2: per hook median 9.16 M, min 9.08 M, max 9.72 M; direct refreshes 20 of 20",
+     "round 3: per hook median 9.48 M, min 9.14 M, max 13.15 M; direct refreshes 20 of 20",
+     "round 4: per hook median 9.15 M, min 9.08 M, max 10.21 M; direct refreshes 20 of 20",
+     "round 5: per hook median 9.21 M, min 9.08 M, max 10.17 M; direct refreshes 20 of 20"
+    ],
+    "new_run3": [
+     "round 1: per hook median 9.65 M, min 9.18 M, max 10.57 M; direct refreshes 20 of 20",
+     "round 2: per hook median 9.34 M, min 9.16 M, max 9.71 M; direct refreshes 20 of 20",
+     "round 3: per hook median 9.40 M, min 9.19 M, max 10.68 M; direct refreshes 20 of 20",
+     "round 4: per hook median 9.40 M, min 9.11 M, max 10.96 M; direct refreshes 20 of 20",
+     "round 5: per hook median 9.38 M, min 9.19 M, max 9.80 M; direct refreshes 20 of 20"
+    ]
+   }
+  },
+  "temporary_files": {
+   "at_22_37": "128 MiB free on /System/Volumes/Data; NotchConsolidatedFixTests failed with NSCocoaErrorDomain 640 (out of space)",
+   "tmpdir_total": "32 GB",
+   "xctrace_leftovers_removed": {
+    "instrumentsktsPyN.ktrace": "18563.8 MB, 12:38 (unlock2, Animation Hitches 90 s)",
+    "instrumentsmBg21A.ktrace": "4420.1 MB, 13:52 (unlock3, Animation Hitches 30 s)",
+    "instrumentsvzvwlH.ktrace": "693.1 MB, 04:40 (attach-test, Animation Hitches 3 s)",
+    "xrgpu_aps_0xa99f86c00_*": "8 files, 224.9-226.0 MB each, 12:37",
+    "time_profiler_ktraces": "53-190 MB each"
+   },
+   "test_fixture_leftovers_removed": {
+    "folders": 1701,
+    "size": "5.1 GB",
+    "prefixes": [
+     "notch-fix-*",
+     "notchshot-overflow-*",
+     "notchshot-clip-*"
+    ]
+   },
+   "per_full_run_before": "56 entries, about 80 MB (notch-fix 48 MB, notchshot-overflow 28 MB, notchshot-clip 3.3 MB)",
+   "per_full_run_after": "34 entries, 0.1 MB",
+   "free_after": "31 GiB"
+  }
  }
 }
