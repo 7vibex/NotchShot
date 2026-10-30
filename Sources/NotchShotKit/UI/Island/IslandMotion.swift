@@ -370,8 +370,9 @@ extension View {
     }
 }
 
-/// A changing discrete number (percentage, bytes, count) that rolls in place
-/// without animating anything around it. Running clocks use `IslandClockText`.
+/// A changing discrete number (a level, bytes, a count) that rolls in place
+/// without animating anything around it. Running clocks and live progress use
+/// `IslandClockText`.
 struct IslandNumericText: View {
     var text: String
     var countsDown = false
@@ -393,7 +394,9 @@ struct IslandNumericText: View {
 /// A running clock (elapsed or remaining time) that changes every second, in
 /// place and without a transition, as the phone's own timers do. Rolling
 /// digits render on the CPU for most of a second per change, so a clock that
-/// rolled never stopped rendering: about 45% of a core during a call.
+/// rolled never stopped rendering: about 45% of a core during a call. Live
+/// progress (an agent's, a download's, a transfer's percentage) changes as
+/// often and uses this too: each roll cost 150–750 ms of rendering.
 struct IslandClockText: View {
     var text: String
     var font: Font

@@ -134,7 +134,7 @@ struct IslandCompactContent: View {
                 )
                 .minimumScaleFactor(0.8)
             } else {
-                IslandNumericText(
+                IslandClockText(
                     text: activity.metric ?? "",
                     font: .system(size: 12, weight: .semibold, design: .rounded),
                     color: valueTint
@@ -278,7 +278,7 @@ struct IslandSatelliteValue: View {
                         )
                     )
                 } else {
-                    IslandNumericText(
+                    IslandClockText(
                         text: activity.metric ?? "",
                         font: font,
                         color: IslandAccessibility.valueTint(for: activity, accent: accent)

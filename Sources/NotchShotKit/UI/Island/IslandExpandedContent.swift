@@ -98,7 +98,7 @@ private struct IslandProgressCard<Action: View>: View {
                 }
             } trailing: {
                 if let fraction = activity.progress.fraction, !activity.lifecycle.isTerminal {
-                    IslandNumericText(
+                    IslandClockText(
                         text: "\(Int((fraction * 100).rounded(.down)))%",
                         font: .system(size: 15, weight: .semibold, design: .rounded),
                         color: .white
