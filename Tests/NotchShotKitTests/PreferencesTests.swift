@@ -9,7 +9,7 @@ struct PreferencesTests {
     /// An isolated defaults domain so these never touch the real settings.
     private func makePreferences() -> Preferences {
         let suiteName = "notchshot.tests.\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: suiteName)!
+        let defaults = TestDefaults.suite(suiteName)
         return Preferences(defaults: defaults)
     }
 
@@ -34,8 +34,7 @@ struct PreferencesTests {
     @Test("Existing glass appearance choices survive the new defaults")
     func glassPreferencePersistence() {
         let suiteName = "notchshot.tests.\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: suiteName)!
-        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let defaults = TestDefaults.suite(suiteName)
         defaults.set(false, forKey: "notchshot.islandGlass")
         defaults.set(0.4, forKey: "notchshot.islandGlassLevel")
 
@@ -89,7 +88,7 @@ struct PreferencesTests {
     @Test("Settings persist to their defaults domain")
     func persistence() {
         let suiteName = "notchshot.tests.\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: suiteName)!
+        let defaults = TestDefaults.suite(suiteName)
 
         let first = Preferences(defaults: defaults)
         first.imageFormat = .heic
@@ -176,8 +175,7 @@ struct PreferencesTests {
             (true, NotchDisplayPlacement.allDisplays),
         ] {
             let suiteName = "notchshot.tests.\(UUID().uuidString)"
-            let defaults = UserDefaults(suiteName: suiteName)!
-            defer { defaults.removePersistentDomain(forName: suiteName) }
+            let defaults = TestDefaults.suite(suiteName)
             defaults.set(legacyValue, forKey: "notchshot.islandOnExternal")
 
             #expect(Preferences(defaults: defaults).notchDisplayPlacement == expected)
@@ -188,8 +186,7 @@ struct PreferencesTests {
     func corruptFrameRateIsSanitized() {
         for value in [-1, 0, Int(Int32.max) + 1, Int.max] {
             let suiteName = "notchshot.tests.\(UUID().uuidString)"
-            let defaults = UserDefaults(suiteName: suiteName)!
-            defer { defaults.removePersistentDomain(forName: suiteName) }
+            let defaults = TestDefaults.suite(suiteName)
             defaults.set(value, forKey: "notchshot.recordingFrameRate")
 
             let preferences = Preferences(defaults: defaults)
@@ -231,8 +228,7 @@ struct PreferencesTests {
     @Test("The Lock Screen player ignores the retired opt-in and persists its own")
     func lockedMediaPreference() {
         let suiteName = "notchshot.tests.\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: suiteName)!
-        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let defaults = TestDefaults.suite(suiteName)
 
         let first = Preferences(defaults: defaults)
         #expect(!first.showsMediaWhileLocked)
@@ -264,8 +260,7 @@ struct PreferencesTests {
     @Test("Context modules use privacy-safe defaults and persist explicit choices")
     func contextModulePreferences() {
         let suiteName = "notchshot.tests.\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: suiteName)!
-        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let defaults = TestDefaults.suite(suiteName)
 
         let first = Preferences(defaults: defaults)
         #expect(!first.calendarGlanceEnabled)
@@ -334,7 +329,7 @@ struct PreferencesTests {
     @Test("A new install keeps OSD replacement off after first-run completion")
     func osdDefaultIsPersistedBeforeFirstRunChanges() {
         let suiteName = "notchshot.tests.\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: suiteName)!
+        let defaults = TestDefaults.suite(suiteName)
         let first = Preferences(defaults: defaults)
         #expect(!first.suppressesSystemOSD)
 
@@ -346,7 +341,7 @@ struct PreferencesTests {
     @Test("A pending first capture survives only as a non-sensitive intent token")
     func pendingFirstCaptureRoundTrip() {
         let suiteName = "notchshot.tests.\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: suiteName)!
+        let defaults = TestDefaults.suite(suiteName)
         let first = Preferences(defaults: defaults)
         first.pendingFirstCaptureIntent = .area
 
@@ -365,7 +360,7 @@ struct PreferencesTests {
     @Test("An upgraded install must explicitly opt into private OSD replacement")
     func legacyOSDDefaultDoesNotBecomeConsent() {
         let suiteName = "notchshot.tests.\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: suiteName)!
+        let defaults = TestDefaults.suite(suiteName)
         defaults.set(true, forKey: "firstRun")
 
         let preferences = Preferences(defaults: defaults)

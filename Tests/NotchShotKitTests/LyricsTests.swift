@@ -226,7 +226,7 @@ struct LyricsTests {
     @Test("Lyrics are opt-in")
     @MainActor
     func lyricsAreOptIn() {
-        let defaults = UserDefaults(suiteName: "notchshot.lyrics-tests.\(UUID().uuidString)")!
+        let defaults = TestDefaults.suite("notchshot.lyrics-tests.\(UUID().uuidString)")
         #expect(Preferences(defaults: defaults).lyricsEnabled == false)
     }
 }

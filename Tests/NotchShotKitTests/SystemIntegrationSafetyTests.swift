@@ -25,7 +25,7 @@ struct SystemIntegrationSafetyTests {
     }
 
     private func defaults() -> UserDefaults {
-        UserDefaults(suiteName: "notchshot.system-integration-tests.\(UUID().uuidString)")!
+        TestDefaults.suite("notchshot.system-integration-tests.\(UUID().uuidString)")
     }
 
     @Test("A user-disabled macOS shortcut is never claimed or restored")
