@@ -77,6 +77,24 @@ struct SignatureVerdictCacheTests {
         #expect(checks == 2)
     }
 
+    @Test("A verdict recorded off the main thread is reused like one checked here")
+    func recordedVerdictIsReused() throws {
+        let bundle = try Self.makeBundle()
+        defer { try? FileManager.default.removeItem(at: bundle) }
+        var cache = SignatureVerdictCache()
+        #expect(!cache.hasVerdict)
+        cache.record(false, for: BundleFileStamps(bundle: bundle))
+        #expect(cache.hasVerdict)
+        var checks = 0
+        #expect(!cache.isValid(for: BundleFileStamps(bundle: bundle)) { checks += 1; return true })
+        #expect(checks == 0)
+
+        // An unreadable bundle records nothing, so the next enable checks again.
+        var unread = SignatureVerdictCache()
+        unread.record(true, for: nil)
+        #expect(!unread.hasVerdict)
+    }
+
     private static func makeBundle() throws -> URL {
         let bundle = FileManager.default.temporaryDirectory
             .appendingPathComponent("SignatureVerdictCacheTests-\(UUID().uuidString).app")

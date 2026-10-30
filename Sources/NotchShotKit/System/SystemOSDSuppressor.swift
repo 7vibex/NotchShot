@@ -39,6 +39,8 @@ public final class SystemOSDSuppressor {
     private var pausedProcessIDs: Set<pid_t> = []
     private var watchdogs: [pid_t: Watchdog] = [:]
     private var launchTask: Task<Void, Never>?
+    /// An enable waiting for the launch's first signature check.
+    private var pendingVerification: (token: UUID, requestInputAccess: Bool)?
     private let mediaKeyInterceptor = SystemMediaKeyInterceptor()
 
     var onSystemMediaKey: ((SystemMediaKeyAction) -> Bool)? {
@@ -101,18 +103,17 @@ public final class SystemOSDSuppressor {
                 if pausedProcessIDs.isEmpty { pauseHelper() }
                 return
             }
-            guard isCrashRecoveryAvailable else {
-                Log.app.error("System OSD replacement unavailable: recovery helper is missing")
-                isEnabled = false
+            if let pending = pendingVerification {
+                pendingVerification = (pending.token, pending.requestInputAccess || requestInputAccess)
                 return
             }
-            isEnabled = true
-            if #available(macOS 26.5, *) {
-                _ = mediaKeyInterceptor.start(requestAccess: requestInputAccess)
+            if signatureVerdict.hasVerdict {
+                enable(requestInputAccess: requestInputAccess)
+            } else {
+                verifyThenEnable(requestInputAccess: requestInputAccess)
             }
-            installLaunchObserver()
-            pauseHelper()
         } else {
+            pendingVerification = nil
             // `mediaKeyInterceptor` is part of the condition because fail-open
             // can leave it running with everything else already cleared, and a
             // guard that ignored it made that state permanent.
@@ -127,7 +128,49 @@ public final class SystemOSDSuppressor {
         }
     }
 
+    /// The first enable of a launch has no verdict yet, and the strict check
+    /// hashes the whole bundle: 270 ms–0.92 s that held up the main thread
+    /// before the app was usable. It runs off the main thread instead, and
+    /// enabling waits for its answer. Until then the system OSD runs as it does
+    /// before any enable, as it also did while the main thread was blocked.
+    private func verifyThenEnable(requestInputAccess: Bool) {
+        let token = UUID()
+        pendingVerification = (token, requestInputAccess)
+        let bundleURL = Bundle.main.bundleURL
+        let helperURL = Self.recoveryExecutableURL(in: bundleURL)
+        Task.detached(priority: .userInitiated) { [weak self] in
+            let stamps = BundleFileStamps(bundle: bundleURL)
+            let isValid = Self.hasMatchingValidSignature(helperURL: helperURL)
+            await self?.finishVerification(token: token, stamps: stamps, isValid: isValid)
+        }
+    }
+
+    private func finishVerification(token: UUID, stamps: BundleFileStamps?, isValid: Bool) {
+        // Kept even when the enable was withdrawn: it is still the answer.
+        signatureVerdict.record(isValid, for: stamps)
+        guard let pending = pendingVerification, pending.token == token else { return }
+        pendingVerification = nil
+        enable(requestInputAccess: pending.requestInputAccess)
+    }
+
+    /// Not `setEnabled(true)`: a bundle that can't be read leaves no verdict,
+    /// and that path would start another background check.
+    private func enable(requestInputAccess: Bool) {
+        guard isCrashRecoveryAvailable else {
+            Log.app.error("System OSD replacement unavailable: recovery helper is missing")
+            isEnabled = false
+            return
+        }
+        isEnabled = true
+        if #available(macOS 26.5, *) {
+            _ = mediaKeyInterceptor.start(requestAccess: requestInputAccess)
+        }
+        installLaunchObserver()
+        pauseHelper()
+    }
+
     public func stop() {
+        pendingVerification = nil
         isEnabled = false
         removeLaunchObserver()
         launchTask?.cancel()
@@ -236,10 +279,14 @@ public final class SystemOSDSuppressor {
         }
     }
 
-    private var recoveryExecutableURL: URL? {
-        let url = Bundle.main.bundleURL
+    private static func recoveryExecutableURL(in bundleURL: URL) -> URL {
+        bundleURL
             .appendingPathComponent("Contents/MacOS", isDirectory: true)
-            .appendingPathComponent(Self.recoveryExecutableName)
+            .appendingPathComponent(recoveryExecutableName)
+    }
+
+    private var recoveryExecutableURL: URL? {
+        let url = Self.recoveryExecutableURL(in: Bundle.main.bundleURL)
         guard FileManager.default.isExecutableFile(atPath: url.path),
               signatureVerdict.isValid(
                   for: BundleFileStamps(bundle: Bundle.main.bundleURL),
@@ -549,7 +596,15 @@ struct SignatureVerdictCache {
     mutating func isValid(for stamps: BundleFileStamps?, validate: () -> Bool) -> Bool {
         if let stamps, let verdict, verdict.stamps == stamps { return verdict.isValid }
         let isValid = validate()
-        verdict = stamps.map { ($0, isValid) }
+        record(isValid, for: stamps)
         return isValid
+    }
+
+    /// False until a check of a readable bundle has been recorded.
+    var hasVerdict: Bool { verdict != nil }
+
+    /// A check made elsewhere, such as off the main thread.
+    mutating func record(_ isValid: Bool, for stamps: BundleFileStamps?) {
+        verdict = stamps.map { ($0, isValid) }
     }
 }
