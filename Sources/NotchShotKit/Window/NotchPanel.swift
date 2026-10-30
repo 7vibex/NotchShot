@@ -88,6 +88,17 @@ public final class NotchPanel: NSPanel {
     public override var canBecomeKey: Bool { true }
     public override var canBecomeMain: Bool { false }
 
+    /// Keeps Liquid Glass in its active, see-through state.
+    ///
+    /// Glass in a window without active appearance draws "subdued": frosted
+    /// and nearly opaque. A nonactivating panel in an accessory app has active
+    /// appearance only while it is key, so the island turned clear only after
+    /// a click made it key. The panel draws no key-dependent chrome (no title
+    /// bar, no traffic lights), so always-active changes nothing else. This is
+    /// AppKit's private selector, checked on screen on macOS 26.7; if a later
+    /// macOS stops calling it, the glass falls back to the subdued look.
+    @objc private func _hasActiveAppearance() -> Bool { true }
+
     /// Updates click-through from a point in *screen* coordinates.
     /// Returns whether the pointer is currently over the island.
     @discardableResult

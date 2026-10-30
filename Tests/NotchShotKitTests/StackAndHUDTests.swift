@@ -360,6 +360,32 @@ struct SystemLevelTests {
         #expect(SystemMediaKeyAction.action(keyType: 999, modifierFlags: []) == nil)
     }
 
+    @Test("A swallowed key handed back to macOS gets a matching key-up")
+    func replayedKeyUp() throws {
+        let keyType = Int(NX_KEYTYPE_SOUND_UP)
+        // Key type, key-down state and the repeat bit of a held key.
+        let downData1 = (keyType << 16) | (0xA << 8) | 0x1
+        #expect(ConsumedMediaKey.keyUpData1(forKeyDown: downData1) == (keyType << 16) | (0xB << 8))
+
+        let down = try #require(NSEvent.otherEvent(
+            with: .systemDefined,
+            location: .zero,
+            modifierFlags: NSEvent.ModifierFlags(rawValue: 0xA00).union([.shift, .option]),
+            timestamp: 0,
+            windowNumber: 0,
+            context: nil,
+            subtype: Int16(NX_SUBTYPE_AUX_CONTROL_BUTTONS),
+            data1: downData1,
+            data2: -1
+        )?.cgEvent)
+        let up = try #require(ConsumedMediaKey.keyUp(for: down).flatMap(NSEvent.init(cgEvent:)))
+        #expect(up.type == .systemDefined)
+        #expect(Int(up.subtype.rawValue) == Int(NX_SUBTYPE_AUX_CONTROL_BUTTONS))
+        #expect(up.data1 == (keyType << 16) | (0xB << 8))
+        // Option-Shift still marks a fine step on the way back.
+        #expect(up.modifierFlags.contains([.shift, .option]))
+    }
+
     @Test("System media-key levels use standard and fine increments with clamping")
     func mediaKeySteps() {
         #expect(SystemMediaKeyAction.adjustedLevel(

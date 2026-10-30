@@ -24,7 +24,7 @@ public final class KeyboardCleaningController {
 
     @ObservationIgnored var onChange: (() -> Void)?
 
-    /// See `SystemMediaKeyInterceptor.eventTap` for why this is unsafe.
+    /// See `SystemMediaKeyInterceptor.tap` for why this is unsafe.
     @ObservationIgnored private nonisolated(unsafe) var eventTap: CFMachPort?
     @ObservationIgnored private var runLoopSource: CFRunLoopSource?
     @ObservationIgnored private var endTask: Task<Void, Never>?
