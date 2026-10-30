@@ -373,6 +373,16 @@
      "ai.activity real 337 files [current]              10.229 M instructions/call   n=30"
     ]
    }
+  },
+  "locked_four_hours": {
+   "process": "pid 1696, dist/ build of a85a425, launched 15:53:06 while locked; locked from 15:45:19 throughout",
+   "watch": "probes/fp once a second, 16:06:51 to 20:06:51; logs moves of 3 MB or more and captures footprint over 120 MB",
+   "logged": [
+    "16:06:51 footprint 34.4 MB (lifetime max 83.5 MB), 12.7 M instr/s, 3.0 wakeups/s, 1.6 mJ/s"
+   ],
+   "captured_over_threshold": false,
+   "at_20_12": "footprint 37.0 MB; 7.8 M instr/s, 0.56% core, 3.1 wakeups/s, 0.6 mJ/s (10 s window)",
+   "lifetime_at_20_12": "cpu 83.53 s, instructions 115.20 G, energy 10.54 J, wakeups 47689, disk written 144.0 KB, peak footprint 83.5 MB"
   }
  }
 }
