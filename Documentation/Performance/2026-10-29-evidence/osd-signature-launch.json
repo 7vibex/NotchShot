@@ -1,0 +1,32 @@
+{
+  "bundle": "dist/NotchShot.app",
+  "command": "./osd-signature-probe dist/NotchShot.app 8 launch",
+  "date": "2026-10-30T03:07",
+  "machine": "user's Mac, load average 3.9-4.3",
+  "note": "Old and new sequences alternate in one process. Old: two full checks (isCrashRecoveryAvailable, then armWatchdog). New: stamp + full check, then stamp (cache hit).",
+  "run": {
+    "mode": "launch",
+    "newCheckAndStampMs": [
+      267.095333,
+      267.644709,
+      271.241625,
+      273.23375,
+      275.228208,
+      284.4325,
+      373.411833,
+      417.066541
+    ],
+    "newFullChecks": 8,
+    "oldTwoChecksMs": [
+      521.654417,
+      524.508,
+      526.610333,
+      529.129708,
+      547.402708,
+      549.53475,
+      730.370459,
+      814.330625
+    ],
+    "rounds": 8
+  }
+}

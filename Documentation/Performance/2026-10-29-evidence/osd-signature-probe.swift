@@ -5,6 +5,11 @@
 //
 //   swiftc -O osd-signature-probe.swift -o osd-signature-probe
 //   ./osd-signature-probe <path to NotchShot.app> <rounds>
+//   ./osd-signature-probe <path to NotchShot.app> <rounds> launch
+//
+// `launch` times what one launch with the overlay replacement on asks for
+// (`isCrashRecoveryAvailable`, then `armWatchdog`), alternating the old
+// sequence (two full checks) with the new one (stamp + check, then stamp).
 
 import Foundation
 import Security
@@ -51,6 +56,32 @@ func milliseconds(_ body: () -> Void) -> Double {
 let app = URL(fileURLWithPath: CommandLine.arguments[1])
 let rounds = Int(CommandLine.arguments[2]) ?? 5
 let helper = app.appendingPathComponent("Contents/MacOS/NotchShotOSDRecovery")
+
+if CommandLine.arguments.count > 3, CommandLine.arguments[3] == "launch" {
+    var old: [Double] = [], new: [Double] = [], newValidations = 0
+    for round in 0 ..< rounds * 2 {
+        if round.isMultiple(of: 2) {
+            old.append(milliseconds { _ = strictCheck(app: app, helper: helper); _ = strictCheck(app: app, helper: helper) })
+        } else {
+            new.append(milliseconds {
+                var cached: (stamps: [String: Stamp], isValid: Bool)?
+                for _ in 0 ..< 2 {
+                    let current = stamps(app)
+                    if let current, let cached, cached.stamps == current { continue }
+                    newValidations += 1
+                    let isValid = strictCheck(app: app, helper: helper)
+                    cached = current.map { ($0, isValid) }
+                }
+            })
+        }
+    }
+    let result: [String: Any] = [
+        "mode": "launch", "rounds": rounds, "oldTwoChecksMs": old.sorted(),
+        "newCheckAndStampMs": new.sorted(), "newFullChecks": newValidations,
+    ]
+    print(String(data: try! JSONSerialization.data(withJSONObject: result, options: [.prettyPrinted, .sortedKeys]), encoding: .utf8)!)
+    exit(0)
+}
 var valid = false
 let checkTimes = (0 ..< rounds).map { _ in milliseconds { valid = strictCheck(app: app, helper: helper) } }
 var first: [String: Stamp]?
