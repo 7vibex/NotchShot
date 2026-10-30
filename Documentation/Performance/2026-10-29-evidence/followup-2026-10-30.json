@@ -323,6 +323,56 @@
    "preferences_entries_before": 12827,
    "after": 1018,
    "pattern": "notchshot.(tests|system-integration-tests|lyrics-tests).<UUID>.plist, newest 03:52 on 30 October"
+  },
+  "pruning_on_a_copy": {
+   "protocol": "cp -Rp of ~/Library/Application Support/NotchShot/AI Activity into the scratchpad twice (dates kept); prune-copy-harness.swift pruned one copy with the real pruneStatusFiles (debug); release NotchShotBench ai.activity with NOTCHSHOT_BENCH_AI_DIRECTORY on each copy, alternating live, pruned, live, pruned. The live folder was only read.",
+   "harness": [
+    "entries 2163 -> 337, removed 1826 in 0.121576291 seconds; second pass removed 0",
+    "activities full 32, pruned 32, identical true",
+    "left: json 337, tmp 0, other []"
+   ],
+   "bench": {
+    "live_1": [
+     "ai.activity real 2163 files [listing 1]        median     6.518 ms   min     6.345 ms   n=30",
+     "ai.activity real 2163 files [current 1]        median     1.251 ms   min     1.221 ms   n=30",
+     "ai.activity real 2163 files [listing 2]        median     6.515 ms   min     6.329 ms   n=30",
+     "ai.activity real 2163 files [current 2]        median     1.259 ms   min     1.238 ms   n=30",
+     "ai.activity real 2163 files [listing 3]        median     6.605 ms   min     6.274 ms   n=30",
+     "ai.activity real 2163 files [current 3]        median     1.253 ms   min     1.218 ms   n=30",
+     "ai.activity real 2163 files [listing]            147.512 M instructions/call   n=30",
+     "ai.activity real 2163 files [current]             28.806 M instructions/call   n=30"
+    ],
+    "live_2": [
+     "ai.activity real 2163 files [listing 1]        median     6.598 ms   min     6.321 ms   n=30",
+     "ai.activity real 2163 files [current 1]        median     1.253 ms   min     1.228 ms   n=30",
+     "ai.activity real 2163 files [listing 2]        median     6.488 ms   min     6.196 ms   n=30",
+     "ai.activity real 2163 files [current 2]        median     1.268 ms   min     1.225 ms   n=30",
+     "ai.activity real 2163 files [listing 3]        median     6.521 ms   min     6.438 ms   n=30",
+     "ai.activity real 2163 files [current 3]        median     1.273 ms   min     1.240 ms   n=30",
+     "ai.activity real 2163 files [listing]            147.694 M instructions/call   n=30",
+     "ai.activity real 2163 files [current]             28.793 M instructions/call   n=30"
+    ],
+    "pruned_1": [
+     "ai.activity real 337 files [listing 1]         median     1.379 ms   min     1.349 ms   n=30",
+     "ai.activity real 337 files [current 1]         median     0.449 ms   min     0.441 ms   n=30",
+     "ai.activity real 337 files [listing 2]         median     1.368 ms   min     1.309 ms   n=30",
+     "ai.activity real 337 files [current 2]         median     0.426 ms   min     0.414 ms   n=30",
+     "ai.activity real 337 files [listing 3]         median     1.288 ms   min     1.269 ms   n=30",
+     "ai.activity real 337 files [current 3]         median     0.428 ms   min     0.411 ms   n=30",
+     "ai.activity real 337 files [listing]              28.365 M instructions/call   n=30",
+     "ai.activity real 337 files [current]              10.219 M instructions/call   n=30"
+    ],
+    "pruned_2": [
+     "ai.activity real 337 files [listing 1]         median     1.278 ms   min     1.243 ms   n=30",
+     "ai.activity real 337 files [current 1]         median     0.418 ms   min     0.413 ms   n=30",
+     "ai.activity real 337 files [listing 2]         median     1.278 ms   min     1.233 ms   n=30",
+     "ai.activity real 337 files [current 2]         median     0.421 ms   min     0.403 ms   n=30",
+     "ai.activity real 337 files [listing 3]         median     1.294 ms   min     1.248 ms   n=30",
+     "ai.activity real 337 files [current 3]         median     0.417 ms   min     0.406 ms   n=30",
+     "ai.activity real 337 files [listing]              28.344 M instructions/call   n=30",
+     "ai.activity real 337 files [current]              10.229 M instructions/call   n=30"
+    ]
+   }
   }
  }
 }
