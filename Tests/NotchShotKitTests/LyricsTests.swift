@@ -146,6 +146,30 @@ struct LyricsTests {
         #expect(LyricsResponseStub.requests(for: session).count == 3)
     }
 
+    @Test("Each new track costs one request: two surfaces share it, and a replay is free until 40 others pass")
+    func requestsPerTrackChange() async {
+        let found = #"{"duration":200,"syncedLyrics":"[00:01.00]Line"}"#
+        let session = LyricsResponseStub.session(responses: Array(repeating: .init(body: found), count: 42))
+        defer { session.invalidateAndCancel() }
+        let service = LyricsService(session: session)
+        let tracks = (0 ... 40).map { LyricsQuery(title: "Song \($0)", artist: "Artist", duration: 200) }
+
+        // The Lock Screen card and the lyrics panel asking at the same time.
+        async let card = service.lyrics(for: tracks[0])
+        async let panel = service.lyrics(for: tracks[0])
+        #expect(await card == panel)
+        #expect(LyricsResponseStub.requests(for: session).count == 1)
+
+        for track in tracks[1 ... 39] { _ = await service.lyrics(for: track) }
+        _ = await service.lyrics(for: tracks[0])
+        #expect(LyricsResponseStub.requests(for: session).count == 40)
+
+        // A 41st track pushes out the oldest.
+        _ = await service.lyrics(for: tracks[40])
+        _ = await service.lyrics(for: tracks[0])
+        #expect(LyricsResponseStub.requests(for: session).count == 42)
+    }
+
     @Test("Refresh bypasses a cached miss and keeps the recovered lyrics")
     func refreshRetriesCachedMiss() async {
         let session = LyricsResponseStub.session(responses: [
