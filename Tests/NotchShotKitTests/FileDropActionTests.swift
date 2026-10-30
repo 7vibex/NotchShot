@@ -82,10 +82,15 @@ struct FileDropActionTests {
             resultCount: 5
         )
 
-        #expect(layout.size.width == 500)
+        #expect(layout.size.width >= 500)
         #expect(layout.size.width <= NotchLayout.maximumSize.width)
         #expect(layout.size.height <= NotchLayout.maximumSize.height)
-        #expect(layout.contentTopInset == metrics.notchSize.height)
+        // The count and the instruction sit beside the camera, the targets
+        // below it, with no empty strip above them.
+        #expect(layout.wrapsCamera)
+        #expect(layout.contentTopInset == 0)
+        let wing = (layout.size.width - metrics.notchSize.width - IslandCameraBand.cameraClearance) / 2
+        #expect(wing >= NotchLayout.fileDropWing)
     }
 
     @Test("The Shelf target parks a supported document instead of summarizing it")

@@ -102,21 +102,17 @@ struct FileDropActionTray: View {
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
 
     var body: some View {
-        VStack(spacing: NotchIsland.Spacing.element) {
-            HStack(spacing: NotchIsland.Spacing.snug) {
-                Image(systemName: headerSymbol)
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(.cyan)
-
-                Text(itemCountDescription)
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(Color.islandInk(NotchIsland.Ink.primary))
-
-                Spacer(minLength: NotchIsland.Spacing.element)
-
+        VStack(spacing: 0) {
+            // What is being dropped beside the camera, as every other card
+            // puts its header, rather than below an empty black strip.
+            IslandBandHeader(leadingInset: NotchIsland.Spacing.gutter + 2, trailingInset: NotchIsland.Spacing.gutter + 2) {
+                IslandBandTitle(systemImage: headerSymbol, title: itemCountDescription)
+            } trailing: {
                 Text("Release over a destination")
-                    .font(.system(size: 10, weight: .medium))
+                    .font(.system(size: NotchIsland.TextSize.caption, weight: .medium))
                     .foregroundStyle(Color.islandInk(NotchIsland.Ink.tertiary))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.85)
             }
 
             HStack(spacing: NotchIsland.Spacing.element) {
@@ -124,9 +120,11 @@ struct FileDropActionTray: View {
                     actionTarget(action)
                 }
             }
+            .padding(.horizontal, NotchIsland.Spacing.gutter)
+            .padding(.top, NotchIsland.Spacing.snug)
+            .padding(.bottom, NotchIsland.Spacing.group)
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 12)
+        .frame(maxHeight: .infinity, alignment: .top)
         .focusable()
         // Arrow-key selection without the blue focus ring drawing over the
         // drop targets. See `ShelfContent` for the same reason.
@@ -205,8 +203,9 @@ struct FileDropActionTray: View {
     ///
     /// The dashed edge is the standard "drop here" affordance, and it does the
     /// work the old circle could not: an idle target now looks like somewhere
-    /// files go, and the one under the pointer fills with its own accent
-    /// instead of merely inverting a glyph.
+    /// files go, and the one under the pointer fills in and lifts. It used to
+    /// fill with a colour of its own — cyan, blue, purple, green, orange — so
+    /// one drag swept a rainbow across the notch.
     private func actionTarget(_ action: FileDropAction) -> some View {
         let isSelected = action == selectedAction
         let accent = accent(for: action)
@@ -233,8 +232,8 @@ struct FileDropActionTray: View {
             // The target under the pointer restates what it is about to
             // receive, so a mis-aimed release is visible before it happens.
             Text(itemCountChip)
-                .font(.system(size: 9, weight: .bold, design: .rounded))
-                .foregroundStyle(.black)
+                .font(.system(size: NotchIsland.TextSize.badge, weight: .bold, design: .rounded))
+                .foregroundStyle(isDestructive(action) ? .white : .black)
                 .padding(.horizontal, NotchIsland.Spacing.snug)
                 .padding(.vertical, 2)
                 .background(accent, in: Capsule(style: .continuous))
@@ -246,7 +245,7 @@ struct FileDropActionTray: View {
             NotchIsland.cardShape
                 .fill(
                     isSelected
-                        ? accent.opacity(reduceTransparency ? 0.28 : 0.18)
+                        ? accent.opacity(reduceTransparency ? 0.24 : 0.14)
                         : Color.islandInk(reduceTransparency ? 0.10 : 0.05)
                 )
         }
@@ -260,7 +259,6 @@ struct FileDropActionTray: View {
                     )
                 )
         }
-        .shadow(color: isSelected ? accent.opacity(0.34) : .clear, radius: 12, y: 4)
         .scaleEffect(isSelected && !reduceMotion ? 1.035 : 1)
         .animation(NotchMotion.selection(reduceMotion: reduceMotion), value: isSelected)
         .accessibilityElement(children: .ignore)
@@ -274,16 +272,12 @@ struct FileDropActionTray: View {
         return count == 1 ? "1 \(noun.one)" : "\(count) \(noun.many)"
     }
 
+    /// White for every destination but the two that delete something.
     private func accent(for action: FileDropAction) -> Color {
-        switch action {
-        case .shelf: .cyan
-        case .airDrop: .blue
-        case .share: .purple
-        case .localSend: .green
-        case .compress: .orange
-        case .extract: .orange
-        case .uninstall: .red
-        case .resetApp: .yellow
-        }
+        isDestructive(action) ? IslandSystemColor.red : .white
+    }
+
+    private func isDestructive(_ action: FileDropAction) -> Bool {
+        action == .uninstall || action == .resetApp
     }
 }

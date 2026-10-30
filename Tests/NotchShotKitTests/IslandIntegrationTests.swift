@@ -160,10 +160,11 @@ struct IslandLayoutTests {
         }
     }
 
-    @Test("Expanded content is laid out below the camera band")
-    func expandedBelowCamera() {
+    @Test("The open agents card puts its header beside the camera")
+    func expandedAgentsWrapCamera() {
         let expanded = layout(IslandLayoutDescriptor(primaryID: Self.agents, level: .expanded))
-        #expect(expanded.contentTopInset == Self.notched.notchSize.height)
+        #expect(expanded.wrapsCamera)
+        #expect(expanded.contentTopInset == 0)
         #expect(expanded.size.height <= NotchLayout.maximumSize.height)
     }
 

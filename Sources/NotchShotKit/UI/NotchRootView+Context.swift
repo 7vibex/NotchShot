@@ -22,10 +22,12 @@ struct ContextContent: View {
                 onDismiss: { coordinator.dismissContextAlert() },
                 onOpenNetworkSettings: { coordinator.openNetworkSettings() }
             )
-        } else if snapshot.kind == .audioRoute, snapshot.presentation != .expanded {
+        } else if snapshot.kind == .audioRoute {
             // Compact first, as the phone announces AirPods: the device and a
-            // charge ring beside the camera. Hovering opens the full card.
-            if isPreviewing {
+            // charge ring beside the camera. Hovering opens the full card,
+            // which is also what an expanded accessory shows: the generic
+            // expanded card did not fit the accessory card's 78 pt.
+            if isPreviewing || snapshot.presentation == .expanded {
                 AudioAccessoryCard(snapshot: snapshot)
             } else {
                 AudioAccessoryCompact(snapshot: snapshot, physicalNotchWidth: physicalNotchWidth)
@@ -187,23 +189,55 @@ struct ContextContent: View {
     }
 
     private var expanded: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 0) {
             // The live AI card owns its source, state, task and progress
-            // header. Repeating the generic context header above it made the
-            // compact card feel like a row inside a settings panel instead of
-            // the focused agent surface it is.
+            // header. Every other kind puts its title beside the camera, as
+            // the island's other open cards do; it used to sit below an empty
+            // black strip, with a text Dismiss button at the bottom.
             if snapshot.kind != .ai {
-                previewHeader
-                    .accessibilityElement(children: .combine)
-                    .accessibilityLabel(snapshot.title)
-                    .accessibilityValue(snapshot.subtitle ?? snapshot.metric ?? "")
-                Divider().overlay(.white.opacity(0.14))
+                IslandBandHeader(leadingInset: NotchIsland.Spacing.gutter + 2, trailingInset: NotchIsland.Spacing.tight) {
+                    IslandBandTitle(systemImage: snapshot.kind.symbolName, title: snapshot.title, tint: accent)
+                        .accessibilityElement(children: .combine)
+                        .accessibilityValue(snapshot.subtitle ?? snapshot.metric ?? "")
+                } trailing: {
+                    HStack(spacing: NotchIsland.Spacing.hairline) {
+                        if let detail = expandedHeaderDetail {
+                            Text(detail)
+                                .font(.system(size: NotchIsland.TextSize.meta, weight: .medium))
+                                .monospacedDigit()
+                                .foregroundStyle(Color.islandInk(NotchIsland.Ink.secondary))
+                                .lineLimit(1)
+                        }
+                        IslandBandButton(systemName: "xmark", label: "Dismiss") {
+                            coordinator.setContextExpanded(false)
+                        }
+                    }
+                }
             }
+            expandedBody
+                .padding(.horizontal, NotchIsland.Spacing.gutter)
+                .padding(.top, snapshot.kind == .ai ? NotchIsland.Spacing.gutter : NotchIsland.Spacing.element)
+                .padding(.bottom, NotchIsland.Spacing.gutter)
+        }
+        .foregroundStyle(.white)
+        .frame(maxHeight: .infinity, alignment: .top)
+    }
+
+    /// The header's right-hand line. The timer's body already shows its
+    /// countdown large, so the header doesn't repeat it.
+    private var expandedHeaderDetail: String? {
+        snapshot.kind == .timer ? nil : snapshot.subtitle ?? snapshot.metric
+    }
+
+    private var expandedBody: some View {
+        VStack(alignment: .leading, spacing: 10) {
             if snapshot.kind == .calendar {
                 HStack(alignment: .top, spacing: 14) {
                     eventList
                         .frame(maxWidth: .infinity, alignment: .topLeading)
-                    Divider().overlay(.white.opacity(0.14))
+                    Rectangle()
+                        .fill(Color.islandInk(NotchIsland.Ink.hairline))
+                        .frame(width: NotchIsland.Stroke.hairline)
                     monthOverview
                         .frame(width: 160)
                 }
@@ -257,53 +291,43 @@ struct ContextContent: View {
                 eventList
             }
             Spacer(minLength: 0)
-            HStack {
-                if snapshot.kind == .power {
-                    Text(ProcessInfo.processInfo.isLowPowerModeEnabled ? "Low Power Mode is on" : "Low Power Mode is off")
-                        .font(.caption2)
-                        .foregroundStyle(.white.opacity(0.62))
+            if snapshot.kind == .power {
+                Text(ProcessInfo.processInfo.isLowPowerModeEnabled ? "Low Power Mode is on" : "Low Power Mode is off")
+                    .font(.system(size: NotchIsland.TextSize.caption, weight: .medium))
+                    .foregroundStyle(Color.islandInk(NotchIsland.Ink.secondary))
+            } else if snapshot.kind == .ai {
+                HStack {
+                    Spacer()
+                    NotchCapsuleButton("Dismiss", size: .compact) { coordinator.setContextExpanded(false) }
                 }
-                Spacer()
-                Button("Dismiss") { coordinator.setContextExpanded(false) }
-                    .buttonStyle(.borderless)
-                    .foregroundStyle(.white.opacity(0.72))
-                    .frame(minHeight: NotchShotDesignSystem.minimumControlTarget)
-                    .contentShape(Rectangle())
             }
         }
-        .foregroundStyle(.white)
-        .padding(14)
     }
 
     @ViewBuilder
     private var focusTimerControls: some View {
         if let timer = snapshot.focusTimer {
             VStack(alignment: .leading, spacing: 10) {
-                ProgressView(value: min(1, timer.elapsed / max(1, timer.duration)))
-                    .tint(accent)
-                    .accessibilityLabel("Timer progress")
-                HStack(spacing: 8) {
+                IslandProgressBar(
+                    progress: .determinate(min(1, timer.elapsed / max(1, timer.duration))),
+                    tint: accent
+                )
+                .accessibilityLabel("Timer progress")
+                HStack(spacing: NotchIsland.Spacing.element) {
                     if timer.state == .running {
-                        Button("Pause") { coordinator.pauseFocusTimer() }
-                            .frame(minHeight: NotchShotDesignSystem.minimumControlTarget)
-                            .contentShape(Rectangle())
+                        NotchCapsuleButton("Pause", systemImage: "pause.fill") { coordinator.pauseFocusTimer() }
                     } else if timer.state == .paused {
-                        Button("Resume") { coordinator.resumeFocusTimer() }
-                            .frame(minHeight: NotchShotDesignSystem.minimumControlTarget)
-                            .contentShape(Rectangle())
+                        NotchCapsuleButton("Resume", systemImage: "play.fill") { coordinator.resumeFocusTimer() }
                     }
-                    Button(timer.state == .completed ? "Done" : "Cancel") {
+                    NotchCapsuleButton(timer.state == .completed ? "Done" : "Cancel") {
                         coordinator.cancelFocusTimer()
                     }
-                    .frame(minHeight: NotchShotDesignSystem.minimumControlTarget)
-                    .contentShape(Rectangle())
                     Spacer()
                     Text(FocusTimerPolicy.formatted(timer.remaining))
-                        .font(.system(.title3, design: .rounded, weight: .semibold))
+                        .font(.system(size: 20, weight: .semibold, design: .rounded))
                         .monospacedDigit()
                         .foregroundStyle(accent)
                 }
-                .buttonStyle(.borderless)
             }
         }
     }
@@ -313,17 +337,20 @@ struct ContextContent: View {
         if let note = snapshot.voiceNote {
             VStack(alignment: .leading, spacing: 10) {
                 if note.state == .recording {
-                    HStack(spacing: 8) {
-                        Circle().fill(.red).frame(width: 8, height: 8)
+                    HStack(spacing: NotchIsland.Spacing.element) {
+                        Circle().fill(IslandSystemColor.red).frame(width: 8, height: 8)
                         Text("Recording & transcribing locally")
+                            .font(.system(size: NotchIsland.TextSize.body, weight: .medium))
                         Spacer()
-                        Text(FocusTimerPolicy.formatted(note.elapsed)).monospacedDigit()
+                        Text(FocusTimerPolicy.formatted(note.elapsed))
+                            .font(.system(size: NotchIsland.TextSize.body, weight: .semibold))
+                            .monospacedDigit()
                     }
                     let hasTranscript = !(note.transcript ?? "").isEmpty
                     if let transcript = note.transcript, hasTranscript {
                         Text(transcript)
-                            .font(.caption)
-                            .foregroundStyle(.white.opacity(0.88))
+                            .font(.system(size: NotchIsland.TextSize.meta))
+                            .foregroundStyle(Color.islandInk(NotchIsland.Ink.body))
                             .lineLimit(4)
                             .textSelection(.enabled)
                             .accessibilityLabel("Live transcript")
@@ -331,41 +358,39 @@ struct ContextContent: View {
                     }
                     if let errorMessage = note.errorMessage {
                         Text(errorMessage)
-                            .font(.caption2)
-                            .foregroundStyle(.orange.opacity(0.86))
+                            .font(.system(size: NotchIsland.TextSize.caption, weight: .medium))
+                            .foregroundStyle(IslandSystemColor.orange)
                     } else if !hasTranscript {
                         Text("Listening for speech…")
-                            .font(.caption2)
-                            .foregroundStyle(.white.opacity(0.58))
+                            .font(.system(size: NotchIsland.TextSize.caption, weight: .medium))
+                            .foregroundStyle(Color.islandInk(NotchIsland.Ink.tertiary))
                     }
-                    Button("Stop & Finish") { coordinator.stopVoiceNote() }
-                        .buttonStyle(.borderless)
-                        .frame(minHeight: NotchShotDesignSystem.minimumControlTarget)
-                        .contentShape(Rectangle())
+                    NotchCapsuleButton("Stop & Finish", systemImage: "stop.fill", prominence: .primary) {
+                        coordinator.stopVoiceNote()
+                    }
                 } else if note.state == .transcribing {
-                    IslandSpinner(size: 12)
-                    Text("Finalizing the on-device transcript…")
-                        .font(.caption2)
-                        .foregroundStyle(.white.opacity(0.62))
+                    HStack(spacing: NotchIsland.Spacing.element) {
+                        IslandSpinner(size: 12)
+                        Text("Finalizing the on-device transcript…")
+                            .font(.system(size: NotchIsland.TextSize.caption, weight: .medium))
+                            .foregroundStyle(Color.islandInk(NotchIsland.Ink.secondary))
+                    }
                 } else {
                     if let transcript = note.transcript, !transcript.isEmpty {
                         Text(transcript)
-                            .font(.caption)
+                            .font(.system(size: NotchIsland.TextSize.meta))
+                            .foregroundStyle(Color.islandInk(NotchIsland.Ink.body))
                             .lineLimit(4)
                             .textSelection(.enabled)
                     }
-                    if let url = note.fileURL {
-                        Button("Reveal Voice Note") {
-                            NSWorkspace.shared.activateFileViewerSelecting([url])
+                    HStack(spacing: NotchIsland.Spacing.element) {
+                        if let url = note.fileURL {
+                            NotchCapsuleButton("Reveal Voice Note", systemImage: "folder") {
+                                NSWorkspace.shared.activateFileViewerSelecting([url])
+                            }
                         }
-                        .buttonStyle(.borderless)
-                        .frame(minHeight: NotchShotDesignSystem.minimumControlTarget)
-                        .contentShape(Rectangle())
+                        NotchCapsuleButton("Dismiss") { coordinator.dismissVoiceNote() }
                     }
-                    Button("Dismiss") { coordinator.dismissVoiceNote() }
-                        .buttonStyle(.borderless)
-                        .frame(minHeight: NotchShotDesignSystem.minimumControlTarget)
-                        .contentShape(Rectangle())
                 }
             }
         }
@@ -374,9 +399,12 @@ struct ContextContent: View {
     @ViewBuilder
     private var eventList: some View {
         if snapshot.events.isEmpty {
-            Text(snapshot.subtitle ?? snapshot.title)
-                .font(.caption)
-                .foregroundStyle(.white.opacity(0.72))
+            // Other kinds have nothing to list; their detail is in the header.
+            if snapshot.kind == .calendar {
+                Text("Nothing else on your calendar today")
+                    .font(.system(size: NotchIsland.TextSize.meta, weight: .medium))
+                    .foregroundStyle(Color.islandInk(NotchIsland.Ink.tertiary))
+            }
         } else {
             VStack(spacing: 4) {
                 ForEach(snapshot.events.prefix(5)) { event in
@@ -387,10 +415,12 @@ struct ContextContent: View {
                             Capsule().fill(Color(nsColor: NSColor(hex: event.colorHex) ?? .systemBlue))
                                 .frame(width: 3, height: 26)
                             VStack(alignment: .leading, spacing: 2) {
-                                Text(event.title).font(.caption.weight(.medium)).lineLimit(1)
+                                Text(event.title)
+                                    .font(.system(size: NotchIsland.TextSize.body, weight: .medium))
+                                    .lineLimit(1)
                                 Text(event.timingDescription())
-                                    .font(.caption2)
-                                    .foregroundStyle(.white.opacity(0.68))
+                                    .font(.system(size: NotchIsland.TextSize.caption, weight: .medium))
+                                    .foregroundStyle(Color.islandInk(NotchIsland.Ink.secondary))
                             }
                             Spacer(minLength: 0)
                         }
@@ -409,8 +439,8 @@ struct ContextContent: View {
     private var monthOverview: some View {
         VStack(alignment: .leading, spacing: 5) {
             Text(Date().formatted(.dateTime.month(.wide).year()))
-                .font(.caption2.weight(.semibold))
-                .foregroundStyle(.white.opacity(0.72))
+                .font(.system(size: NotchIsland.TextSize.caption, weight: .semibold))
+                .foregroundStyle(Color.islandInk(NotchIsland.Ink.secondary))
             LazyVGrid(
                 columns: Array(repeating: GridItem(.flexible(), spacing: 2), count: 7),
                 spacing: 4
@@ -508,14 +538,10 @@ struct IdleContent: View {
                         captureMenuButton
                     }
                 } trailing: {
-                    HStack(spacing: 6) {
-                        NotchCapsuleButton("Area", systemImage: "square.dashed", help: "Capture an area") {
-                            coordinator.capture(.area)
-                        }
-                        NotchCapsuleButton("Record", systemImage: "record.circle.fill", iconTint: .red, help: "Record the screen") {
-                            coordinator.startRecording()
-                        }
-                    }
+                    IdleShortcutPair(
+                        onArea: { coordinator.capture(.area) },
+                        onRecord: { coordinator.startRecording() }
+                    )
                 }
                 Spacer(minLength: 0)
             }
@@ -552,6 +578,30 @@ struct IdleContent: View {
     }
 
     private var privacy: PrivacyIndicatorMonitor { .shared }
+}
+
+/// The hover bar's two one-click shortcuts, in the band right of the camera.
+///
+/// Compact capsules: the band is only as tall as the menu bar, and the
+/// regular 28 pt pair was wider than `NotchLayout.idlePeekWing`, so Area ran
+/// about 7 pt under the camera.
+struct IdleShortcutPair: View {
+    var onArea: () -> Void
+    var onRecord: () -> Void
+
+    var body: some View {
+        HStack(spacing: NotchIsland.Spacing.snug) {
+            NotchCapsuleButton("Area", systemImage: "square.dashed", size: .compact, help: "Capture an area", action: onArea)
+            NotchCapsuleButton(
+                "Record",
+                systemImage: "record.circle.fill",
+                iconTint: .red,
+                size: .compact,
+                help: "Record the screen",
+                action: onRecord
+            )
+        }
+    }
 }
 
 /// macOS's own colours: orange for the microphone, green for a camera.

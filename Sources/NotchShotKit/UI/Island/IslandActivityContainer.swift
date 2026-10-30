@@ -374,7 +374,9 @@ struct IslandSatelliteView: View {
                         outlineWidth: 2
                     )
                     .frame(width: 9, height: 9)
-                    .offset(x: 1, y: -1)
+                    // On the circle's shoulder. Pushed up and out, its
+                    // outline met the top of the screen and was cut off.
+                    .offset(y: 1)
                     .opacity(emergence)
                     .transition(.opacity)
                 }

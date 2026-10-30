@@ -296,6 +296,8 @@ public struct NotchLayout: Sendable, Equatable {
     /// red dot, the time and its size on the left; the meters on the right.
     /// Each side of the camera in the idle hover bar.
     static let idlePeekWing: CGFloat = 156
+    /// Room beside the camera for the file tray's count and instruction.
+    static let fileDropWing: CGFloat = 150
     static let recordingWing: CGFloat = 150
     /// The meters and the three round controls, below the band.
     static let recordingBodyHeight: CGFloat = 58
@@ -305,6 +307,38 @@ public struct NotchLayout: Sendable, Equatable {
 
     static func processingBodyHeight(isScrolling: Bool) -> CGFloat {
         isScrolling ? 50 : statusLip
+    }
+
+    /// An open context card's padding below the band: the gap under the
+    /// header, the stack's spacing before its spacer, and the bottom gutter.
+    static let contextCardPadding: CGFloat = NotchIsland.Spacing.element + 10 + NotchIsland.Spacing.gutter
+    /// The voice note's recording state, its tallest: the status line, four
+    /// transcript lines, the hint and Stop & Finish.
+    static let voiceNoteCardContentHeight: CGFloat = 140
+    /// The focus timer's bar and its row of capsules.
+    static let timerCardContentHeight: CGFloat = 5 + 10 + 28
+
+    /// Event rows are 36 pt with 4 pt between them, so each stays a full
+    /// click target. The month grid beside five rows is shorter than they are.
+    static func contextEventListHeight(rows: Int) -> CGFloat {
+        guard rows > 0 else { return 0 }
+        return CGFloat(rows) * 36 + CGFloat(rows - 1) * 4
+    }
+
+    static func contextCardBodyHeight(for snapshot: ContextSnapshot) -> CGFloat {
+        switch snapshot.kind {
+        case .calendar:
+            return contextCardPadding + contextEventListHeight(rows: 5)
+        case .timer:
+            return contextCardPadding + timerCardContentHeight
+        case .voiceNote:
+            return contextCardPadding + voiceNoteCardContentHeight
+        default:
+            // With no events these kinds list nothing; the header has their detail.
+            let list = contextEventListHeight(rows: min(snapshot.events.count, 5))
+            // Power adds its Low Power Mode line under the spacer.
+            return contextCardPadding + list + (snapshot.kind == .power ? 10 + 13 : 0)
+        }
     }
 
     /// An expanded card whose header row sits in the camera band and whose
@@ -506,11 +540,15 @@ public struct NotchLayout: Sendable, Equatable {
                 cornerRadius: NotchIsland.Geometry.expandedCornerRadius
             )
         case .fileDrop:
-            // One dashed destination tile per action, plus a compact
-            // instruction line. The physical camera band is added by
-            // `revealed`, keeping every target below real hardware while the
-            // drag remains active.
-            return revealed(width: 500, contentHeight: 168, cornerRadius: 24)
+            // One dashed destination tile per action, below the camera: the
+            // count and the instruction sit beside it, in the band, so every
+            // target stays clear of real hardware without an empty strip
+            // above them. 6 pt, the 108 pt tiles, then 12.
+            return banded(
+                width: max(500, wingWidth(fileDropWing, floatingWidth: 500)),
+                bodyHeight: 6 + 108 + 12,
+                cornerRadius: 24
+            )
         case .selecting:
             // A status line needs no room below the camera: icon and title in
             // one wing, the hint in the other.
@@ -588,10 +626,14 @@ public struct NotchLayout: Sendable, Equatable {
                 if snapshot.kind == .ai {
                     return revealed(width: 520, contentHeight: 320, cornerRadius: 24)
                 }
-                // Five event rows, the calendar strip, header, and actions must
-                // fit without shrinking click targets or clipping at the
-                // bottom of a physical camera cutout.
-                return revealed(width: 520, contentHeight: 390, cornerRadius: 24)
+                // The title and Dismiss sit beside the camera; the body is
+                // only as tall as what this kind shows. Every kind used to get
+                // 390 pt, so a timer was a short row over a tall black card.
+                return banded(
+                    width: snapshot.kind == .voiceNote ? 440 : 520,
+                    bodyHeight: contextCardBodyHeight(for: snapshot),
+                    cornerRadius: 24
+                )
             }
             if isPeeking {
                 // An agent peek is one row: its mark, name, state and task.
@@ -661,6 +703,11 @@ public struct NotchLayout: Sendable, Equatable {
         case .external, .voiceNote: 64
         }
     }
+
+    /// Below the band of an open transfer or reported activity: 4 pt, the
+    /// subtitle line, 8, the 5 pt bar, 10, the 36 pt detail row with its
+    /// button, then 10 above the bottom corners.
+    static let progressCardBodyHeight: CGFloat = 4 + 15 + 8 + 5 + 10 + 36 + 10
 
     /// Band appended below an expanded island for a level HUD or a burst: the
     /// strip's 46pt plus its 5pt lift, rounded for the curve.
@@ -734,12 +781,44 @@ public struct NotchLayout: Sendable, Equatable {
                     height: NotchIsland.Geometry.expandedCallHeight
                 )
             // Room for the usage rings plus one answer card without
-            // scrolling; more agents scroll beneath.
-            case .ai: return revealed(520, 400, 24)
-            case .transfer: return revealed(400, 134, 24)
-            case .external: return revealed(400, 124, 24)
-            case .voiceNote: return revealed(440, 204, 24)
-            case .calendar: return revealed(520, 390, 24)
+            // scrolling; more agents scroll beneath. The header was always
+            // drawn for the band beside the camera, but this used to hang it
+            // below the camera, under an empty black strip.
+            case .ai:
+                let band = physical ? max(metrics.notchSize.height, 1) : IslandCameraBand.floatingRowHeight + 4
+                return bandedLayout(
+                    width: 520,
+                    bodyHeight: 400 - band,
+                    cornerRadius: 24,
+                    metrics: metrics,
+                    floatingTopInset: floatingTopInset
+                )
+            // The name and the percentage beside the camera; the route, the
+            // bar and the details below it.
+            case .transfer, .external:
+                return bandedLayout(
+                    width: 400,
+                    bodyHeight: progressCardBodyHeight,
+                    cornerRadius: 24,
+                    metrics: metrics,
+                    floatingTopInset: floatingTopInset
+                )
+            case .voiceNote:
+                return bandedLayout(
+                    width: 440,
+                    bodyHeight: contextCardPadding + voiceNoteCardContentHeight,
+                    cornerRadius: 24,
+                    metrics: metrics,
+                    floatingTopInset: floatingTopInset
+                )
+            case .calendar:
+                return bandedLayout(
+                    width: 520,
+                    bodyHeight: contextCardPadding + contextEventListHeight(rows: 5),
+                    cornerRadius: 24,
+                    metrics: metrics,
+                    floatingTopInset: floatingTopInset
+                )
             }
         }
 

@@ -227,11 +227,14 @@ final class LayerProgressRimView: NSView {
         [glow, line].forEach { $0.contentsScale = scale }
     }
 
-    /// Along the shell's bottom edge, which is `bleed` above this view's own.
+    /// Just under the shell's bottom edge, which is `bleed` above this view's
+    /// own. Inside the edge the line sat in the camera's band: on a display
+    /// whose cutout is as tall as the menu bar, everything between the wings
+    /// was drawn behind the camera.
     private func layoutLine() {
         CATransaction.begin()
         CATransaction.setDisableActions(true)
-        let y = bounds.height - NotchRimPolicy.bleed - line.lineWidth / 2
+        let y = bounds.height - NotchRimPolicy.bleed + line.lineWidth / 2
         let start = min(inset, bounds.midX)
         let path = CGMutablePath()
         path.move(to: CGPoint(x: start, y: y))

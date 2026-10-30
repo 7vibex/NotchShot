@@ -224,7 +224,9 @@ enum IslandAccessibility {
 
     static func lifecycleColor(_ lifecycle: IslandLifecycle, accent: Color) -> Color {
         switch lifecycle {
-        case .succeeded: .green
+        // A finished transfer or task is calm news; only failure and
+        // waiting on the user take a colour.
+        case .succeeded: Color.islandInk(NotchIsland.Ink.primary)
         case .failed: .red
         case .waiting: .orange
         case .paused: Color.islandInk(NotchIsland.Ink.secondary)

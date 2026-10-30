@@ -962,7 +962,8 @@ struct AgentStateMark: View {
         switch state {
         case .working: Color.islandInk(NotchIsland.Ink.body)
         case .waiting: .orange
-        case .finished: .green
+        // White, as the open list's "Done" is: green read as one more alert.
+        case .finished: Color.islandInk(NotchIsland.Ink.primary)
         case .failed: failedInk
         }
     }

@@ -71,33 +71,75 @@ struct IslandExpandedContent: View {
     }
 }
 
-/// Header row shared by the island's own expanded cards.
-private struct IslandExpandedHeader<Trailing: View>: View {
+/// An open transfer or reported activity, laid out like the other cards:
+/// its glyph and name in the band left of the camera, how far it has got to
+/// the right, then the route, the bar and the measured details below. The
+/// header used to start under the camera, below an empty black strip.
+private struct IslandProgressCard<Action: View>: View {
     var activity: IslandActivity
-    var glyphSize: CGFloat = 38
     var title: String
     var subtitle: String?
-    @ViewBuilder var trailing: () -> Trailing
+    var tint: Color
+    var stateTint: Color
+    var detail: String
+    @ViewBuilder var action: () -> Action
 
     var body: some View {
-        HStack(spacing: NotchIsland.Spacing.group) {
-            IslandGlyphSlot(id: activity.id, size: glyphSize)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title)
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(Color.islandInk(NotchIsland.Ink.primary))
-                    .lineLimit(1)
+        VStack(alignment: .leading, spacing: 0) {
+            IslandBandHeader(leadingInset: NotchIsland.Spacing.gutter + 2, trailingInset: NotchIsland.Spacing.gutter + 2) {
+                HStack(spacing: NotchIsland.Spacing.element) {
+                    // The compact wing's glyph lands here, at about its size.
+                    IslandGlyphSlot(id: activity.id, size: 20)
+                    Text(title)
+                        .font(.system(size: NotchIsland.TextSize.body, weight: .semibold))
+                        .foregroundStyle(Color.islandInk(NotchIsland.Ink.primary))
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                }
+            } trailing: {
+                if let fraction = activity.progress.fraction, !activity.lifecycle.isTerminal {
+                    IslandNumericText(
+                        text: "\(Int((fraction * 100).rounded(.down)))%",
+                        font: .system(size: 15, weight: .semibold, design: .rounded),
+                        color: .white
+                    )
+                } else {
+                    IslandStateText(
+                        text: activity.stateLabel ?? "",
+                        font: .system(size: NotchIsland.TextSize.body, weight: .semibold),
+                        color: stateTint
+                    )
+                }
+            }
+            .accessibilityElement(children: .combine)
+
+            VStack(alignment: .leading, spacing: NotchIsland.Spacing.element) {
                 if let subtitle, !subtitle.isEmpty {
                     Text(subtitle)
-                        .font(.system(size: 11, weight: .medium))
+                        .font(.system(size: NotchIsland.TextSize.meta, weight: .medium))
                         .foregroundStyle(Color.islandInk(NotchIsland.Ink.secondary))
                         .lineLimit(1)
                 }
+                IslandProgressBar(progress: activity.progress, tint: tint)
+                    .islandReveal(stage: 1)
+                HStack(spacing: NotchIsland.Spacing.element) {
+                    Text(detail)
+                        .font(.system(size: NotchIsland.TextSize.meta, weight: .medium))
+                        .monospacedDigit()
+                        .foregroundStyle(Color.islandInk(NotchIsland.Ink.secondary))
+                        .lineLimit(1)
+                        .contentTransition(.numericText())
+                    Spacer(minLength: 0)
+                    action()
+                }
+                .frame(minHeight: NotchIsland.Hit.control)
+                .padding(.top, 2)
+                .islandReveal(stage: 2)
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            trailing()
+            .padding(.horizontal, NotchIsland.Spacing.gutter + 2)
+            .padding(.top, NotchIsland.Spacing.tight)
         }
-        .accessibilityElement(children: .combine)
+        .frame(maxHeight: .infinity, alignment: .top)
     }
 }
 
@@ -374,50 +416,25 @@ private struct IslandTransferExpanded: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: NotchIsland.Spacing.row) {
-            IslandExpandedHeader(
-                activity: activity,
-                title: transfer?.title ?? activity.title,
-                subtitle: transfer.map {
-                    $0.service == .download
-                        ? $0.peerName
-                        : "\($0.service.title) · \($0.direction == .outgoing ? "to" : "from") \($0.peerName)"
-                }
-            ) {
-                if let fraction = activity.progress.fraction, !activity.lifecycle.isTerminal {
-                    IslandNumericText(
-                        text: "\(Int((fraction * 100).rounded(.down)))%",
-                        font: .system(size: 18, weight: .semibold, design: .rounded),
-                        color: .white
-                    )
-                } else {
-                    IslandStateText(
-                        text: activity.stateLabel ?? "",
-                        font: .system(size: 12, weight: .semibold),
-                        color: IslandAccessibility.lifecycleColor(activity.lifecycle, accent: .blue)
-                    )
+        // White, as the island's other bars are: the old blue read as a link.
+        IslandProgressCard(
+            activity: activity,
+            title: transfer?.title ?? activity.title,
+            subtitle: transfer.map {
+                $0.service == .download
+                    ? $0.peerName
+                    : "\($0.service.title) · \($0.direction == .outgoing ? "to" : "from") \($0.peerName)"
+            },
+            tint: .white,
+            stateTint: IslandAccessibility.lifecycleColor(activity.lifecycle, accent: .white),
+            detail: detailLine
+        ) {
+            if transfer?.canCancel == true {
+                NotchCapsuleButton("Cancel", systemImage: "xmark", prominence: .destructive) {
+                    coordinator.performIslandAction(.cancel, on: activity.id)
                 }
             }
-            IslandProgressBar(progress: activity.progress, tint: .blue)
-                .islandReveal(stage: 1)
-            HStack(spacing: NotchIsland.Spacing.element) {
-                Text(detailLine)
-                    .font(.system(size: 11, weight: .medium))
-                    .monospacedDigit()
-                    .foregroundStyle(Color.islandInk(NotchIsland.Ink.secondary))
-                    .lineLimit(1)
-                    .contentTransition(.numericText())
-                Spacer(minLength: 0)
-                if transfer?.canCancel == true {
-                    NotchCapsuleButton("Cancel", systemImage: "xmark", prominence: .destructive) {
-                        coordinator.performIslandAction(.cancel, on: activity.id)
-                    }
-                }
-            }
-            .islandReveal(stage: 2)
         }
-        .padding(.horizontal, NotchIsland.Spacing.gutter)
-        .padding(.vertical, NotchIsland.Spacing.row)
     }
 
     /// Only measured facts: bytes, files, speed and ETA each appear only when
@@ -466,46 +483,21 @@ private struct IslandExternalExpanded: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: NotchIsland.Spacing.row) {
-            IslandExpandedHeader(
-                activity: activity,
-                title: activity.title,
-                subtitle: [external?.source, activity.subtitle == external?.source ? nil : activity.subtitle]
-                    .compactMap { $0 }
-                    .joined(separator: " · ")
-            ) {
-                if let fraction = activity.progress.fraction, !activity.lifecycle.isTerminal {
-                    IslandNumericText(
-                        text: "\(Int((fraction * 100).rounded(.down)))%",
-                        font: .system(size: 18, weight: .semibold, design: .rounded),
-                        color: .white
-                    )
-                } else {
-                    IslandStateText(
-                        text: activity.stateLabel ?? "",
-                        font: .system(size: 12, weight: .semibold),
-                        color: IslandAccessibility.lifecycleColor(activity.lifecycle, accent: accent)
-                    )
-                }
+        IslandProgressCard(
+            activity: activity,
+            title: activity.title,
+            subtitle: [external?.source, activity.subtitle == external?.source ? nil : activity.subtitle]
+                .compactMap { $0 }
+                .joined(separator: " · "),
+            tint: accent,
+            stateTint: IslandAccessibility.lifecycleColor(activity.lifecycle, accent: accent),
+            detail: detailLine
+        ) {
+            NotchCapsuleButton("Hide", systemImage: "eye.slash") {
+                coordinator.performIslandAction(.dismiss, on: activity.id)
             }
-            IslandProgressBar(progress: activity.progress, tint: accent)
-                .islandReveal(stage: 1)
-            HStack(spacing: NotchIsland.Spacing.element) {
-                Text(detailLine)
-                    .font(.system(size: 11, weight: .medium))
-                    .monospacedDigit()
-                    .foregroundStyle(Color.islandInk(NotchIsland.Ink.secondary))
-                    .lineLimit(1)
-                Spacer(minLength: 0)
-                NotchCapsuleButton("Hide", systemImage: "eye.slash") {
-                    coordinator.performIslandAction(.dismiss, on: activity.id)
-                }
-                .help("Hides this activity from the island. The reporting tool keeps running.")
-            }
-            .islandReveal(stage: 2)
+            .help("Hides this activity from the island. The reporting tool keeps running.")
         }
-        .padding(.horizontal, NotchIsland.Spacing.gutter)
-        .padding(.vertical, NotchIsland.Spacing.row)
     }
 
     private var detailLine: String {

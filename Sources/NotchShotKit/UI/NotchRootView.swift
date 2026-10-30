@@ -362,8 +362,15 @@ public struct NotchRootView: View {
                 .overlay {
                     if isTargetedForDrop {
                         // Clipped to the shell below, so the visible half of a
-                        // 3 pt stroke reads as the old 1.5 pt border.
-                        MarchingDashStroke(shape: shape, color: .accentColor, lineWidth: 3, dash: [8, 6], insideOnly: true)
+                        // 3 pt stroke reads as the old 1.5 pt border. White, as
+                        // the tray's targets are, not the system accent.
+                        MarchingDashStroke(
+                            shape: shape,
+                            color: .white.opacity(0.55),
+                            lineWidth: 3,
+                            dash: [8, 6],
+                            insideOnly: true
+                        )
                     } else if !isRecording, !shellIsSeeThrough {
                         // Glass draws its own edge.
                         mediaShellKeyline
@@ -638,7 +645,12 @@ public struct NotchRootView: View {
             isCompactPlayer = true
         }
         return NotchRimPolicy.kind(
-            isOpen: effectiveActivity.isExpanded || isTargetedForDrop,
+            // A hover-opened player is not `isExpanded`, but its scrubber
+            // already shows the song; the line belongs to the closed shell,
+            // which is never taller than the cutout or a floating pill.
+            isOpen: effectiveActivity.isExpanded || isTargetedForDrop
+                || baseLayout.size.height
+                    > max(context.metrics.notchSize.height, NotchIsland.Geometry.compactHeight) + 1,
             isCapsLockOn: coordinator.isCapsLockOn,
             showsCapsLockGlow: extras.showsCapsLock && extras.showsCapsLockGlow,
             isShowingCompactPlayer: isCompactPlayer,

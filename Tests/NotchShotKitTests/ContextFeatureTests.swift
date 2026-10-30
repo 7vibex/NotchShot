@@ -499,7 +499,10 @@ struct ContextFeatureTests {
             isPeeking: false,
             resultCount: 0
         )
-        #expect(layout.size.height >= 390)
+        // Five full-height event rows below the header, which sits beside
+        // the camera rather than under it.
+        #expect(layout.wrapsCamera)
+        #expect(layout.size.height - metrics.notchSize.height >= 5 * 36 + 4 * 4)
         #expect(layout.size.height <= NotchLayout.maximumSize.height)
         #expect(layout.size.width <= NotchLayout.maximumSize.width)
     }
