@@ -799,6 +799,21 @@ struct AppleEventsMediaTimelineTests {
         }
         #expect(!AppleEventsMediaSource.isRunning("com.notchshot.tests.\(UUID().uuidString)"))
     }
+
+    @Test("The artwork cache keeps the newest covers and lists a track once")
+    func artworkCacheEviction() {
+        let cache = AppleEventsArtworkCache(limit: 2)
+        cache.insert(Data([1]), for: "a")
+        cache.insert(Data([2]), for: "b")
+        // A second miss for the same track replaces it without a second slot.
+        cache.insert(Data([3]), for: "b")
+        #expect(cache.data(for: "a") == Data([1]))
+        #expect(cache.data(for: "b") == Data([3]))
+        cache.insert(Data([4]), for: "c")
+        #expect(cache.data(for: "a") == nil)
+        #expect(cache.data(for: "b") == Data([3]))
+        #expect(cache.data(for: "c") == Data([4]))
+    }
 }
 
 @Suite("Adapter payload parsing")

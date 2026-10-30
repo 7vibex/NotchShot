@@ -11,6 +11,35 @@ struct AppleEventsSnapshotFields: Equatable {
     var isPlaying: Bool
 }
 
+/// The last few covers, by track, for every Apple Events source in the
+/// process.
+final class AppleEventsArtworkCache: @unchecked Sendable {
+    private let lock = NSLock()
+    /// Guarded by `lock`.
+    private var entries: [String: Data] = [:]
+    private var order: [String] = []
+    private let limit: Int
+
+    /// Album art is a few hundred KB apiece; a handful is plenty of history.
+    init(limit: Int = 8) {
+        self.limit = limit
+    }
+
+    func data(for key: String) -> Data? {
+        lock.withLock { entries[key] }
+    }
+
+    func insert(_ data: Data, for key: String) {
+        lock.withLock {
+            // Two sources can miss the same track at once; keep it listed once.
+            if entries.updateValue(data, forKey: key) == nil { order.append(key) }
+            while order.count > limit {
+                entries.removeValue(forKey: order.removeFirst())
+            }
+        }
+    }
+}
+
 struct AppleScriptExecution: Sendable {
     var stringValue: String?
     var data: Data?
@@ -150,9 +179,10 @@ public actor AppleEventsMediaSource: MediaSource {
     private var continuation: AsyncStream<MediaSnapshot>.Continuation?
     private var lastSnapshot = MediaSnapshot.empty
     /// Artwork keyed by "artist — title", so it is fetched once per track
-    /// rather than on every poll tick.
-    private var artworkCache: [String: Data] = [:]
-    private var artworkCacheOrder: [String] = []
+    /// rather than on every poll tick. Shared by every instance: the
+    /// coordinator builds a new source at each unlock and wake, and a cache of
+    /// its own downloaded the same Spotify cover again every time.
+    static let artworkCache = AppleEventsArtworkCache()
     private let scriptExecutor = AppleScriptExecutor()
     private let maximumArtworkBytes = 8_000_000
     private let maximumArtworkDimension = 4_096
@@ -237,7 +267,7 @@ public actor AppleEventsMediaSource: MediaSource {
     /// Spotify is the active player.
     private func artwork(for snapshot: MediaSnapshot) async -> Data? {
         guard let key = Self.cacheKey(for: snapshot) else { return nil }
-        if let cached = artworkCache[key] { return cached }
+        if let cached = Self.artworkCache.data(for: key) { return cached }
 
         let data: Data?
         switch snapshot.applicationBundleID {
@@ -254,7 +284,7 @@ public actor AppleEventsMediaSource: MediaSource {
         }
 
         guard let data, !data.isEmpty else { return nil }
-        cache(data, for: key)
+        Self.artworkCache.insert(data, for: key)
         return data
     }
 
@@ -301,15 +331,6 @@ public actor AppleEventsMediaSource: MediaSource {
     private static func cacheKey(for snapshot: MediaSnapshot) -> String? {
         guard let title = snapshot.title else { return nil }
         return "\(snapshot.artist ?? "")—\(title)"
-    }
-
-    private func cache(_ data: Data, for key: String) {
-        artworkCache[key] = data
-        artworkCacheOrder.append(key)
-        // Album art is a few hundred KB apiece; a handful is plenty of history.
-        while artworkCacheOrder.count > 8 {
-            artworkCache.removeValue(forKey: artworkCacheOrder.removeFirst())
-        }
     }
 
     private func musicArtworkData() async -> Data? {
