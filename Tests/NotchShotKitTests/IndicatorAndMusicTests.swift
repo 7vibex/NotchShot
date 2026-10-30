@@ -155,6 +155,19 @@ struct PowerChargeDescriptionTests {
             hasChargingContent: true
         ) == .none)
     }
+
+    @Test("The player polls slowly only while locked with nothing on the Lock Screen")
+    func lockedPollRate() {
+        for media in [false, true] {
+            for stack in [false, true] {
+                #expect(!MediaCoordinator.pollsInBackground(
+                    screenLocked: false, mediaOptedIn: media, activityStackOptedIn: stack))
+                #expect(MediaCoordinator.pollsInBackground(
+                    screenLocked: true, mediaOptedIn: media, activityStackOptedIn: stack)
+                    == (!media && !stack))
+            }
+        }
+    }
 }
 
 @Suite("Lyric line and sweep")

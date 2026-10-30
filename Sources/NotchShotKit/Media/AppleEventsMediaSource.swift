@@ -196,9 +196,24 @@ public actor AppleEventsMediaSource: MediaSource {
     }()
     /// Apple Events are synchronous and comparatively expensive, so the poll is
     /// slow by design — the notch interpolates playback position between ticks.
-    private let pollInterval: Duration = .seconds(2)
+    static let pollInterval: Duration = .seconds(2)
+    /// While the Mac is locked and the Lock Screen shows no notch. The poll was
+    /// most of what a locked app still did. The coordinator selects a fresh
+    /// source at unlock, so this only bounds how old the track is until that
+    /// source's first answer.
+    static let backgroundPollInterval: Duration = .seconds(10)
+    private var pollsInBackground = false
 
     public init() {}
+
+    /// Takes effect from the next tick.
+    func setPollsInBackground(_ background: Bool) {
+        pollsInBackground = background
+    }
+
+    private func nextPollInterval() -> Duration {
+        pollsInBackground ? Self.backgroundPollInterval : Self.pollInterval
+    }
 
     public func healthCheck() async -> Bool {
         await runningPlayer() != nil
@@ -214,7 +229,7 @@ public actor AppleEventsMediaSource: MediaSource {
                 while !Task.isCancelled {
                     guard let self else { return }
                     await self.poll()
-                    try? await Task.sleep(for: self.pollInterval)
+                    try? await Task.sleep(for: await self.nextPollInterval())
                 }
             }
         }

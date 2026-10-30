@@ -239,7 +239,32 @@ public final class MediaCoordinator {
     private func setScreenLocked(_ locked: Bool) {
         guard locked != isScreenLocked else { return }
         isScreenLocked = locked
+        if let appleEvents = source as? AppleEventsMediaSource {
+            let background = pollsInBackground
+            Task { await appleEvents.setPollsInBackground(background) }
+        }
         setSessionActive(!locked)
+    }
+
+    /// Whether the Apple Events poll can slow down: the Mac is locked and the
+    /// Lock Screen shows no notch, so nothing shows what it reads.
+    nonisolated static func pollsInBackground(
+        screenLocked: Bool,
+        mediaOptedIn: Bool,
+        activityStackOptedIn: Bool
+    ) -> Bool {
+        screenLocked && !LockedMediaPresentationPolicy.canBecomeVisibleWithoutLogin(
+            mediaOptedIn: mediaOptedIn,
+            activityStackOptedIn: activityStackOptedIn
+        )
+    }
+
+    private var pollsInBackground: Bool {
+        Self.pollsInBackground(
+            screenLocked: isScreenLocked,
+            mediaOptedIn: Preferences.shared.showsMediaWhileLocked,
+            activityStackOptedIn: Preferences.shared.showsActivityStackWhileLocked
+        )
     }
 
     // MARK: Source selection
@@ -346,6 +371,10 @@ public final class MediaCoordinator {
         // Public: which bridge is live is the first question when music
         // doesn't show, and the name says nothing about the user.
         Log.media.info("Media source: \(newSource.kind.rawValue, privacy: .public)")
+        // A selection can run while locked: a wake, or a fallback retry.
+        if let appleEvents = newSource as? AppleEventsMediaSource {
+            await appleEvents.setPollsInBackground(pollsInBackground)
+        }
 
         let stream = await newSource.updates()
         guard isCurrentSelection(generation), source?.kind == newSource.kind else {
