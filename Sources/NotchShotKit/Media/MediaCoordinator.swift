@@ -323,10 +323,9 @@ public final class MediaCoordinator {
     /// the next relaunch even after the user clicked Allow.
     private func retryFallbackLater(generation: UInt) {
         guard fallbackRetries < fallbackRetryLimit else { return }
-        let playerIsRunning = NSWorkspace.shared.runningApplications.contains {
-            $0.bundleIdentifier.map(AppleEventsMediaSource.playerBundleIdentifiers.contains) ?? false
+        guard AppleEventsMediaSource.playerBundleIdentifiers.contains(where: AppleEventsMediaSource.isRunning) else {
+            return
         }
-        guard playerIsRunning else { return }
         fallbackRetries += 1
         fallbackRetryTask?.cancel()
         fallbackRetryTask = Task { [weak self] in

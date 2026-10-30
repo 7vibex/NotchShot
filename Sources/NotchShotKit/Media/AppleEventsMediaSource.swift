@@ -128,6 +128,12 @@ public actor AppleEventsMediaSource: MediaSource {
     /// The apps this source can follow, by bundle identifier.
     static let playerBundleIdentifiers: Set<String> = Set(Player.allCases.map(\.rawValue))
 
+    /// Whether an app with this bundle identifier is running.
+    @MainActor
+    static func isRunning(_ bundleIdentifier: String) -> Bool {
+        !NSRunningApplication.runningApplications(withBundleIdentifier: bundleIdentifier).isEmpty
+    }
+
     private enum Player: String, CaseIterable {
         case music = "com.apple.Music"
         case spotify = "com.spotify.client"
@@ -323,8 +329,11 @@ public actor AppleEventsMediaSource: MediaSource {
     }
 
     private func runningPlayer() async -> Player? {
+        // Asked by identifier: reading `bundleIdentifier` off every running
+        // app went to LaunchServices for most of them on every poll, about
+        // 10 M instructions and 5 ms on the main thread each time.
         let running = await MainActor.run {
-            NSWorkspace.shared.runningApplications.compactMap(\.bundleIdentifier)
+            Player.allCases.map(\.rawValue).filter(Self.isRunning)
         }
         // Prefer whichever is actually playing, then another responsive player.
         // A merely open app is not a healthy source: treating a timed-out player

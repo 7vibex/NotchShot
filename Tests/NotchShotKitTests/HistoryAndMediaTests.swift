@@ -786,6 +786,19 @@ struct AppleEventsMediaTimelineTests {
         #expect(fields.duration == nil)
         #expect(fields.position == nil)
     }
+
+    @Test("A player counts as running exactly when the app list has it")
+    @MainActor
+    func runningCheckMatchesTheAppList() {
+        let listed = Set(NSWorkspace.shared.runningApplications.compactMap(\.bundleIdentifier))
+        for identifier in listed.sorted().prefix(8) {
+            #expect(AppleEventsMediaSource.isRunning(identifier))
+        }
+        for identifier in AppleEventsMediaSource.playerBundleIdentifiers {
+            #expect(AppleEventsMediaSource.isRunning(identifier) == listed.contains(identifier))
+        }
+        #expect(!AppleEventsMediaSource.isRunning("com.notchshot.tests.\(UUID().uuidString)"))
+    }
 }
 
 @Suite("Adapter payload parsing")
