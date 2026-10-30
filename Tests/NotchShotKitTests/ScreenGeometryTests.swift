@@ -505,6 +505,21 @@ struct NotchMetricsTests {
         ) == nil)
     }
 
+    @Test("The session dictionary read at launch maps lock and console state")
+    func screenLockStateAtLaunch() {
+        typealias State = ScreenLockSignal.State
+        let onConsole = kCGSessionOnConsoleKey
+        #expect(ScreenLockSignal.state(from: nil) == State(sessionIsActive: true, screenIsLocked: false))
+        #expect(ScreenLockSignal.state(from: [onConsole: true]) == State(sessionIsActive: true, screenIsLocked: false))
+        // The key is absent while unlocked and a CFBoolean (NSNumber) when set.
+        #expect(ScreenLockSignal.state(from: [onConsole: true, "CGSSessionScreenIsLocked": NSNumber(value: true)])
+            == State(sessionIsActive: false, screenIsLocked: true))
+        #expect(ScreenLockSignal.state(from: [onConsole: true, "CGSSessionScreenIsLocked": NSNumber(value: false)])
+            == State(sessionIsActive: true, screenIsLocked: false))
+        // Switched out with Fast User Switching: inactive, but not the Lock Screen.
+        #expect(ScreenLockSignal.state(from: [onConsole: false]) == State(sessionIsActive: false, screenIsLocked: false))
+    }
+
     @Test("The experimental bridge creates one screen-lock Space and moves each window once")
     @MainActor
     func lockScreenSpaceBridgeSequence() {

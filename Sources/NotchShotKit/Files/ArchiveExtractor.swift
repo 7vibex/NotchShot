@@ -208,7 +208,7 @@ enum ArchiveExtractor {
         }
         try process.run()
         let message = errors.fileHandleForReading.readDataToEndOfFile()
-        process.waitUntilExit()
+        process.blockUntilExit()
         try? outputHandle?.close()
         guard process.terminationStatus == 0 else {
             let text = String(decoding: message, as: UTF8.self)

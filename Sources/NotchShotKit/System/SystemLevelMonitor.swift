@@ -109,8 +109,14 @@ public final class SystemLevelMonitor {
     private var globalBrightnessKeyMonitor: Any?
     private var localBrightnessKeyMonitor: Any?
     private var observers: [NSObjectProtocol] = []
+    private var distributedObservers: [NSObjectProtocol] = []
     private var displayObserver: NSObjectProtocol?
     private var isRunning = false
+    /// Asleep or locked, no brightness reading can reach the screen: the HUD
+    /// needs a recent brightness key, and key events don't reach the app on
+    /// the Lock Screen. The 5 Hz poll waits for wake and unlock instead.
+    private var screensAsleep = false
+    private var sessionIsActive = true
 
     public init() {}
 
@@ -138,8 +144,10 @@ public final class SystemLevelMonitor {
         }
 
         installDeviceVolumeListeners()
+        sessionIsActive = ScreenLockSignal.current().sessionIsActive
         startBrightnessSampling()
         installSleepObservers()
+        installSessionObservers()
         installDisplayObserver()
     }
 
@@ -153,6 +161,12 @@ public final class SystemLevelMonitor {
             NSWorkspace.shared.notificationCenter.removeObserver(observer)
         }
         observers.removeAll()
+        for observer in distributedObservers {
+            DistributedNotificationCenter.default().removeObserver(observer)
+        }
+        distributedObservers.removeAll()
+        // Nothing reports the wake once its observer is gone.
+        screensAsleep = false
         if let displayObserver {
             NotificationCenter.default.removeObserver(displayObserver)
             self.displayObserver = nil
@@ -567,6 +581,8 @@ public final class SystemLevelMonitor {
         }
         installBrightnessKeyMonitorsIfNeeded()
         brightnessTimer?.invalidate()
+        brightnessTimer = nil
+        guard !screensAsleep, sessionIsActive else { return }
         // 5 Hz: fast enough that a key-repeat ramp looks continuous, while each
         // tick remains one bounded compatibility-shim read.
         let timer = Timer(timeInterval: 0.2, repeats: true) { [weak self] _ in
@@ -664,6 +680,7 @@ public final class SystemLevelMonitor {
             queue: .main
         ) { [weak self] _ in
             MainActor.assumeIsolated {
+                self?.screensAsleep = true
                 self?.brightnessTimer?.invalidate()
                 self?.brightnessTimer = nil
                 self?.brightnessIntent.reset()
@@ -675,7 +692,9 @@ public final class SystemLevelMonitor {
             queue: .main
         ) { [weak self] _ in
             MainActor.assumeIsolated {
-                guard let self, self.isRunning else { return }
+                guard let self else { return }
+                self.screensAsleep = false
+                guard self.isRunning else { return }
                 guard Preferences.shared.mirrorsBrightnessChanges else { return }
                 // Brightness usually differs after a wake; re-baseline instead
                 // of firing a HUD nobody asked for.
@@ -683,6 +702,44 @@ public final class SystemLevelMonitor {
                 self.startBrightnessSampling()
             }
         })
+    }
+
+    /// Ctrl-Cmd-Q posts only the loginwindow signal; Fast User Switching
+    /// posts only the workspace one. Either pauses brightness sampling.
+    private func installSessionObservers() {
+        let center = NSWorkspace.shared.notificationCenter
+        for name in [NSWorkspace.sessionDidResignActiveNotification, NSWorkspace.sessionDidBecomeActiveNotification] {
+            observers.append(center.addObserver(forName: name, object: nil, queue: .main) { [weak self] note in
+                let active = note.name == NSWorkspace.sessionDidBecomeActiveNotification
+                MainActor.assumeIsolated { self?.setSessionActive(active) }
+            })
+        }
+        let distributed = DistributedNotificationCenter.default()
+        for name in [ScreenLockSignal.lockedNotification, ScreenLockSignal.unlockedNotification] {
+            distributedObservers.append(distributed.addObserver(forName: name, object: nil, queue: .main) { [weak self] note in
+                let name = note.name
+                MainActor.assumeIsolated {
+                    guard let active = ScreenLockSignal.sessionIsActive(for: name) else { return }
+                    self?.setSessionActive(active)
+                }
+            })
+        }
+    }
+
+    private func setSessionActive(_ active: Bool) {
+        guard active != sessionIsActive else { return }
+        sessionIsActive = active
+        guard isRunning else { return }
+        guard active else {
+            brightnessTimer?.invalidate()
+            brightnessTimer = nil
+            brightnessIntent.reset()
+            return
+        }
+        guard Preferences.shared.mirrorsBrightnessChanges else { return }
+        // As after a wake: the value may have moved while locked.
+        rebaselineBrightness()
+        startBrightnessSampling()
     }
 
     private func installDisplayObserver() {

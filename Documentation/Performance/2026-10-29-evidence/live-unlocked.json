@@ -1,0 +1,18 @@
+{
+ "protocol": "proc_pid_rusage(RUSAGE_INFO_V6) on the user's running NotchShot (pid 15379, launched 19:58 from a dist/ build without this pass's changes). Screen unlocked (CGSSessionScreenIsLocked absent, on console). HID idle went from 23 s to 0 s during the 60 s window, so the user was at the Mac. AI Activity was off (notchshot.aiActivity = 0). A release build was compiling in the background during the 60 s window; instruction and wakeup counts are per process.",
+ "date": "2026-10-30",
+ "window_60s": {"start": "02:20:40", "cpu_percent_core": 3.62, "instructions_per_s_millions": 36.6, "wakeups_per_s": 16.1, "energy_mj_per_s": 6.4, "footprint_mb": 97.2},
+ "windows_30s": [
+  {"end": "02:23:43", "instructions_per_s_millions": 46.3, "wakeups_per_s": 30.4, "energy_mj_per_s": 7.5, "footprint_mb": 97.2},
+  {"end": "02:24:13", "instructions_per_s_millions": 41.9, "wakeups_per_s": 36.9, "energy_mj_per_s": 7.2, "footprint_mb": 97.2},
+  {"end": "02:24:43", "instructions_per_s_millions": 33.7, "wakeups_per_s": 13.2, "energy_mj_per_s": 5.7, "footprint_mb": 97.2},
+  {"end": "02:25:13", "instructions_per_s_millions": 32.2, "wakeups_per_s": 12.0, "energy_mj_per_s": 5.6, "footprint_mb": 97.2},
+  {"end": "02:25:43", "instructions_per_s_millions": 37.3, "wakeups_per_s": 13.9, "energy_mj_per_s": 6.2, "footprint_mb": 97.2},
+  {"end": "02:26:13", "instructions_per_s_millions": 38.4, "wakeups_per_s": 27.6, "energy_mj_per_s": 6.1, "footprint_mb": 97.2}
+ ],
+ "lifetime_peak_footprint_mb": 227.6,
+ "footprint_breakdown_mb": {"MALLOC_SMALL_dirty": 74, "untagged_vm_allocate": 4.0, "DATA": 3.9, "DATA_DIRTY": 2.9, "IOAccelerator": 1.3},
+ "heap": {"live_bytes": 38232816, "live_blocks": 279952, "swift_metadata_bytes": 5127424, "cfbundle_objects": 893, "loaded_frameworks": 936},
+ "sample_10s_busy_app_frames": {"SystemNotificationMirror.scanNow (own queue)": 28, "SystemLevelMonitor.sampleBrightness": 13, "NotchWindowController mouse monitors": 9, "MainActor timer and observer work, total": 46, "main_thread_samples": 8211},
+ "application_catalog_probe": {"apps": 102, "cold_ms": 228.5, "warm_ms": [10.2, 9.8, 9.3, 8.5], "retained_mb": 4.9}
+}

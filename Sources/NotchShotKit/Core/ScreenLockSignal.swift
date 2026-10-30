@@ -1,3 +1,4 @@
+import CoreGraphics
 import Foundation
 
 /// The screen lock is distinct from an AppKit user-session switch.
@@ -17,5 +18,26 @@ enum ScreenLockSignal {
         case unlockedNotification: true
         default: nil
         }
+    }
+
+    struct State: Equatable {
+        var sessionIsActive: Bool
+        var screenIsLocked: Bool
+    }
+
+    /// The state right now. A launch on a locked Mac happens after both
+    /// notifications went out, so without this every observer would run as
+    /// unlocked until the next lock.
+    static func current() -> State {
+        state(from: CGSessionCopyCurrentDictionary() as? [String: Any])
+    }
+
+    /// No session dictionary means no window-server session to ask about;
+    /// that keeps the old assumption, active and unlocked.
+    static func state(from session: [String: Any]?) -> State {
+        guard let session else { return State(sessionIsActive: true, screenIsLocked: false) }
+        let locked = session["CGSSessionScreenIsLocked"] as? Bool ?? false
+        let onConsole = session[kCGSessionOnConsoleKey] as? Bool ?? true
+        return State(sessionIsActive: onConsole && !locked, screenIsLocked: locked)
     }
 }

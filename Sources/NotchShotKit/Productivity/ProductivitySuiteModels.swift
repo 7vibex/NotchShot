@@ -420,7 +420,7 @@ public enum TerminalRunner {
             let processID = process.processIdentifier
             guard waitForDedicatedProcessGroup(processID: processID) else {
                 process.terminate()
-                process.waitUntilExit()
+                await process.waitForExit()
                 throw CocoaError(.executableNotLoadable)
             }
 
@@ -442,7 +442,8 @@ public enum TerminalRunner {
             if process.isRunning, timedOut || exceededOutputLimit {
                 await terminateProcessGroup(processID)
             }
-            process.waitUntilExit()
+            // A full test run once hung here for five hours.
+            await process.waitForExit()
             // A shell can exit successfully after forking. Do not let a
             // descendant escape the timeout/output boundary just because its
             // parent returned first.

@@ -171,7 +171,9 @@ public actor BluetoothAccessoryBatteryService {
 
         func read() -> Data? {
             let data = pipe.fileHandleForReading.readDataToEndOfFile()
-            process.waitUntilExit()
+            // A wait that never returned would also hold up the timeout task:
+            // the group still waits for this child.
+            process.blockUntilExit()
             return data.isEmpty ? nil : data
         }
 

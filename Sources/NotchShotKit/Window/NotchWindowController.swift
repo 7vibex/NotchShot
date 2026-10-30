@@ -179,6 +179,10 @@ public final class NotchWindowController {
     /// it, which looks exactly like the card never being drawn at all.
     private var lockedPresenceTimer: Timer?
     private var lastLoggedLockedPresentation: String?
+    /// One process blocked 11–13 ms in `orderOut` on every locked refresh; a
+    /// probe reproduces that only for the first hide after a focus request.
+    /// Tallied per lock and reported once at unlock, to tell the two apart.
+    private var lockedOrdering = LockedOrderingTally()
     /// Cadence the live timer was created with, so a tick that changes nothing
     /// does not tear the timer down and build it again.
     private var presenceTimerInterval: TimeInterval?
@@ -267,6 +271,14 @@ public final class NotchWindowController {
     // MARK: Lifecycle
 
     public func start() {
+        // Before the first panel exists, so a launch on a locked Mac never
+        // orders one in or runs the unlocked layout.
+        let session = ScreenLockSignal.current()
+        isScreenLocked = session.screenIsLocked
+        isSessionActive = session.sessionIsActive
+        if !isSessionActive {
+            Log.window.notice("Starting with the session \(self.isScreenLocked ? "locked" : "inactive", privacy: .public)")
+        }
         rebuildPanels()
         installObservers()
         installMouseMonitors()
@@ -714,7 +726,12 @@ public final class NotchWindowController {
                         reportFailure: true
                     )
                 }
+                let orderingStarted = DispatchTime.now().uptimeNanoseconds
                 applyVisibilityPolicy(to: entry.panel, context: entry.context)
+                lockedOrdering.record(
+                    milliseconds: Double(DispatchTime.now().uptimeNanoseconds - orderingStarted) / 1_000_000,
+                    stillVisibleWhenHidden: entry.panel.isVisible && !shouldShowLockedPanel(on: entry.context)
+                )
             }
             // Marked public: this is the line that says whether the card was
             // even asked for, and it is unreadable in a bug report otherwise.
@@ -738,6 +755,12 @@ public final class NotchWindowController {
         }
         stopLockedPresenceTimer()
         lastLoggedLockedPresentation = nil
+        if lockedOrdering.passes > 0 {
+            Log.window.notice(
+                "Locked ordering: \(self.lockedOrdering.passes, privacy: .public) passes, \(self.lockedOrdering.slowPasses, privacy: .public) took 2 ms or more, slowest \(self.lockedOrdering.slowestMilliseconds, format: .fixed(precision: 1), privacy: .public) ms, hide failed \(self.lockedOrdering.failedHides, privacy: .public) times"
+            )
+            lockedOrdering = LockedOrderingTally()
+        }
         LockedMediaNotificationController.shared.clear()
         LockedMediaNotificationController.shared.setCustomPresentationAvailable(false)
         for entry in entries.values {
@@ -1356,5 +1379,19 @@ public final class NotchWindowController {
         for entry in entries.values where entry.panel.isKeyWindow {
             entry.panel.resignKey()
         }
+    }
+}
+
+private struct LockedOrderingTally {
+    private(set) var passes = 0
+    private(set) var slowPasses = 0
+    private(set) var failedHides = 0
+    private(set) var slowestMilliseconds = 0.0
+
+    mutating func record(milliseconds: Double, stillVisibleWhenHidden: Bool) {
+        passes += 1
+        if milliseconds >= 2 { slowPasses += 1 }
+        if stillVisibleWhenHidden { failedHides += 1 }
+        slowestMilliseconds = max(slowestMilliseconds, milliseconds)
     }
 }
