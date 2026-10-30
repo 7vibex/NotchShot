@@ -132,7 +132,7 @@ public actor MediaPlaybackModeService {
             : "(shuffling as string) & fieldSeparator & (repeating as string)"
         return """
         tell application "\(player.applicationName)"
-            set fieldSeparator to ASCII character 31
+            set fieldSeparator to character id 31
             try
                 return \(properties)
             on error

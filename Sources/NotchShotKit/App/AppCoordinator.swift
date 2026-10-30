@@ -88,6 +88,7 @@ public final class AppCoordinator {
     @ObservationIgnored var islandEventTask: Task<Void, Never>?
     @ObservationIgnored var islandCollapseTask: Task<Void, Never>?
     @ObservationIgnored var islandRefreshScheduled = false
+    @ObservationIgnored var islandSourcesAtLastRefresh: IslandSourceValues?
     @ObservationIgnored var mediaActivityStartedAt: Date?
     @ObservationIgnored var recordingActivityStartedAt: Date?
     @ObservationIgnored var islandGestureCoordinator: IslandGestureCoordinator?

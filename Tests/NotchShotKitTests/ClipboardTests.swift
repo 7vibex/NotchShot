@@ -154,14 +154,16 @@ struct ClipboardClassificationTests {
 @MainActor
 struct ClipboardStoreTests {
 
-    private func makeStore() -> ClipboardStore {
+    /// The store and the temporary directory it lives in, for the test to remove.
+    private func makeStore() -> (ClipboardStore, URL) {
         let directory = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("notchshot-clip-\(UUID().uuidString)", isDirectory: true)
         try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        return ClipboardStore(
+        let store = ClipboardStore(
             storeURL: directory.appendingPathComponent("clipboard.json"),
             imageDirectory: directory
         )
+        return (store, directory)
     }
 
     private func entry(_ text: String, pinned: Bool = false, at offset: TimeInterval = 0) -> ClipboardEntry {
@@ -187,7 +189,8 @@ struct ClipboardStoreTests {
         Preferences.shared.clipboardEnabled = false
         defer { Preferences.shared.clipboardEnabled = wasEnabled }
 
-        let store = makeStore()
+        let (store, directory) = makeStore()
+        defer { try? FileManager.default.removeItem(at: directory) }
         #expect(store.record(entry("secret")) == nil)
         #expect(store.entries.isEmpty)
     }
@@ -195,7 +198,8 @@ struct ClipboardStoreTests {
     @Test("Re-copying promotes the existing row instead of duplicating it")
     func reCopyPromotes() {
         withClipboardOn {
-            let store = makeStore()
+            let (store, directory) = makeStore()
+            defer { try? FileManager.default.removeItem(at: directory) }
             store.record(entry("alpha", at: 0))
             store.record(entry("beta", at: 1))
             store.record(entry("alpha", at: 2))
@@ -208,7 +212,8 @@ struct ClipboardStoreTests {
     @Test("Pinned rows sort above unpinned ones")
     func pinnedSortFirst() {
         withClipboardOn {
-            let store = makeStore()
+            let (store, directory) = makeStore()
+            defer { try? FileManager.default.removeItem(at: directory) }
             store.record(entry("old", at: 0))
             store.record(entry("new", at: 10))
             let oldID = store.entries.first { $0.text == "old" }?.id
@@ -226,7 +231,8 @@ struct ClipboardStoreTests {
             Preferences.shared.clipboardRetentionDays = 7
             defer { Preferences.shared.clipboardRetentionDays = wasRetention }
 
-            let store = makeStore()
+            let (store, directory) = makeStore()
+            defer { try? FileManager.default.removeItem(at: directory) }
             let now = Date()
             store.record(ClipboardEntry(
                 kind: .text, text: "ancient",
@@ -256,7 +262,8 @@ struct ClipboardStoreTests {
     @Test("The row cap is enforced on write, not discovered on read")
     func rowCapIsEnforcedOnWrite() {
         withClipboardOn {
-            let store = makeStore()
+            let (store, directory) = makeStore()
+            defer { try? FileManager.default.removeItem(at: directory) }
             for index in 0 ..< (ClipboardStore.maximumEntryCount + 40) {
                 store.record(entry("clip \(index)", at: TimeInterval(index)))
             }
@@ -269,7 +276,8 @@ struct ClipboardStoreTests {
     @Test("A single huge clipping cannot evict the whole history")
     func oversizedClippingIsTruncatedRatherThanEvicting() {
         withClipboardOn {
-            let store = makeStore()
+            let (store, directory) = makeStore()
+            defer { try? FileManager.default.removeItem(at: directory) }
             for index in 0 ..< 20 {
                 store.record(entry("small \(index)", at: TimeInterval(index)))
             }
@@ -292,6 +300,7 @@ struct ClipboardStoreTests {
             let directory = URL(fileURLWithPath: NSTemporaryDirectory())
                 .appendingPathComponent("notchshot-clip-\(UUID().uuidString)", isDirectory: true)
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(at: directory) }
             let storeURL = directory.appendingPathComponent("clipboard.json")
             let store = ClipboardStore(storeURL: storeURL, imageDirectory: directory)
 
@@ -325,6 +334,7 @@ struct ClipboardStoreTests {
             let directory = URL(fileURLWithPath: NSTemporaryDirectory())
                 .appendingPathComponent("notchshot-clip-\(UUID().uuidString)", isDirectory: true)
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(at: directory) }
             let storeURL = directory.appendingPathComponent("clipboard.json")
 
             let store = ClipboardStore(storeURL: storeURL, imageDirectory: directory)
@@ -397,7 +407,8 @@ struct ClipboardStoreTests {
     @Test("Image OCR becomes searchable only after explicit indexing")
     func imageOCRIsExplicitAndSearchable() throws {
         try withClipboardOn {
-            let store = makeStore()
+            let (store, directory) = makeStore()
+            defer { try? FileManager.default.removeItem(at: directory) }
             let imageEntry = ClipboardEntry(
                 kind: .image,
                 contentHash: "image-with-text"
@@ -419,7 +430,8 @@ struct ClipboardStoreTests {
     @Test("Clearing keeps pinned rows when asked to")
     func clearCanKeepPinned() {
         withClipboardOn {
-            let store = makeStore()
+            let (store, directory) = makeStore()
+            defer { try? FileManager.default.removeItem(at: directory) }
             store.record(entry("throwaway", at: 0))
             store.record(entry("keeper", pinned: true, at: 1))
 

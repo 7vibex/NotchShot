@@ -748,6 +748,19 @@ struct MediaSnapshotTests {
 @Suite("Apple Events media timeline")
 struct AppleEventsMediaTimelineTests {
 
+    @Test("A poll asks the player for its state once, as the text the parser reads")
+    func pollAsksStateOnce() {
+        let script = AppleEventsMediaSource.snapshotScript(applicationName: "Spotify")
+        #expect(script.hasPrefix("tell application \"Spotify\"\n"))
+        #expect(script.components(separatedBy: "player state").count == 2)
+        #expect(script.contains("set theState to player state as string"))
+        #expect(script.contains("if theState is \"stopped\" then return \"stopped\""))
+        #expect(script.contains("fieldSeparator & theState\n"))
+        // A scripting addition inside the `tell` is sent to the player first.
+        #expect(!script.contains("ASCII character"))
+        #expect(script.contains("set fieldSeparator to character id 31"))
+    }
+
     @Test("Spotify duration is converted from milliseconds")
     func spotifyDurationConversion() throws {
         let separator = AppleEventsMediaSource.fieldSeparator

@@ -58,6 +58,7 @@ struct HistoryOverflowTests {
     @Test("A store past the byte cap is recovered, not discarded")
     func oversizedStoreIsRecovered() throws {
         let store = Self.makeStore()
+        defer { try? FileManager.default.removeItem(at: store.deletingLastPathComponent()) }
         // 5,000 rows of realistic recognised text clears 16 MB comfortably.
         let byteCount = try Self.write(
             Self.entries(count: 5_000, textBytes: 3_600),
@@ -76,6 +77,7 @@ struct HistoryOverflowTests {
     @Test("A store past the row cap keeps the newest entries")
     func overlongStoreKeepsNewest() throws {
         let store = Self.makeStore()
+        defer { try? FileManager.default.removeItem(at: store.deletingLastPathComponent()) }
         try Self.write(
             Self.entries(count: HistoryRepository.maximumEntryCount + 25, textBytes: 0),
             to: store
@@ -93,6 +95,7 @@ struct HistoryOverflowTests {
     @Test("Recording past the row cap trims instead of growing without limit")
     func recordingStopsAtTheRowCap() throws {
         let store = Self.makeStore()
+        defer { try? FileManager.default.removeItem(at: store.deletingLastPathComponent()) }
         try Self.write(
             Self.entries(count: HistoryRepository.maximumEntryCount, textBytes: 0),
             to: store
@@ -123,6 +126,7 @@ struct HistoryOverflowTests {
     @Test("A store written after budgeting is readable without repair")
     func writtenStoreLoadsUnchanged() throws {
         let store = Self.makeStore()
+        defer { try? FileManager.default.removeItem(at: store.deletingLastPathComponent()) }
         let repository = HistoryRepository(
             storeURL: store,
             managedArtifactDirectories: [],
@@ -167,6 +171,7 @@ struct HistoryOverflowTests {
     @Test("A text-free store past the write cap sheds oldest rows instead of failing")
     func oversizedTextFreeStoreShrinks() throws {
         let store = Self.makeStore()
+        defer { try? FileManager.default.removeItem(at: store.deletingLastPathComponent()) }
         let longDirectory = String(repeating: "p", count: 2_000)
         let seeded = (0 ..< 8_500).map { index -> HistoryEntry in
             var asset = CaptureAsset(

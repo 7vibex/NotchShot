@@ -180,6 +180,7 @@ extension AppCoordinator {
     }
 
     func refreshActivity() {
+        islandSourcesAtLastRefresh = islandSourceValues
         releaseSystemMuteAfterCalls()
         syncQuickToggleInputs()
         refreshIsland()

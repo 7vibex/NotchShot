@@ -393,21 +393,7 @@ public actor AppleEventsMediaSource: MediaSource {
             return MediaSnapshot(source: .none)
         }
 
-        // One round-trip for everything: each `tell` is a separate Apple Event
-        // and they add up quickly.
-        let script = """
-        tell application "\(player.applicationName)"
-            if player state is stopped then return "stopped"
-            set theTitle to name of current track
-            set theArtist to artist of current track
-            set theAlbum to album of current track
-            set theDuration to (duration of current track) as integer
-            set thePosition to (player position) as integer
-            set theState to player state as string
-            set fieldSeparator to ASCII character 31
-            return theTitle & fieldSeparator & theArtist & fieldSeparator & theAlbum & fieldSeparator & theDuration & fieldSeparator & thePosition & fieldSeparator & theState
-        end tell
-        """
+        let script = Self.snapshotScript(applicationName: player.applicationName)
 
         guard let output = await run(script: script), output != "stopped" else {
             return MediaSnapshot(
@@ -438,6 +424,29 @@ public actor AppleEventsMediaSource: MediaSource {
             isPlaying: fields.isPlaying,
             supportedCommands: [.play, .pause, .togglePlayPause, .nextTrack, .previousTrack, .seek]
         )
+    }
+
+    /// One round-trip for everything: each `tell` is a separate Apple Event
+    /// and they add up quickly. The state is asked once, as text, the same
+    /// way `runningPlayer()` asks it, and the stopped check reads that text.
+    /// `character id` is built in; `ASCII character` is a scripting addition,
+    /// which inside the `tell` went to the player, was refused, and was sent
+    /// again to this process: two more events, one of them a round trip to
+    /// the player, on every poll.
+    static func snapshotScript(applicationName: String) -> String {
+        """
+        tell application "\(applicationName)"
+            set theState to player state as string
+            if theState is "stopped" then return "stopped"
+            set theTitle to name of current track
+            set theArtist to artist of current track
+            set theAlbum to album of current track
+            set theDuration to (duration of current track) as integer
+            set thePosition to (player position) as integer
+            set fieldSeparator to character id 31
+            return theTitle & fieldSeparator & theArtist & fieldSeparator & theAlbum & fieldSeparator & theDuration & fieldSeparator & thePosition & fieldSeparator & theState
+        end tell
+        """
     }
 
     static func parseSnapshotFields(

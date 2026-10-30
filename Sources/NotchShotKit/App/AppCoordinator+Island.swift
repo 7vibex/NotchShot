@@ -87,19 +87,34 @@ extension AppCoordinator {
     /// `onChange`, so tracking its observable `transfers` array directly would
     /// let raw progress mutations schedule refreshes the store intentionally
     /// throttled.
+    ///
+    /// Most of these changes also refresh directly: a Claude hook publishes
+    /// through `context.onSnapshotChange` before this task runs. The scheduled
+    /// refresh is skipped when the last refresh already read the same values.
+    /// It compares values, not a counter, because a change made after the
+    /// tracking fired and before it is renewed must still be refreshed.
     func observeIslandSources() {
         withObservationTracking {
-            _ = context.ai.snapshot
-            _ = context.claude.sessions
-            _ = context.timer.current
-            _ = context.voiceNotes.snapshot
-            _ = isRecordingPaused
+            _ = islandSourceValues
         } onChange: { [weak self] in
             Task { @MainActor in
-                self?.scheduleIslandRefresh()
-                self?.observeIslandSources()
+                guard let self else { return }
+                if self.islandSourceValues != self.islandSourcesAtLastRefresh {
+                    self.scheduleIslandRefresh()
+                }
+                self.observeIslandSources()
             }
         }
+    }
+
+    var islandSourceValues: IslandSourceValues {
+        IslandSourceValues(
+            ai: context.ai.snapshot,
+            claude: context.claude.sessions,
+            timer: context.timer.current,
+            voiceNote: context.voiceNotes.snapshot,
+            isRecordingPaused: isRecordingPaused
+        )
     }
 
     /// Coalesces bursts of source changes into one refresh per run-loop turn.
@@ -469,4 +484,13 @@ extension AppCoordinator {
         NSWorkspace.shared.openApplication(at: url, configuration: configuration)
         collapseIsland()
     }
+}
+
+/// The island sources `observeIslandSources` tracks, as one refresh read them.
+struct IslandSourceValues: Equatable {
+    var ai: ContextSnapshot?
+    var claude: [ClaudeCodeSession]
+    var timer: FocusTimerSnapshot?
+    var voiceNote: VoiceNoteSnapshot?
+    var isRecordingPaused: Bool
 }

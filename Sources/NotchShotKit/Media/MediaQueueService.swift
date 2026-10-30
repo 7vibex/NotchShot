@@ -67,9 +67,9 @@ public actor MediaQueueService {
     /// current playlist, and asking for one raises rather than returning empty.
     private static let musicQueueScript = """
     tell application "Music"
-        if player state is stopped then return (ASCII character 3)
-        set fieldSeparator to ASCII character 31
-        set recordSeparator to ASCII character 30
+        if player state is stopped then return (character id 3)
+        set fieldSeparator to character id 31
+        set recordSeparator to character id 30
         set collected to ""
         try
             set thePlaylist to current playlist

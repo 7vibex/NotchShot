@@ -44,9 +44,15 @@ struct NotchConsolidatedFixTests {
         return result
     }
 
+    private func remove(_ directory: URL) {
+        try? FileManager.default.removeItem(at: directory)
+    }
+
     @Test("Notes reject an over-budget edit without changing durable or displayed content")
     func notesBudget() throws {
-        let url = try directory("notes-budget").appendingPathComponent("notes.json")
+        let root = try directory("notes-budget")
+        defer { remove(root) }
+        let url = root.appendingPathComponent("notes.json")
         let seed = (0..<41).map { ProductivityNote(title: "Synthetic \($0)", body: String(repeating: "x", count: 200_000)) }
         try JSONEncoder().encode(seed).write(to: url)
         let store = ProductivityNoteStore(storeURL: url)
@@ -65,7 +71,9 @@ struct NotchConsolidatedFixTests {
 
     @Test("Lyrics budget failures preserve memory and disk; missing parents are initialized")
     func lyricsBudget() throws {
-        let url = try directory("lyrics-budget").appendingPathComponent("lyrics.json")
+        let root = try directory("lyrics-budget")
+        defer { remove(root) }
+        let url = root.appendingPathComponent("lyrics.json")
         let seed = Dictionary(uniqueKeysWithValues: (0..<27).map { ("synthetic-\($0)", String(repeating: "x", count: 300_000)) })
         let before = try JSONEncoder().encode(seed)
         try before.write(to: url)
@@ -77,7 +85,9 @@ struct NotchConsolidatedFixTests {
         #expect(store.lyricsByTrack == seed)
         #expect(try Data(contentsOf: url) == before)
         #expect(LyricsStore(storeURL: url).lyricsByTrack == seed)
-        let fresh = LyricsStore(storeURL: try directory("lyrics-new").appendingPathComponent("nested/lyrics.json"))
+        let freshRoot = try directory("lyrics-new")
+        defer { remove(freshRoot) }
+        let fresh = LyricsStore(storeURL: freshRoot.appendingPathComponent("nested/lyrics.json"))
         #expect(fresh.lastError == nil)
         try fresh.setLyrics("Synthetic lyrics", for: "track")
         #expect(fresh.lyrics(for: "track") == "Synthetic lyrics")
@@ -85,7 +95,9 @@ struct NotchConsolidatedFixTests {
 
     @Test("Encoded bytes at and above the limit round trip, including escaping and multibyte text")
     func encodedByteBoundary() throws {
-        let url = try directory("byte-boundary").appendingPathComponent("store.json")
+        let root = try directory("byte-boundary")
+        defer { remove(root) }
+        let url = root.appendingPathComponent("store.json")
         var file = AuthoredContentFile(url: url)
         _ = try file.load([String: String].self)
         let overhead = try JSONEncoder().encode(["k": ""]).count
@@ -108,6 +120,7 @@ struct NotchConsolidatedFixTests {
     @Test("Legacy oversized Notes and Lyrics are recovered without a write, then backed up exactly")
     func oversizedRecovery() throws {
         let root = try directory("recovery")
+        defer { remove(root) }
         let notesURL = root.appendingPathComponent("notes.json")
         let notes = (0..<42).map { ProductivityNote(title: "Synthetic \($0)", body: String(repeating: "x", count: 200_000)) }
         let originalNotes = try JSONEncoder().encode(notes)
@@ -139,6 +152,7 @@ struct NotchConsolidatedFixTests {
     @Test("Failed reads lock writes; I/O failures and outside changes never commit memory")
     func readAndWriteProtection() throws {
         let root = try directory("read-lock")
+        defer { remove(root) }
         let corrupt = Data("{synthetic invalid JSON".utf8)
         let url = root.appendingPathComponent("corrupt.json")
         try corrupt.write(to: url)
@@ -177,6 +191,7 @@ struct NotchConsolidatedFixTests {
     @Test("Clipboard file and text identities remain distinct in both directions")
     func clipboardTypeDirections() throws {
         let root = try directory("clipboard-kind")
+        defer { remove(root) }
         let path = root.appendingPathComponent("synthetic.txt").path
         let hash = ClipboardEntry.hash(forText: path)
         let files = ClipboardEntry(kind: .files, filePaths: [path], contentHash: hash)
@@ -201,6 +216,7 @@ struct NotchConsolidatedFixTests {
     func clipboardImageRace() async throws {
         for newerFirst in [false, true] {
             let root = try directory("image-race")
+            defer { remove(root) }
             let gate = FixImageWriteGate()
             let store = ClipboardStore(storeURL: root.appendingPathComponent("store.json"), imageDirectory: root, isEnabled: { true }, imageWriter: { _, id, directory in
                 try? Data("synthetic image writer".utf8).write(to: directory.appendingPathComponent("\(id.uuidString).png"))
@@ -237,6 +253,7 @@ struct NotchConsolidatedFixTests {
     @Test("An image suspension does not conflate a text hash or escape Clear")
     func clipboardTypeRaceAndClear() async throws {
         let root = try directory("image-kind-race")
+        defer { remove(root) }
         let gate = FixImageWriteGate()
         let store = ClipboardStore(storeURL: root.appendingPathComponent("store.json"), imageDirectory: root, isEnabled: { true }, imageWriter: { _, id, directory in
             try? Data("synthetic image writer".utf8).write(to: directory.appendingPathComponent("\(id.uuidString).png"))
@@ -265,6 +282,7 @@ struct NotchConsolidatedFixTests {
     @Test("64-file clippings replay wholly; 65-file clippings are rejected and persisted lists stay complete")
     func clipboardFileLimit() throws {
         let root = try directory("file-limit")
+        defer { remove(root) }
         var paths: [String] = []
         var identities: [ExternalFileIdentity] = []
         for i in 0..<65 {
