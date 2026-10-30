@@ -507,5 +507,72 @@
    "per_full_run_after": "34 entries, 0.1 MB",
    "free_after": "31 GiB"
   }
+ },
+ "night_followup": {
+  "first_unlock_new_build": {
+   "time": "23:07:26.341",
+   "process": "pid 68210, f966908",
+   "rusage_first_seconds": [
+    "23:07:26.359 458.5 M instr/s, 16.87% core, 78 wakeups/s, footprint 85.4 MB, 69.2 mJ/s",
+    "23:07:27.525 336.0 M instr/s, 12.52% core, 68 wakeups/s, footprint 82.4 MB, 54.7 mJ/s",
+    "23:07:28.542 114.6 M instr/s, 4.62% core, 78 wakeups/s, footprint 80.9 MB, 18.8 mJ/s",
+    "23:07:29.590 6.1 M instr/s, 0.28% core, 15 wakeups/s, footprint 36.5 MB, 1.1 mJ/s"
+   ],
+   "memwatch_peak_mb": 88.2,
+   "time_profiler_20s_cpu_ms": {
+    "main": 376,
+    "NotchShot workers": 111,
+    "AppleScript": 70
+   },
+   "cfnetwork_task_lines_23_07_20_to_23_08_00": 0
+  },
+  "launch_profile": {
+   "trace": "xctrace Time Profiler --all-processes, 14 s, relaunch at 23:39",
+   "open": "23:39:18.584",
+   "exec": "23:39:18.676",
+   "launched": "23:39:19.104",
+   "first_media_answers": "23:39:19.250",
+   "main_thread_ms": 357,
+   "main_items_ms": {
+    "AppKit/SwiftUI under main (NSHostingView.layout 102)": 147,
+    "KeyboardStateMonitor.currentInputSource": 24,
+    "applicationDidFinishLaunching self": 22,
+    "NotchPanel.init": 14,
+    "installStatusItem": 11,
+    "MeetingControls.defaultInputDevice": 7,
+    "rebuildPanels": 7,
+    "EKEventStore.init": 5
+   },
+   "signature_check_off_main_ms": 32
+  },
+  "warm_launches": [
+   {
+    "time": "22:46",
+    "pid": 65986,
+    "locked": true,
+    "exec_to_launched_s": 0.47,
+    "exec_to_first_media_s": 0.64
+   },
+   {
+    "time": "22:56",
+    "pid": 68210,
+    "locked": true,
+    "exec_to_launched_s": 0.28,
+    "exec_to_first_media_s": 0.45
+   },
+   {
+    "time": "23:39",
+    "pid": 27370,
+    "locked": false,
+    "exec_to_launched_s": 0.43,
+    "exec_to_first_media_s": 0.57,
+    "note": "under a system-wide profiler"
+   }
+  ],
+  "network": {
+   "spotify": "paused: 4.9 M instr/s, 0.41% core, no audio assertion at 23:44",
+   "pid_1696_cfnetwork_task_lines_8h": 6,
+   "all_at": "15:53:07-15:53:08"
+  }
  }
 }
