@@ -58,7 +58,30 @@
    "expanded new progress round 1: quiet 0.20 M per 50 ms; after one update 16.1 M over 2 s, busy for 1 slices (50 ms); first slices 8.3 0.2 0.2 0.2 0.2 0.2 0.2 0.2 0.2 0.2 0.2 0.2",
    "expanded new progress round 2: quiet 0.20 M per 50 ms; after one update 16.2 M over 2 s, busy for 1 slices (50 ms); first slices 7.9 0.2 0.2 0.2 0.2 0.2 0.2 0.2 0.4 0.2 0.2 0.2",
    "expanded new progress round 3: quiet 0.20 M per 50 ms; after one update 16.3 M over 2 s, busy for 1 slices (50 ms); first slices 8.6 0.2 0.2 0.2 0.2 0.2 0.2 0.2 0.2 0.2 0.2 0.2"
-  ]
+  ],
+  "progress_changes_after_plain_text": {
+   "protocol": "Same harness and protocol, 15:36 on 30 October, load average about 40. Progress percentages use IslandClockText instead of IslandNumericText. The timestamp-only and tool-text rows are the in-run control.",
+   "records": [
+    "compact  timestamp only round 1: quiet 0.32 M per 50 ms; after one update 23.4 M over 2 s, busy for 1 slices (50 ms); first slices 12.4 0.3 0.3 0.2 0.3 0.2 0.2 0.2 0.3 0.4 0.3 0.4",
+    "compact  timestamp only round 2: quiet 0.28 M per 50 ms; after one update 22.3 M over 2 s, busy for 1 slices (50 ms); first slices 11.2 0.3 0.3 0.2 0.3 0.3 0.3 0.2 0.2 0.3 0.3 0.3",
+    "compact  timestamp only round 3: quiet 0.30 M per 50 ms; after one update 22.4 M over 2 s, busy for 1 slices (50 ms); first slices 11.3 0.2 0.3 0.3 0.3 0.3 0.3 0.4 0.3 0.3 0.3 0.3",
+    "compact  new tool text round 1: quiet 0.30 M per 50 ms; after one update 24.3 M over 2 s, busy for 1 slices (50 ms); first slices 12.3 0.4 0.3 0.3 0.3 0.3 0.3 0.2 0.3 0.3 0.3 0.3",
+    "compact  new tool text round 2: quiet 0.28 M per 50 ms; after one update 23.7 M over 2 s, busy for 1 slices (50 ms); first slices 11.6 0.3 0.3 0.4 0.3 0.3 0.4 0.3 0.3 0.3 0.3 0.3",
+    "compact  new tool text round 3: quiet 0.30 M per 50 ms; after one update 23.1 M over 2 s, busy for 1 slices (50 ms); first slices 11.5 0.3 0.3 0.3 0.3 0.3 0.3 0.3 0.3 0.3 0.4 0.3",
+    "compact  new progress round 1: quiet 0.32 M per 50 ms; after one update 436.4 M over 2 s, busy for 3 slices (150 ms); first slices 220.3 152.3 52.5 0.3 0.4 0.3 0.3 0.3 0.3 0.3 0.3 0.3",
+    "compact  new progress round 2: quiet 0.26 M per 50 ms; after one update 29.9 M over 2 s, busy for 1 slices (50 ms); first slices 19.0 0.3 0.3 0.3 0.3 0.3 0.3 0.3 0.3 0.3 0.3 0.3",
+    "compact  new progress round 3: quiet 0.27 M per 50 ms; after one update 26.2 M over 2 s, busy for 1 slices (50 ms); first slices 13.5 0.3 0.3 0.3 0.4 0.3 0.3 0.4 0.3 0.4 0.3 0.3",
+    "expanded timestamp only round 1: quiet 0.30 M per 50 ms; after one update 24.9 M over 2 s, busy for 1 slices (50 ms); first slices 13.1 0.3 0.3 0.3 0.4 0.3 0.3 0.3 0.3 0.3 0.3 0.3",
+    "expanded timestamp only round 2: quiet 0.34 M per 50 ms; after one update 24.7 M over 2 s, busy for 1 slices (50 ms); first slices 12.3 0.3 0.4 0.3 0.3 0.4 0.3 0.3 0.3 0.3 0.4 0.3",
+    "expanded timestamp only round 3: quiet 0.30 M per 50 ms; after one update 25.3 M over 2 s, busy for 1 slices (50 ms); first slices 13.3 0.3 0.3 0.3 0.3 0.3 0.3 0.5 0.4 0.3 0.3 0.3",
+    "expanded new tool text round 1: quiet 0.29 M per 50 ms; after one update 24.8 M over 2 s, busy for 1 slices (50 ms); first slices 13.3 0.3 0.3 0.3 0.3 0.3 0.3 0.3 0.3 0.3 0.3 0.3",
+    "expanded new tool text round 2: quiet 0.31 M per 50 ms; after one update 24.7 M over 2 s, busy for 1 slices (50 ms); first slices 13.6 0.3 0.3 0.3 0.3 0.3 0.3 0.3 0.3 0.3 0.3 0.3",
+    "expanded new tool text round 3: quiet 0.30 M per 50 ms; after one update 23.4 M over 2 s, busy for 1 slices (50 ms); first slices 11.9 0.3 0.3 0.3 0.4 0.3 0.3 0.3 0.3 0.3 0.3 0.3",
+    "expanded new progress round 1: quiet 0.29 M per 50 ms; after one update 23.6 M over 2 s, busy for 1 slices (50 ms); first slices 11.4 0.3 0.3 0.4 0.3 0.3 0.3 0.3 0.4 0.3 0.3 0.3",
+    "expanded new progress round 2: quiet 0.31 M per 50 ms; after one update 24.6 M over 2 s, busy for 1 slices (50 ms); first slices 12.7 0.3 0.3 0.3 0.3 0.3 0.3 0.3 0.3 0.3 0.3 0.3",
+    "expanded new progress round 3: quiet 0.28 M per 50 ms; after one update 23.7 M over 2 s, busy for 1 slices (50 ms); first slices 12.4 0.3 0.3 0.3 0.3 0.5 0.3 0.3 0.3 0.3 0.3 0.3"
+   ]
+  }
  },
  "notification_mirror_scan_locked": "walk probe (read-only copy of readBanners): Notification Center had 0 windows while locked; one AX call per scan, median 0.57 ms. Not yet run unlocked.",
  "live_after_rebuild": {
@@ -230,6 +253,76 @@
    "NotchShot.AppleScript": 57,
    "NotchShot (workers)": 18,
    "Main Thread": 11
+  }
+ },
+ "afternoon_followup": {
+  "lock_profile": {
+   "trace": "Rolling 20 s Time Profiler attached to pid 65032 (8507f95 build) across the 15:40:19 lock, stopped 4 s after it.",
+   "cpu_ms": {
+    "main": 239,
+    "apple_script": 64,
+    "other": 60,
+    "total": 363
+   },
+   "burst": "Main thread 35.8-36.4 s into the trace, about 150 ms: SwiftUI graph update, NSHostingView layout and constraints, display list and CA commit. Nearest NotchShot frame is main() for 161 ms; one sample in NotchRootView.lockedPresentationContent.",
+   "rusage_from_lock": [
+    "15:40:19.223 pid 65032: 709.3 M instr/s, cpu 15.30% core, 39.0 wakeups/s (pkg idle 0.0), disk w 0.0 KB/s, footprint 142.4 MB, energy 199.1 mJ/s",
+    "15:40:20.247 pid 65032: 3.1 M instr/s, cpu 0.24% core, 3.0 wakeups/s (pkg idle 0.0), disk w 0.0 KB/s, footprint 108.0 MB, energy 0.4 mJ/s",
+    "15:40:21.258 pid 65032: 14.0 M instr/s, cpu 0.93% core, 5.0 wakeups/s (pkg idle 0.0), disk w 0.0 KB/s, footprint 108.0 MB, energy 1.5 mJ/s",
+    "15:40:22.274 pid 65032: 7.7 M instr/s, cpu 0.29% core, 2.0 wakeups/s (pkg idle 0.0), disk w 0.0 KB/s, footprint 108.0 MB, energy 1.0 mJ/s"
+   ]
+  },
+  "unlock_profile": {
+   "trace": "Rolling 20 s Time Profiler across the 15:08:46 unlock of pid 65032, stopped 6 s after it.",
+   "cpu_ms": {
+    "main": 660,
+    "ca_transaction_commit": 344,
+    "nshostingview_layout_render": 273,
+    "view_graph_update": 120
+   },
+   "reading": "Per-frame SwiftUI render of the padlock and island animation at 240 Hz; no NotchShot code in the hot path."
+  },
+  "launch_signature_check": {
+   "old": {
+    "pid": 65032,
+    "build": "8507f95",
+    "session": "locked",
+    "first_line": "12:52:34.053",
+    "launched": "12:52:34.477",
+    "first_to_launched_s": 0.424,
+    "verify_events": "lone event on main at 34.105; burst 34.372-34.426 on main and workers; 4 after launched on a worker"
+   },
+   "new": {
+    "pid": 1696,
+    "build": "working tree after 4a2a75b",
+    "session": "locked",
+    "first_line": "15:53:06.708",
+    "launched": "15:53:07.038",
+    "first_to_launched_s": 0.33,
+    "verify_events": "lone event on main at 06.752; burst 07.004-07.042 on worker threads only, main logged launched at 07.038 during it; watchdog validation on main at 07.060-07.061"
+   },
+   "osd_after_launch": "OSDUIHelper in state T, NotchShotOSDRecovery watchdog running"
+  },
+  "locked_song_card_shown": {
+   "note": "songOptIn turned true between 13:54 and 15:40, so the Lock Screen shows the song card and the 2 s poll correctly stays. Both rows below are in that state.",
+   "old_pid_65032": [
+    "15:49:46 pid 65032: 6.6 M instr/s, cpu 0.49% core, 3.0 wakeups/s (pkg idle 0.6), disk w 0.0 KB/s, footprint 106.6 MB, energy 0.7 mJ/s",
+    "15:50:46 pid 65032: 7.9 M instr/s, cpu 0.60% core, 3.3 wakeups/s (pkg idle 1.2), disk w 0.0 KB/s, footprint 106.8 MB, energy 0.7 mJ/s",
+    "15:51:46 pid 65032: 6.5 M instr/s, cpu 0.53% core, 2.8 wakeups/s (pkg idle 1.1), disk w 0.0 KB/s, footprint 106.8 MB, energy 0.6 mJ/s"
+   ],
+   "new_pid_1696": [
+    "15:54:35 pid 1696: 6.3 M instr/s, cpu 0.53% core, 3.1 wakeups/s (pkg idle 1.4), disk w 0.0 KB/s, footprint 47.1 MB, energy 0.5 mJ/s",
+    "15:55:36 pid 1696: 6.6 M instr/s, cpu 0.53% core, 3.9 wakeups/s (pkg idle 1.8), disk w 0.0 KB/s, footprint 34.2 MB, energy 0.6 mJ/s",
+    "15:56:36 pid 1696: 6.6 M instr/s, cpu 0.54% core, 3.3 wakeups/s (pkg idle 1.1), disk w 0.0 KB/s, footprint 34.2 MB, energy 0.6 mJ/s"
+   ],
+   "script_thread_bursts": "new build, 30 s Time Profiler: 14 bursts about 2.2 s apart, 68 ms on the script thread; old build at the 15:40 lock: 18 bursts in 38 s, 64 ms"
+  },
+  "test_plists_moved": {
+   "count": 11809,
+   "to": "~/.Trash/NotchShot test preferences 2026-10-30",
+   "preferences_entries_before": 12827,
+   "after": 1018,
+   "pattern": "notchshot.(tests|system-integration-tests|lyrics-tests).<UUID>.plist, newest 03:52 on 30 October"
   }
  }
 }
