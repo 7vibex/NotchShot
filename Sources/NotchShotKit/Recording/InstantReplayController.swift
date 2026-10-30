@@ -49,6 +49,8 @@ public final class InstantReplayController {
     /// Listens for sleep and lock. Called once at launch.
     func start() {
         guard observers.isEmpty else { return }
+        // A launch on a locked Mac must not start buffering the Lock Screen.
+        sessionLocked = !ScreenLockSignal.current().sessionIsActive
         let workspace = NSWorkspace.shared.notificationCenter
         let names = [
             NSWorkspace.screensDidSleepNotification,

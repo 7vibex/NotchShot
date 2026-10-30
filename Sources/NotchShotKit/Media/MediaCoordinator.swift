@@ -79,6 +79,11 @@ public final class MediaCoordinator {
             snapshot = .empty
             return
         }
+        // Seeded only where the observers that end it are installed: unlock
+        // still runs `setSessionActive(true)` and its fresh selection.
+        let session = ScreenLockSignal.current()
+        isScreenLocked = session.screenIsLocked
+        isSessionActive = session.sessionIsActive
         scheduleSelection()
         installObservers()
     }
