@@ -1,0 +1,64 @@
+{
+ "long_lock": {
+  "protocol": "proc_pid_rusage deltas, three 120 s windows on the live app (pid 35435, build with 57e3eb1 and 1b6d211), 34-40 minutes into a lock that began at 03:34:59; load average 1.4-2.1. Lifetime totals since its 03:35:42 launch, locked throughout.",
+  "windows": [
+   "pid 35435: 10.5 M instr/s, cpu 0.57% core, 2.9 wakeups/s (pkg idle 1.0), disk w 0.0 KB/s, footprint 28.8 MB, energy 0.8 mJ/s",
+   "pid 35435: 10.2 M instr/s, cpu 0.55% core, 2.9 wakeups/s (pkg idle 1.2), disk w 0.0 KB/s, footprint 28.8 MB, energy 0.8 mJ/s",
+   "pid 35435: 10.3 M instr/s, cpu 0.55% core, 2.9 wakeups/s (pkg idle 1.0), disk w 0.0 KB/s, footprint 28.8 MB, energy 0.8 mJ/s"
+  ],
+  "osd_helper": [
+   "pid 35493: 0.0 M instr/s, cpu 0.00% core, 0.0 wakeups/s (pkg idle 0.0), disk w 0.0 KB/s, footprint 1.7 MB, energy 0.0 mJ/s"
+  ],
+  "lifetime_at_39_5_minutes": {
+   "cpu_s": 15.82,
+   "instructions_g": 33.93,
+   "energy_j": 3.8,
+   "wakeups": 7081,
+   "disk_written_kb": 68.0,
+   "lifetime_max_footprint_mb": 62.1,
+   "footprint_mb": 28.9
+  }
+ },
+ "player_lookup_ab": {
+  "protocol": "player-lookup-probe.swift, swiftc -O, 16 rounds alternating old and new every 2 s, first sample of each dropped; load average 1.3.",
+  "result": [
+   "today: n=15, instructions median 10.15 M (range 10.09-10.33), time median 4.76 ms (range 2.00-7.51)",
+   "byid: n=15, instructions median 0.13 M (range 0.13-0.24), time median 0.43 ms (range 0.20-0.69)",
+   "result mismatches between the two lookups: 0"
+  ]
+ },
+ "root_reassign": {
+  "protocol": "root-reassign-harness.swift, debug build, offscreen; 50 reassignments per round with a no-op render between, 5 fresh hosting views per round.",
+  "result": [
+   "round 1: no-op render 0.05 M instr 0.078 ms | reassign + render 0.39 M instr 0.326 ms | fresh host + first render 25.2 M instr 7.43 ms",
+   "round 2: no-op render 0.05 M instr 0.076 ms | reassign + render 0.38 M instr 0.315 ms | fresh host + first render 23.7 M instr 7.82 ms",
+   "round 3: no-op render 0.07 M instr 0.072 ms | reassign + render 0.42 M instr 0.311 ms | fresh host + first render 23.9 M instr 7.79 ms"
+  ]
+ },
+ "agent_updates": {
+  "protocol": "agent-update-harness.swift, debug build, offscreen (CPU rendering); 3 working agents; 20 quiet 50 ms slices, then one update and 30-40 slices.",
+  "claude_style_records": [
+   "compact  timestamp only round 1: quiet 0.18 M per 50 ms; after one update 18.3 M over 1.5 s, busy for 1 slices (50 ms); first slices 9.8 0.2 0.2 0.2 0.2 0.2 0.2 0.2",
+   "compact  timestamp only round 2: quiet 0.18 M per 50 ms; after one update 14.2 M over 1.5 s, busy for 1 slices (50 ms); first slices 9.1 0.2 0.2 0.2 0.2 0.2 0.2 0.2",
+   "compact  timestamp only round 3: quiet 0.19 M per 50 ms; after one update 13.5 M over 1.5 s, busy for 1 slices (50 ms); first slices 8.4 0.2 0.2 0.2 0.2 0.2 0.2 0.2",
+   "compact  new tool text round 1: quiet 0.17 M per 50 ms; after one update 13.5 M over 1.5 s, busy for 1 slices (50 ms); first slices 8.4 0.2 0.2 0.2 0.2 0.2 0.2 0.2",
+   "compact  new tool text round 2: quiet 0.18 M per 50 ms; after one update 13.4 M over 1.5 s, busy for 1 slices (50 ms); first slices 8.3 0.2 0.2 0.2 0.2 0.2 0.2 0.2",
+   "compact  new tool text round 3: quiet 0.17 M per 50 ms; after one update 13.4 M over 1.5 s, busy for 1 slices (50 ms); first slices 8.4 0.2 0.2 0.2 0.2 0.2 0.2 0.2",
+   "expanded timestamp only round 1: quiet 0.20 M per 50 ms; after one update 14.4 M over 1.5 s, busy for 1 slices (50 ms); first slices 8.8 0.2 0.2 0.2 0.2 0.2 0.2 0.2",
+   "expanded timestamp only round 2: quiet 0.20 M per 50 ms; after one update 13.6 M over 1.5 s, busy for 1 slices (50 ms); first slices 8.0 0.2 0.2 0.2 0.2 0.2 0.2 0.2",
+   "expanded timestamp only round 3: quiet 0.20 M per 50 ms; after one update 13.8 M over 1.5 s, busy for 1 slices (50 ms); first slices 8.0 0.2 0.2 0.2 0.2 0.2 0.3 0.2",
+   "expanded new tool text round 1: quiet 0.20 M per 50 ms; after one update 13.6 M over 1.5 s, busy for 1 slices (50 ms); first slices 7.9 0.2 0.2 0.2 0.2 0.2 0.2 0.2",
+   "expanded new tool text round 2: quiet 0.19 M per 50 ms; after one update 13.6 M over 1.5 s, busy for 1 slices (50 ms); first slices 8.0 0.2 0.2 0.2 0.2 0.2 0.2 0.2",
+   "expanded new tool text round 3: quiet 0.20 M per 50 ms; after one update 13.7 M over 1.5 s, busy for 1 slices (50 ms); first slices 8.0 0.2 0.2 0.2 0.2 0.2 0.2 0.2"
+  ],
+  "progress_changes": [
+   "compact  new progress round 1: quiet 0.18 M per 50 ms; after one update 1742.2 M over 2 s, busy for 3 slices (150 ms); first slices 638.9 830.2 265.8 0.2 0.2 0.2 0.2 0.2 0.3 0.2 0.2 0.2",
+   "compact  new progress round 2: quiet 0.18 M per 50 ms; after one update 12122.4 M over 2 s, busy for 15 slices (750 ms); first slices 575.8 805.1 886.4 930.0 892.2 970.8 911.7 986.8 709.3 787.9 767.6 935.8",
+   "compact  new progress round 3: quiet 0.18 M per 50 ms; after one update 11868.6 M over 2 s, busy for 15 slices (750 ms); first slices 645.4 895.8 914.5 817.2 517.8 821.9 806.1 906.7 968.2 956.2 804.3 905.7",
+   "expanded new progress round 1: quiet 0.20 M per 50 ms; after one update 16.1 M over 2 s, busy for 1 slices (50 ms); first slices 8.3 0.2 0.2 0.2 0.2 0.2 0.2 0.2 0.2 0.2 0.2 0.2",
+   "expanded new progress round 2: quiet 0.20 M per 50 ms; after one update 16.2 M over 2 s, busy for 1 slices (50 ms); first slices 7.9 0.2 0.2 0.2 0.2 0.2 0.2 0.2 0.4 0.2 0.2 0.2",
+   "expanded new progress round 3: quiet 0.20 M per 50 ms; after one update 16.3 M over 2 s, busy for 1 slices (50 ms); first slices 8.6 0.2 0.2 0.2 0.2 0.2 0.2 0.2 0.2 0.2 0.2 0.2"
+  ]
+ },
+ "notification_mirror_scan_locked": "walk probe (read-only copy of readBanners): Notification Center had 0 windows while locked; one AX call per scan, median 0.57 ms. Not yet run unlocked."
+}
