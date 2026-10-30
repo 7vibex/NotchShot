@@ -574,5 +574,247 @@
    "pid_1696_cfnetwork_task_lines_8h": 6,
    "all_at": "15:53:07-15:53:08"
   }
+ },
+ "matched_series_2026_10_31": {
+  "protocol": "Release builds from build_app.sh, same signing team. Old = 59af292 with the Sources changes of 65fa6a1 (OSD check off main) and f966908 (media events, island refresh) reverse-applied (CDHash 68e595f3, built twice, identical). New = dist/ f966908 build (CDHash 0623c311). Mac locked throughout, Spotify running (pid 24530). Each phase: quit, swap bundles by rename, open; a warm-up launch of the old binary first; then 25 s settle and three 60 s proc_pid_rusage windows of NotchShot and Spotify at once. Order old/new alternating. Part 1 (23:50) stopped after old r2's second window when the Mac was unlocked; part 2 (00:18) ran three full pairs after a two-minute lock. Times from the unified log: process start = first xpcproxy line for the pid, launched = the app's 'launched' line, first media reply = first Apple Event reply.",
+  "launch_s": {
+   "old": [
+    {
+     "run": "p1 r1",
+     "start_to_launched": 0.269,
+     "to_first_media": 0.332,
+     "check_burst_before_launched_ms": 40
+    },
+    {
+     "run": "p1 r2",
+     "start_to_launched": 0.392,
+     "to_first_media": 0.463,
+     "check_burst_before_launched_ms": 139
+    },
+    {
+     "run": "p2 r1",
+     "start_to_launched": 0.245,
+     "to_first_media": 0.306,
+     "check_burst_before_launched_ms": 41
+    },
+    {
+     "run": "p2 r2",
+     "start_to_launched": 0.409,
+     "to_first_media": 0.472,
+     "check_burst_before_launched_ms": 144
+    },
+    {
+     "run": "p2 r3",
+     "start_to_launched": 0.432,
+     "to_first_media": 0.499,
+     "check_burst_before_launched_ms": 149
+    }
+   ],
+   "new": [
+    {
+     "run": "p1 r1",
+     "start_to_launched": 0.263,
+     "to_first_media": 0.33
+    },
+    {
+     "run": "p2 r1",
+     "start_to_launched": 0.253,
+     "to_first_media": 0.32
+    },
+    {
+     "run": "p2 r2",
+     "start_to_launched": 0.258,
+     "to_first_media": 0.32
+    },
+    {
+     "run": "p2 r3",
+     "start_to_launched": 0.253,
+     "to_first_media": 0.316
+    }
+   ],
+   "warmups_old_first_run": [
+    1.102,
+    1.074
+   ],
+   "signature_verify_events": "23 per launch in both builds. Old: 19 before 'launched' (7-9 logged on the main thread; the 17-event check burst runs before 'launched'). New: 2 before 'launched', the burst after it on worker threads, 2 events on main after it."
+  },
+  "apple_events_per_poll": {
+   "old": [
+    {
+     "run": "p1 r1",
+     "polls": 79,
+     "events": 10,
+     "ms": 127.1
+    },
+    {
+     "run": "p1 r2",
+     "polls": 80,
+     "events": 10,
+     "ms": 128.4
+    },
+    {
+     "run": "p2 r1",
+     "polls": 79,
+     "events": 10,
+     "ms": 129.1
+    },
+    {
+     "run": "p2 r2",
+     "polls": 79,
+     "events": 10,
+     "ms": 127.7
+    },
+    {
+     "run": "p2 r3",
+     "polls": 79,
+     "events": 10,
+     "ms": 127.6
+    }
+   ],
+   "new": [
+    {
+     "run": "p1 r1",
+     "polls": 82,
+     "events": 7,
+     "ms": 93.3
+    },
+    {
+     "run": "p2 r1",
+     "polls": 82,
+     "events": 7,
+     "ms": 94.3
+    },
+    {
+     "run": "p2 r2",
+     "polls": 81,
+     "events": 7,
+     "ms": 93.5
+    },
+    {
+     "run": "p2 r3",
+     "polls": 82,
+     "events": 7,
+     "ms": 94.7
+    }
+   ],
+   "spotify_reply_pacing": "After the first two events of a poll, each reply arrives about 16.5 ms after its send.",
+   "ms": "median per run, from a poll's first send to its last Apple Events line; the first and last poll of each 180 s span are dropped"
+  },
+  "rusage_60s_windows": {
+   "app_M_instr_per_s": {
+    "old": [
+     6.5,
+     6.5,
+     6.2,
+     6.4,
+     6.4,
+     6.7,
+     6.6,
+     6.3,
+     6.2,
+     6.3,
+     6.2,
+     6.2,
+     6.2,
+     6.2
+    ],
+    "new": [
+     5.7,
+     5.9,
+     5.7,
+     5.6,
+     5.6,
+     5.6,
+     5.6,
+     5.6,
+     5.6,
+     5.6,
+     5.8,
+     5.6
+    ]
+   },
+   "app_cpu_pct": {
+    "old": "0.51-0.54",
+    "new": "0.46-0.50"
+   },
+   "app_mJ_per_s": {
+    "old": "0.5-0.6",
+    "new": "0.4-0.5"
+   },
+   "app_wakeups_per_s": {
+    "old": "3.0-3.3",
+    "new": "2.9-3.2"
+   },
+   "spotify_M_instr_per_s": {
+    "old": [
+     6.6,
+     6.0,
+     9.5,
+     10.1,
+     9.6,
+     8.0,
+     5.7,
+     5.1,
+     5.5,
+     6.5,
+     4.8,
+     5.4,
+     4.8,
+     10.7
+    ],
+    "new": [
+     5.9,
+     5.4,
+     5.1,
+     4.6,
+     16.2,
+     8.9,
+     8.3,
+     4.5,
+     4.3,
+     5.5,
+     5.7,
+     6.3
+    ]
+   },
+   "spotify_cpu_pct": {
+    "old": "0.41-0.67",
+    "new": "0.37-0.58"
+   },
+   "dropped": "p1 old r2 third window (the Mac was unlocked during it)"
+  },
+  "memwatch_new_build_00_00_to_00_19": {
+   "process": "pid 33123 (new build, relaunched at 00:00:43 when part 1 stopped)",
+   "transitions": [
+    {
+     "time": "00:02:37",
+     "event": "lock",
+     "peak_mb": 82.9
+    },
+    {
+     "time": "00:04:54",
+     "event": "unlock",
+     "peak_mb": 81.8
+    },
+    {
+     "time": "00:08:02",
+     "event": "lock",
+     "peak_mb": 72.6
+    },
+    {
+     "time": "00:09:34",
+     "event": "unlock",
+     "peak_mb": 80.5
+    },
+    {
+     "time": "00:11:51",
+     "event": "lock",
+     "peak_mb": 73.1
+    }
+   ],
+   "settled_mb": "34.5-38.9 within 1-3 s of each",
+   "lifetime_max_mb": 84.5
+  },
+  "tests": "swift test --skip PasteboardRaceTests --skip idleClientsRecover: 1298 tests / 213 suites passed (with requestsPerTrackChange, 935dcab)"
  }
 }
