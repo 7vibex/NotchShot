@@ -10,7 +10,7 @@ Also fixed:
 - The 5 Hz brightness poll pauses while the session is locked, as it already did while displays sleep. While locked its readings could never reach the screen. In a probe, that poll cost 5.5–7 wakeups and 0.5–0.8 mJ a second.
 - Waiting for a child process could hang forever. `Process.waitUntilExit()` on a worker thread never returned in 13 of 568 probe runs, after the child had already exited. A full test run sat in the Terminal runner for five hours this way. The Terminal runner, archive extraction, the Bluetooth battery report and the Screen Recording reset now poll `isRunning` instead, and none of 384 probe runs hung.
 
-This pass measured the live app only with the screen locked, plus the code paths that state uses. It does not establish a whole-app speedup, a launch-time change, an unlocked idle number or a battery-life gain. The running app's after-numbers need a relaunch from `dist/` and were not taken.
+This pass profiled the live app twice with the screen locked and once unlocked with the user at the Mac, all on code from before these changes. It does not establish a whole-app speedup, a launch-time change or a battery-life gain. The running app's after-numbers need a rebuild of `dist/` and a relaunch, and were not taken.
 
 ## The live app, before
 
@@ -45,6 +45,22 @@ At 19:58 another session relaunched the app from a new `dist/` build. That build
 In a 10 s sample, the AI Activity refresh was 243 of 314 busy main-thread samples (77%). The rest was Crewline (15), the brightness poll (9), the presence poll (5), island refresh (5) and Notification Center removals (4). The bench puts the old scan at 145 M instructions per poll, about 64% of the 224 M instructions a second this process retired.
 
 This process never ran its Lock Screen branch. It started after the lock, and the window controller starts out assuming an unlocked session (see leads). So it ran the unlocked path while locked, which is how the removal requests below came to light.
+
+### Third profile, unlocked and in use
+
+At 02:20 on 30 October the screen was unlocked and the user was at the Mac: the time since the last input went from 23 s to 0 during the first window. This is still the 19:58 process, with none of this pass's changes. AI Activity was switched off in its settings by then (`notchshot.aiActivity = 0`), so its scan is not in these numbers. One 60 s window, then six 30 s windows:
+
+| Metric | Value |
+|---|---:|
+| CPU | 3.6% of one core (60 s window) |
+| Instructions | 32–46 M/s |
+| Energy | 5.6–7.5 mJ/s |
+| Wakeups | 12–37/s |
+| Physical footprint | 97.2 MB, flat for 3 minutes (peak since launch 227.6 MB) |
+
+In a 10 s sample, NotchShot's own code is about 1% of the main thread. The rest of the time is spent waiting. The largest busy items are the notification mirror's Accessibility scan, every 0.45 s (28–32 samples, on its own queue), the 5 Hz brightness poll (13–14) and the mouse monitors (9).
+
+The footprint is mostly heap: 74 MB of dirty `MALLOC_SMALL`. `heap` counts 38.2 MB of live allocations in 279,952 blocks, so about 36 MB is freed memory that malloc has not returned to the system since the 227.6 MB peak. What caused the peak is unknown. The live heap holds 5 MB of Swift metadata, about 3 MB of SF Symbol (CoreSVG) data and 893 `CFBundle` objects. A probe of the app launcher's `ApplicationCatalog.discover()` rules it out as the source of those bundles: it finds 102 apps, takes 229 ms cold and 9–10 ms warm, runs off the main thread, and keeps about 5 MB. The count is close to the 936 frameworks loaded into the process, and Core Foundation keeps one `CFBundle` per framework once something has asked for it. That is system state, not an app cache. **No change** to either.
 
 ## Results
 
@@ -183,6 +199,7 @@ The relaunch helper in `main.swift` waits on the main thread, and the bench harn
 - `swift test --filter "AIActivity|AI activity|AgentUsage"` (debug): 15 tests / 3 suites passed, including the listing-equivalence test.
 - `swift test --filter "ProcessExitTests|ProductivitySuiteTests|SystemUtilitiesTests|NotchMetricsTests|LockedMediaNotificationDeliveryTests|HistoryAndMediaTests"` (debug): 165 tests / 17 suites passed, including both Terminal runner tests and the new process-exit tests. Control: `ProcessExitTests` also passes 40 repetitions with `waitUntilExit()` restored, so the probe, not the tests, shows the race.
 - Full `swift test --skip PasteboardRaceTests --skip idleClientsRecover` (debug), with every change in this report: **1,277 tests / 209 suites passed** twice in a row (27 s and 24 s). The run before those had one failure: "An oversized answer is refused as it arrives" took 5.6 s against its 5 s bound under full-suite load, and it passes alone in 2.0 s. The run before that one is the five-hour Terminal runner hang described above. `PasteboardRaceTests` writes the system clipboard and was left unexecuted to protect user data. `idleClientsRecover` is a known flake under full-suite load.
+- `swift build -c release` of every product with every change in this report: built in 406 s, with no warnings in the changed files.
 - Release `NotchShotBench ai.activity` twice with instruction counters: every precondition held. The earlier full sweep completed every group.
 
 ## Coverage and leads
@@ -198,11 +215,11 @@ The relaunch helper in `main.swift` waits on the main thread, and the bench harn
 | Island refresh fan-out | Each Claude hook event refreshes the island twice, about 15 ms apart: once from `context.onSnapshotChange`, once from `observeIslandSources` → `scheduleIslandRefresh`. About 1 ms CPU per refresh while locked, and 5 of 314 busy samples in the second profile. **Not changed:** the unlocked cost (SwiftUI) isn't measurable with the screen locked, and refresh ordering is delicate. | Count refreshes per hook and measure CPU with the notch visible. A generation check taken in the observation's `onChange` could skip the redundant pass. |
 | Crewline unpaired retry | Keychain miss every 5 s on main. A warm miss costs 0.18 ms. **Rejected** as negligible. | — |
 | Network | No sockets or traffic in the relaunched app (`lsof`, `nettop`). Lyrics are opt-in and cached (40 entries), with in-flight de-duplication and 8 s / 12 s timeouts. Sparkle runs only in configured release builds. Reachability uses `NWPathMonitor`, which is event-driven. **No change.** | Traffic while lyrics are on and tracks change. |
-| Memory | The relaunched app stayed at 30.5–31.3 MB footprint for 25 minutes while locked. The first process was at 68 MB after 5 h (187 MB peak). **No change:** the growth was not reproduced. | Open/close cycles while unlocked, footprint before and after. |
+| Memory | The relaunched app stayed at 30.5–31.3 MB footprint for 25 minutes while locked. Unlocked and in use at 02:20 it was at 97.2 MB, flat over 3 minutes, with a 227.6 MB peak since launch. `heap`: 38.2 MB live; about 36 MB is freed small-zone memory not yet returned after the peak. The first process was at 68 MB after 5 h (187 MB peak). **No change:** no growth reproduced, and the peak's cause is unknown. | Open/close cycles while unlocked, footprint before and after; what drives the footprint past 200 MB. |
 | Launch | One launch observed, at 19:58, of a freshly built and signed binary: exec → WindowServer connection 0.85 s → notch panel 1.13 s → retention cleanups done 1.25 s. The logs don't account for the 0.85 s before AppKit; a first launch of a new 55 MB binary pays cold page-in and signature checks. Startup cleanups scale with the store (181 history rows, 176 captures here). History load at 5,000 rows is 100 ms, already tuned and fuzz-tested. **No change.** | Repeated warm launches. Blocked here: one GUI instance at a time, and a second instance would share sockets, hotkeys and the system-overlay lease. |
 | Opening/scrolling History, capture, clipboard, island engine | Full release sweep: search cache hit ~0, cold search 3–5 ms at 5,000 rows, record 6.9 ms, save 29 ms (off main), PNG encode 33 ms (detached), island sync/present ≤ 10 µs. **No change.** | On-screen scrolling and hitch traces. |
 | Rendering loops | Every SwiftUI `repeatForever` and `TimelineView(.animation)` loop in the notch is now a layer. Only 1 Hz countdowns and a 6 Hz Productivity view remain. **No change.** | — |
-| Unlocked steady state, size | Not measurable this session (screen locked, user away). | Unlocked idle and agent-active CPU/energy after the relaunch. |
+| Unlocked steady state, size | Measured once, on the old process, with the user at the Mac and AI Activity off: 3.6% of a core, 32–46 M instructions/s, 5.6–7.5 mJ/s, 12–37 wakeups/s. About 1% of the main thread is NotchShot code. The notification mirror's 0.45 s Accessibility scan is the largest piece (about 3 ms/s on its queue). It also has an `AXObserver`, so the scan might become event-driven, but that changes a polling policy and needs a product decision. **No change.** | The same windows on the new build after a relaunch; agent-active numbers with AI Activity on. |
 | Waiting for child processes | A five-hour hang in a full test run, sampled; probe with interleaved modes (13 of 568 old waits never returned, 0 of 384 polled); Foundation's exit path read from disassembly and a hung task's state word. **Fixed** at the four worker-thread sites; helper tests. The tests pass against the old wait too, so the probe is the evidence. | Whether the hang has shown up in the app: an "Extracting" spinner or a Terminal command that never finished. |
 
 ## Reproduction
