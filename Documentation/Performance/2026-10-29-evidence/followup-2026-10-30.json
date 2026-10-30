@@ -60,5 +60,68 @@
    "expanded new progress round 3: quiet 0.20 M per 50 ms; after one update 16.3 M over 2 s, busy for 1 slices (50 ms); first slices 8.6 0.2 0.2 0.2 0.2 0.2 0.2 0.2 0.2 0.2 0.2 0.2"
   ]
  },
- "notification_mirror_scan_locked": "walk probe (read-only copy of readBanners): Notification Center had 0 windows while locked; one AX call per scan, median 0.57 ms. Not yet run unlocked."
+ "notification_mirror_scan_locked": "walk probe (read-only copy of readBanners): Notification Center had 0 windows while locked; one AX call per scan, median 0.57 ms. Not yet run unlocked.",
+ "live_after_rebuild": {
+  "build": "8507f95, Scripts/build_app.sh --release, Apple Development identity, designated requirement unchanged",
+  "relaunched": "2026-10-30 12:52:34 +0100, session locked; first log line 'Starting with the session locked'",
+  "locked_new_build_pid_65032": {
+   "protocol": "proc_pid_rusage over 60 s windows, 20 s after launch, Spotify playing",
+   "windows": [
+    {
+     "time": "12:53:17",
+     "instr_M_per_s": 5.1,
+     "cpu_pct_core": 0.36,
+     "wakeups_per_s": 3.0,
+     "footprint_MB": 27.1,
+     "energy_mJ_per_s": 0.4
+    },
+    {
+     "time": "12:54:17",
+     "instr_M_per_s": 5.2,
+     "cpu_pct_core": 0.39,
+     "wakeups_per_s": 3.0,
+     "footprint_MB": 27.2,
+     "energy_mJ_per_s": 0.4
+    },
+    {
+     "time": "12:55:17",
+     "instr_M_per_s": 5.1,
+     "cpu_pct_core": 0.38,
+     "wakeups_per_s": 3.0,
+     "footprint_MB": 27.1,
+     "energy_mJ_per_s": 0.4
+    }
+   ]
+  },
+  "locked_old_build_pid_35435": {
+   "protocol": "same probe; 30 s window at 04:45 plus the 40-minute lock in long_lock",
+   "04:45_30s": {
+    "instr_M_per_s": 9.7,
+    "cpu_pct_core": 0.52,
+    "wakeups_per_s": 2.9,
+    "energy_mJ_per_s": 0.8,
+    "footprint_MB": 30.1
+   }
+  },
+  "main_thread_busy_samples_10s": {
+   "old_build": 38,
+   "old_build_player_lookup": 31,
+   "new_build": 13,
+   "new_build_total": 7691
+  },
+  "old_build_unlock_2026-10-30_12:35:21": {
+   "sample": "3 s from 0.28 s after unlock: main thread idle in 2586 of 2599 samples",
+   "artwork": "new HTTPS connection with the artwork session's 8 s / 12 s timeouts at +0.85 s; 5 of 5 unlocks seen",
+   "unlocked_rusage_180s": {
+    "n": 180,
+    "instr_M_per_s_mean": 21.3,
+    "instr_M_per_s_median": 17.4,
+    "instr_M_per_s_max": 150.9,
+    "cpu_pct_core_mean": 0.89,
+    "wakeups_per_s_mean": 16.0,
+    "energy_mJ_per_s_mean": 2.64
+   },
+   "hitch_trace": "xctrace Animation Hitches, attached, 90 s: recording ended but saving never finished (semaphore wait, 15 min); abandoned"
+  }
+ }
 }
