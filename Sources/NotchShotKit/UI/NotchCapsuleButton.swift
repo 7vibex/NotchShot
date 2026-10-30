@@ -3,7 +3,8 @@ import SwiftUI
 /// The island's one capsule button. `primary` is white with black text, the
 /// way the system marks the affirmative choice on a dark surface; `secondary`
 /// is a soft grey fill with no edge; `destructive` is the secondary capsule
-/// with red text.
+/// with red text; `quiet` is black with a hairline edge, for shortcuts that
+/// sit on the black band beside the camera and shouldn't read as grey pills.
 ///
 /// Every capsule on the island goes through this, so a notification's Reply,
 /// an agent run's Pause and the idle bar's Area shortcut are the same object
@@ -13,6 +14,7 @@ struct NotchCapsuleButton: View {
         case primary
         case secondary
         case destructive
+        case quiet
     }
 
     enum Size {
@@ -90,7 +92,12 @@ struct NotchCapsuleButton: View {
                 .padding(.horizontal, size.horizontalPadding)
                 .frame(maxWidth: expands ? .infinity : nil)
                 .frame(height: size.height)
-                .background(fill, in: Capsule(style: .continuous))
+                .background(fill, in: shape)
+                .overlay {
+                    if prominence == .quiet {
+                        shape.strokeBorder(Color.islandInk(NotchIsland.Ink.hairline), lineWidth: NotchIsland.Stroke.hairline)
+                    }
+                }
                 .modifier(CapsuleHitTarget(size: size))
         }
         .buttonStyle(NotchPressButtonStyle())
@@ -116,10 +123,17 @@ struct NotchCapsuleButton: View {
         }
     }
 
+    /// A hairline traced around a continuous capsule's flattened ends shows
+    /// them as two little upright ticks; the quiet capsule's edge is visible,
+    /// so it keeps round ends.
+    private var shape: Capsule {
+        Capsule(style: prominence == .quiet ? .circular : .continuous)
+    }
+
     private var foreground: Color {
         switch prominence {
         case .primary: .black
-        case .secondary: Color.islandInk(NotchIsland.Ink.primary)
+        case .secondary, .quiet: Color.islandInk(NotchIsland.Ink.primary)
         case .destructive: .red
         }
     }
@@ -130,6 +144,8 @@ struct NotchCapsuleButton: View {
             .white.opacity(isHovered ? 0.86 : 1)
         case .secondary, .destructive:
             Color.islandInk(isHovered ? NotchIsland.Surface.capsuleHover : NotchIsland.Surface.capsule)
+        case .quiet:
+            isHovered ? Color(white: NotchIsland.Surface.hover) : .black
         }
     }
 }

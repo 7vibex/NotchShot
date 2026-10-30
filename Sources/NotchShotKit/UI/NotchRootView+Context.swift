@@ -584,18 +584,27 @@ struct IdleContent: View {
 ///
 /// Compact capsules: the band is only as tall as the menu bar, and the
 /// regular 28 pt pair was wider than `NotchLayout.idlePeekWing`, so Area ran
-/// about 7 pt under the camera.
+/// about 7 pt under the camera. Quiet, so they sit on the black band rather
+/// than as two grey pills.
 struct IdleShortcutPair: View {
     var onArea: () -> Void
     var onRecord: () -> Void
 
     var body: some View {
         HStack(spacing: NotchIsland.Spacing.snug) {
-            NotchCapsuleButton("Area", systemImage: "square.dashed", size: .compact, help: "Capture an area", action: onArea)
+            NotchCapsuleButton(
+                "Area",
+                systemImage: "square.dashed",
+                prominence: .quiet,
+                size: .compact,
+                help: "Capture an area",
+                action: onArea
+            )
             NotchCapsuleButton(
                 "Record",
                 systemImage: "record.circle.fill",
                 iconTint: .red,
+                prominence: .quiet,
                 size: .compact,
                 help: "Record the screen",
                 action: onRecord
