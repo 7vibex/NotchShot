@@ -122,6 +122,114 @@
     "energy_mJ_per_s_mean": 2.64
    },
    "hitch_trace": "xctrace Animation Hitches, attached, 90 s: recording ended but saving never finished (semaphore wait, 15 min); abandoned"
+  },
+  "new_build_unlock_2026-10-30_13:51:50": {
+   "app_saw_unlock": "13:51:50.360",
+   "network_tasks_in_20s_after_unlock": 0,
+   "first_seconds_rusage": [
+    {
+     "time": "13:51:50",
+     "instr_M_per_s": 597.1,
+     "cpu_pct_core": 21.09,
+     "wakeups_per_s": 91.0,
+     "footprint_MB": 78.3,
+     "energy_mJ_per_s": 260.0
+    },
+    {
+     "time": "13:51:52",
+     "instr_M_per_s": 294.3,
+     "cpu_pct_core": 11.97,
+     "wakeups_per_s": 65.0,
+     "footprint_MB": 77.6,
+     "energy_mJ_per_s": 45.0
+    },
+    {
+     "time": "13:51:53",
+     "instr_M_per_s": 47.4,
+     "cpu_pct_core": 2.56,
+     "wakeups_per_s": 45.0,
+     "footprint_MB": 73.9,
+     "energy_mJ_per_s": 7.2
+    },
+    {
+     "time": "13:51:54",
+     "instr_M_per_s": 4.3,
+     "cpu_pct_core": 0.46,
+     "wakeups_per_s": 14.0,
+     "footprint_MB": 34.6,
+     "energy_mJ_per_s": 0.5
+    }
+   ],
+   "sample": "3 s from 0.95 s after unlock: main thread busy in 46 of 2563 samples",
+   "lock_2026-10-30_13:54:00": [
+    {
+     "time": "13:53:58",
+     "instr_M_per_s": 13.5,
+     "cpu_pct_core": 1.18,
+     "wakeups_per_s": 15.0,
+     "footprint_MB": 31.3,
+     "energy_mJ_per_s": 1.0
+    },
+    {
+     "time": "13:53:59",
+     "instr_M_per_s": 439.4,
+     "cpu_pct_core": 15.5,
+     "wakeups_per_s": 49.0,
+     "footprint_MB": 72.6,
+     "energy_mJ_per_s": 78.5
+    },
+    {
+     "time": "13:54:00",
+     "instr_M_per_s": 29.6,
+     "cpu_pct_core": 2.1,
+     "wakeups_per_s": 12.0,
+     "footprint_MB": 72.0,
+     "energy_mJ_per_s": 2.4
+    },
+    {
+     "time": "13:54:01",
+     "instr_M_per_s": 0.9,
+     "cpu_pct_core": 0.13,
+     "wakeups_per_s": 4.0,
+     "footprint_MB": 37.3,
+     "energy_mJ_per_s": 0.1
+    }
+   ],
+   "unlocked_idle_13:51:54-13:53:59": {
+    "n": 124,
+    "instr_M_per_s_mean": 11.1,
+    "instr_M_per_s_median": 9.6,
+    "cpu_pct_core_mean": 0.71,
+    "wakeups_per_s_mean": 13.5,
+    "energy_mJ_per_s_mean": 1.14
+   },
+   "hitch_trace": {
+    "window": "13:51:58.367-13:52:29.269 (30.9 s), Animation Hitches attached",
+    "hitches": 0,
+    "potential_hangs": 0,
+    "app_frame_updates": 0,
+    "displayed_surfaces": 201,
+    "time_profile_samples_ms": 252,
+    "note": "notch not used in the window"
+   },
+   "memwatch_30min": "never above 120 MB; lifetime max 79.0 MB"
+  },
+  "new_process_lifetime_at_14:30:23": {
+   "since": "12:52:26",
+   "seconds": 5877,
+   "cpu_s": 23.45,
+   "instructions_g": 37.58,
+   "energy_j": 4.55,
+   "wakeups": 18999,
+   "disk_written_kb": 144.0,
+   "lifetime_max_footprint_mb": 79.0,
+   "footprint_mb": 31.9
+  },
+  "locked_time_profile_20s_14:28": {
+   "samples_ms": 86,
+   "NotchShot.AppleScript": 57,
+   "NotchShot (workers)": 18,
+   "Main Thread": 11
   }
  }
 }
