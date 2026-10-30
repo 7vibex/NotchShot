@@ -41,12 +41,10 @@ enum SystemMediaKeyAction: Sendable, Equatable {
 /// consumes only the five hardware keys NotchShot can apply itself. A key whose
 /// write fails still reaches macOS.
 ///
-/// The tap lives on a thread of its own. WindowServer holds every covered event
-/// until a filtering tap answers, and switches the tap off when the answer is
-/// late; macOS then handles the key and draws its banner beside the notch. On
-/// the main run loop the answer waited behind everything else queued there:
-/// `CGGetEventTapList` showed 0.7 to 1 s per key on Oct 30, and once 17.6 s.
-/// Now the tap thread answers at once and the main actor applies the key after.
+/// The tap answers from a thread of its own (`EventTapThread`): a late answer
+/// switches the tap off, and macOS then handles the key and draws its banner
+/// beside the notch. The tap thread swallows the key at once and the main actor
+/// applies it after.
 @MainActor
 final class SystemMediaKeyInterceptor {
     var onKeyDown: ((SystemMediaKeyAction) -> Bool)?
@@ -56,7 +54,7 @@ final class SystemMediaKeyInterceptor {
     /// keys, until it is stopped. Every mutation below happens on the main
     /// actor; the deinit is the one other reader, and by then nothing else
     /// holds a reference.
-    private nonisolated(unsafe) var tap: MediaKeyTap?
+    private nonisolated(unsafe) var tap: EventTapThread?
 
     deinit {
         // Normal teardown goes through `stop()`; this is the backstop for any
@@ -95,7 +93,7 @@ final class SystemMediaKeyInterceptor {
         // Without post-event access a swallowed key can't be handed back to
         // macOS, so the tap thread must wait for the main actor's answer as
         // before; with it, the answer is immediate and a failure is replayed.
-        let answer: MediaKeyTap.Answer = canReplay
+        let answer: MediaKeyFilter.Answer = canReplay
             ? .immediately { [weak self] action, keyDown in
                 DispatchQueue.main.async {
                     MainActor.assumeIsolated {
@@ -109,7 +107,12 @@ final class SystemMediaKeyInterceptor {
                     MainActor.assumeIsolated { self?.onKeyDown?(action) == true }
                 }
             }
-        guard let tap = MediaKeyTap(answer: answer) else {
+        let filter = MediaKeyFilter(answer: answer)
+        guard let tap = EventTapThread(
+            name: "NotchShot.MediaKeyTap",
+            eventsOfInterest: CGEventMask(1) << systemDefinedCGEventType.rawValue,
+            filter: { filter.shouldSwallow($0, $1) }
+        ) else {
             Log.app.notice("Could not install the system media-key interception tap")
             return false
         }
@@ -165,12 +168,11 @@ struct ConsumedMediaKey: @unchecked Sendable {
     }
 }
 
-/// The event tap and the thread it runs on.
+/// Decides, on the tap thread, which events the media-key tap swallows.
 ///
-/// `@unchecked Sendable`: `port` is set once before the thread starts and then
-/// only read, and `consumedKeyTypes` is touched only by the tap callback, which
-/// always runs on the tap thread.
-private final class MediaKeyTap: @unchecked Sendable {
+/// `@unchecked Sendable`: `consumedKeyTypes` is touched only from
+/// `shouldSwallow`, which always runs on the tap thread.
+private final class MediaKeyFilter: @unchecked Sendable {
     enum Answer {
         /// Swallow the key now; the main actor applies it later.
         case immediately(@Sendable (SystemMediaKeyAction, ConsumedMediaKey) -> Void)
@@ -178,81 +180,24 @@ private final class MediaKeyTap: @unchecked Sendable {
         case afterMainActor(@Sendable (SystemMediaKeyAction) -> Bool)
     }
 
-    let answer: Answer
-    private(set) var port: CFMachPort?
+    private let answer: Answer
     private var consumedKeyTypes: Set<Int> = []
-    private let runLoopLock = NSLock()
-    /// Guarded by `runLoopLock`.
-    private var runLoop: CFRunLoop?
-    private var isStopped = false
 
-    init?(answer: Answer) {
+    init(answer: Answer) {
         self.answer = answer
-        let mask = CGEventMask(1) << systemDefinedCGEventType.rawValue
-        guard let port = CGEvent.tapCreate(
-            tap: .cgSessionEventTap,
-            place: .headInsertEventTap,
-            options: .defaultTap,
-            eventsOfInterest: mask,
-            callback: systemMediaKeyEventTapCallback,
-            userInfo: Unmanaged.passUnretained(self).toOpaque()
-        ) else { return nil }
-        self.port = port
-
-        // The thread's closure keeps `self` alive until its run loop ends, so
-        // the unretained pointer the callback receives stays valid.
-        let thread = Thread { [self] in run() }
-        thread.name = "NotchShot.MediaKeyTap"
-        thread.qualityOfService = .userInteractive
-        thread.start()
     }
 
-    deinit {
-        // Reached once the thread has ended, or if it never got its run loop
-        // source; invalidating twice is harmless.
-        if let port { CFMachPortInvalidate(port) }
-    }
-
-    private func run() {
-        guard let port,
-              let source = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, port, 0) else { return }
-        let current = CFRunLoopGetCurrent()
-        runLoopLock.lock()
-        if isStopped {
-            runLoopLock.unlock()
-            return
+    func shouldSwallow(_ type: CGEventType, _ event: CGEvent) -> Bool {
+        guard type == systemDefinedCGEventType,
+              event.getIntegerValueField(.eventSourceUserData) != ConsumedMediaKey.replayMarker,
+              let nsEvent = NSEvent(cgEvent: event),
+              nsEvent.subtype.rawValue == NX_SUBTYPE_AUX_CONTROL_BUTTONS else {
+            return false
         }
-        runLoop = current
-        runLoopLock.unlock()
-        CFRunLoopAddSource(current, source, .commonModes)
-        CGEvent.tapEnable(tap: port, enable: true)
-        CFRunLoopRun()
-    }
-
-    /// Invalidating the port removes its source from the tap thread's run loop;
-    /// stopping the run loop ends the thread even if something else was added.
-    func stop() {
-        if let port {
-            CGEvent.tapEnable(tap: port, enable: false)
-            CFMachPortInvalidate(port)
-        }
-        runLoopLock.lock()
-        isStopped = true
-        let runLoop = runLoop
-        runLoopLock.unlock()
-        if let runLoop { CFRunLoopStop(runLoop) }
-    }
-
-    fileprivate func reenableAfterSystemDisable() {
-        if let port { CGEvent.tapEnable(tap: port, enable: true) }
-    }
-
-    fileprivate func shouldConsume(_ event: CGEvent, keyType: Int, keyState: Int, modifierFlags: UInt) -> Bool {
+        let keyType = (nsEvent.data1 & 0xFFFF_0000) >> 16
+        let keyState = (nsEvent.data1 & 0x0000_FF00) >> 8
         if keyState == 0xA,
-           let action = SystemMediaKeyAction.action(
-               keyType: keyType,
-               modifierFlags: NSEvent.ModifierFlags(rawValue: modifierFlags)
-           ) {
+           let action = SystemMediaKeyAction.action(keyType: keyType, modifierFlags: nsEvent.modifierFlags) {
             let consumed: Bool
             switch answer {
             case .immediately(let deliver):
@@ -273,33 +218,4 @@ private final class MediaKeyTap: @unchecked Sendable {
         }
         return false
     }
-}
-
-private func systemMediaKeyEventTapCallback(
-    _ proxy: CGEventTapProxy,
-    _ type: CGEventType,
-    _ event: CGEvent,
-    _ userInfo: UnsafeMutableRawPointer?
-) -> Unmanaged<CGEvent>? {
-    guard let userInfo else { return Unmanaged.passUnretained(event) }
-    let tap = Unmanaged<MediaKeyTap>.fromOpaque(userInfo).takeUnretainedValue()
-    if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
-        tap.reenableAfterSystemDisable()
-        return Unmanaged.passUnretained(event)
-    }
-    guard type == systemDefinedCGEventType,
-          event.getIntegerValueField(.eventSourceUserData) != ConsumedMediaKey.replayMarker,
-          let nsEvent = NSEvent(cgEvent: event),
-          nsEvent.subtype.rawValue == NX_SUBTYPE_AUX_CONTROL_BUTTONS else {
-        return Unmanaged.passUnretained(event)
-    }
-    let keyType = (nsEvent.data1 & 0xFFFF_0000) >> 16
-    let keyState = (nsEvent.data1 & 0x0000_FF00) >> 8
-    let consume = tap.shouldConsume(
-        event,
-        keyType: keyType,
-        keyState: keyState,
-        modifierFlags: nsEvent.modifierFlags.rawValue
-    )
-    return consume ? nil : Unmanaged.passUnretained(event)
 }

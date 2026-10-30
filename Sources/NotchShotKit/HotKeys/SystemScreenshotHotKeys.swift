@@ -48,6 +48,12 @@ public final class SystemScreenshotHotKeys {
     private let isEnabled: ((Int32) -> Bool)?
     private let defaults: UserDefaults
     private let claimsKey = "notchshot.systemScreenshotHotKeyClaims.v1"
+    /// A second copy of the claims, outside the preferences domain. On Oct 30,
+    /// 2026 this Mac's NotchShot preferences lost several keys, the claims
+    /// among them, while ⇧⌘4 was still switched off. With no record, nothing
+    /// turned it back on, the take-over preference read as off, and ⇧⌘4 did
+    /// nothing at all. Either copy is enough to give a key back.
+    private let claimsFile: URL?
     /// Keys this app switched off, persisted so a crash cannot erase ownership.
     private var claimed: Set<SymbolicHotKey>
 
@@ -72,20 +78,23 @@ public final class SystemScreenshotHotKeys {
         } else {
             isEnabled = nil
         }
-        claimed = Self.loadClaims(from: defaults, key: claimsKey)
+        claimsFile = AppPaths.support.appendingPathComponent("System Shortcut Claims.json")
+        claimed = Self.loadClaims(from: defaults, key: claimsKey, file: claimsFile)
     }
 
     /// Test seam for the ownership and crash-recovery rules. Production always
     /// resolves the two SkyLight functions above at runtime.
     init(
         defaults: UserDefaults,
+        claimsFile: URL? = nil,
         setEnabled: ((Int32, Bool) -> Int32)?,
         isEnabled: ((Int32) -> Bool)?
     ) {
         self.defaults = defaults
+        self.claimsFile = claimsFile
         self.setEnabled = setEnabled
         self.isEnabled = isEnabled
-        claimed = Self.loadClaims(from: defaults, key: claimsKey)
+        claimed = Self.loadClaims(from: defaults, key: claimsKey, file: claimsFile)
     }
 
     /// Whether macOS currently owns this shortcut.
@@ -152,14 +161,30 @@ public final class SystemScreenshotHotKeys {
     }
 
     private func persistClaims() {
-        defaults.set(claimed.map(\.rawValue).sorted(), forKey: claimsKey)
+        let values = claimed.map(\.rawValue).sorted()
+        defaults.set(values, forKey: claimsKey)
+        guard let claimsFile else { return }
+        do {
+            try FileManager.default.createDirectory(
+                at: claimsFile.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+            try JSONEncoder().encode(values).write(to: claimsFile, options: .atomic)
+        } catch {
+            Log.app.error("Could not save the screenshot shortcut claims: \(error.localizedDescription)")
+        }
     }
 
     private static func loadClaims(
         from defaults: UserDefaults,
-        key: String
+        key: String,
+        file: URL?
     ) -> Set<SymbolicHotKey> {
-        let values = defaults.array(forKey: key) as? [Int] ?? []
+        var values = defaults.array(forKey: key) as? [Int] ?? []
+        if let file, let data = try? Data(contentsOf: file),
+           let stored = try? JSONDecoder().decode([Int].self, from: data) {
+            values += stored
+        }
         return Set(values.compactMap(SymbolicHotKey.init(rawValue:)))
     }
 }

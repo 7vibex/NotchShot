@@ -72,4 +72,33 @@ struct SystemIntegrationSafetyTests {
         #expect(system.enabled[28] == false)
         #expect(system.mutations.filter { $0.1 }.map(\.0) == [30])
     }
+
+    @Test("A claim survives the preferences being wiped")
+    func restoresClaimAfterPreferencesWipe() throws {
+        let file = FileManager.default.temporaryDirectory
+            .appendingPathComponent("notchshot-claims-\(UUID().uuidString)", isDirectory: true)
+            .appendingPathComponent("System Shortcut Claims.json")
+        defer { try? FileManager.default.removeItem(at: file.deletingLastPathComponent()) }
+        let system = FakeSymbolicHotKeys(enabled: [30: true])
+        SystemScreenshotHotKeys(
+            defaults: defaults(),
+            claimsFile: file,
+            setEnabled: system.set,
+            isEnabled: system.get
+        ).takeOver([.areaToFile])
+        #expect(system.enabled[30] == false)
+
+        // A fresh, empty defaults domain: the preferences copy is gone.
+        let controller = SystemScreenshotHotKeys(
+            defaults: defaults(),
+            claimsFile: file,
+            setEnabled: system.set,
+            isEnabled: system.get
+        )
+        controller.restoreAll()
+
+        #expect(system.enabled[30] == true)
+        let remaining = try JSONDecoder().decode([Int].self, from: Data(contentsOf: file))
+        #expect(remaining.isEmpty)
+    }
 }

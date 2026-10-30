@@ -25,14 +25,13 @@ public final class KeyboardCleaningController {
     @ObservationIgnored var onChange: (() -> Void)?
 
     /// See `SystemMediaKeyInterceptor.tap` for why this is unsafe.
-    @ObservationIgnored private nonisolated(unsafe) var eventTap: CFMachPort?
-    @ObservationIgnored private var runLoopSource: CFRunLoopSource?
+    @ObservationIgnored private nonisolated(unsafe) var eventTap: EventTapThread?
     @ObservationIgnored private var endTask: Task<Void, Never>?
 
     init() {}
 
     deinit {
-        if let eventTap { CFMachPortInvalidate(eventTap) }
+        eventTap?.stop()
     }
 
     public enum StartError: LocalizedError {
@@ -60,35 +59,28 @@ public final class KeyboardCleaningController {
             throw StartError.needsAccessibility
         }
         let mask = KeyboardCleaningPolicy.swallowedTypes.reduce(CGEventMask(0)) { $0 | (CGEventMask(1) << $1.rawValue) }
-        guard let tap = CGEvent.tapCreate(
-            tap: .cgSessionEventTap,
-            place: .headInsertEventTap,
-            options: .defaultTap,
+        // On its own thread, so a busy main thread can't make WindowServer
+        // switch the lock off mid-wipe and let key presses through.
+        guard let tap = EventTapThread(
+            name: "NotchShot.KeyboardCleaningTap",
             eventsOfInterest: mask,
-            callback: keyboardCleaningTapCallback,
-            userInfo: Unmanaged.passUnretained(self).toOpaque()
+            filter: { type, event in
+                let subtype = type == KeyboardCleaningPolicy.systemDefined
+                    ? NSEvent(cgEvent: event).map { Int($0.subtype.rawValue) }
+                    : nil
+                return KeyboardCleaningPolicy.swallows(type: type, systemDefinedSubtype: subtype)
+            }
         ) else {
             throw StartError.tapUnavailable
         }
-        let source = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0)
-        CFRunLoopAddSource(CFRunLoopGetMain(), source, .commonModes)
-        CGEvent.tapEnable(tap: tap, enable: true)
         eventTap = tap
-        runLoopSource = source
         schedule(end: now.addingTimeInterval(Self.duration))
     }
 
     public func stop() {
         endTask?.cancel()
         endTask = nil
-        if let runLoopSource {
-            CFRunLoopRemoveSource(CFRunLoopGetMain(), runLoopSource, .commonModes)
-        }
-        if let eventTap {
-            CGEvent.tapEnable(tap: eventTap, enable: false)
-            CFMachPortInvalidate(eventTap)
-        }
-        runLoopSource = nil
+        eventTap?.stop()
         eventTap = nil
         guard endsAt != nil else { return }
         endsAt = nil
@@ -109,10 +101,6 @@ public final class KeyboardCleaningController {
         }
         onChange?()
     }
-
-    fileprivate func reenableAfterSystemDisable() {
-        if let eventTap { CGEvent.tapEnable(tap: eventTap, enable: true) }
-    }
 }
 
 /// Which events the lock swallows.
@@ -131,25 +119,4 @@ enum KeyboardCleaningPolicy {
         default: false
         }
     }
-}
-
-private func keyboardCleaningTapCallback(
-    _ proxy: CGEventTapProxy,
-    _ type: CGEventType,
-    _ event: CGEvent,
-    _ userInfo: UnsafeMutableRawPointer?
-) -> Unmanaged<CGEvent>? {
-    if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
-        if let userInfo {
-            let controller = Unmanaged<KeyboardCleaningController>.fromOpaque(userInfo).takeUnretainedValue()
-            MainActor.assumeIsolated { controller.reenableAfterSystemDisable() }
-        }
-        return Unmanaged.passUnretained(event)
-    }
-    let subtype = type == KeyboardCleaningPolicy.systemDefined
-        ? NSEvent(cgEvent: event).map { Int($0.subtype.rawValue) }
-        : nil
-    return KeyboardCleaningPolicy.swallows(type: type, systemDefinedSubtype: subtype)
-        ? nil
-        : Unmanaged.passUnretained(event)
 }
