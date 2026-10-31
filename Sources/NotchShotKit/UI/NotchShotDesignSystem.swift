@@ -42,13 +42,24 @@ enum NotchActivityGlassPolicy {
 
 /// Optical rules for the compact display-only player shown over the wallpaper
 /// while loginwindow owns the secure Lock Screen.
+///
+/// The wallpaper is the media-rich backdrop Apple's clear Liquid Glass is
+/// meant for, so the card is that glass at full strength: no colour wash,
+/// no fade, and nothing drawn under it but a light dimming layer. Fading the
+/// glass flattened its lensing and rim, and anything painted beneath it (a
+/// shadow, a cover tint) is sampled through it and darkens the card.
 enum LockedNowPlayingGlassPolicy {
-    /// Even clear glass blurs a full-sized card at native strength. Composite
-    /// only the background at this opacity so wallpaper detail stays visible;
-    /// artwork, labels, and transport glyphs must remain fully opaque.
-    static let materialOpacity = 0.22
-    static let dimmingOpacity = 0.025
+    /// Black beneath the glass. The HIG asks for up to 35% over bright
+    /// content and none over dark. The card can't know which wallpaper it
+    /// sits on, so it takes a light share that still lifts white type off a
+    /// mid-tone wallpaper (relative luminance 0.35: 2.6:1, and about 3.8:1
+    /// once dimmed, by calculation) while the wallpaper stays plainly visible.
+    static let dimmingOpacity = 0.18
     static let highlightOpacity = 0.28
+    /// A soft shadow under the type and glyphs, which carries most of the
+    /// legibility on a see-through card.
+    static let foregroundShadowOpacity = 0.35
+    static let foregroundShadowRadius: CGFloat = 3
 
     static func usesLiquidGlass(
         reduceTransparency: Bool,
@@ -506,14 +517,17 @@ private struct NotchShotLockedNowPlayingSurfaceModifier: ViewModifier {
             content
                 // Contrast belongs to the foreground, rather than an opaque
                 // wash over the wallpaper. Keep this outside the glass layer.
-                .shadow(color: .black.opacity(0.32), radius: 1, y: 1)
+                .shadow(
+                    color: .black.opacity(LockedNowPlayingGlassPolicy.foregroundShadowOpacity),
+                    radius: LockedNowPlayingGlassPolicy.foregroundShadowRadius,
+                    y: 1
+                )
                 .background {
                     shape
                         .fill(.black.opacity(LockedNowPlayingGlassPolicy.dimmingOpacity))
                     shape
                         .fill(.clear)
                         .glassEffect(.clear, in: shape)
-                        .opacity(LockedNowPlayingGlassPolicy.materialOpacity)
                 }
                 .overlay { border(shape) }
         } else {

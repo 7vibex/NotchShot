@@ -113,7 +113,9 @@ struct DesignSystemTests {
             reduceTransparency: false,
             increaseContrast: false
         ))
-        #expect(LockedNowPlayingGlassPolicy.dimmingOpacity <= 0.08)
+        // The HIG's range for clear glass: some dimming, never past 35%.
+        #expect(LockedNowPlayingGlassPolicy.dimmingOpacity > 0)
+        #expect(LockedNowPlayingGlassPolicy.dimmingOpacity <= 0.35)
         #expect(!LockedNowPlayingGlassPolicy.usesLiquidGlass(
             reduceTransparency: true,
             increaseContrast: false
@@ -144,6 +146,8 @@ struct DesignSystemTests {
         #expect(designSystem.contains("LockedNowPlayingGlassPolicy.dimmingOpacity"))
         #expect(!designSystem.contains("LockedNowPlayingGlassPolicy.surfaceOpacity"))
         #expect(!designSystem.contains("LockedNowPlayingGlassPolicy.tintOpacity"))
+        // The glass is drawn at full strength, never faded.
+        #expect(!designSystem.contains("LockedNowPlayingGlassPolicy.materialOpacity"))
 
         let lockedCardURL = packageRoot.appending(
             path: "Sources/NotchShotKit/UI/LockedNowPlayingCard.swift"
@@ -153,6 +157,9 @@ struct DesignSystemTests {
         #expect(!lockedCard.contains("transportSymbol(\"shuffle\""))
         #expect(!lockedCard.contains("transportSymbol(\"heart.fill\""))
         #expect(lockedCard.contains(".allowsHitTesting(false)"))
+        // Nothing tints the glass from beneath: the wallpaper shows through.
+        #expect(!lockedCard.contains("MeshGradient("))
+        #expect(!lockedCard.contains("liquidBackdrop"))
         #expect(LockedNowPlayingLayout.artworkSize == 72)
         #expect(LockedNowPlayingLayout.artworkSize < LockedCardGeometry.preferredCardSize.height / 2)
         #expect(LockedNowPlayingLayout.cornerRadius == 30)

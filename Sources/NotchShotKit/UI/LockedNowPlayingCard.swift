@@ -3,20 +3,17 @@ import CoreAudio
 import Observation
 import SwiftUI
 
-/// The Lock Screen player: a Liquid Glass slab tinted by its own cover, with
-/// the cover large on the left, the names and live meter beside it, a thick
-/// progress line, and the transport centred beneath. Charging and the sung
-/// lyric line ride along when there is something to say.
+/// The Lock Screen player: a clear Liquid Glass slab the wallpaper shows
+/// through, with the cover large on the left, the names and live meter
+/// beside it, a thick progress line, and the transport centred beneath.
+/// Charging and the sung lyric line ride along when there is something to
+/// say.
 enum LockedNowPlayingLayout {
     static let cornerRadius: CGFloat = 30
     static let artworkSize: CGFloat = 72
     static let artworkCornerRadius: CGFloat = 16
     static let titleSize: CGFloat = 17
     static let artistSize: CGFloat = 13
-    /// How far the cover's colours spread through the glass. Enough to tint
-    /// it like the cover is under the glass; not so much it washes out the
-    /// white type.
-    static let backdropOpacity: Double = 0.62
 }
 
 /// The compact, display-only Now Playing surface drawn over loginwindow.
@@ -112,10 +109,6 @@ struct LockedNowPlayingPresentation: View {
             cardSize.height / LockedCardGeometry.preferredCardSize.height)
     }
 
-    private var shape: RoundedRectangle {
-        RoundedRectangle(cornerRadius: LockedNowPlayingLayout.cornerRadius, style: .continuous)
-    }
-
     private var card: some View {
         VStack(spacing: 0) {
             header
@@ -130,49 +123,18 @@ struct LockedNowPlayingPresentation: View {
         .padding(.top, 18)
         .padding(.bottom, 12)
         .frame(width: LockedCardGeometry.preferredCardSize.width, height: LockedCardGeometry.preferredCardSize.height)
-        .background { if !reduceTransparency { liquidBackdrop } }
+        // Nothing goes under the glass but its dimming layer: a cover tint
+        // or a drop shadow there is seen through it and darkens the card.
         .notchShotLockedNowPlayingSurface(
             cornerRadius: LockedNowPlayingLayout.cornerRadius,
             reduceTransparency: reduceTransparency
         )
-        // The cover's colour leaks past the edge a little, like light
-        // through coloured glass. Static: it changes only with the track.
-        .shadow(color: accent.opacity(reduceTransparency ? 0 : 0.34), radius: 26, y: 8)
-        .shadow(color: .black.opacity(reduceTransparency ? 0.24 : 0.12), radius: 12, y: 5)
-    }
-
-    /// The cover, blown up and blurred into the glass so the whole slab takes
-    /// its colours. Drawn once per track; nothing here moves.
-    @ViewBuilder
-    private var liquidBackdrop: some View {
-        ZStack {
-            if let artwork, let colors = LockedBackdropField.colors(for: artwork) {
-                // The cover reduced to a 3×3 grid of its colours and drawn
-                // as a mesh gradient: a smooth field of its palette rather
-                // than a blurred copy of its shapes, with no blur to render.
-                MeshGradient(
-                    width: LockedBackdropField.grid,
-                    height: LockedBackdropField.grid,
-                    points: LockedBackdropField.points,
-                    colors: colors
-                )
-                .saturation(1.4)
-                .opacity(LockedNowPlayingLayout.backdropOpacity)
-            } else {
-                accent.opacity(0.28)
-            }
-            // Keeps the lower half, where the controls sit, readable.
-            LinearGradient(
-                colors: [.clear, .black.opacity(0.28)],
-                startPoint: .top,
-                endPoint: .bottom
-            )
-        }
-        .frame(width: LockedCardGeometry.preferredCardSize.width, height: LockedCardGeometry.preferredCardSize.height)
-        .clipShape(shape)
-        .id(artwork.map(ObjectIdentifier.init))
-        .transition(.opacity.animation(.easeInOut(duration: 0.4)))
-        .accessibilityHidden(true)
+        // The opaque fallback still needs lifting off the wallpaper.
+        .shadow(
+            color: .black.opacity(reduceTransparency ? 0.24 : 0),
+            radius: reduceTransparency ? 12 : 0,
+            y: reduceTransparency ? 5 : 0
+        )
     }
 
     private var header: some View {
@@ -190,7 +152,7 @@ struct LockedNowPlayingPresentation: View {
 
                 Text(LockedNowPlayingPresentationPolicy.subtitle(snapshot))
                     .font(.system(size: LockedNowPlayingLayout.artistSize, weight: .regular))
-                    .foregroundStyle(.white.opacity(0.68))
+                    .foregroundStyle(.white.opacity(0.78))
                     .lineLimit(1)
                     .minimumScaleFactor(0.85)
 
@@ -264,7 +226,7 @@ struct LockedNowPlayingPresentation: View {
             GeometryReader { geometry in
                 ZStack(alignment: .leading) {
                     Capsule()
-                        .fill(.white.opacity(0.22))
+                        .fill(.white.opacity(0.3))
                     Capsule()
                         .fill(.white.opacity(0.92))
                         .frame(width: max(6, geometry.size.width * fraction))
@@ -307,7 +269,7 @@ struct LockedNowPlayingPresentation: View {
     private func timeLabel(_ value: TimeInterval?, countdown: Bool = false) -> some View {
         Text((countdown && value != nil ? "-" : "") + Self.formatted(value))
             .font(.system(size: 11, weight: .semibold, design: .rounded))
-            .foregroundStyle(.white.opacity(0.62))
+            .foregroundStyle(.white.opacity(0.75))
             .monospacedDigit()
     }
 
@@ -333,50 +295,6 @@ struct LockedNowPlayingPresentation: View {
 
     private static func formatted(_ value: TimeInterval?) -> String {
         MediaTimePolicy.formatted(value)
-    }
-}
-
-/// The cover reduced to a 3×3 grid of colours, once per cover, for the
-/// mesh gradient behind the Lock Screen player. Only the current cover's is
-/// kept.
-@MainActor
-enum LockedBackdropField {
-    static let grid = 3
-    static let points: [SIMD2<Float>] = [
-        [0, 0], [0.5, 0], [1, 0],
-        [0, 0.5], [0.5, 0.5], [1, 0.5],
-        [0, 1], [0.5, 1], [1, 1],
-    ]
-    private static var cached: (key: ObjectIdentifier, colors: [Color])?
-
-    static func colors(for artwork: NSImage) -> [Color]? {
-        let key = ObjectIdentifier(artwork)
-        if let cached, cached.key == key { return cached.colors }
-        guard let source = artwork.cgImage(forProposedRect: nil, context: nil, hints: nil),
-              let space = CGColorSpace(name: CGColorSpace.sRGB) else { return nil }
-        var pixels = [UInt8](repeating: 0, count: grid * grid * 4)
-        let drawn = pixels.withUnsafeMutableBytes { buffer -> Bool in
-            guard let context = CGContext(
-                data: buffer.baseAddress, width: grid, height: grid, bitsPerComponent: 8,
-                bytesPerRow: grid * 4, space: space,
-                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
-            ) else { return false }
-            context.interpolationQuality = .medium
-            context.draw(source, in: CGRect(x: 0, y: 0, width: grid, height: grid))
-            return true
-        }
-        guard drawn else { return nil }
-        // Bitmap rows run top to bottom, which is the mesh's order too.
-        let colors = (0..<(grid * grid)).map { index in
-            Color(
-                .sRGB,
-                red: Double(pixels[index * 4]) / 255,
-                green: Double(pixels[index * 4 + 1]) / 255,
-                blue: Double(pixels[index * 4 + 2]) / 255
-            )
-        }
-        cached = (key, colors)
-        return colors
     }
 }
 
