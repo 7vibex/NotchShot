@@ -944,5 +944,48 @@
    "hosts": "lrclib.net resolves to 104.21.13.116 and 172.67.167.238 (Cloudflare); i.scdn.co to 213.216.115.x"
   },
   "notch_use": "User answered 'Yes, now' at 12:26 but nobody was at the Mac (HID idle 168 s); two 30 s Animation Hitches attaches hung in 'Stopping recording' and were killed, and their 9.3 GB of kernel traces deleted. A passive footprint watch waits for the next activity at the Mac."
+ },
+ "evening_2026_10_31": {
+  "presence": "18:29: CGSSessionScreenIsLocked 1, HIDIdleTime 12,749 s, built-in display asleep; the 4 h footprint watch ended with nobody at the Mac.",
+  "hitch_recordings_attached_to_live_app_pid_58103": {
+   "15s_time_limit": {
+    "wall_s": 53,
+    "saved": true,
+    "ktrace_bytes": 1970545688,
+    "trace_mb": 201
+   },
+   "20s_time_limit_test_cycle": {
+    "wall_s": 73,
+    "saved": true,
+    "ktrace_removed": true
+   },
+   "window_10s_stopped_at_40s": {
+    "ktrace_bytes_at_10_20_30_40s": [
+     2453495808,
+     3553976328,
+     4919537672,
+     7044554760
+    ],
+    "trace_mb": 670,
+    "total_wall_s": 156,
+    "save_wall_s_approx": 115
+   },
+   "ktrace_holder": "the recording's own DTServiceHub (PPID 1, Xcode); kill -TERM released it",
+   "tables_for_NotchShot": {
+    "hitches": 0,
+    "hitches-updates": 0,
+    "hang-risks": 0,
+    "potential-hangs": 0
+   }
+  },
+  "locked_idle_app": {
+   "footprint_mb": 33.7,
+   "lifetime_max_mb": 82.0,
+   "M_instr_s": 10.0,
+   "wakeups_s": 4.0,
+   "mJ_s": 0.8
+  },
+  "progress_change_bound": "By inference, not measured: app share <= offscreen 26-30 M instructions per change; digits are IslandClockText (on screen 21 Oct: 2.3 M instr/s for a 1 Hz call clock); agent rim adds a 0.35 s CA strokeEnd ease on two layers in the render server. Locked stack shows no transfers or agents, so a direct on-screen check needs the Mac unlocked.",
+  "watcher": "usewatch3: waits for unlocked + HID idle < 5 s, 15 min footprint watch, up to three 20 s Animation Hitches traces started at pointer-at-notch (notch-hover-wait.swift), >= 15 GB free, kernel trace deleted after each, hitch-summary.py per trace."
  }
 }
