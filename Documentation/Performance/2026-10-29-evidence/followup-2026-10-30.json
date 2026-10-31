@@ -1083,6 +1083,46 @@
    "settled_wakeups_s": "14-15",
    "burst_kinds": "23:54:04 just after unlock; 00:05:42 pointer at the notch (traced); 23:56:35 and 00:05:35 with the pointer away from the notch; 00:08:28 while the watcher was saving the trace (pointer not checked); causes not recorded"
   },
-  "decision": "No change: key-window change is AppKit/SwiftUI focus handling; whole-view render is diffuse; slow renders are the glass. One recording, under the recording's own load, missing the open."
+  "decision": "No change: key-window change is AppKit/SwiftUI focus handling; whole-view render is diffuse; the two slow renders are display-wide and not attributable. One recording, under the recording's own load, missing the open."
+ },
+ "notch_closed_2026_11_01": {
+  "session": "user at the unlocked Mac from 00:18:16; pointer at the notch 00:21:05 without an open; audio out on built-in speakers since 00:13:14 (coreaudiod assertion); pid 58103",
+  "trace": {
+   "trigger_to_saved_s": 63,
+   "duration_s": 20,
+   "ktrace_removed": true
+  },
+  "hitches_filed_under_NotchShot": {
+   "count": 124,
+   "total_ms": 2366.6,
+   "max_ms": 83.3,
+   "between_12_and_16_s": 110
+  },
+  "display_frames_per_second": {
+   "0-5": "1-10",
+   "6": 54,
+   "9-11": "1-3",
+   "12-15": "56-57 (WebKit GPU label at 13-15 s)",
+   "16-20": "32-48"
+  },
+  "render_ms_per_s_12_to_16": "212-327",
+  "gpu_ms_per_s_12_to_16": "53-225",
+  "notchshot_updates": {
+   "count": 32,
+   "total_ms": 5.4,
+   "max_ms": 1.13
+  },
+  "notchshot_cpu": {
+   "total_ms": 244,
+   "window_s": 21,
+   "main_ms": 157,
+   "applescript_thread_ms": 55,
+   "brightness_read_ms": 56,
+   "spotify_poll_ms": 54,
+   "notification_mirror_ms": 20
+  },
+  "footprint_mb": 41.6,
+  "note": "hitches-renders and displayed-surfaces-interval are display-wide; only surface labels attribute frames; the hitch table names the attached process regardless",
+  "decision": "No change"
  }
 }
