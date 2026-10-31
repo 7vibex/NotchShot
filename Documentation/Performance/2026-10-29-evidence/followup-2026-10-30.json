@@ -987,5 +987,102 @@
   },
   "progress_change_bound": "By inference, not measured: app share <= offscreen 26-30 M instructions per change; digits are IslandClockText (on screen 21 Oct: 2.3 M instr/s for a 1 Hz call clock); agent rim adds a 0.35 s CA strokeEnd ease on two layers in the render server. Locked stack shows no transfers or agents, so a direct on-screen check needs the Mac unlocked.",
   "watcher": "usewatch3: waits for unlocked + HID idle < 5 s, 15 min footprint watch, up to three 20 s Animation Hitches traces started at pointer-at-notch (notch-hover-wait.swift), >= 15 GB free, kernel trace deleted after each, hitch-summary.py per trace."
+ },
+ "notch_use_2026_11_01": {
+  "session": "user at the unlocked Mac 23:54:03 to ~00:09; pointer at the notch once, 00:05:41; pid 58103 (457acc3 build); built-in display, 60 Hz",
+  "trace": {
+   "start": "00:05:43.688",
+   "duration_s": 20.867,
+   "size_mb": 517,
+   "ktrace_removed": true,
+   "trigger_to_saved_s": 112
+  },
+  "hitches": {
+   "count": 12,
+   "total_ms": 250.0,
+   "one_frame": 9,
+   "two_frame": 3,
+   "within_first_s": 7.0,
+   "attribution": {
+    "outside_app_main_idle": 8,
+    "main_thread": 2,
+    "render_server": 2
+   },
+   "main_thread_detail": [
+    "3.73 s: 34.22 ms potential interaction delay, mouse-down -> panel becomes key -> NSHostingView._windowChangedKeyState, updateEnvironment, focus responders, tooltip tracking; no NotchShot frames",
+    "4.54-4.60 s: 19 samples of CA commit -> NSHostingView.layout -> ViewGraphRootValueUpdater.render; NotchRootView.body 3 samples"
+   ],
+   "render_server_detail": [
+    "0.91 s: render 25.7 ms, gpu 2.4 ms, expensive render",
+    "6.96 s: render 31.3 ms, gpu 22.4 ms, expensive render and GPU work"
+   ],
+   "outside_app_detail": "main thread 0-4 ms sampled in the 50 ms before, renders 1.0-6.5 ms, app update 0.1-0.6 ms or none"
+  },
+  "frames": {
+   "app_updates": 128,
+   "update_ms": {
+    "median": 2.79,
+    "p90": 6.02,
+    "max": 13.09
+   },
+   "renders": 777,
+   "render_ms": {
+    "median": 0.95,
+    "p90": 5.22,
+    "max": 31.27
+   },
+   "frame_lifetime_ms_median": {
+    "normal": 16.1,
+    "hitch": 45.4
+   }
+  },
+  "main_thread_cpu_ms_0_to_7_5s": 535,
+  "footprint_watch": {
+   "bursts": [
+    [
+     "23:54:04",
+     81.8,
+     378.4
+    ],
+    [
+     "23:56:35",
+     85.7,
+     406.6
+    ],
+    [
+     "00:05:35",
+     78.8,
+     347.6
+    ],
+    [
+     "00:05:42",
+     110.6,
+     1612.7
+    ],
+    [
+     "00:08:28",
+     103.6,
+     750.6
+    ]
+   ],
+   "burst_columns": [
+    "time",
+    "max_sampled_mb",
+    "max_M_instr_s"
+   ],
+   "lifetime_max_mb": {
+    "before": 86.7,
+    "after": 122.5
+   },
+   "settled_mb": "38.3-41.8",
+   "settled_M_instr_s": "3.3-19.3",
+   "settled_mJ_s": "0.3-1.9",
+   "first_settled_mb": 38.5,
+   "last_mb": 41.4,
+   "open_burst_mJ_s": 501.6,
+   "settled_wakeups_s": "14-15",
+   "burst_kinds": "23:54:04 just after unlock; 00:05:42 pointer at the notch (traced); 23:56:35 and 00:05:35 with the pointer away from the notch; 00:08:28 while the watcher was saving the trace (pointer not checked); causes not recorded"
+  },
+  "decision": "No change: key-window change is AppKit/SwiftUI focus handling; whole-view render is diffuse; slow renders are the glass. One recording, under the recording's own load, missing the open."
  }
 }
