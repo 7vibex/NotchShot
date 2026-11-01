@@ -1290,7 +1290,13 @@
    },
    "gap": "background page kept WindowServer busy; cost on an otherwise static screen unmeasured",
    "decision": "No change",
-   "still_screen_attempt": "blocked: Safari WebKit processes drew at 13-23% of a core from 02:07 to 03:05; a watcher waiting for three quiet 5 s checks gave up after 28 minutes. The screen also locked with the display off at 02:36:06 (CGDisplayIsAsleep 1, CGSSessionScreenIsLocked 1 at 03:14), so any run after that would not have been on screen. Second watcher (armed 03:24, needs awake + unlocked + 75 s without input + no probe/build): ready at 07:30:56; three 10-minute waits found WebKit at 68-78 cs per 5 s (14-16% of a core), five more were cut short when the screen stopped qualifying; display off 08:54:34; gave up at 15:24:46. Its caffeinate -d kept the unlocked display on from 07:31 while it waited."
+   "still_screen_attempt": "blocked: Safari WebKit processes drew at 13-23% of a core from 02:07 to 03:05; a watcher waiting for three quiet 5 s checks gave up after 28 minutes. The screen also locked with the display off at 02:36:06 (CGDisplayIsAsleep 1, CGSSessionScreenIsLocked 1 at 03:14), so any run after that would not have been on screen. Second watcher (armed 03:24, needs awake + unlocked + 75 s without input + no probe/build): ready at 07:30:56; three 10-minute waits found WebKit at 68-78 cs per 5 s (14-16% of a core), five more were cut short when the screen stopped qualifying; display off 08:54:34; gave up at 15:24:46. Its caffeinate -d kept the unlocked display on from 07:31 while it waited. Third watcher (rim-still-watch, 24 h, caffeinate only during the rounds): 23:58:52 screen ready but WebKit at 159 cs per 5 s; stopped on 2 November around 00:30, before any run, when every on-screen probe was stopped at the user's request.",
+   "unmeasured_lead": {
+    "observation": "LayerProgressRimView.glide() adds one linear strokeEnd CABasicAnimation over the rest of the song, with no preferredFrameRateRange; the built-in display is a fixed 60 Hz (NSScreen maximumFramesPerSecond 60, refresh interval 1/60 s)",
+    "arithmetic": "probe line: 220 pt, 0.3 to 1 over 200 s = 0.77 pt/s = 1.54 px/s at 2x, so about 39 display frames per pixel moved",
+    "candidate": "preferredFrameRateRange on that animation, preferred and maximum = ceil(2 x pixels per second) clamped to 1...60, minimum 1: about half a pixel a step (4 fps in the probe); the 0.35 s ease is left alone",
+    "status": "applied in a scratch copy behind PROBE_RIM_CAP=1 and checked to take effect ('glide capped at 4.0 fps for 1.54 px/s'); not measured, since it needs the still screen above; not in the repo"
+   }
   },
   "open_frame_breakdown": {
    "setup": "PROBE_FADE=ramp in every variant; 3 interleaved repeats x 2 rounds x 5 cycles; scratch-build switches remove CaptureMenuContent and/or NotchTabBar",
