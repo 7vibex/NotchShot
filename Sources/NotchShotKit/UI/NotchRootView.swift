@@ -425,15 +425,11 @@ public struct NotchRootView: View {
                     cutsOut: shellIsSeeThrough
                 ))
         }
-        // Caps Lock or the song, along the closed island's edge. Outside the
-        // clip, so the glow can spill onto the menu bar.
+        // The song or an agent's progress, along the closed island's edge.
+        // Outside the clip, so the line's glow can spill onto the menu bar.
         .overlay(alignment: .top) {
             ZStack {
                 switch rimKind {
-                case .capsLock:
-                    NotchCapsLockRim(shape: shape)
-                        .frame(width: layout.size.width, height: layout.size.height)
-                        .transition(.opacity)
                 case .songProgress:
                     NotchSongProgressRim(media: coordinator.media, bottomRadius: layout.cornerRadius)
                         .frame(width: layout.size.width, height: layout.size.height + NotchRimPolicy.bleed)
@@ -651,8 +647,6 @@ public struct NotchRootView: View {
             isOpen: effectiveActivity.isExpanded || isTargetedForDrop
                 || baseLayout.size.height
                     > max(context.metrics.notchSize.height, NotchIsland.Geometry.compactHeight) + 1,
-            isCapsLockOn: coordinator.isCapsLockOn,
-            showsCapsLockGlow: extras.showsCapsLock && extras.showsCapsLockGlow,
             isShowingCompactPlayer: isCompactPlayer,
             showsSongProgress: extras.showsSongProgressRim,
             isShowingAgentProgress: isAgentWorking,

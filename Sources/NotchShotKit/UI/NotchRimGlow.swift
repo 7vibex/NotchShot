@@ -2,10 +2,8 @@ import AppKit
 import QuartzCore
 import SwiftUI
 
-/// What the closed island's edge is showing. Caps Lock wins over the song:
-/// it is the one that changes what the next keystroke types.
+/// What the closed island's edge is showing.
 enum NotchRimKind: Equatable {
-    case capsLock
     case songProgress
     /// An agent's reported progress, step by step, on the closed island.
     case agentProgress
@@ -14,15 +12,12 @@ enum NotchRimKind: Equatable {
 enum NotchRimPolicy {
     static func kind(
         isOpen: Bool,
-        isCapsLockOn: Bool,
-        showsCapsLockGlow: Bool,
         isShowingCompactPlayer: Bool,
         showsSongProgress: Bool,
         isShowingAgentProgress: Bool = false,
         showsAgentProgress: Bool = true
     ) -> NotchRimKind? {
         guard !isOpen else { return nil }
-        if isCapsLockOn, showsCapsLockGlow { return .capsLock }
         if isShowingCompactPlayer, showsSongProgress { return .songProgress }
         if isShowingAgentProgress, showsAgentProgress { return .agentProgress }
         return nil
@@ -31,36 +26,6 @@ enum NotchRimPolicy {
     /// How far below the shell the rim may draw: room for the glow's soft
     /// edge on the menu bar.
     static let bleed: CGFloat = 6
-}
-
-/// A soft green light around the closed notch while Caps Lock is on, the
-/// way the key's own light stays lit. Static, so it costs nothing once drawn;
-/// faded out over the top half so it never lines the top of the screen.
-struct NotchCapsLockRim: View {
-    var shape: NotchShape
-
-    var body: some View {
-        ZStack {
-            shape
-                .stroke(Color.green.opacity(0.55), lineWidth: 5)
-                .blur(radius: 4)
-            shape
-                .stroke(Color.green, lineWidth: 1.5)
-        }
-        .mask {
-            LinearGradient(
-                stops: [
-                    .init(color: .clear, location: 0),
-                    .init(color: .white, location: 0.55),
-                ],
-                startPoint: .top,
-                endPoint: .bottom
-            )
-            .padding(-NotchRimPolicy.bleed)
-        }
-        .allowsHitTesting(false)
-        .accessibilityHidden(true)
-    }
 }
 
 /// The song's progress as a thin white line along the closed player's bottom

@@ -82,22 +82,22 @@ struct IslandMotionPassTests {
     @Test("An agent's progress takes the closed edge only when nothing outranks it")
     func agentRim() {
         #expect(NotchRimPolicy.kind(
-            isOpen: false, isCapsLockOn: false, showsCapsLockGlow: true,
+            isOpen: false,
             isShowingCompactPlayer: false, showsSongProgress: true,
             isShowingAgentProgress: true, showsAgentProgress: true
         ) == .agentProgress)
         #expect(NotchRimPolicy.kind(
-            isOpen: false, isCapsLockOn: true, showsCapsLockGlow: true,
-            isShowingCompactPlayer: false, showsSongProgress: true,
+            isOpen: false,
+            isShowingCompactPlayer: true, showsSongProgress: true,
             isShowingAgentProgress: true, showsAgentProgress: true
-        ) == .capsLock)
+        ) == .songProgress)
         #expect(NotchRimPolicy.kind(
-            isOpen: false, isCapsLockOn: false, showsCapsLockGlow: true,
+            isOpen: false,
             isShowingCompactPlayer: false, showsSongProgress: true,
             isShowingAgentProgress: true, showsAgentProgress: false
         ) == nil)
         #expect(NotchRimPolicy.kind(
-            isOpen: true, isCapsLockOn: false, showsCapsLockGlow: true,
+            isOpen: true,
             isShowingCompactPlayer: false, showsSongProgress: true,
             isShowingAgentProgress: true, showsAgentProgress: true
         ) == nil)

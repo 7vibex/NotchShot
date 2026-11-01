@@ -85,9 +85,6 @@ public final class ExtrasPreferences {
     /// A burst with the new language when the keyboard input source changes.
     /// Only shown when more than one layout is enabled.
     public var showsInputSource = true { didSet { write(showsInputSource, "inputSource") } }
-    /// A soft green light around the closed notch for as long as Caps Lock
-    /// is on. Needs `showsCapsLock`, which watches the key.
-    public var showsCapsLockGlow = true { didSet { write(showsCapsLockGlow, "capsLockGlow") } }
 
     // MARK: Network and accessories
 
@@ -205,7 +202,6 @@ public final class ExtrasPreferences {
         idleAnimationFileName = defaults.string(forKey: key("idleAnimation"))
         showsCapsLock = bool("capsLock", true)
         showsInputSource = bool("inputSource", true)
-        showsCapsLockGlow = bool("capsLockGlow", true)
         showsDownloads = bool("downloads", true)
         showsArtworkGlow = bool("artworkGlow", true)
         dimsArtworkWhenPaused = bool("dimPausedArtwork", true)

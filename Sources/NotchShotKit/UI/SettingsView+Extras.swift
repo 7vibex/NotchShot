@@ -203,10 +203,8 @@ struct ExtrasSettings: View {
 
             Section("Keyboard") {
                 Toggle("Caps Lock in the notch", isOn: $extras.showsCapsLock)
-                Toggle("Glow around the notch while Caps Lock is on", isOn: $extras.showsCapsLockGlow)
-                    .disabled(!extras.showsCapsLock)
                 Toggle("Keyboard language changes", isOn: $extras.showsInputSource)
-                Text("A short burst when Caps Lock turns on or off, or when you switch input source, and a soft green edge on the closed notch for as long as Caps Lock stays on. Language bursts appear only with more than one keyboard layout.")
+                Text("A short burst when Caps Lock turns on or off, or when you switch input source. Language bursts appear only with more than one keyboard layout.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 if !preferences.multipleActivitiesEnabled {

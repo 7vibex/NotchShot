@@ -103,23 +103,19 @@ struct IslandPolishTests {
         #expect(filledWidth(afterFineStep) > 80)
     }
 
-    @Test("Caps Lock outranks the song on the closed notch's edge, and an open notch shows neither")
+    @Test("The closed player's edge shows the song, and an open notch shows nothing")
     func rimPriority() {
         #expect(NotchRimPolicy.kind(
-            isOpen: false, isCapsLockOn: true, showsCapsLockGlow: true,
-            isShowingCompactPlayer: true, showsSongProgress: true
-        ) == .capsLock)
-        #expect(NotchRimPolicy.kind(
-            isOpen: false, isCapsLockOn: true, showsCapsLockGlow: false,
-            isShowingCompactPlayer: true, showsSongProgress: true
+            isOpen: false, isShowingCompactPlayer: true, showsSongProgress: true
         ) == .songProgress)
         #expect(NotchRimPolicy.kind(
-            isOpen: false, isCapsLockOn: false, showsCapsLockGlow: true,
-            isShowingCompactPlayer: false, showsSongProgress: true
+            isOpen: false, isShowingCompactPlayer: true, showsSongProgress: false
         ) == nil)
         #expect(NotchRimPolicy.kind(
-            isOpen: true, isCapsLockOn: true, showsCapsLockGlow: true,
-            isShowingCompactPlayer: true, showsSongProgress: true
+            isOpen: false, isShowingCompactPlayer: false, showsSongProgress: true
+        ) == nil)
+        #expect(NotchRimPolicy.kind(
+            isOpen: true, isShowingCompactPlayer: true, showsSongProgress: true
         ) == nil)
     }
 
