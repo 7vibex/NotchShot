@@ -1401,7 +1401,7 @@
   },
   "staged_capture_menu": {
    "change": "IslandStagedSlot builds the capture menu 17 ms after it is inserted, into a clear placeholder, when it arrives (step 0, not Reduce Motion); its arrival waits 60 ms, so it is invisible until then",
-   "setup": "IslandProbe stall 30 2: background thread pings the main queue every 1 ms and keeps waits over 4 ms; longest wait in the 400 ms after each toggle; screen locked with the display off (since 02:36:06); binaries built from HEAD's NotchRootView.swift and IslandMotion.swift (head), staging state in the root view (stage), and the kept slot view (slot); 3 interleaved repeats x 2 rounds x 10 opens",
+   "setup": "IslandProbe stall 30 2: background thread pings the main queue every 1 ms and keeps waits over 4 ms; longest wait in the 400 ms after each toggle; screen locked with the display off (since 02:36:06)",
    "run_3_way": {
     "head": {
      "opens_over_16_7_ms_per_10": [
@@ -1528,7 +1528,8 @@
       true,
       true
      ]
-    }
+    },
+    "slot_withdrawn": true
    },
    "run_head_vs_first_version": {
     "head": {
@@ -1617,22 +1618,108 @@
     }
    },
    "summary": {
-    "opens_over_one_frame": {
-     "head": "47 of 60",
-     "stage": "20 of 60",
-     "slot_kept": "15 of 60",
-     "earlier_pair": "52 -> 19 of 60"
-    },
-    "paired_instruction_delta_vs_head": {
-     "stage": "+25 to +71 M (+3.5%)",
-     "slot_kept": "+23 to +66 M (+2.9%)"
-    },
-    "close_waits": "40-260 ms in every build; unexplained, the profile has nothing of 14 ms or more at the close; left out",
-    "validity": "the open's view update and layer commit run on the main thread with the display off; HEAD's open medians (19.8-25.4 ms) match the 19-28 ms open frame profiled on screen. The windows_visible flag is not evidence on a locked, dark screen (see live_fade)"
+    "opens_over_one_frame": "45 of 80 -> 23 of 80; fewer in 7 of 8 paired rounds, equal in 1",
+    "open_median_ms": "15.4-25.9 -> 10.6-17.8",
+    "open_max_ms": "20.8-60.0 -> 19.0-28.9",
+    "paired_instruction_delta": "+16 to +59 M per cycle, +2.6%, positive in all 8 pairs",
+    "earlier_runs": "head vs first version (state in the root view): 52 -> 19 and 47 -> 20 of 60, +3.9% and +3.5%; that binary was not re-checked",
+    "withdrawn": "run_3_way slot binary: built 03:12 while another session had PROBE_FADE=mask and PROBE_SCREEN switches in the shared mirror; and run_3_way head rep 1 overlapped that session's hold runs",
+    "close_waits": "39-260 ms in every build; unexplained, the profile has nothing of 14 ms or more at the close; left out",
+    "validity": "the open's view update and layer commit run on the main thread with the display off; HEAD's open medians are close to the 19-28 ms open frame profiled on screen"
    },
    "gap": "frames on screen and a visual check of the open menu need the display on and the Mac unlocked",
-   "decision": "Changed (kept the slot view)",
-   "live_build": "pid 32356, relaunched 03:30:25 from the 03:30:00 dist build of 6228537 (nm: 134 IslandStagedSlot symbols); Keep Awake was off; screen locked, display asleep; seen_open: false"
+   "decision": "Changed",
+   "live_build": "pid 32356, relaunched 03:30:25 from the 03:30:00 dist build of 6228537 (nm: 134 IslandStagedSlot symbols); Keep Awake was off; screen locked, display asleep; seen_open: false",
+   "run_clean": {
+    "builds": "headc: HEAD's (b463d29) NotchRootView.swift and IslandMotion.swift, byte-identical to the 03:00 head binary; final: 6228537. Mirror Sources cmp-equal to the repo's otherwise",
+    "protocol": "4 interleaved repeats x 2 rounds x 10 opens, 03:35:53-03:44:41; no other IslandProbe process before or during any run",
+    "results": {
+     "headc": {
+      "opens_over_16_7_ms_per_10": [
+       8,
+       6,
+       7,
+       5,
+       6,
+       5,
+       6,
+       2
+      ],
+      "open_median_ms": [
+       20.9,
+       25.9,
+       20.0,
+       16.9,
+       19.1,
+       19.4,
+       19.3,
+       15.4
+      ],
+      "open_max_ms": [
+       60.0,
+       28.2,
+       37.8,
+       27.8,
+       38.1,
+       27.4,
+       37.3,
+       20.8
+      ],
+      "m_instructions_per_cycle": [
+       1276.0,
+       1217.6,
+       1256.5,
+       1216.8,
+       1257.3,
+       1227.9,
+       1237.5,
+       1224.7
+      ]
+     },
+     "final": {
+      "opens_over_16_7_ms_per_10": [
+       6,
+       1,
+       4,
+       1,
+       2,
+       4,
+       3,
+       2
+      ],
+      "open_median_ms": [
+       17.8,
+       11.5,
+       13.0,
+       11.2,
+       11.5,
+       16.6,
+       13.2,
+       10.6
+      ],
+      "open_max_ms": [
+       28.9,
+       19.0,
+       22.6,
+       21.0,
+       28.3,
+       20.8,
+       28.5,
+       20.5
+      ],
+      "m_instructions_per_cycle": [
+       1297.4,
+       1247.3,
+       1272.5,
+       1260.5,
+       1280.8,
+       1264.1,
+       1296.2,
+       1254.8
+      ]
+     }
+    }
+   }
   }
  }
 }
