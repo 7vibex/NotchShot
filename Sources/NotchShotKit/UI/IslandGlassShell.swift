@@ -80,15 +80,25 @@ enum IslandGlassPolicy {
             - (floorOpacityRange.upperBound - floorOpacityRange.lowerBound) * level
     }
 
-    /// The black's opacity from the top of the shell down to `fade.end`.
-    static func stops(for fade: Fade) -> [Gradient.Stop] {
-        guard fade.end > 0 else { return [.init(color: .clear, location: 0)] }
-        let solid = min(1, max(0, fade.start / fade.end))
+    /// How far the ramp reaches up into the solid black, in points. The black
+    /// above it is a separate fill that stops halfway into this overlap, so
+    /// their two antialiased edges never meet and leave a seam.
+    static let rampOverlap: CGFloat = 8
+
+    /// The black's opacity down the ramp, which is `rampOverlap + fadeLength`
+    /// tall with its top at `fade.start - rampOverlap`: solid for the overlap,
+    /// then eased out along `fadeCurve`. It never changes, so the ramp is
+    /// drawn once and only moves as the shell springs.
+    static let rampStops: [Gradient.Stop] = {
+        let length = rampOverlap + fadeLength
         let last = Double(fadeCurve.count - 1)
         return [.init(color: .black, location: 0)] + fadeCurve.enumerated().map { index, opacity in
-            .init(color: .black.opacity(opacity), location: solid + (1 - solid) * Double(index) / last)
+            .init(
+                color: .black.opacity(opacity),
+                location: (rampOverlap + fadeLength * Double(index) / last) / length
+            )
         }
-    }
+    }()
 
     /// Whether the shell is currently see-through, so the shadow carrier
     /// behind it must not show black through the glass.
@@ -135,16 +145,24 @@ struct IslandShellFill<S: Shape>: View {
                         floorOpacity: IslandGlassPolicy.floorOpacity(level: preferences.islandGlassLevel)
                     )
                     // Drawn over the glass, not under it, so the top is true
-                    // black rather than glass refracting black.
-                    shape.fill(.black)
-                        .mask(alignment: .top) {
-                            LinearGradient(
-                                stops: IslandGlassPolicy.stops(for: fade),
-                                startPoint: .top,
-                                endPoint: .bottom
-                            )
-                            .frame(height: fade.end)
-                        }
+                    // black rather than glass refracting black. The ramp keeps
+                    // one size and only moves with the shell: a gradient sized
+                    // to the shell, masking a black fill, was drawn again on
+                    // the CPU on every frame of the spring. Both span the
+                    // shell's width, as that mask did; the island's clip
+                    // shapes them.
+                    ZStack(alignment: .top) {
+                        Color.black
+                            .frame(height: max(0, fade.start - IslandGlassPolicy.rampOverlap / 2))
+                        LinearGradient(
+                            stops: IslandGlassPolicy.rampStops,
+                            startPoint: .top,
+                            endPoint: .bottom
+                        )
+                        .frame(height: IslandGlassPolicy.rampOverlap + IslandGlassPolicy.fadeLength)
+                        .offset(y: fade.start - IslandGlassPolicy.rampOverlap)
+                    }
+                    .frame(maxHeight: .infinity, alignment: .top)
                     // Closed, the notch must read as hardware. Fading this
                     // layer (rather than swapping views) lets the glass
                     // appear on the shell's own spring.

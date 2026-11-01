@@ -1124,5 +1124,172 @@
   "footprint_mb": 41.6,
   "note": "hitches-renders and displayed-surfaces-interval are display-wide; only surface labels attribute frames; the hitch table names the attached process regardless",
   "decision": "No change"
+ },
+ "on_screen_probe_2026_11_01": {
+  "setup": "island-probe.swift: real NotchRootView/AppCoordinator from a release library build, borderless windows bottom-left, glass on, coordinator never started; 60 Hz display; a background Safari page (WebKit 17% of a core) held WindowServer at 38-40%",
+  "open_close": {
+   "closed_missed_frames": 0,
+   "closed_m_instructions_per_3s": "21-23",
+   "baseline_m_instructions_per_cycle": "1227-1315",
+   "baseline_missed_frames_per_5_cycles": "4-10",
+   "longest_gap_ms": "33-46",
+   "profile": {
+    "open_burst_ms": "19-28, one per cycle at the open, none >= 14 ms at the close",
+    "burst_split": "view graph build and layout ~60%, CA commit ~23%, NotchShot code < 3%",
+    "layer_display_samples": 176,
+    "cpu_gradient_shading_samples": 104
+   },
+   "fade_variants_m_instructions_per_cycle": {
+    "mask_before": "1227-1315 (missed 87 in 60 cycles)",
+    "none_control": "1076-1143",
+    "solid_control": "1113-1125",
+    "plain_gradient": "1244-1327 (missed 43 in 30)",
+    "ca_gradient_layer": "1118-1212 (missed 94 in 60)",
+    "one_size_ramp": "1125-1206 (missed 48 in 30)"
+   },
+   "openclose_3_interleaved_repeats_of_8_cycles": {
+    "mask_before": {
+     "m_instructions_per_cycle": [
+      1258.1,
+      1264.6,
+      1264.9
+     ],
+     "app_mj_per_s": [
+      81.04,
+      78.48,
+      71.37
+     ],
+     "windowserver_pct": [
+      40.04,
+      40.45,
+      38.75
+     ]
+    },
+    "ramp_after": {
+     "m_instructions_per_cycle": [
+      1152.3,
+      1153.2,
+      1151.0
+     ],
+     "app_mj_per_s": [
+      74.21,
+      73.61,
+      66.49
+     ],
+     "windowserver_pct": [
+      40.89,
+      40.01,
+      40.48
+     ]
+    },
+    "ca_gradient_layer": {
+     "m_instructions_per_cycle": [
+      1147.3,
+      1151.4,
+      1149.8
+     ],
+     "app_mj_per_s": [
+      71.45,
+      73.38,
+      68.54
+     ],
+     "windowserver_pct": [
+      39.31,
+      40.71,
+      37.63
+     ]
+    }
+   },
+   "missed_frames_same_bench_30_cycles": {
+    "mask_before": 47,
+    "ramp_after": 48,
+    "ca_gradient_layer": 46
+   },
+   "screenshot_diff_vs_mask": {
+    "ramp": {
+     "pixels_over_3_levels": 98,
+     "max_level_diff": 23
+    },
+    "ca_gradient_layer": {
+     "pixels_over_3_levels": 314,
+     "max_level_diff": 59
+    },
+    "total_pixels": 1382400,
+    "region": "lower part of the fade only; top identical"
+   },
+   "decision": "Fade: changed to a one-size ramp (-8.7% instructions per cycle, stutter unchanged). Open frame: no change (design decision)."
+  },
+  "progress_change": {
+   "cadence": "one agent update a second, 20 s phases, 4 interleaved rounds",
+   "percent_m_instr_per_s": [
+    15.53,
+    11.56,
+    8.7,
+    8.51
+   ],
+   "timestamp_only_m_instr_per_s": [
+    10.08,
+    9.53,
+    14.37,
+    8.76
+   ],
+   "idle_m_instr_per_s": [
+    0.12,
+    0.05,
+    2.65,
+    0.07
+   ],
+   "windowserver_pct": {
+    "percent": "24.6-29.8",
+    "timestamp": "23.4-37.5",
+    "note": "a video was playing"
+   },
+   "screenshot": "15% -> 25% with the agent rim",
+   "decision": "No change"
+  },
+  "song_line": {
+   "phases": "6 interleaved rounds of 4 x 20 s",
+   "app_m_instr_per_s": "0.01-0.05",
+   "windowserver_pct": {
+    "neither": [
+     38.2,
+     39.83,
+     39.03,
+     37.58,
+     39.65,
+     38.09
+    ],
+    "line_glides": [
+     39.2,
+     38.7,
+     38.26,
+     39.57,
+     39.27,
+     39.19
+    ],
+    "meter_only": [
+     39.73,
+     39.32,
+     39.62,
+     39.71,
+     39.54,
+     39.79
+    ],
+    "both": [
+     39.57,
+     39.4,
+     39.86,
+     40.03,
+     39.98,
+     39.78
+    ]
+   },
+   "paired_delta_points": {
+    "line": "+0.3 (SE 0.5)",
+    "meter": "+0.9 (SE 0.4)"
+   },
+   "gap": "background page kept WindowServer busy; cost on an otherwise static screen unmeasured",
+   "decision": "No change"
+  }
  }
 }

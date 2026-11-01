@@ -51,11 +51,33 @@ struct IslandGlassPolicyTests {
         #expect(curve.last == 0)
         #expect(zip(curve, curve.dropFirst()).allSatisfy { $0 > $1 })
 
-        let fade = IslandGlassPolicy.fade(bandHeight: band, shellHeight: height)
-        let locations = IslandGlassPolicy.stops(for: fade).map(\.location)
+        let locations = IslandGlassPolicy.rampStops.map(\.location)
         #expect(locations.first == 0)
-        #expect(locations.last == 1)
+        #expect(abs((locations.last ?? 0) - 1) < 0.000_001)
         #expect(zip(locations, locations.dropFirst()).allSatisfy { $0 <= $1 })
+    }
+
+    /// The ramp has one size and only moves with the shell, so where its
+    /// stops land must still follow the fade at every shell height: black down
+    /// to `fade.start`, then the curve spread evenly over `fadeLength`.
+    @Test func theRampFollowsTheFadeAtEveryHeight() {
+        let overlap = IslandGlassPolicy.rampOverlap
+        let length = overlap + IslandGlassPolicy.fadeLength
+        let stops = IslandGlassPolicy.rampStops
+        let curve = IslandGlassPolicy.fadeCurve
+        #expect(stops.count == curve.count + 1)
+        for shellHeight: CGFloat in [64, 160, 260, 440] {
+            let fade = IslandGlassPolicy.fade(bandHeight: band, shellHeight: shellHeight)
+            let rampTop = fade.start - overlap
+            for index in curve.indices {
+                let expected = fade.start + IslandGlassPolicy.fadeLength * CGFloat(index) / CGFloat(curve.count - 1)
+                #expect(abs(rampTop + stops[index + 1].location * length - expected) < 0.001)
+            }
+        }
+        // The solid black above stops inside the ramp's solid top, so no
+        // seam shows between them.
+        #expect(overlap > 0)
+        #expect(stops[1].location * length >= overlap / 2)
     }
 
     @Test func higherLevelsShowMoreOfTheDesktop() {
