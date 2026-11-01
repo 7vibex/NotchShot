@@ -1290,7 +1290,7 @@
    },
    "gap": "background page kept WindowServer busy; cost on an otherwise static screen unmeasured",
    "decision": "No change",
-   "still_screen_attempt": "blocked: background Safari WebKit process at 15-23% of a core from 02:07 to 02:32"
+   "still_screen_attempt": "blocked: Safari WebKit processes drew at 13-23% of a core from 02:07 to 03:05; a watcher waiting for three quiet 5 s checks gave up after 28 minutes"
   },
   "open_frame_breakdown": {
    "setup": "PROBE_FADE=ramp in every variant; 3 interleaved repeats x 2 rounds x 5 cycles; scratch-build switches remove CaptureMenuContent and/or NotchTabBar",
