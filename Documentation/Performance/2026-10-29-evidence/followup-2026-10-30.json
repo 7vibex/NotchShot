@@ -1634,9 +1634,9 @@
     "close_waits": "39-260 ms in every build; unexplained, the profile has nothing of 14 ms or more at the close; left out",
     "validity": "the open's view update and layer commit run on the main thread with the display off; HEAD's open medians are close to the 19-28 ms open frame profiled on screen"
    },
-   "gap": "frames on screen and a visual check of the open menu need the display on and the Mac unlocked",
+   "gap": "nobody has watched the menu arrive on the real notch; the probe counts frames, not how the arrival looks",
    "decision": "Changed",
-   "live_build": "pid 32356, relaunched 03:30:25 from the 03:30:00 dist build of 6228537 (nm: 134 IslandStagedSlot symbols); Keep Awake was off; screen locked, display asleep; seen_open: false",
+   "live_build": "pid 32356, relaunched 03:30:25 from the 03:30:00 dist build of 6228537 (nm: 134 IslandStagedSlot symbols); Keep Awake was off; screen locked, display asleep; seen_open: not checked",
    "run_clean": {
     "builds": "headc: HEAD's (b463d29) NotchRootView.swift and IslandMotion.swift, byte-identical to the 03:00 head binary; final: 6228537. Mirror Sources cmp-equal to the repo's otherwise",
     "protocol": "4 interleaved repeats x 2 rounds x 10 opens, 03:35:53-03:44:41; no other IslandProbe process before or during any run",
@@ -1725,6 +1725,162 @@
        1254.8
       ]
      }
+    }
+   },
+   "run_on_screen": {
+    "builds": "the same headc and final binaries as run_clean",
+    "protocol": "IslandProbe pacing 15 2 per run (two rounds of a closed 15 s phase and 5 open-and-close cycles, display-link gaps over 1.5 frames count as missed), each pair one run of each build, alternating which went first; 60 Hz (16.7 ms frames); display awake and unlocked; a pair started only after 75 s without input, twice 20 s apart, with no other probe, Swift build, xctrace or other session's watcher step running, and was thrown away if input arrived (2 pairs, 23:59 and 00:01) or another IslandProbe process appeared (8 pairs, 07:42-08:39, while another session built and ran its probe)",
+    "pairs": [
+     {
+      "kept": "2026-11-01 08:39:26",
+      "order": [
+       "headc",
+       "final"
+      ],
+      "webkit_cs_per_s": 15,
+      "headc": {
+       "missed_frames_per_round": [
+        5,
+        7
+       ],
+       "longest_gap_ms": [
+        35.7,
+        41.3
+       ],
+       "m_instructions_per_cycle": [
+        1343.8,
+        1286.5
+       ]
+      },
+      "final": {
+       "missed_frames_per_round": [
+        6,
+        4
+       ],
+       "longest_gap_ms": [
+        42.6,
+        37.7
+       ],
+       "m_instructions_per_cycle": [
+        1403.3,
+        1332.6
+       ]
+      }
+     },
+     {
+      "kept": "2026-11-02 00:06:37",
+      "order": [
+       "final",
+       "headc"
+      ],
+      "webkit_cs_per_s": 25,
+      "final": {
+       "missed_frames_per_round": [
+        5,
+        3
+       ],
+       "longest_gap_ms": [
+        33.5,
+        33.3
+       ],
+       "m_instructions_per_cycle": [
+        1236.8,
+        1198.9
+       ]
+      },
+      "headc": {
+       "missed_frames_per_round": [
+        5,
+        7
+       ],
+       "longest_gap_ms": [
+        33.3,
+        33.3
+       ],
+       "m_instructions_per_cycle": [
+        1182.8,
+        1126.1
+       ]
+      }
+     },
+     {
+      "kept": "2026-11-02 00:08:48",
+      "order": [
+       "headc",
+       "final"
+      ],
+      "webkit_cs_per_s": 25,
+      "headc": {
+       "missed_frames_per_round": [
+        4,
+        4
+       ],
+       "longest_gap_ms": [
+        35.8,
+        37.5
+       ],
+       "m_instructions_per_cycle": [
+        1217.4,
+        1157.0
+       ]
+      },
+      "final": {
+       "missed_frames_per_round": [
+        3,
+        3
+       ],
+       "longest_gap_ms": [
+        33.3,
+        33.3
+       ],
+       "m_instructions_per_cycle": [
+        1262.2,
+        1194.5
+       ]
+      }
+     },
+     {
+      "kept": "2026-11-02 00:11:00",
+      "order": [
+       "final",
+       "headc"
+      ],
+      "webkit_cs_per_s": 25,
+      "final": {
+       "missed_frames_per_round": [
+        1,
+        4
+       ],
+       "longest_gap_ms": [
+        33.3,
+        33.3
+       ],
+       "m_instructions_per_cycle": [
+        1252.7,
+        1192.5
+       ]
+      },
+      "headc": {
+       "missed_frames_per_round": [
+        6,
+        7
+       ],
+       "longest_gap_ms": [
+        36.6,
+        44.2
+       ],
+       "m_instructions_per_cycle": [
+        1182.2,
+        1128.6
+       ]
+      }
+     }
+    ],
+    "closed_phases": "0 missed frames in all 16, 20.8-21.4 M instructions per cycle in both builds",
+    "summary": {
+     "missed_frames_in_40_cycles": "45 -> 29; fewer in all 4 pairs (12->10, 12->8, 8->6, 13->5)",
+     "longest_gap_per_run_ms": "33.3-44.2 -> 33.3-42.6",
+     "paired_instruction_delta": "+41 to +67 M per cycle, mean +56 M, +4.7%, positive in all 4 pairs"
     }
    }
   }

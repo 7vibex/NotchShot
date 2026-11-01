@@ -371,8 +371,8 @@ private struct IslandStagedReveal: ViewModifier {
 /// `IslandMotion.contentArrivalDelay` before it starts to arrive, so for its
 /// first frames it can't be seen: it is built about a frame later instead,
 /// into a clear placeholder of the same size, while it is still invisible.
-/// Measured, opens that blocked the main thread past a frame fell from 45 of
-/// 80 to 23 of 80, for about 3% more instructions per open and close.
+/// Measured on screen, missed frames fell from 45 to 29 in 40 opens and
+/// closes, for about 5% more instructions per open and close.
 enum IslandContentStaging {
     static let stagedSlot = "expanded"
 
