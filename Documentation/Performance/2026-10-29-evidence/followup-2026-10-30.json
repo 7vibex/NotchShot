@@ -1631,7 +1631,8 @@
     "validity": "the open's view update and layer commit run on the main thread with the display off; HEAD's open medians (19.8-25.4 ms) match the 19-28 ms open frame profiled on screen. The windows_visible flag is not evidence on a locked, dark screen (see live_fade)"
    },
    "gap": "frames on screen and a visual check of the open menu need the display on and the Mac unlocked",
-   "decision": "Changed (kept the slot view)"
+   "decision": "Changed (kept the slot view)",
+   "live_build": "pid 32356, relaunched 03:30:25 from the 03:30:00 dist build of 6228537 (nm: 134 IslandStagedSlot symbols); Keep Awake was off; screen locked, display asleep; seen_open: false"
   }
  }
 }
