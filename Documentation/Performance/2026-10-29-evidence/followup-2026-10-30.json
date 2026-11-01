@@ -1889,6 +1889,44 @@
      "paired_instruction_delta": "+41 to +67 M per cycle, mean +56 M, +4.7%, positive in all 4 pairs"
     }
    }
+  },
+  "repeated_use_2026_11_02": {
+   "protocol": "IslandProbe soak 1.2 150: per cycle, open onto the capture menu, show the shelf (5 captures), show the agents page (3 working agents), show the capture menu, close; 1.2 s per step; an agent update after each cycle; footprint is proc_pid_rusage phys_footprint",
+   "started": "2026-11-02 00:18:56; display off until 00:26:23 (pmset)",
+   "first_cycle_states": [
+    "expanded",
+    "result",
+    "island ai:agents expanded",
+    "expanded",
+    "island ai:agents compact"
+   ],
+   "footprint_mb": {
+    "0": 168.4,
+    "1": 220.0,
+    "10": 219.2,
+    "20": 145.6,
+    "30": 145.1,
+    "40": 147.3,
+    "50": 146.9,
+    "60": 146.5,
+    "70": 145.8,
+    "80": 148.6
+   },
+   "m_instructions_per_cycle": {
+    "1": 5320.1,
+    "10": 4263.9,
+    "20": 4258.7,
+    "30": 4278.2,
+    "40": 4517.7,
+    "50": 4410.0,
+    "60": 4407.1,
+    "70": 4341.9,
+    "80": 4734.2
+   },
+   "stopped": "at cycle 80 (~00:27) of 150: the user woke the Mac, saw the probe window and asked for it to stop; all probes and watchers were stopped and the temporary captures removed",
+   "decision": "No change: no growth from cycle 20 to 80",
+   "shelf_scrolling": "not applicable: AppCoordinator.maximumShelfItems is 5",
+   "gap": "repeated use in the live app by a person; on-screen probes need the user's go-ahead"
   }
  }
 }

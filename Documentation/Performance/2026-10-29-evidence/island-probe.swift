@@ -15,6 +15,12 @@
 //                          queue each millisecond; prints the longest wait after each open and close.
 //                          Needs no visible window, so it also runs while the Mac is locked. Judge
 //                          it by the opens: waits after a close ran 40-311 ms in every build tried.
+//   IslandProbe soak       opens the island, steps through the capture menu, a full shelf and the
+//                          agents page, back to the capture menu, and closes; seconds per step, then
+//                          cycles. Prints footprint and instructions every 10 cycles. The five shelf
+//                          captures are solid-colour PNGs in a temporary folder it removes at the end.
+//   Every mode except `stall` shows its windows at the bottom left of the screen. Run them only
+//   with the user's go-ahead: a locked, dark screen can be woken at any time.
 //   Arguments after the mode: seconds per phase, rounds.
 //   PROBE_SCREEN=real lays the island out on this Mac's main screen and notch instead of a
 //   14-inch one (1512 x 982 points, a 185 pt notch).
@@ -325,6 +331,65 @@ final class Probe {
         }
     }
 
+    // MARK: Repeated use
+
+    /// Many opens, each visiting every page the probe can fill: the capture
+    /// menu, a full shelf, the agents page and the capture menu again, then
+    /// closed. Retained growth shows as footprint that keeps rising after the
+    /// first cycles.
+    func runSoak() async {
+        let coordinator = makeIsland()
+        sendAgents(coordinator, advance: true)
+        let folder = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("IslandProbeSoak-\(getpid())")
+        try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        for index in 0 ..< AppCoordinator.maximumShelfItems {
+            let url = folder.appendingPathComponent("capture-\(index).png")
+            let image = NSImage(size: CGSize(width: 640, height: 400), flipped: false) { rect in
+                NSColor(calibratedHue: Double(index) / 5, saturation: 0.6, brightness: 0.8, alpha: 1).setFill()
+                rect.fill()
+                return true
+            }
+            if let tiff = image.tiffRepresentation,
+               let png = NSBitmapImageRep(data: tiff)?.representation(using: .png, properties: [:]) {
+                try? png.write(to: url)
+            }
+            let asset = CaptureAsset(url: url, kind: .screenshot, pixelSize: CGSize(width: 640, height: 400))
+            coordinator.push(ShelfItem(asset: asset, thumbnail: image, image: nil))
+        }
+        coordinator.hideShelf()
+        try? await Task.sleep(for: .seconds(3))
+        print("shelf \(coordinator.shelfItems.count) items, available \(coordinator.isTabAvailable(.shelf)); "
+            + "agents available \(coordinator.isTabAvailable(.agents)); visible=\(allVisible)")
+        let steps: [(String, () -> Void)] = [
+            ("capture", { coordinator.toggleExpanded() }),
+            ("shelf  ", { coordinator.showTab(.shelf) }),
+            ("agents ", { coordinator.showTab(.agents) }),
+            ("capture", { coordinator.showTab(.capture) }),
+            ("closed ", { coordinator.toggleExpanded() }),
+        ]
+        var last = Usage.now()
+        var lastCycle = 0
+        print(String(format: "cycle 0 footprint %.1f MB", Double(last.footprint) / 1_048_576))
+        for cycle in 1 ... rounds {
+            for (name, step) in steps {
+                step()
+                if cycle == 1 { print("  \(name) \(String(describing: coordinator.activity).prefix(110))") }
+                try? await Task.sleep(for: .seconds(phaseSeconds))
+            }
+            sendAgents(coordinator, advance: true)
+            if cycle == 1 || cycle % 10 == 0 {
+                let now = Usage.now()
+                print(String(format: "cycle %d footprint %.1f MB, %.1f M instructions per cycle, visible=%@",
+                             cycle, Double(now.footprint) / 1_048_576,
+                             Double(now.instructions - last.instructions) / Double(cycle - lastCycle) / 1e6,
+                             allVisible ? "yes" : "NO"))
+                last = now
+                lastCycle = cycle
+            }
+        }
+    }
+
     // MARK: Scrolling
 
     func findTableScrollView(in view: NSView) -> NSScrollView? {
@@ -476,6 +541,7 @@ final class Probe {
         case "pacing": await runPacing()
         case "stall": await runStall()
         case "scroll": await runScroll()
+        case "soak": await runSoak()
         case "hold":
             let coordinator = makeIsland()
             sendAgents(coordinator, advance: true)
