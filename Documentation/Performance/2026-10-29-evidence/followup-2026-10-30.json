@@ -1397,7 +1397,7 @@
    "live_build": "pid 10096, started 02:36:50 from the 02:10:26 dist binary; nm finds rampStops (4 symbols) and no stops(for:)",
    "seen_open": false,
    "real_geometry_screenshot": "set up and not run: this Mac's notch metrics (1470 x 956 pt, 179 pt notch, 33 pt menu bar) and the saved glass level 0.463 / shadow 0.208, old mask vs ramp; screencapture fails while the screen is locked",
-   "earlier_runs_on_screen": "song line (to 01:58), open breakdown (to 02:21) and scrolling (to 02:34): 108 of 108 phases report the window visible; scrolling phases show about 120 display-link wakeups a second"
+   "earlier_runs_on_screen": "song line (to 01:58), open breakdown (to 02:21) and scrolling (to 02:34) all ran while the display was on: pmset log 'Display is turned on' 01:11:07, 'off' 02:36:06; last HID input 01:13:50. The probe's visible flag stays set on a locked, dark screen, so it is not evidence."
   }
  }
 }
