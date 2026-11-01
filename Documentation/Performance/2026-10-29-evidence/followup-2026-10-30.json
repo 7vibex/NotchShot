@@ -1924,9 +1924,51 @@
     "80": 4734.2
    },
    "stopped": "at cycle 80 (~00:27) of 150: the user woke the Mac, saw the probe window and asked for it to stop; all probes and watchers were stopped and the temporary captures removed",
-   "decision": "No change: no growth from cycle 20 to 80",
+   "decision": "No change: no growth in either run",
    "shelf_scrolling": "not applicable: AppCoordinator.maximumShelfItems is 5",
-   "gap": "repeated use in the live app by a person; on-screen probes need the user's go-ahead"
+   "gap": "repeated use in the live app by a person",
+   "offscreen_run": {
+    "protocol": "PROBE_OFFSCREEN=1 IslandProbe soak 1.2 150: the same cycle with the window at (-8000, -8000), outside every display",
+    "ran": "2026-11-02 00:32:20-00:48:02, all 150 cycles",
+    "footprint_mb": {
+     "0": 164.5,
+     "1": 224.0,
+     "10": 221.7,
+     "20": 221.2,
+     "30": 221.5,
+     "40": 219.9,
+     "50": 218.9,
+     "60": 219.4,
+     "70": 219.5,
+     "80": 219.0,
+     "90": 218.7,
+     "100": 220.1,
+     "110": 220.3,
+     "120": 219.7,
+     "130": 219.3,
+     "140": 219.8,
+     "150": 220.4
+    },
+    "m_instructions_per_cycle": {
+     "1": 5360.7,
+     "10": 4497.2,
+     "20": 4473.4,
+     "30": 4435.6,
+     "40": 4411.3,
+     "50": 4438.2,
+     "60": 4428.0,
+     "70": 4567.8,
+     "80": 4449.4,
+     "90": 4507.7,
+     "100": 4430.4,
+     "110": 4512.3,
+     "120": 4490.1,
+     "130": 4453.5,
+     "140": 4496.1,
+     "150": 4521.1
+    },
+    "summary": "218.7-221.7 MB from cycle 10 to 150, ending lower than at cycle 10; the first run's 74 MB fall at cycles 10-20 did not recur and is unexplained"
+   }
   }
  }
 }

@@ -20,7 +20,8 @@
 //                          cycles. Prints footprint and instructions every 10 cycles. The five shelf
 //                          captures are solid-colour PNGs in a temporary folder it removes at the end.
 //   Every mode except `stall` shows its windows at the bottom left of the screen. Run them only
-//   with the user's go-ahead: a locked, dark screen can be woken at any time.
+//   with the user's go-ahead: a locked, dark screen can be woken at any time. PROBE_OFFSCREEN=1
+//   places them outside every display instead, for runs that don't need the screen (soak).
 //   Arguments after the mode: seconds per phase, rounds.
 //   PROBE_SCREEN=real lays the island out on this Mac's main screen and notch instead of a
 //   14-inch one (1512 x 982 points, a 185 pt notch).
@@ -127,6 +128,14 @@ final class Probe {
     }
 
     func window(size: CGSize, origin: CGPoint, content: NSView) -> NSWindow {
+        var origin = origin
+        // PROBE_OFFSCREEN=1 puts the window well outside every display, so
+        // nothing shows on screen; the probe refuses to run if it would.
+        let offscreen = ProcessInfo.processInfo.environment["PROBE_OFFSCREEN"] == "1"
+        if offscreen {
+            let union = NSScreen.screens.reduce(CGRect.null) { $0.union($1.frame) }
+            origin = CGPoint(x: union.minX - 8000, y: union.minY - 8000)
+        }
         let window = NSWindow(contentRect: CGRect(origin: origin, size: size), styleMask: .borderless,
                               backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
@@ -139,6 +148,14 @@ final class Probe {
         content.frame = CGRect(origin: .zero, size: size)
         window.contentView = content
         window.orderFrontRegardless()
+        if offscreen {
+            window.setFrameOrigin(origin)
+            if NSScreen.screens.contains(where: { $0.frame.intersects(window.frame) }) {
+                print("window \(window.frame) would show on a display; stopping")
+                exit(1)
+            }
+            print("off screen at \(window.frame)")
+        }
         windows.append(window)
         return window
     }
