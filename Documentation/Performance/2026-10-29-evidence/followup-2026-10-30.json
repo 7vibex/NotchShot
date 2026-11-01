@@ -1290,7 +1290,7 @@
    },
    "gap": "background page kept WindowServer busy; cost on an otherwise static screen unmeasured",
    "decision": "No change",
-   "still_screen_attempt": "blocked: Safari WebKit processes drew at 13-23% of a core from 02:07 to 03:05; a watcher waiting for three quiet 5 s checks gave up after 28 minutes"
+   "still_screen_attempt": "blocked: Safari WebKit processes drew at 13-23% of a core from 02:07 to 03:05; a watcher waiting for three quiet 5 s checks gave up after 28 minutes. The screen also locked with the display off at 02:36:06 (CGDisplayIsAsleep 1, CGSSessionScreenIsLocked 1 at 03:14), so any run after that would not have been on screen."
   },
   "open_frame_breakdown": {
    "setup": "PROBE_FADE=ramp in every variant; 3 interleaved repeats x 2 rounds x 5 cycles; scratch-build switches remove CaptureMenuContent and/or NotchTabBar",
@@ -1392,6 +1392,12 @@
    },
    "longest_gap_ms": 16.8,
    "decision": "No change"
+  },
+  "live_fade": {
+   "live_build": "pid 10096, started 02:36:50 from the 02:10:26 dist binary; nm finds rampStops (4 symbols) and no stops(for:)",
+   "seen_open": false,
+   "real_geometry_screenshot": "set up and not run: this Mac's notch metrics (1470 x 956 pt, 179 pt notch, 33 pt menu bar) and the saved glass level 0.463 / shadow 0.208, old mask vs ramp; screencapture fails while the screen is locked",
+   "earlier_runs_on_screen": "song line (to 01:58), open breakdown (to 02:21) and scrolling (to 02:34): 108 of 108 phases report the window visible; scrolling phases show about 120 display-link wakeups a second"
   }
  }
 }
