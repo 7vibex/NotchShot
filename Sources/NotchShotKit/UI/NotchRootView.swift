@@ -681,6 +681,20 @@ public struct NotchRootView: View {
         }
     }
 
+    /// `content`, or for the first frame of an open onto the capture menu a
+    /// clear placeholder; see `IslandContentStaging`.
+    private var stagedContent: some View {
+        // Read in the update that inserts the slot, where `shownTab` is still
+        // the page before it, as in `contentTransition`.
+        IslandStagedSlot(stages: IslandContentStaging.stages(
+            slot: contentSlot,
+            step: NotchTab.step(from: shownTab, to: visibleTab, in: Preferences.shared.notchTabs),
+            reduceMotion: reduceMotion
+        )) {
+            content
+        }
+    }
+
     /// The content at the size of the shell it is going to. The frames sit
     /// inside the slot's identity on purpose: a switch inserts the new
     /// content already at its final size, and the outgoing content keeps the
@@ -691,7 +705,7 @@ public struct NotchRootView: View {
     /// Within one slot (the island's levels, a media peek) the frame still
     /// animates, because that content choreographs its own resize.
     private var framedContent: some View {
-        content
+        stagedContent
             .environment(\.islandCameraBand, cameraBand)
             .frame(
                 width: baseLayout.size.width,
@@ -794,7 +808,7 @@ public struct NotchRootView: View {
             )
         }
         return .asymmetric(
-            insertion: IslandMotion.arrival(delay: 0.06),
+            insertion: IslandMotion.arrival(delay: IslandMotion.contentArrivalDelay),
             removal: .opacity
                 .combined(with: .scale(scale: 0.96, anchor: .top))
                 .animation(NotchMotion.contentExit(reduceMotion: false))

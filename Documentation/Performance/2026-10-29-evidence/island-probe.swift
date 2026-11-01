@@ -11,6 +11,10 @@
 //                          24 pt per display frame; read only, over the stores the app reads. The
 //                          clipboard list needs `-notchshot.clipboardEnabled '<true/>'` after the
 //                          other arguments, since the probe has its own preferences domain.
+//   IslandProbe stall      opens and closes every 1.5 s while a background thread pings the main
+//                          queue each millisecond; prints the longest wait after each open and close.
+//                          Needs no visible window, so it also runs while the Mac is locked. Judge
+//                          it by the opens: waits after a close ran 40-311 ms in every build tried.
 //   Arguments after the mode: seconds per phase, rounds.
 //
 // Build: in a scratch copy of the package, put this file at Sources/IslandProbe/main.swift, add
@@ -18,6 +22,8 @@
 // swiftSettings: [.swiftLanguageMode(.v5)])` and its product, then
 // `swift build -c release -Xswiftc -enable-testing --product IslandProbe` and run it from .build/release.
 // The fade variants in the report were env switches added to that copy's IslandGlassShell.swift only.
+// The staged capture menu was compared as two binaries of this probe, one built with HEAD's
+// NotchRootView.swift and IslandMotion.swift and one with the change's, run alternately.
 //
 // The coordinator is never started: no media poll, no socket, no monitors.
 import AppKit
@@ -396,12 +402,75 @@ final class Probe {
         }
     }
 
+
+    // MARK: Main-thread stalls
+
+    /// Pings the main queue from a background thread every millisecond and
+    /// keeps every wait over 4 ms. Needs no visible window, so it also works
+    /// while the Mac is locked or the display sleeps.
+    final class StallWatch: @unchecked Sendable {
+        private let lock = NSLock()
+        private var stalls: [(at: CFTimeInterval, ms: Double)] = []
+        private var stopped = false
+        func start() {
+            Thread.detachNewThread { [self] in
+                while true {
+                    lock.lock(); let done = stopped; lock.unlock()
+                    if done { return }
+                    let t0 = CACurrentMediaTime()
+                    DispatchQueue.main.sync {}
+                    let ms = (CACurrentMediaTime() - t0) * 1000
+                    if ms > 4 { lock.lock(); stalls.append((t0, ms)); lock.unlock() }
+                    usleep(1000)
+                }
+            }
+        }
+        func stop() -> [(at: CFTimeInterval, ms: Double)] {
+            lock.lock(); stopped = true; let s = stalls; lock.unlock(); return s
+        }
+    }
+
+    func runStall() async {
+        let coordinator = makeIsland()
+        sendAgents(coordinator, advance: true)
+        try? await Task.sleep(for: .seconds(3))
+        for round in 1 ... rounds {
+            let watch = StallWatch()
+            watch.start()
+            var opens: [CFTimeInterval] = [], closes: [CFTimeInterval] = []
+            let a = Usage.now()
+            let cycles = Int(phaseSeconds / 3)
+            for _ in 0 ..< cycles {
+                opens.append(CACurrentMediaTime()); coordinator.toggleExpanded()
+                try? await Task.sleep(for: .seconds(1.5))
+                closes.append(CACurrentMediaTime()); coordinator.toggleExpanded()
+                try? await Task.sleep(for: .seconds(1.5))
+            }
+            let b = Usage.now()
+            let stalls = watch.stop()
+            func worst(after times: [CFTimeInterval]) -> [Double] {
+                times.map { t in stalls.filter { $0.at >= t - 0.002 && $0.at < t + 0.4 }.map(\.ms).max() ?? 0 }
+            }
+            func line(_ label: String, _ values: [Double]) -> String {
+                let sorted = values.sorted()
+                let median = sorted.isEmpty ? 0 : sorted[sorted.count / 2]
+                return String(format: "%@ longest wait per toggle: median %.1f ms, max %.1f ms, over 16.7 ms in %d of %d",
+                              label as NSString, median, sorted.last ?? 0, values.filter { $0 > 16.7 }.count, values.count)
+            }
+            print("round \(round) " + line("open ", worst(after: opens)))
+            print("round \(round) " + line("close", worst(after: closes)))
+            print(String(format: "round %d %.1f M instructions per cycle, visible=%@", round,
+                         Double(b.instructions - a.instructions) / Double(cycles) / 1e6, allVisible ? "yes" : "NO"))
+        }
+    }
+
     func run() async {
         switch mode {
         case "progress": await runProgress()
         case "rim": await runRim()
         case "openclose": await runOpenClose()
         case "pacing": await runPacing()
+        case "stall": await runStall()
         case "scroll": await runScroll()
         case "hold":
             let coordinator = makeIsland()

@@ -115,4 +115,19 @@ struct IslandMotionPassTests {
         #expect(IslandMotion.skipReleaseSpring.settlingDuration <= 2)
         #expect(IslandMotion.pullOpenStretch > 0 && IslandMotion.pullOpenStretch < 0.5)
     }
+
+    @Test("Only the capture menu, when it arrives rather than slides in, is built a frame late")
+    func contentStaging() {
+        let staged = IslandContentStaging.stagedSlot
+        #expect(IslandContentStaging.stages(slot: staged, step: 0, reduceMotion: false))
+        // Sliding in from a neighbouring page, it shows at once.
+        #expect(!IslandContentStaging.stages(slot: staged, step: 1, reduceMotion: false))
+        #expect(!IslandContentStaging.stages(slot: staged, step: -1, reduceMotion: false))
+        // Reduce Motion fades content in with no delay to hide behind.
+        #expect(!IslandContentStaging.stages(slot: staged, step: 0, reduceMotion: true))
+        #expect(!IslandContentStaging.stages(slot: "result", step: 0, reduceMotion: false))
+        #expect(!IslandContentStaging.stages(slot: "island", step: 0, reduceMotion: false))
+        // The page is in place before it starts to arrive.
+        #expect(IslandContentStaging.delay * 2 < IslandMotion.contentArrivalDelay)
+    }
 }

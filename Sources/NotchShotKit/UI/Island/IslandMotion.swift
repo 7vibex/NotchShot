@@ -92,6 +92,10 @@ enum IslandMotion {
 
     static let arrivalScale: CGFloat = 0.94
 
+    /// How long a page that opens with the notch waits before it starts to
+    /// arrive, so it never shows outside the shell that is still growing.
+    static let contentArrivalDelay = 0.06
+
     /// How far a page travels when the pill switches to its neighbour.
     static let pageTravel: CGFloat = 28
 
@@ -344,6 +348,7 @@ private struct IslandArrivalFromScreen<ID: Hashable>: ViewModifier {
 private struct IslandStagedReveal: ViewModifier {
     var stage: Int
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.islandRevealLead) private var lead
     @State private var isVisible = false
 
     func body(content: Content) -> some View {
@@ -354,10 +359,79 @@ private struct IslandStagedReveal: ViewModifier {
                 guard !isVisible else { return }
                 let animation: Animation = reduceMotion
                     ? .easeOut(duration: 0.12)
-                    : .easeOut(duration: 0.24).delay(IslandMotion.revealDelay(stage: stage))
+                    : .easeOut(duration: 0.24).delay(max(0, IslandMotion.revealDelay(stage: stage) - lead))
                 withAnimation(animation) { isVisible = true }
             }
     }
+}
+
+/// The capture menu is the heaviest thing an open inserts. Built in the same
+/// update as the shell, its pill and the transition, that update took 19–28 ms
+/// and missed one or two frames at 60 Hz. The page waits
+/// `IslandMotion.contentArrivalDelay` before it starts to arrive, so for its
+/// first frames it can't be seen: it is built about a frame later instead,
+/// into a clear placeholder of the same size, while it is still invisible.
+/// Measured, opens that blocked the main thread past a frame fell from 47 of
+/// 60 to 15 of 60, for about 3% more instructions per open and close.
+enum IslandContentStaging {
+    static let stagedSlot = "expanded"
+
+    /// About one frame at 60 Hz. The page is in place 20–25 ms after the open
+    /// starts, well before it starts to fade in.
+    static let delay = 0.017
+
+    /// Whether `slot` is built a frame after it is inserted.
+    /// - Parameter step: the page switch the slot is inserted with, from
+    ///   `NotchTab.step`. A page that slides in from a neighbour shows at
+    ///   once, so it is never staged.
+    static func stages(slot: String, step: Int, reduceMotion: Bool) -> Bool {
+        !reduceMotion && step == 0 && slot == stagedSlot
+    }
+}
+
+/// A content slot that, when `IslandContentStaging` stages it, shows a clear
+/// placeholder for its first frame and builds its content after that. Its own
+/// state, so the late build updates only the slot, not the whole notch.
+struct IslandStagedSlot<Content: View>: View {
+    private let content: () -> Content
+    /// Both are read once, when the slot is inserted: later updates of the
+    /// same slot never stage it again.
+    @State private var isBuilt: Bool
+    @State private var revealLead: Double
+
+    init(stages: Bool, @ViewBuilder content: @escaping () -> Content) {
+        self.content = content
+        _isBuilt = State(initialValue: !stages)
+        _revealLead = State(initialValue: stages ? IslandContentStaging.delay : 0)
+    }
+
+    var body: some View {
+        if isBuilt {
+            content()
+                .environment(\.islandRevealLead, revealLead)
+        } else {
+            Color.clear
+                .task {
+                    do {
+                        try await Task.sleep(for: .seconds(IslandContentStaging.delay))
+                    } catch {
+                        return
+                    }
+                    // Swapped in place, not transitioned: the slot's own
+                    // arrival is already running and the page is still
+                    // invisible.
+                    var transaction = Transaction()
+                    transaction.disablesAnimations = true
+                    withTransaction(transaction) { isBuilt = true }
+                }
+        }
+    }
+}
+
+extension EnvironmentValues {
+    /// How much later than its page's open a staged page was built. Its rows'
+    /// reveals start that much sooner, so they keep the timing they had.
+    @Entry var islandRevealLead: Double = 0
 }
 
 extension View {
