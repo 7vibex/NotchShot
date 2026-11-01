@@ -16,6 +16,8 @@
 //                          Needs no visible window, so it also runs while the Mac is locked. Judge
 //                          it by the opens: waits after a close ran 40-311 ms in every build tried.
 //   Arguments after the mode: seconds per phase, rounds.
+//   PROBE_SCREEN=real lays the island out on this Mac's main screen and notch instead of a
+//   14-inch one (1512 x 982 points, a 185 pt notch).
 //
 // Build: in a scratch copy of the package, put this file at Sources/IslandProbe/main.swift, add
 // `.executableTarget(name: "IslandProbe", dependencies: ["NotchShotKit"], path: "Sources/IslandProbe",
@@ -160,12 +162,14 @@ final class Probe {
     func makeIsland() -> AppCoordinator {
         let coordinator = AppCoordinator()
         coordinator.rendersAsActiveDisplay = true
-        let metrics = NotchMetrics(
-            screenFrame: CGRect(x: 0, y: 0, width: 1512, height: 982),
-            hasPhysicalNotch: true,
-            notchSize: CGSize(width: 185, height: 32),
-            menuBarHeight: 32
-        )
+        let metrics = ProcessInfo.processInfo.environment["PROBE_SCREEN"] == "real"
+            ? NotchMetrics.metrics(for: NSScreen.screens[0])
+            : NotchMetrics(
+                screenFrame: CGRect(x: 0, y: 0, width: 1512, height: 982),
+                hasPhysicalNotch: true,
+                notchSize: CGSize(width: 185, height: 32),
+                menuBarHeight: 32
+            )
         let context = NotchDisplayContext(displayID: 1, metrics: metrics, isPrimary: true, isBuiltIn: true)
         let size = CGSize(width: NotchLayout.maximumSize.width + NotchLayout.shadowPadding * 2,
                           height: NotchLayout.maximumSize.height + NotchLayout.shadowPadding)

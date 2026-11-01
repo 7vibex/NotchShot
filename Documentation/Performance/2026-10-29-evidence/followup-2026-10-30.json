@@ -1290,7 +1290,7 @@
    },
    "gap": "background page kept WindowServer busy; cost on an otherwise static screen unmeasured",
    "decision": "No change",
-   "still_screen_attempt": "blocked: Safari WebKit processes drew at 13-23% of a core from 02:07 to 03:05; a watcher waiting for three quiet 5 s checks gave up after 28 minutes. The screen also locked with the display off at 02:36:06 (CGDisplayIsAsleep 1, CGSSessionScreenIsLocked 1 at 03:14), so any run after that would not have been on screen."
+   "still_screen_attempt": "blocked: Safari WebKit processes drew at 13-23% of a core from 02:07 to 03:05; a watcher waiting for three quiet 5 s checks gave up after 28 minutes. The screen also locked with the display off at 02:36:06 (CGDisplayIsAsleep 1, CGSSessionScreenIsLocked 1 at 03:14), so any run after that would not have been on screen. Second watcher (armed 03:24, needs awake + unlocked + 75 s without input + no probe/build): ready at 07:30:56; three 10-minute waits found WebKit at 68-78 cs per 5 s (14-16% of a core), five more were cut short when the screen stopped qualifying; display off 08:54:34; gave up at 15:24:46. Its caffeinate -d kept the unlocked display on from 07:31 while it waited."
   },
   "open_frame_breakdown": {
    "setup": "PROBE_FADE=ramp in every variant; 3 interleaved repeats x 2 rounds x 5 cycles; scratch-build switches remove CaptureMenuContent and/or NotchTabBar",
@@ -1396,7 +1396,14 @@
   "live_fade": {
    "live_build": "pid 10096, started 02:36:50 from the 02:10:26 dist binary; nm finds rampStops (4 symbols) and no stops(for:)",
    "seen_open": false,
-   "real_geometry_screenshot": "set up and not run: this Mac's notch metrics (1470 x 956 pt, 179 pt notch, 33 pt menu bar) and the saved glass level 0.463 / shadow 0.208, old mask vs ramp; screencapture fails while the screen is locked",
+   "real_geometry_screenshot": {
+    "when": "07:31:04-07:31:27, display on since 07:29:20, unlocked, no input for 76 s",
+    "setup": "IslandProbe hold 12 with PROBE_SCREEN=real (this Mac's notch metrics: 1470 x 956 pt, 179 pt notch, 33 pt menu bar) and the saved glass level 0.4633 / shadow 0.2077; built from da34da2 (with 6228537) plus a scratch-copy PROBE_FADE=mask switch in IslandGlassShell.swift; screenshot 4 s after 'expanded; holding' with screencapture -x -o -l <window>; order mask, ramp, mask, ramp",
+    "image": "1440 x 960 px window at 2x, shell bottom at 151 pt",
+    "repeat_noise": "mask-1 vs mask-2 and ramp-1 vs ramp-2 byte-identical (0 px differ)",
+    "mask_vs_ramp": "15,531 px differ, 96 by more than 3 of 255, max 24; bbox rows 110-151 pt; the >3 px sit at x 144-168 and 552-576 pt, on the edges of the More/Shelf buttons and the shell inside the fade; top 110 pt identical",
+    "limit": "window-only capture, so the glass has no desktop behind it"
+   },
    "earlier_runs_on_screen": "song line (to 01:58), open breakdown (to 02:21) and scrolling (to 02:34) all ran while the display was on: pmset log 'Display is turned on' 01:11:07, 'off' 02:36:06; last HID input 01:13:50. The probe's visible flag stays set on a locked, dark screen, so it is not evidence."
   },
   "staged_capture_menu": {
