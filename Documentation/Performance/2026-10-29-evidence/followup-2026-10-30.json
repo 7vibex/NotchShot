@@ -1289,6 +1289,108 @@
     "meter": "+0.9 (SE 0.4)"
    },
    "gap": "background page kept WindowServer busy; cost on an otherwise static screen unmeasured",
+   "decision": "No change",
+   "still_screen_attempt": "blocked: background Safari WebKit process at 15-23% of a core from 02:07 to 02:32"
+  },
+  "open_frame_breakdown": {
+   "setup": "PROBE_FADE=ramp in every variant; 3 interleaved repeats x 2 rounds x 5 cycles; scratch-build switches remove CaptureMenuContent and/or NotchTabBar",
+   "missed_frames_30_cycles": {
+    "everything": 52,
+    "no_capture_menu_content": 27,
+    "no_tab_pill": 33,
+    "neither": 19
+   },
+   "m_instructions_per_cycle": {
+    "everything": [
+     1224.8,
+     1140.8,
+     1199.6,
+     1139.7,
+     1208.8,
+     1127.5
+    ],
+    "no_capture_menu_content": [
+     732.5,
+     718.5,
+     725.8,
+     706.7,
+     731.6,
+     705.6
+    ],
+    "no_tab_pill": [
+     1126.6,
+     1046.9,
+     1097.9,
+     1076.1,
+     1096.7,
+     1089.8
+    ],
+    "neither": [
+     640.4,
+     634.2,
+     635.7,
+     620.2,
+     646.9,
+     626.1
+    ]
+   },
+   "share_of_work": {
+    "capture_menu_content": "~39%",
+    "tab_pill": "~7%",
+    "shell_and_chrome": "~54%"
+   },
+   "profile_10_cycles": {
+    "open_bursts_ms": "16-30",
+    "burst_samples": 276,
+    "layout_sizing": 94,
+    "ca_commit": 65,
+    "making_views": 47,
+    "appkit_menu_tooltip_hover_samples": 0
+   },
+   "decision": "No change: no single view to remove without changing the panel; keeping it built while closed is a design decision"
+  },
+  "scrolling": {
+   "setup": "probe scroll mode: real HistoryView / ClipboardView over the app's stores, coordinator never started, visible titled window, 12 s phases at 0, 8, 24 pt per 60 Hz frame; 2 runs x 3 rounds per list",
+   "history": {
+    "rows": 140,
+    "content_pt": 4656,
+    "missed_frames": 0,
+    "m_instr_per_s": {
+     "still": "7.0-7.6",
+     "8pt": "328-332 (first pass 476-487)",
+     "24pt": "635-645"
+    },
+    "core_pct": {
+     "8pt": "13.9-14.9",
+     "24pt": "20.1-21.7"
+    },
+    "footprint_mb": "50 -> 60 on first pass, then 59.4-60.8",
+    "windowserver_pct": {
+     "still": "34.9-37.0",
+     "scrolling": "39.3-40.8"
+    }
+   },
+   "clipboard": {
+    "rows": 48,
+    "content_pt": 1498,
+    "missed_frames": 0,
+    "m_instr_per_s": {
+     "still": "6.7-7.8",
+     "8pt": "283-291",
+     "24pt": "542-550"
+    },
+    "core_pct": {
+     "8pt": "11.8-13.1",
+     "24pt": "17.2-19.1"
+    },
+    "footprint_mb": "39.0-42.6",
+    "windowserver_pct": {
+     "still": "36.1-37.9",
+     "scrolling": "38.6-39.9"
+    },
+    "note": "needs -notchshot.clipboardEnabled <true/> in the probe's own domain; store mtime, size and image count unchanged"
+   },
+   "longest_gap_ms": 16.8,
    "decision": "No change"
   }
  }

@@ -7,6 +7,10 @@
 //   IslandProbe openclose  toggles the island open and closed every 1.5 s (for a hitch trace)
 //   IslandProbe pacing     closed vs open/close: display-link gaps on the main thread, instructions per cycle
 //   IslandProbe hold       opens the island and holds it, for a window screenshot
+//   IslandProbe scroll     History (or PROBE_LIST=clipboard) in a visible window, scrolled 0, 8 and
+//                          24 pt per display frame; read only, over the stores the app reads. The
+//                          clipboard list needs `-notchshot.clipboardEnabled '<true/>'` after the
+//                          other arguments, since the probe has its own preferences domain.
 //   Arguments after the mode: seconds per phase, rounds.
 //
 // Build: in a scratch copy of the package, put this file at Sources/IslandProbe/main.swift, add
@@ -311,12 +315,94 @@ final class Probe {
         }
     }
 
+    // MARK: Scrolling
+
+    func findTableScrollView(in view: NSView) -> NSScrollView? {
+        if let scrollView = view as? NSScrollView, scrollView.documentView is NSTableView { return scrollView }
+        for subview in view.subviews {
+            if let found = findTableScrollView(in: subview) { return found }
+        }
+        return nil
+    }
+
+    /// Moves the list by `stride` points at each display-link callback, down
+    /// to the end and back up, and keeps the callbacks' timestamps.
+    final class Scroller: NSObject {
+        let clock = FrameClock()
+        let scrollView: NSScrollView
+        let maxY: Double
+        let stride: Double
+        var direction = 1.0
+        var travelled = 0.0
+        init(scrollView: NSScrollView, maxY: Double, stride: Double) {
+            self.scrollView = scrollView
+            self.maxY = maxY
+            self.stride = stride
+        }
+        @objc func tick(_ link: CADisplayLink) {
+            clock.tick(link)
+            guard stride > 0, maxY > 0 else { return }
+            let clip = scrollView.contentView
+            var y = clip.bounds.origin.y + stride * direction
+            if y >= maxY { y = maxY; direction = -1 }
+            if y <= 0 { y = 0; direction = 1 }
+            travelled += abs(y - clip.bounds.origin.y)
+            clip.scroll(to: NSPoint(x: 0, y: y))
+            scrollView.reflectScrolledClipView(clip)
+        }
+    }
+
+    /// History or the clipboard list (PROBE_LIST), over the stores the app
+    /// reads. The coordinator is never started, so nothing is saved, indexed
+    /// or pruned. A titled window, as the app's own, never key.
+    func runScroll() async {
+        let coordinator = AppCoordinator()
+        let which = ProcessInfo.processInfo.environment["PROBE_LIST"] ?? "history"
+        let root = which == "clipboard"
+            ? AnyView(ClipboardView(coordinator: coordinator))
+            : AnyView(HistoryView(coordinator: coordinator))
+        let hosting = NSHostingView(rootView: root)
+        let size = CGSize(width: 860, height: 540)
+        let window = NSWindow(contentRect: CGRect(origin: CGPoint(x: 16, y: 16), size: size),
+                              styleMask: [.titled, .closable, .miniaturizable, .resizable],
+                              backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.ignoresMouseEvents = true
+        window.level = .statusBar
+        window.contentView = hosting
+        window.orderFrontRegardless()
+        windows.append(window)
+        try? await Task.sleep(for: .seconds(4))
+        guard let scrollView = findTableScrollView(in: hosting),
+              let table = scrollView.documentView as? NSTableView else { return print("no list found") }
+        let maxY = max(0, table.frame.height - scrollView.contentView.bounds.height)
+        print("\(which): \(table.numberOfRows) rows, \(Int(table.frame.height)) pt tall, visible=\(allVisible), footprint \(String(format: "%.1f", Double(Usage.now().footprint) / 1_048_576)) MB")
+        for round in 1 ... rounds {
+            for stride in [0.0, 8.0, 24.0] {
+                let scroller = Scroller(scrollView: scrollView, maxY: maxY, stride: stride)
+                let link = hosting.displayLink(target: scroller, selector: #selector(Scroller.tick(_:)))
+                link.add(to: .main, forMode: .common)
+                var a = Usage.now()
+                a.windowServer = windowServerSeconds()
+                a = { var u = Usage.now(); u.windowServer = a.windowServer; return u }()
+                try? await Task.sleep(for: .seconds(phaseSeconds))
+                var b = Usage.now()
+                b.windowServer = windowServerSeconds()
+                link.invalidate()
+                let label = String(format: "round %d %@ %2.0f pt/frame", round, which as NSString, stride)
+                scroller.clock.summary(label)
+                report(label + String(format: " travelled %.0f pt", scroller.travelled), a, b, visible: allVisible)
+            }
+        }
+    }
+
     func run() async {
         switch mode {
         case "progress": await runProgress()
         case "rim": await runRim()
         case "openclose": await runOpenClose()
         case "pacing": await runPacing()
+        case "scroll": await runScroll()
         case "hold":
             let coordinator = makeIsland()
             sendAgents(coordinator, advance: true)
