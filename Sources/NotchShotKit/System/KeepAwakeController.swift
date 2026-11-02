@@ -7,8 +7,9 @@ public enum KeepAwakeChoice: String, CaseIterable, Identifiable, Sendable {
     case fifteenMinutes
     case oneHour
     case untilTurnedOff
-    /// Only while an AI agent reports that it is working. The display may
-    /// sleep; the Mac doesn't, so a long run isn't cut off by idle sleep.
+    /// Only while an AI agent reports that it is working, so a long run isn't
+    /// cut off by idle sleep or hidden behind the Lock Screen. Agents are only
+    /// seen while AI Activity is on.
     case whileAgentsWork
 
     public var id: String { rawValue }
@@ -39,15 +40,16 @@ public enum KeepAwakeMode: Equatable, Sendable {
     case whileAgentsWork
 
     /// The IOKit assertion this mode holds right now, or nil for none.
-    /// Timed and indefinite modes keep the display on, as the `caffeinate -d`
-    /// people reach for does. The agent mode only keeps the Mac itself awake,
-    /// and only while an agent is working.
+    /// Every mode keeps the display on, as the `caffeinate -d` people reach
+    /// for does: a display left to sleep starts the screen-lock countdown, so
+    /// a Mac kept only "system awake" still locks. The agent mode holds it
+    /// only while an agent is working.
     static func assertionType(for mode: KeepAwakeMode, agentsWorking: Bool, now: Date) -> String? {
         switch mode {
         case .off: nil
         case .until(let end): end > now ? kIOPMAssertPreventUserIdleDisplaySleep : nil
         case .indefinitely: kIOPMAssertPreventUserIdleDisplaySleep
-        case .whileAgentsWork: agentsWorking ? kIOPMAssertPreventUserIdleSystemSleep : nil
+        case .whileAgentsWork: agentsWorking ? kIOPMAssertPreventUserIdleDisplaySleep : nil
         }
     }
 }

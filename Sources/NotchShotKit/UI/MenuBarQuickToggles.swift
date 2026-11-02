@@ -87,7 +87,14 @@ struct MenuBarQuickToggles: View {
             // Off, the circle asks for how long; on, it only switches off.
             Menu {
                 ForEach(KeepAwakeChoice.allCases) { choice in
-                    Button(choice.title) { coordinator.turnOnKeepAwake(choice) }
+                    if choice == .whileAgentsWork && !Preferences.shared.aiActivityEnabled {
+                        // With AI Activity off no agent is ever seen, so this
+                        // would hold nothing and let the Mac sleep and lock.
+                        Button("\(choice.title) (Needs AI Activity)") {}
+                            .disabled(true)
+                    } else {
+                        Button(choice.title) { coordinator.turnOnKeepAwake(choice) }
+                    }
                 }
             } label: {
                 MenuBarQuickTileFace(caption: caption, systemImage: "cup.and.heat.waves", isOn: false)

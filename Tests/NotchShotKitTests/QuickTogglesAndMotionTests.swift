@@ -71,13 +71,12 @@ struct KeepAwakeAndKeyboardTests {
     func assertions() {
         let now = Date()
         let display = kIOPMAssertPreventUserIdleDisplaySleep as String
-        let system = kIOPMAssertPreventUserIdleSystemSleep as String
         #expect(KeepAwakeMode.assertionType(for: .off, agentsWorking: true, now: now) == nil)
         #expect(KeepAwakeMode.assertionType(for: .until(now.addingTimeInterval(60)), agentsWorking: false, now: now) == display)
         #expect(KeepAwakeMode.assertionType(for: .until(now.addingTimeInterval(-1)), agentsWorking: false, now: now) == nil)
         #expect(KeepAwakeMode.assertionType(for: .indefinitely, agentsWorking: false, now: now) == display)
         #expect(KeepAwakeMode.assertionType(for: .whileAgentsWork, agentsWorking: false, now: now) == nil)
-        #expect(KeepAwakeMode.assertionType(for: .whileAgentsWork, agentsWorking: true, now: now) == system)
+        #expect(KeepAwakeMode.assertionType(for: .whileAgentsWork, agentsWorking: true, now: now) == display)
     }
 
     @Test("Timed choices last 15 minutes and an hour")
