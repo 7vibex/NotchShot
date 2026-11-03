@@ -5,10 +5,11 @@ import SwiftUI
 ///
 /// It replaces both the plain popover and the twenty-item right-click menu
 /// that sat behind the old camera icon. Capturing is the notch's job, so the
-/// menu holds no capture buttons: only the Quick Toggles row, the places
-/// captures end up, the three after-capture switches people actually flip,
-/// and the app itself. The rarely used commands are one level down under
-/// More, and everything else stays in Settings.
+/// menu holds no capture buttons: only the Quick Toggles row, display
+/// brightness, Night Shift and Dark Mode, the places captures end up, the
+/// three after-capture switches people actually flip, and the app itself.
+/// The rarely used commands are one level down under More, and everything
+/// else stays in Settings.
 ///
 /// It is drawn like the island it controls: dark glass, white ink,
 /// hairlines instead of boxes.
@@ -36,6 +37,10 @@ struct MenuBarPanelView: View {
             MenuBarHairline()
             MenuBarQuickToggles(coordinator: coordinator, onDismiss: onDismiss)
             MenuBarHairline()
+            if MenuBarDisplayControls.hasContent(brightness: coordinator.displayBrightness) {
+                MenuBarDisplayControls(brightness: coordinator.displayBrightness)
+                MenuBarHairline()
+            }
             librarySection
             MenuBarHairline()
             afterCaptureSection
@@ -300,7 +305,7 @@ private struct MenuBarHairline: View {
     }
 }
 
-private struct MenuBarSectionTitle: View {
+struct MenuBarSectionTitle: View {
     var title: String
 
     init(_ title: String) { self.title = title }
@@ -423,7 +428,7 @@ struct MenuBarRowHighlight<Content: View>: View {
 
 /// A setting that applies the moment it is flipped; the whole row is the
 /// hit target, not only the switch.
-private struct MenuBarSwitchRow: View {
+struct MenuBarSwitchRow: View {
     var title: String
     var systemImage: String
     @Binding var isOn: Bool
@@ -445,7 +450,7 @@ private struct MenuBarSwitchRow: View {
 /// Drawn rather than a system switch: an `NSSwitch` in a panel whose app is
 /// not active draws its inactive grey, and on and off then look alike. It
 /// takes no clicks of its own; the row toggles.
-private struct MenuBarSwitch: View {
+struct MenuBarSwitch: View {
     var isOn: Bool
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion

@@ -269,7 +269,7 @@ struct ExtrasSettings: View {
 
             Section("Displays") {
                 Toggle("Brightness keys control external displays", isOn: $extras.controlsExternalDisplays)
-                Text("The keys adjust the display under the pointer. Monitors that accept DDC change their own backlight; others are dimmed in software. Sliders for every display are under More → Displays.")
+                Text("The keys adjust the display under the pointer. Monitors that accept DDC change their own backlight; others are dimmed in software. Sliders for every display are in the menu-bar menu and under More → Displays.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 if extras.controlsExternalDisplays, !preferences.suppressesSystemOSD {

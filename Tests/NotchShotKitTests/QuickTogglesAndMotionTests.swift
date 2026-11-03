@@ -318,3 +318,32 @@ struct AppVolumeRendererTests {
         #expect(output.sample(buffer: 0, frame: 3, channel: 0) == 1)
     }
 }
+
+@Suite("Night Shift status")
+struct NightShiftStatusTests {
+    /// Read from macOS 26.7 at 18:07 with a custom 20:00–07:00 schedule.
+    static let scheduledButOff: [UInt8] = [
+        1, 0, 1, 0, 2, 0, 0, 0, 20, 0, 0, 0, 0, 0, 0, 0, 7, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0,
+    ]
+
+    @Test("A schedule that has not started yet reads as off, and available")
+    func scheduledOff() {
+        #expect(NightShiftStatus(bytes: Self.scheduledButOff) == NightShiftStatus(isEnabled: false, mode: 2, isAvailable: true))
+    }
+
+    @Test("The enabled byte is the second one, not the schedule's active flag")
+    func enabledByte() {
+        var bytes = Self.scheduledButOff
+        bytes[1] = 1
+        #expect(NightShiftStatus(bytes: bytes)?.isEnabled == true)
+        bytes[0] = 0
+        bytes[1] = 0
+        #expect(NightShiftStatus(bytes: bytes)?.isEnabled == false)
+    }
+
+    @Test("A short buffer is refused rather than read past its end")
+    func shortBuffer() {
+        #expect(NightShiftStatus(bytes: Array(Self.scheduledButOff.prefix(20))) == nil)
+    }
+}

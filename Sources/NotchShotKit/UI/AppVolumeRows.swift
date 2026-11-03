@@ -24,7 +24,7 @@ struct AppVolumeRow: View {
                 .foregroundStyle(Color.islandInk(source.isPlaying ? NotchIsland.Ink.primary : NotchIsland.Ink.secondary))
                 .lineLimit(1)
                 .frame(width: 92, alignment: .leading)
-            AppVolumeSlider(level: level, isHovered: isHovered) { value, isFinal in
+            LevelBarSlider(level: level, isHovered: isHovered) { value, isFinal in
                 draft = isFinal ? nil : value
                 mixer.setVolume(value, for: source.bundleIdentifier, isFinal: isFinal)
             }
@@ -59,7 +59,7 @@ struct AppVolumeRow: View {
 
 /// The volume HUD's bar, made draggable: click anywhere to jump, drag to
 /// adjust. Thickens a little while the row is hovered.
-private struct AppVolumeSlider: View {
+struct LevelBarSlider: View {
     var level: Double
     var isHovered: Bool
     var onChange: (Double, _ isFinal: Bool) -> Void

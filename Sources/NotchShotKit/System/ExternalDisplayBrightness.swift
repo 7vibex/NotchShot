@@ -135,6 +135,17 @@ public final class DisplayBrightnessController {
         }
     }
 
+    /// Re-reads displays macOS dims itself, whose level the brightness keys
+    /// and Control Center change behind NotchShot's back. Cheap, unlike
+    /// `refresh()`, which asks every monitor over DDC again.
+    public func refreshNativeLevels() {
+        for index in displays.indices where displays[index].method == .native {
+            if let level = BrightnessReader.shared.level(displayID: displays[index].id) {
+                displays[index].level = level
+            }
+        }
+    }
+
     public func display(_ id: CGDirectDisplayID) -> ControlledDisplay? {
         displays.first { $0.id == id }
     }
