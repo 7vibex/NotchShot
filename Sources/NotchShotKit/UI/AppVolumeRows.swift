@@ -26,7 +26,7 @@ struct AppVolumeRow: View {
                 .frame(width: 92, alignment: .leading)
             AppVolumeSlider(level: level, isHovered: isHovered) { value, isFinal in
                 draft = isFinal ? nil : value
-                mixer.setVolume(value, for: source.bundleIdentifier)
+                mixer.setVolume(value, for: source.bundleIdentifier, isFinal: isFinal)
             }
             Text("\(Int((level * 100).rounded()))")
                 .font(.system(size: 11, weight: .medium).monospacedDigit())

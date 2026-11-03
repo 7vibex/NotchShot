@@ -75,19 +75,24 @@ public final class AppVolumeMixer {
         ExtrasPreferences.shared.appVolumes[bundleIdentifier] ?? 1
     }
 
-    /// Sets an app's level. Full volume removes its tap altogether.
-    public func setVolume(_ volume: Double, for bundleIdentifier: String) {
+    /// Sets an app's level. Full volume removes its tap altogether, but only
+    /// once a drag ends: a drag that passes through the end keeps the tap at
+    /// full gain, since every new tap costs a handover.
+    public func setVolume(_ volume: Double, for bundleIdentifier: String, isFinal: Bool = true) {
         let clamped = min(max(volume, 0), 1)
         let extras = ExtrasPreferences.shared
+        let tap = taps[bundleIdentifier]
         // Snaps the last percent to full, so dragging to the end really
         // gives the app its own output back.
-        if clamped >= 0.99 {
+        let isFull = clamped >= 0.99
+        if isFull, tap == nil || isFinal {
             extras.appVolumes[bundleIdentifier] = nil
-        } else {
-            extras.appVolumes[bundleIdentifier] = clamped
+            reconcileTaps()
+            return
         }
-        if let tap = taps[bundleIdentifier], clamped < 0.99 {
-            tap.setGain(Float(clamped))
+        extras.appVolumes[bundleIdentifier] = isFull ? 1 : clamped
+        if let tap {
+            tap.setGain(isFull ? 1 : Float(clamped))
         } else {
             refused.remove(bundleIdentifier)
             reconcileTaps()
@@ -131,8 +136,10 @@ public final class AppVolumeMixer {
         for (id, level) in levels where !refused.contains(id) {
             let matched = AudioTapProcessPolicy.matches(for: id, among: running).sorted()
             if let existing = taps[id] {
-                // A helper that started after the tap isn't in it.
-                guard existing.bundleIDs != matched else { continue }
+                // A helper that started after the tap isn't in it. Spotify
+                // and Chrome start and quit helpers all the time, so the
+                // running tap is changed rather than rebuilt.
+                guard existing.bundleIDs != matched, !existing.update(bundleIDs: matched) else { continue }
                 existing.stop()
                 taps[id] = nil
             }
@@ -175,12 +182,26 @@ public final class AppVolumeMixer {
 
 /// One app's tap: its sound muted at the source and replayed, scaled, to
 /// the current output through a private aggregate device.
+///
+/// The tap starts unmuted, with the replay silent, and mutes the app only
+/// once the replay is running. Muting first would leave a gap of a few audio
+/// cycles while the aggregate device starts. Stopping hands back the same
+/// way. Both handovers overlap by a cycle or so rather than leave a gap.
 final class AppVolumeTap: @unchecked Sendable {
-    let bundleIDs: [String]
+    private(set) var bundleIDs: [String]
     private let gain = AppVolumeGain()
+    private let handover = AppVolumeHandover()
+    private let description = CATapDescription(stereoMixdownOfProcesses: [])
     private var tapID = AudioObjectID(kAudioObjectUnknown)
     private var aggregateID = AudioObjectID(kAudioObjectUnknown)
     private var procID: AudioDeviceIOProcID?
+    private var isMuting = false
+
+    /// Cycles the replay must run before the app is muted. The first ones
+    /// can carry silence while the tap's drift compensation fills.
+    private static let cyclesBeforeMute = 3
+    private static let handoverPoll: DispatchTimeInterval = .milliseconds(5)
+    private static let handoverTimeout: TimeInterval = 1
 
     init(bundleIDs: [String], gain: Float) throws {
         self.bundleIDs = bundleIDs
@@ -191,6 +212,7 @@ final class AppVolumeTap: @unchecked Sendable {
             stop()
             throw error
         }
+        scheduleMute(deadline: Date().addingTimeInterval(Self.handoverTimeout))
     }
 
     deinit { stop() }
@@ -199,18 +221,28 @@ final class AppVolumeTap: @unchecked Sendable {
         gain.store(min(max(value, 0), 1))
     }
 
+    /// Changes which processes the running tap takes. False if Core Audio
+    /// refused, and the tap has to be rebuilt.
+    func update(bundleIDs: [String]) -> Bool {
+        guard tapID != kAudioObjectUnknown else { return false }
+        description.bundleIDs = bundleIDs
+        guard applyDescription() else {
+            description.bundleIDs = self.bundleIDs
+            return false
+        }
+        self.bundleIDs = bundleIDs
+        return true
+    }
+
     private func start() throws {
         guard let outputUID = Self.defaultOutputUID() else {
             throw ProcessAudioTap.TapError.coreAudio("output", kAudioHardwareBadDeviceError)
         }
-        let description = CATapDescription(stereoMixdownOfProcesses: [])
         description.bundleIDs = bundleIDs
         description.isProcessRestoreEnabled = true
         description.name = "NotchShot app volume"
         description.isPrivate = true
-        // The app goes quiet only while this tap is read, so a crash or a
-        // quit gives the app its own sound back at once.
-        description.muteBehavior = .mutedWhenTapped
+        description.muteBehavior = .unmuted
 
         var tap = AudioObjectID(kAudioObjectUnknown)
         var status = AudioHardwareCreateProcessTap(description, &tap)
@@ -246,12 +278,14 @@ final class AppVolumeTap: @unchecked Sendable {
         aggregateID = device
 
         let gain = self.gain
-        var current = gain.load()
+        let handover = self.handover
+        // Silent until the handover, then ramps up over one buffer.
+        var current: Float = 0
         var proc: AudioDeviceIOProcID?
         // No queue: the block runs on the HAL's real-time thread, which is
         // what writing to an output needs.
         status = AudioDeviceCreateIOProcIDWithBlock(&proc, device, nil) { _, input, _, output, _ in
-            let target = gain.load()
+            let target = handover.isLive ? gain.load() : 0
             AppVolumeRenderer.render(
                 input: UnsafeMutableAudioBufferListPointer(UnsafeMutablePointer(mutating: input)),
                 output: UnsafeMutableAudioBufferListPointer(output),
@@ -260,6 +294,7 @@ final class AppVolumeTap: @unchecked Sendable {
                 to: target
             )
             current = target
+            handover.countCycle()
         }
         guard status == noErr, let proc else { throw ProcessAudioTap.TapError.coreAudio("io", status) }
         procID = proc
@@ -267,7 +302,52 @@ final class AppVolumeTap: @unchecked Sendable {
         guard status == noErr else { throw ProcessAudioTap.TapError.coreAudio("start", status) }
     }
 
+    /// Mutes the app once the replay has run a few cycles. The replay goes
+    /// live first, so the slop is a short overlap, not a gap. If it never
+    /// runs, the app is left playing on its own at full volume.
+    private func scheduleMute(deadline: Date) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.handoverPoll) { [weak self] in
+            guard let self, self.tapID != kAudioObjectUnknown, !self.isMuting else { return }
+            guard self.handover.cycles >= Self.cyclesBeforeMute else {
+                if Date() < deadline {
+                    self.scheduleMute(deadline: deadline)
+                } else {
+                    Log.app.error("App volume tap for \(self.bundleIDs) never ran; leaving the app unmuted")
+                }
+                return
+            }
+            self.handover.goLive()
+            self.description.muteBehavior = .mutedWhenTapped
+            if self.applyDescription() {
+                self.isMuting = true
+            } else {
+                // Without the mute the app would play twice.
+                self.handover.goSilent()
+                self.description.muteBehavior = .unmuted
+                Log.app.error("App volume tap for \(self.bundleIDs) couldn't mute the app")
+            }
+        }
+    }
+
+    private func applyDescription() -> Bool {
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioTapPropertyDescription,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var value = Unmanaged.passUnretained(description)
+        let size = UInt32(MemoryLayout<Unmanaged<CATapDescription>>.size)
+        return AudioObjectSetPropertyData(tapID, &address, 0, nil, size, &value) == noErr
+    }
+
     func stop() {
+        // Unmute before the replay stops, so the app's own sound is back
+        // by the replay's last cycle.
+        if isMuting, tapID != kAudioObjectUnknown {
+            description.muteBehavior = .unmuted
+            _ = applyDescription()
+        }
+        isMuting = false
         if aggregateID != kAudioObjectUnknown {
             if let procID {
                 AudioDeviceStop(aggregateID, procID)
@@ -308,6 +388,20 @@ private final class AppVolumeGain: Sendable {
 
     func load() -> Float { Float(bitPattern: bits.load(ordering: .relaxed)) }
     func store(_ value: Float) { bits.store(value.bitPattern, ordering: .relaxed) }
+}
+
+/// What the real-time thread and the main thread share during a handover:
+/// how many cycles the replay has run, and whether it is audible yet.
+private final class AppVolumeHandover: Sendable {
+    private let cycleCount = Atomic<Int>(0)
+    private let live = Atomic<Bool>(false)
+
+    var cycles: Int { cycleCount.load(ordering: .relaxed) }
+    var isLive: Bool { live.load(ordering: .relaxed) }
+
+    func countCycle() { cycleCount.add(1, ordering: .relaxed) }
+    func goLive() { live.store(true, ordering: .relaxed) }
+    func goSilent() { live.store(false, ordering: .relaxed) }
 }
 
 /// The real-time half of the mixer: copies the tapped sound to the output
