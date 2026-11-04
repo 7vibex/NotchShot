@@ -248,7 +248,9 @@ struct AgentRunCard: View {
             font: NotchAlertStyle.meta,
             color: Color.islandInk(model.endedAt == nil ? NotchIsland.Ink.secondary : NotchIsland.Ink.tertiary)
         )
-        .accessibilityLabel("Running for \(AgentRunPhrasing.duration(seconds, running: true))")
+        .accessibilityLabel(model.endedAt == nil
+            ? "Running for \(AgentRunPhrasing.duration(seconds, running: true))"
+            : "Ran for \(AgentRunPhrasing.duration(seconds, running: false))")
     }
 
     // MARK: Details

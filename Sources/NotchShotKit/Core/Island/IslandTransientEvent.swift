@@ -139,10 +139,6 @@ public struct IslandTransientQueue: Sendable, Equatable {
         return true
     }
 
-    public mutating func dismissCurrent(now: Date = Date()) {
-        advance(now: now)
-    }
-
     public mutating func removeAll() {
         current = nil
         pending.removeAll()

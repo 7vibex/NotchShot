@@ -28,7 +28,9 @@ public struct MarqueeText: View {
     private let gap: CGFloat
 
     @State private var textWidth: CGFloat = 0
-    @State private var containerWidth: CGFloat = 0
+    /// Kept rather than worked out from the container's width, which changes
+    /// on every frame of a spring; this changes at most once per spring.
+    @State private var overflows = false
     /// Drawn once per text, not per update: the body runs on every frame
     /// the container is resizing.
     @State private var strip: MarqueeScroller.Strip?
@@ -52,8 +54,9 @@ public struct MarqueeText: View {
         self.gap = gap
     }
 
-    private var overflows: Bool {
-        textWidth > containerWidth + 1 && containerWidth > 0
+    private func updateOverflow(textWidth: CGFloat, containerWidth: CGFloat) {
+        let overflowing = textWidth > containerWidth + 1 && containerWidth > 0
+        if overflowing != overflows { overflows = overflowing }
     }
 
     private var label: some View {
@@ -89,21 +92,26 @@ public struct MarqueeText: View {
                     .hidden()
                     .background {
                         GeometryReader { textGeometry in
-                            Color.clear.onAppear { textWidth = textGeometry.size.width }
+                            Color.clear
+                                .onAppear {
+                                    textWidth = textGeometry.size.width
+                                    updateOverflow(textWidth: textWidth, containerWidth: geometry.size.width)
+                                }
                                 .onChange(of: textGeometry.size.width) { _, width in
                                     textWidth = width
+                                    updateOverflow(textWidth: width, containerWidth: geometry.size.width)
                                 }
                         }
                     }
             }
             .onAppear {
-                containerWidth = geometry.size.width
+                updateOverflow(textWidth: textWidth, containerWidth: geometry.size.width)
                 refreshStrip()
             }
             // Only decides whether to scroll at all. The loop does not depend
             // on the width, so a container springing open does not restart it.
             .onChange(of: geometry.size.width) { _, newValue in
-                containerWidth = newValue
+                updateOverflow(textWidth: textWidth, containerWidth: newValue)
             }
             .onChange(of: stripKey) { _, _ in refreshStrip() }
             .onChange(of: overflows) { _, _ in refreshStrip() }
@@ -125,6 +133,12 @@ public struct MarqueeText: View {
         guard overflows, !reduceMotion else { return }
         let key = stripKey
         guard strip?.key != key else { return }
+        // This view goes away when the player closes, and the picture with it.
+        let cacheKey = MarqueeStripCache.Key(stripKey: key, font: font, color: color)
+        if let cached = MarqueeStripCache.strip(for: cacheKey) {
+            strip = cached
+            return
+        }
         let renderer = ImageRenderer(content: HStack(spacing: gap) { label; label })
         renderer.scale = max(1, displayScale)
         renderer.isOpaque = false
@@ -132,7 +146,7 @@ public struct MarqueeText: View {
             strip = nil
             return
         }
-        strip = MarqueeScroller.Strip(
+        let rendered = MarqueeScroller.Strip(
             image: image,
             size: CGSize(
                 width: CGFloat(image.width) / renderer.scale,
@@ -141,6 +155,35 @@ public struct MarqueeText: View {
             scale: renderer.scale,
             key: key
         )
+        strip = rendered
+        MarqueeStripCache.insert(rendered, for: cacheKey)
+    }
+}
+
+/// The last few pictures, so a title already drawn costs nothing on the next
+/// open. Small on purpose: each one holds a few hundred KB.
+@MainActor
+private enum MarqueeStripCache {
+    struct Key: Hashable {
+        var stripKey: String
+        var font: Font
+        var color: Color
+    }
+
+    private static let capacity = 4
+    private static var entries: [(key: Key, strip: MarqueeScroller.Strip)] = []
+
+    static func strip(for key: Key) -> MarqueeScroller.Strip? {
+        guard let index = entries.firstIndex(where: { $0.key == key }) else { return nil }
+        let entry = entries.remove(at: index)
+        entries.append(entry)
+        return entry.strip
+    }
+
+    static func insert(_ strip: MarqueeScroller.Strip, for key: Key) {
+        entries.removeAll { $0.key == key }
+        entries.append((key, strip))
+        if entries.count > capacity { entries.removeFirst(entries.count - capacity) }
     }
 }
 

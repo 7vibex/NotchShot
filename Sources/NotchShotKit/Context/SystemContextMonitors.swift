@@ -68,13 +68,30 @@ enum PowerChargeDescription {
 
 /// Whether the locked activity stack should carry a charging card: only
 /// while plugged in, and only when the user hasn't turned it off.
+///
+/// Layout and view bodies ask several times a refresh, and every answer from
+/// `IOPSCopyPowerSourcesInfo` is IPC to powerd, so the reading is kept briefly.
+/// `PowerSourceMonitor` drops it as soon as the power state changes.
 @MainActor
 enum LockedChargingPolicy {
+    nonisolated static let readingLifetime: TimeInterval = 5
+    private static var cached: (at: TimeInterval, reading: PowerSourceReading?)?
+
     static func reading() -> PowerSourceReading? {
-        guard ExtrasPreferences.shared.showsChargingWhileLocked,
-              let reading = PowerSourceMonitor.currentReading(),
-              reading.isConnectedToPower else { return nil }
+        guard ExtrasPreferences.shared.showsChargingWhileLocked else { return nil }
+        let now = ProcessInfo.processInfo.systemUptime
+        if let cached, isFresh(readAt: cached.at, now: now) { return cached.reading }
+        let reading = PowerSourceMonitor.currentReading().flatMap { $0.isConnectedToPower ? $0 : nil }
+        cached = (now, reading)
         return reading
+    }
+
+    static func invalidate() {
+        cached = nil
+    }
+
+    nonisolated static func isFresh(readAt: TimeInterval, now: TimeInterval) -> Bool {
+        now >= readAt && now - readAt < readingLifetime
     }
 }
 
@@ -106,8 +123,6 @@ enum PowerContextPolicy {
             title = current.isConnectedToPower ? "Charging" : "On Battery"
             symbol = current.isConnectedToPower ? "#30D158" : "#FFD60A"
             expires = 4
-        } else if previous == nil {
-            return nil
         } else {
             return nil
         }
@@ -158,7 +173,9 @@ final class PowerSourceMonitor {
         coalescingTask?.cancel()
         coalescingTask = Task { [weak self] in
             try? await Task.sleep(for: .milliseconds(350))
-            guard !Task.isCancelled, let self, let current = Self.currentReading() else { return }
+            guard !Task.isCancelled, let self else { return }
+            LockedChargingPolicy.invalidate()
+            guard let current = Self.currentReading() else { return }
             let old = self.previous
             self.previous = current
             if let snapshot = PowerContextPolicy.snapshot(previous: old, current: current) {
@@ -168,8 +185,9 @@ final class PowerSourceMonitor {
     }
 
     static func currentReading() -> PowerSourceReading? {
-        let info = IOPSCopyPowerSourcesInfo().takeRetainedValue()
-        let sources = IOPSCopyPowerSourcesList(info).takeRetainedValue() as Array
+        // Both are documented to return NULL on error.
+        guard let info = IOPSCopyPowerSourcesInfo()?.takeRetainedValue(),
+              let sources = IOPSCopyPowerSourcesList(info)?.takeRetainedValue() as? [CFTypeRef] else { return nil }
         for source in sources {
             guard let description = IOPSGetPowerSourceDescription(info, source)?.takeUnretainedValue()
                 as? [String: Any] else { continue }
@@ -402,13 +420,23 @@ enum AudioOutputDeviceService {
             &unmanagedName
         )
         let name = nameStatus == noErr
-            ? unmanagedName?.takeUnretainedValue() as String? ?? "Audio Device"
+            // The name follows the copy rule: this read owns it.
+            ? unmanagedName?.takeRetainedValue() as String? ?? "Audio Device"
             : "Audio Device"
         return AudioRouteReading(deviceID: device, name: name, transport: transport)
     }
 }
 
 enum AudioRouteContextPolicy {
+    static func batteryAmendmentApplies(
+        routeID: UInt32?,
+        currentRouteID: UInt32?,
+        expiresAt: Date?,
+        now: Date = Date()
+    ) -> Bool {
+        routeID == currentRouteID && now < expiresAt ?? .distantFuture
+    }
+
     static let externalTransports: Set<UInt32> = [
         kAudioDeviceTransportTypeBluetooth,
         kAudioDeviceTransportTypeBluetoothLE,
@@ -468,20 +496,39 @@ final class AudioRouteMonitor {
         mScope: kAudioObjectPropertyScopeGlobal,
         mElement: kAudioObjectPropertyElementMain
     )
+    /// Core Audio is asked here, not on main: this fires exactly when
+    /// coreaudiod is busiest, while it reconfigures for the new device.
+    private let queue = DispatchQueue(label: "com.notchshot.audio-route", qos: .userInitiated)
+    private var generation = 0
+    private var hasBaseline = false
 
     func start() {
         guard listener == nil else { return }
-        previous = AudioOutputDeviceService.currentOutput()
-        let block: AudioObjectPropertyListenerBlock = { [weak self] _, _ in
-            Task { @MainActor in self?.refresh() }
+        generation += 1
+        let generation = self.generation
+        hasBaseline = false
+        let deliver: @Sendable (AudioRouteReading?) -> Void = { [weak self] current in
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated { self?.receive(current, generation: generation) }
+            }
         }
+        let block = Self.routeListener(deliver)
         listener = block
         AudioObjectAddPropertyListenerBlock(
             AudioObjectID(kAudioObjectSystemObject),
             &address,
-            .main,
+            queue,
             block
         )
+        queue.async { deliver(AudioOutputDeviceService.currentOutput()) }
+    }
+
+    /// Built outside the main actor, so the block isn't taken to be isolated
+    /// to it: it runs on `queue`.
+    private nonisolated static func routeListener(
+        _ deliver: @escaping @Sendable (AudioRouteReading?) -> Void
+    ) -> AudioObjectPropertyListenerBlock {
+        { _, _ in deliver(AudioOutputDeviceService.currentOutput()) }
     }
 
     func stop() {
@@ -489,16 +536,27 @@ final class AudioRouteMonitor {
             AudioObjectRemovePropertyListenerBlock(
                 AudioObjectID(kAudioObjectSystemObject),
                 &address,
-                .main,
+                queue,
                 listener
             )
         }
         listener = nil
         previous = nil
+        generation += 1
     }
 
-    private func refresh() {
-        let current = AudioOutputDeviceService.currentOutput()
+    /// The first reading after `start` is the baseline; it is never a change.
+    private func receive(_ current: AudioRouteReading?, generation: Int) {
+        guard generation == self.generation else { return }
+        guard hasBaseline else {
+            hasBaseline = true
+            previous = current
+            return
+        }
+        refresh(current: current)
+    }
+
+    private func refresh(current: AudioRouteReading?) {
         defer { previous = current }
         guard let snapshot = AudioRouteContextPolicy.snapshot(
             previous: previous,
@@ -511,11 +569,19 @@ final class AudioRouteMonitor {
         // first would delay the card by a second or more for every accessory,
         // including the ones that report no battery at all.
         guard let routeName = current?.name, snapshot.metric == "Connected" else { return }
+        let deviceID = current?.deviceID
         Task { [weak self] in
             guard let battery = await BluetoothAccessoryBatteryService.shared
                 .battery(forRouteNamed: routeName) else { return }
             await MainActor.run {
                 guard let self else { return }
+                // The report can take seconds. By then the card may have gone,
+                // or the route moved on, and it must not come back.
+                guard AudioRouteContextPolicy.batteryAmendmentApplies(
+                    routeID: deviceID,
+                    currentRouteID: self.previous?.deviceID,
+                    expiresAt: snapshot.expiresAt
+                ) else { return }
                 var amended = snapshot
                 amended.accessory = battery
                 // Long enough to read three numbers, where the plain

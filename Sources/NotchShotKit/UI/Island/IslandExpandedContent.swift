@@ -28,7 +28,7 @@ struct IslandExpandedContent: View {
             case .call:
                 IslandCallExpanded(activity: activity, physicalNotchWidth: physicalNotchWidth, coordinator: coordinator)
             case .ai:
-                IslandAIExpanded(activity: activity, coordinator: coordinator)
+                IslandAIExpanded(coordinator: coordinator)
             case .transfer:
                 IslandTransferExpanded(activity: activity, coordinator: coordinator)
             case .external:
@@ -329,7 +329,6 @@ private struct RoundButtonSurface: ViewModifier {
 // MARK: - AI
 
 private struct IslandAIExpanded: View {
-    var activity: IslandActivity
     @Bindable var coordinator: AppCoordinator
 
     /// Every run the list shows, so the header counts what the user sees.
@@ -515,11 +514,21 @@ private struct IslandExternalExpanded: View {
 }
 
 enum IslandFormat {
-    static func remaining(_ seconds: TimeInterval) -> String {
+    /// One per unit set, because the detail line asks on every progress update.
+    @MainActor private static let hoursAndMinutes = remainingFormatter(units: [.hour, .minute])
+    @MainActor private static let minutesAndSeconds = remainingFormatter(units: [.minute, .second])
+
+    private static func remainingFormatter(units: NSCalendar.Unit) -> DateComponentsFormatter {
         let formatter = DateComponentsFormatter()
         formatter.unitsStyle = .abbreviated
         formatter.maximumUnitCount = 2
-        formatter.allowedUnits = seconds >= 3_600 ? [.hour, .minute] : [.minute, .second]
+        formatter.allowedUnits = units
+        return formatter
+    }
+
+    @MainActor
+    static func remaining(_ seconds: TimeInterval) -> String {
+        let formatter = seconds >= 3_600 ? hoursAndMinutes : minutesAndSeconds
         return (formatter.string(from: seconds) ?? "") + " left"
     }
 

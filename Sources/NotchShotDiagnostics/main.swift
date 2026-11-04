@@ -126,10 +126,18 @@ func run() async {
         print("All capture paths OK.")
         exit(0)
     } catch {
+        if RecordingService.shared.isRecording {
+            await RecordingService.shared.cancel()
+        }
         print("\nFAILED: \(error.localizedDescription)")
         exit(1)
     }
 }
 
+// A fully launched AppKit application, as `--self-test` uses: with a bare run
+// loop macOS 26 may return an empty shareable-content inventory.
+let application = NSApplication.shared
+application.setActivationPolicy(.accessory)
+application.finishLaunching()
 Task { await run() }
-RunLoop.main.run()
+application.run()

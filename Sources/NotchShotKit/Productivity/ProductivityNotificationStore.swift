@@ -133,6 +133,9 @@ public final class ProductivityNotificationStore {
     public var onChange: (() -> Void)?
 
     private let storeURL: URL
+    /// The saved inbox exists but could not be read. Writing now would replace
+    /// it with whatever is in memory, so alerts work for this session only.
+    private var loadFailed = false
 
     public init(storeURL: URL = AppPaths.support.appendingPathComponent("productivity-notifications.json")) {
         self.storeURL = storeURL
@@ -222,10 +225,14 @@ public final class ProductivityNotificationStore {
     }
 
     private func load() {
+        guard FileManager.default.fileExists(atPath: storeURL.path) else { return }
         guard let attributes = try? FileManager.default.attributesOfItem(atPath: storeURL.path),
               let size = (attributes[.size] as? NSNumber)?.intValue,
               size <= Self.maximumStoreBytes,
-              let data = try? Data(contentsOf: storeURL) else { return }
+              let data = try? Data(contentsOf: storeURL) else {
+            setAsideUnreadableStore()
+            return
+        }
         do {
             items = Array(
                 try JSONDecoder().decode([ProductivityNotificationItem].self, from: data)
@@ -233,11 +240,29 @@ public final class ProductivityNotificationStore {
                     .prefix(Self.maximumItemCount)
             )
         } catch {
-            lastError = "Notifications could not be loaded: \(error.localizedDescription)"
+            setAsideUnreadableStore()
+        }
+    }
+
+    /// Keeps the file under a recovery name, so saving can carry on without
+    /// destroying it. Only if it can't be moved does saving stay off, since the
+    /// next save would overwrite the only copy.
+    private func setAsideUnreadableStore() {
+        let name = storeURL.deletingPathExtension().lastPathComponent
+        let recovery = storeURL.deletingLastPathComponent()
+            .appendingPathComponent("\(name).corrupt-\(UUID().uuidString)")
+            .appendingPathExtension(storeURL.pathExtension)
+        do {
+            try FileManager.default.moveItem(at: storeURL, to: recovery)
+            lastError = "Notifications could not be loaded. The saved file was kept as \(recovery.lastPathComponent)."
+        } catch {
+            loadFailed = true
+            lastError = "Notifications could not be loaded. The saved file was left untouched and changes are not being saved."
         }
     }
 
     private func persist() {
+        guard !loadFailed else { return }
         do {
             try FileManager.default.createDirectory(
                 at: storeURL.deletingLastPathComponent(),

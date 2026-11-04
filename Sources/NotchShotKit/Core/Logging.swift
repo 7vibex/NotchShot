@@ -10,7 +10,6 @@ public enum Log {
     public static let recording = Logger(subsystem: subsystem, category: "recording")
     public static let media = Logger(subsystem: subsystem, category: "media")
     public static let history = Logger(subsystem: subsystem, category: "history")
-    public static let annotation = Logger(subsystem: subsystem, category: "annotation")
     public static let permissions = Logger(subsystem: subsystem, category: "permissions")
     public static let ocr = Logger(subsystem: subsystem, category: "ocr")
     public static let dictation = Logger(subsystem: subsystem, category: "dictation")

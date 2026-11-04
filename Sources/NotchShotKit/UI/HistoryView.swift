@@ -44,9 +44,8 @@ public struct HistoryView: View {
                     )
                 } else {
                     List(entries, selection: $selection) { entry in
-                        HistoryRow(entry: entry, thumbnails: thumbnails)
+                        HistoryRow(entry: entry, thumbnails: thumbnails, coordinator: coordinator)
                             .tag(entry.id)
-                            .contextMenu { contextMenu(for: entry) }
                     }
                 }
             }
@@ -94,10 +93,23 @@ public struct HistoryView: View {
         let days = Preferences.shared.historyRetentionDays
         return days == 0 ? "as long as you like" : "\(days) days"
     }
+}
 
-    @ViewBuilder
-    private func contextMenu(for entry: HistoryEntry) -> some View {
-        if entry.fileExists {
+/// A stat on a saved capture can hang on an unreachable volume, so views ask
+/// off the main actor and assume the file is there until they hear otherwise.
+private func fileExistsOffMain(_ url: URL) async -> Bool {
+    await Task.detached(priority: .userInitiated) {
+        FileManager.default.fileExists(atPath: url.path)
+    }.value
+}
+
+private struct HistoryRowMenu: View {
+    let entry: HistoryEntry
+    let fileExists: Bool
+    let coordinator: AppCoordinator
+
+    var body: some View {
+        if fileExists {
             Button("Reveal in Finder") {
                 NSWorkspace.shared.activateFileViewerSelecting([entry.fileURL])
             }
@@ -123,14 +135,14 @@ public struct HistoryView: View {
             }
         }
         Divider()
-        Button(entry.fileExists ? "Remove from History" : "Remove Missing Capture from History") {
+        Button(fileExists ? "Remove from History" : "Remove Missing Capture from History") {
             do {
                 try coordinator.history.delete(id: entry.id, includingFile: false)
             } catch {
                 coordinator.present(error: error)
             }
         }
-        if entry.fileExists {
+        if fileExists {
             Button(entry.kind == .recording ? "Move Recording and Captions to Trash" : "Move File to Trash", role: .destructive) {
                 do {
                     try coordinator.history.delete(id: entry.id, includingFile: true)
@@ -145,7 +157,9 @@ public struct HistoryView: View {
 private struct HistoryRow: View {
     let entry: HistoryEntry
     let thumbnails: HistoryThumbnailCache
+    let coordinator: AppCoordinator
     @State private var thumbnail: NSImage?
+    @State private var fileExists = true
 
     var body: some View {
         HStack(spacing: 10) {
@@ -184,7 +198,7 @@ private struct HistoryRow: View {
 
             Spacer()
 
-            if !entry.fileExists {
+            if !fileExists {
                 Image(systemName: "questionmark.folder")
                     .foregroundStyle(.orange)
                     .help("The file has moved or been deleted")
@@ -195,6 +209,9 @@ private struct HistoryRow: View {
                     .accessibilityHint("The file has moved or been deleted")
             }
         }
+        .contextMenu { HistoryRowMenu(entry: entry, fileExists: fileExists, coordinator: coordinator) }
+        // By URL: a tracked rename or move changes it under the same row.
+        .task(id: entry.fileURL) { fileExists = await fileExistsOffMain(entry.fileURL) }
         .task { await loadThumbnail() }
     }
 
@@ -205,7 +222,7 @@ private struct HistoryRow: View {
         }
         // Fall back to Quick Look so rows still render if a thumbnail was
         // pruned or never generated (recordings, dropped files).
-        guard entry.fileExists else { return }
+        guard await fileExistsOffMain(entry.fileURL) else { return }
         let request = QLThumbnailGenerator.Request(
             fileAt: entry.fileURL,
             size: CGSize(width: 104, height: 72),
@@ -248,7 +265,11 @@ final class HistoryThumbnailCache: @unchecked Sendable {
         images.totalCostLimit = 16 * 1_048_576
     }
 
-    func image(at url: URL, decode: (Data) -> CGImage?) -> CGImage? {
+    func image(
+        at url: URL,
+        read: (URL) -> Data? = { try? Data(contentsOf: $0) },
+        decode: (Data) -> CGImage?
+    ) -> CGImage? {
         var information = stat()
         guard stat(url.path, &information) == 0 else { return nil }
         let key = [
@@ -259,12 +280,16 @@ final class HistoryThumbnailCache: @unchecked Sendable {
             "\(information.st_ctimespec.tv_sec).\(information.st_ctimespec.tv_nsec)",
         ].joined(separator: "|") as NSString
         if let image = images.object(forKey: key) { return image }
-        guard let data = try? Data(contentsOf: url), let image = decode(data) else { return nil }
+        guard let data = read(url), let image = decode(data) else { return nil }
         images.setObject(image, forKey: key, cost: image.bytesPerRow * image.height)
         return image
     }
 
     static func rowImage(from data: Data) -> CGImage? {
+        rowImage(from: data, fitting: rowSize)
+    }
+
+    static func rowImage(from data: Data, fitting size: CGSize) -> CGImage? {
         guard let source = CGImageSourceCreateWithData(
             data as CFData,
             [kCGImageSourceShouldCache: false] as CFDictionary
@@ -277,7 +302,7 @@ final class HistoryThumbnailCache: @unchecked Sendable {
            let width = properties[kCGImagePropertyPixelWidth] as? Int,
            let height = properties[kCGImagePropertyPixelHeight] as? Int,
            width > 0, height > 0 {
-            options[kCGImageSourceThumbnailMaxPixelSize] = fillingPixelSize(width: width, height: height)
+            options[kCGImageSourceThumbnailMaxPixelSize] = fillingPixelSize(width: width, height: height, size: size)
         }
         // Without a size, the thumbnail is the full image, as before.
         return CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary)
@@ -286,8 +311,8 @@ final class HistoryThumbnailCache: @unchecked Sendable {
     /// The long edge that still covers the row at 2x, the largest Mac backing
     /// scale, after its aspect fill. One pixel of headroom keeps the short
     /// edge from rounding below the frame. Never larger than the image.
-    static func fillingPixelSize(width: Int, height: Int) -> Int {
-        let scale = max(rowSize.width * 2 / CGFloat(width), rowSize.height * 2 / CGFloat(height))
+    static func fillingPixelSize(width: Int, height: Int, size: CGSize = rowSize) -> Int {
+        let scale = max(size.width * 2 / CGFloat(width), size.height * 2 / CGFloat(height))
         let longEdge = max(width, height)
         return min(longEdge, Int((CGFloat(longEdge) * scale).rounded(.up)) + 1)
     }
@@ -298,6 +323,7 @@ private struct HistoryDetail: View {
     @Bindable var coordinator: AppCoordinator
     @State private var image: NSImage?
     @State private var finishedLoading = false
+    @State private var fileExists = true
     @State private var tagsText = ""
     @State private var collectionText = ""
     @State private var showsTranslation = false
@@ -310,9 +336,9 @@ private struct HistoryDetail: View {
                         .resizable()
                         .aspectRatio(contentMode: .fit)
                         .accessibilityLabel("Preview of \(entry.fileURL.lastPathComponent)")
-                } else if entry.fileExists, !finishedLoading {
+                } else if fileExists, !finishedLoading {
                     ProgressView()
-                } else if entry.fileExists {
+                } else if fileExists {
                     ContentUnavailableView(
                         "Preview unavailable",
                         systemImage: entry.kind.symbolName,
@@ -359,7 +385,7 @@ private struct HistoryDetail: View {
                         .foregroundStyle(.secondary)
                 }
                 Spacer()
-                if entry.fileExists {
+                if fileExists {
                     Button("Reveal") {
                         NSWorkspace.shared.activateFileViewerSelecting([entry.fileURL])
                     }
@@ -388,12 +414,16 @@ private struct HistoryDetail: View {
             }
             .padding(12)
         }
-        .task(id: entry.id) {
+        .task(id: [entry.id.uuidString, entry.fileURL.path]) {
             tagsText = entry.libraryTags.joined(separator: ", ")
             collectionText = entry.collectionName ?? ""
             finishedLoading = false
             image = nil
-            guard entry.fileExists else {
+            fileExists = true
+            let exists = await fileExistsOffMain(entry.fileURL)
+            guard !Task.isCancelled else { return }
+            fileExists = exists
+            guard exists else {
                 finishedLoading = true
                 return
             }
@@ -427,8 +457,8 @@ private struct HistoryDetail: View {
 
     private var previewPhase: Int {
         if image != nil { return 0 }
-        if entry.fileExists, !finishedLoading { return 1 }
-        return entry.fileExists ? 2 : 3
+        if fileExists, !finishedLoading { return 1 }
+        return fileExists ? 2 : 3
     }
 
     private func removeMissingEntry() {

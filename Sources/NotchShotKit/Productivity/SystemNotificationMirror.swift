@@ -222,16 +222,14 @@ public final class SystemNotificationMirror {
     /// Closes Apple's banner once the notch has it, so it shows in one place.
     public var hidesPresentedBanners = false
 
-    private static let notificationCenterBundleID = "com.apple.notificationcenterui"
+    private nonisolated static let notificationCenterBundleID = "com.apple.notificationcenterui"
     private nonisolated static let notificationBannerSubrole = "AXNotificationCenterBanner"
     private static let scanInterval: TimeInterval = 0.45
     private nonisolated static let maximumAXElements = 240
 
     private var isEnabled = false
     private var isSessionActive = true
-    private var applicationElement: AXUIElement?
-    private var observer: AXObserver?
-    private var observedPID: pid_t?
+    private var attachment: NotificationCenterAttachment?
     private var scanTimer: Timer?
     private var visibleFingerprints: Set<String> = []
     /// Banners the notch took whose Apple copy is being closed, with the
@@ -246,7 +244,9 @@ public final class SystemNotificationMirror {
     /// Walking Notification Center's hierarchy is hundreds of cross-process
     /// Accessibility calls. On the main thread that cost the island frames
     /// every scan, and a busy Notification Center could stall the whole
-    /// interface for the length of the AX timeout, so the walk runs here.
+    /// interface for the length of the AX timeout, so the walk runs here. So
+    /// do the trust check and the app lookup before it: each waits on a system
+    /// daemon, and the poll asks twice a second.
     private let scanQueue = DispatchQueue(label: "NotchShot.NotificationMirror", qos: .utility)
     private var isScanning = false
     private var needsRescan = false
@@ -256,7 +256,7 @@ public final class SystemNotificationMirror {
     /// Per-call ceiling on Notification Center's answers. The default is
     /// six seconds; a banner that cannot be read in this long is skipped
     /// and picked up by a later scan.
-    private static let messagingTimeout: Float = 0.5
+    private nonisolated static let messagingTimeout: Float = 0.5
 
     private init() {}
 
@@ -275,36 +275,59 @@ public final class SystemNotificationMirror {
         reconcile()
     }
 
+    /// Runs each time the app activates, so only a
+    /// regrant does anything. A lost grant is noticed by the next scan, and
+    /// rebuilding a healthy observer here made banners still on screen mirror
+    /// again.
     public func refreshPermission() {
-        guard isEnabled else { return }
-        reconcile()
+        guard isEnabled, status == .accessibilityRequired else { return }
+        scanQueue.async { [weak self] in
+            guard AXIsProcessTrusted() else { return }
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    guard let self, self.isEnabled, self.status == .accessibilityRequired else { return }
+                    self.reconcile()
+                }
+            }
+        }
     }
 
     fileprivate func scanNow() {
         guard isEnabled, isSessionActive else { return }
-        guard AXIsProcessTrusted() else {
-            stopMonitoring()
-            status = .accessibilityRequired
-            return
-        }
-        attachIfNeeded()
-        guard let applicationElement else { return }
         guard !isScanning else {
             needsRescan = true
             return
         }
         isScanning = true
         let generation = scanGeneration
-        let application = AXElementBox(element: applicationElement)
+        let attached = attachment
+        let refcon = Int(bitPattern: Unmanaged.passUnretained(self).toOpaque())
         scanQueue.async { [weak self] in
-            let banners = Self.readBanners(in: application.element)
+            let outcome = Self.scan(attached: attached, refcon: refcon)
             DispatchQueue.main.async {
-                MainActor.assumeIsolated { self?.finishScan(banners, generation: generation) }
+                MainActor.assumeIsolated { self?.finishScan(outcome, generation: generation) }
             }
         }
     }
 
-    private func finishScan(_ banners: [ScannedBanner], generation: Int) {
+    /// One scan off the main thread: is the grant still there, is Notification
+    /// Center still the process we are watching, and what is it showing.
+    private nonisolated static func scan(
+        attached: NotificationCenterAttachment?,
+        refcon: Int
+    ) -> ScanOutcome {
+        guard AXIsProcessTrusted() else { return .notTrusted }
+        guard let processID = NSRunningApplication.runningApplications(
+            withBundleIdentifier: notificationCenterBundleID
+        ).first?.processIdentifier else { return .notificationCenterMissing }
+        if let attached, attached.processID == processID {
+            return .read(readBanners(in: attached.element), newAttachment: nil)
+        }
+        let fresh = makeAttachment(processID: processID, refcon: refcon)
+        return .read(readBanners(in: fresh.element), newAttachment: fresh)
+    }
+
+    private func finishScan(_ outcome: ScanOutcome, generation: Int) {
         isScanning = false
         // A request that arrived mid-walk runs now, even when this walk's
         // result is stale because monitoring restarted underneath it.
@@ -315,9 +338,32 @@ public final class SystemNotificationMirror {
             }
         }
         guard generation == scanGeneration, isEnabled, isSessionActive else { return }
+        switch outcome {
+        case .notTrusted:
+            stopMonitoring()
+            setStatus(.accessibilityRequired)
+        case .notificationCenterMissing:
+            // Notification Center quit: remove the observer's run-loop source
+            // before dropping it, or the source stays attached to a dead PID.
+            detachObserver()
+            setStatus(.waitingForNotificationCenter)
+        case .read(let reading, let newAttachment):
+            if let newAttachment { attach(newAttachment) }
+            setStatus(.monitoring)
+            present(reading)
+        }
+    }
+
+    /// Settings observes `status`, and an observed setter notifies even when
+    /// the value is unchanged. Most scans change nothing.
+    private func setStatus(_ newStatus: SystemNotificationMirrorStatus) {
+        if status != newStatus { status = newStatus }
+    }
+
+    private func present(_ reading: ScanReading) {
         var currentFingerprints: Set<String> = []
         replyTargets.removeAll()
-        for banner in banners {
+        for banner in reading.banners {
             let content = banner.content
             currentFingerprints.insert(content.fingerprint)
             if let attempts = closingAttempts[content.fingerprint] {
@@ -345,6 +391,12 @@ public final class SystemNotificationMirror {
                 closingAttempts[content.fingerprint] = 1
                 close(banner)
             }
+        }
+        // A walk that lost an answer to a timeout cannot say a banner has gone.
+        // Forgetting it would mirror it again as soon as the next walk reads it.
+        guard reading.isComplete else {
+            visibleFingerprints.formUnion(currentFingerprints)
+            return
         }
         visibleFingerprints = currentFingerprints
         closingAttempts = closingAttempts.filter { currentFingerprints.contains($0.key) }
@@ -409,21 +461,22 @@ public final class SystemNotificationMirror {
         }
     }
 
-    private nonisolated static func readBanners(in application: AXUIElement) -> [ScannedBanner] {
-        let windows = elements(application, attribute: kAXWindowsAttribute as CFString)
+    private nonisolated static func readBanners(in application: AXUIElement) -> ScanReading {
+        var isComplete = true
+        let windows = elements(application, attribute: kAXWindowsAttribute as CFString, isComplete: &isComplete)
         var budget = maximumAXElements
         var banners: [AXUIElement] = []
         for window in windows {
-            collectBanners(from: window, budget: &budget, into: &banners)
+            collectBanners(from: window, budget: &budget, into: &banners, isComplete: &isComplete)
             if budget == 0 { break }
         }
-        return banners.compactMap { banner in
+        let scanned = banners.compactMap { banner -> ScannedBanner? in
             // Banner discovery and banner parsing use separate bounds. A large
             // Notification Center hierarchy must not consume the text budget
             // before a discovered banner can be read.
             var textBudget = maximumAXElements
-            let texts = staticTexts(from: banner, budget: &textBudget)
-            let description = string(banner, attribute: kAXDescriptionAttribute as CFString)
+            let texts = staticTexts(from: banner, budget: &textBudget, isComplete: &isComplete)
+            let description = string(banner, attribute: kAXDescriptionAttribute as CFString, isComplete: &isComplete)
             guard let content = SystemNotificationBannerParser.parse(description: description, staticTexts: texts) else {
                 return nil
             }
@@ -436,24 +489,22 @@ public final class SystemNotificationMirror {
                 element: AXElementBox(element: banner)
             )
         }
+        return ScanReading(banners: scanned, isComplete: isComplete)
     }
 
+    /// The first scan answers for the grant and for Notification Center, off
+    /// the main thread, and sets the status when it reports back.
     private func reconcile() {
         stopMonitoring()
         guard isEnabled else {
-            status = .disabled
+            setStatus(.disabled)
             return
         }
         guard isSessionActive else {
-            status = .pausedWhileLocked
-            return
-        }
-        guard AXIsProcessTrusted() else {
-            status = .accessibilityRequired
+            setStatus(.pausedWhileLocked)
             return
         }
         startScanTimer()
-        attachIfNeeded()
         scanNow()
     }
 
@@ -461,59 +512,50 @@ public final class SystemNotificationMirror {
         let timer = Timer(timeInterval: Self.scanInterval, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.scanNow() }
         }
+        timer.tolerance = 0.1
         RunLoop.main.add(timer, forMode: .common)
         scanTimer = timer
     }
 
-    private func attachIfNeeded() {
-        let app = NSRunningApplication.runningApplications(
-            withBundleIdentifier: Self.notificationCenterBundleID
-        ).first
-        guard let app else {
-            // Notification Center quit: remove the observer's run-loop source
-            // before dropping it, or the source stays attached to a dead PID.
-            detachObserver()
-            status = .waitingForNotificationCenter
-            return
-        }
-        guard observedPID != app.processIdentifier else {
-            status = .monitoring
-            return
-        }
-
-        detachObserver()
-        let element = AXUIElementCreateApplication(app.processIdentifier)
-        AXUIElementSetMessagingTimeout(element, Self.messagingTimeout)
+    /// Creating the observer and registering for its notifications each wait
+    /// on Notification Center, so they happen with the scan. Only adding the
+    /// run-loop source belongs to the main thread: see `attach(_:)`.
+    private nonisolated static func makeAttachment(
+        processID: pid_t,
+        refcon: Int
+    ) -> NotificationCenterAttachment {
+        let element = AXUIElementCreateApplication(processID)
+        AXUIElementSetMessagingTimeout(element, messagingTimeout)
         var newObserver: AXObserver?
         guard AXObserverCreate(
-            app.processIdentifier,
+            processID,
             systemNotificationObserverCallback,
             &newObserver
         ) == .success, let newObserver else {
-            applicationElement = element
-            observedPID = app.processIdentifier
-            status = .monitoring
-            return
+            return NotificationCenterAttachment(processID: processID, element: element, observer: nil)
         }
-
-        let refcon = Unmanaged.passUnretained(self).toOpaque()
+        let context = UnsafeMutableRawPointer(bitPattern: refcon)
         for notification in [kAXWindowCreatedNotification, kAXCreatedNotification] {
             _ = AXObserverAddNotification(
                 newObserver,
                 element,
                 notification as CFString,
-                refcon
+                context
             )
         }
-        CFRunLoopAddSource(
-            CFRunLoopGetMain(),
-            AXObserverGetRunLoopSource(newObserver),
-            .commonModes
-        )
-        applicationElement = element
-        observer = newObserver
-        observedPID = app.processIdentifier
-        status = .monitoring
+        return NotificationCenterAttachment(processID: processID, element: element, observer: newObserver)
+    }
+
+    private func attach(_ new: NotificationCenterAttachment) {
+        detachObserver()
+        if let newObserver = new.observer {
+            CFRunLoopAddSource(
+                CFRunLoopGetMain(),
+                AXObserverGetRunLoopSource(newObserver),
+                .commonModes
+            )
+        }
+        attachment = new
     }
 
     private func shouldMirror(_ content: SystemNotificationBannerContent) -> Bool {
@@ -534,61 +576,115 @@ public final class SystemNotificationMirror {
     }
 
     private func detachObserver() {
-        if let observer {
+        if let observer = attachment?.observer {
             CFRunLoopRemoveSource(
                 CFRunLoopGetMain(),
                 AXObserverGetRunLoopSource(observer),
                 .commonModes
             )
         }
-        observer = nil
-        applicationElement = nil
-        observedPID = nil
+        attachment = nil
     }
 
     private nonisolated static func collectBanners(
         from element: AXUIElement,
         budget: inout Int,
-        into result: inout [AXUIElement]
+        into result: inout [AXUIElement],
+        isComplete: inout Bool
     ) {
         guard budget > 0 else { return }
         budget -= 1
-        if string(element, attribute: kAXSubroleAttribute as CFString) == notificationBannerSubrole {
+        if string(element, attribute: kAXSubroleAttribute as CFString, isComplete: &isComplete) == notificationBannerSubrole {
             result.append(element)
             return
         }
-        for child in elements(element, attribute: kAXChildrenAttribute as CFString) {
-            collectBanners(from: child, budget: &budget, into: &result)
+        for child in elements(element, attribute: kAXChildrenAttribute as CFString, isComplete: &isComplete) {
+            collectBanners(from: child, budget: &budget, into: &result, isComplete: &isComplete)
             if budget == 0 { return }
         }
     }
 
-    private nonisolated static func staticTexts(from element: AXUIElement, budget: inout Int) -> [String] {
+    private nonisolated static func staticTexts(
+        from element: AXUIElement,
+        budget: inout Int,
+        isComplete: inout Bool
+    ) -> [String] {
         guard budget > 0 else { return [] }
         budget -= 1
         var result: [String] = []
-        if string(element, attribute: kAXRoleAttribute as CFString) == kAXStaticTextRole as String,
-           let value = string(element, attribute: kAXValueAttribute as CFString) {
+        if string(element, attribute: kAXRoleAttribute as CFString, isComplete: &isComplete) == kAXStaticTextRole as String,
+           let value = string(element, attribute: kAXValueAttribute as CFString, isComplete: &isComplete) {
             result.append(value)
         }
-        for child in elements(element, attribute: kAXChildrenAttribute as CFString) {
-            result.append(contentsOf: staticTexts(from: child, budget: &budget))
+        for child in elements(element, attribute: kAXChildrenAttribute as CFString, isComplete: &isComplete) {
+            result.append(contentsOf: staticTexts(from: child, budget: &budget, isComplete: &isComplete))
             if budget == 0 { break }
         }
         return result
     }
 
-    private nonisolated static func elements(_ element: AXUIElement, attribute: CFString) -> [AXUIElement] {
+    private nonisolated static func elements(
+        _ element: AXUIElement,
+        attribute: CFString,
+        isComplete: inout Bool
+    ) -> [AXUIElement] {
         var value: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(element, attribute, &value) == .success else { return [] }
-        return value as? [AXUIElement] ?? []
+        let result = AXUIElementCopyAttributeValue(element, attribute, &value)
+        guard result == .success else {
+            noteFailure(result, isComplete: &isComplete)
+            return []
+        }
+        let children = value as? [AXUIElement] ?? []
+        // A timeout belongs to one element, not to what it returns. It is a
+        // local setting, so this asks Notification Center nothing.
+        for child in children { AXUIElementSetMessagingTimeout(child, messagingTimeout) }
+        return children
     }
 
-    private nonisolated static func string(_ element: AXUIElement, attribute: CFString) -> String? {
+    private nonisolated static func string(
+        _ element: AXUIElement,
+        attribute: CFString,
+        isComplete: inout Bool
+    ) -> String? {
         var value: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(element, attribute, &value) == .success else { return nil }
+        let result = AXUIElementCopyAttributeValue(element, attribute, &value)
+        guard result == .success else {
+            noteFailure(result, isComplete: &isComplete)
+            return nil
+        }
         return value as? String
     }
+
+    /// A timeout or a refused call says nothing about what is on screen. An
+    /// element that is gone, or an attribute it does not have, does.
+    private nonisolated static func noteFailure(_ result: AXError, isComplete: inout Bool) {
+        if result == .cannotComplete || result == .apiDisabled || result == .failure {
+            isComplete = false
+        }
+    }
+}
+
+/// What one walk of Notification Center read.
+private struct ScanReading: Sendable {
+    var banners: [ScannedBanner]
+    /// False when an answer was lost, so a missing banner may still be there.
+    var isComplete: Bool
+}
+
+private enum ScanOutcome: Sendable {
+    case notTrusted
+    case notificationCenterMissing
+    /// `newAttachment` is set when this scan attached to a new process.
+    case read(ScanReading, newAttachment: NotificationCenterAttachment?)
+}
+
+/// The Notification Center process being watched. Carried between the main
+/// thread and the scan queue; the Accessibility API may be called from any
+/// thread, and the observer's run-loop source is only touched on main.
+private struct NotificationCenterAttachment: @unchecked Sendable {
+    let processID: pid_t
+    let element: AXUIElement
+    let observer: AXObserver?
 }
 
 /// One banner read by a scan: its text, and how to reply to or close it.

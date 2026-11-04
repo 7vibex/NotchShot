@@ -250,7 +250,9 @@ public final class InstantReplayController {
         let fragmented = FileManager.default.temporaryDirectory
             .appendingPathComponent("notchshot-replay-\(UUID().uuidString)")
             .appendingPathExtension("mp4")
-        try data.write(to: fragmented, options: .atomic)
+        try await Task.detached(priority: .userInitiated) {
+            try data.write(to: fragmented, options: .atomic)
+        }.value
         defer { try? FileManager.default.removeItem(at: fragmented) }
 
         let asset = AVURLAsset(url: fragmented)

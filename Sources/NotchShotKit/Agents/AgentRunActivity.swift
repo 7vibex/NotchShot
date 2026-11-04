@@ -125,8 +125,9 @@ public enum AgentRunTimeline {
         if actions.count > maximumActions { actions.removeFirst(actions.count - maximumActions) }
     }
 
-    /// Ends the call with this ID, else the newest open call of this tool,
-    /// else the newest open call.
+    /// Ends the call with this ID, else the newest open call of this tool. A
+    /// call with no ID at all ends the newest open call; one with an ID that
+    /// matches nothing isn't any of them.
     public static func end(
         toolUseID: String?,
         tool: String?,
@@ -136,7 +137,7 @@ public enum AgentRunTimeline {
     ) {
         let index = toolUseID.flatMap { id in actions.lastIndex { $0.id == id && $0.isOpen } }
             ?? tool.flatMap { name in actions.lastIndex { $0.tool == name && $0.isOpen } }
-            ?? actions.lastIndex(where: \.isOpen)
+            ?? (toolUseID == nil ? actions.lastIndex(where: \.isOpen) : nil)
         guard let index else { return }
         actions[index].endedAt = max(date, actions[index].startedAt)
         actions[index].failed = failed
@@ -296,8 +297,11 @@ public enum AgentRunPlan {
             let next = (plan.compactMap { Int($0.id) }.max() ?? 0) + 1
             plan.append(AIActivityStep(id: String(next), label: label, state: .pending))
         case "update":
-            guard let id = operation["id"] as? String,
-                  let index = plan.firstIndex(where: { $0.id == id }) else { return plan }
+            guard let id = operation["id"] as? String else { return plan }
+            if !plan.contains(where: { $0.id == id }), (operation["status"] as? String).flatMap({ state($0) }) == .working {
+                plan = renumbered(plan, toReach: id)
+            }
+            guard let index = plan.firstIndex(where: { $0.id == id }) else { return plan }
             if let status = operation["status"] as? String {
                 guard let state = state(status) else {
                     plan.remove(at: index)
@@ -310,6 +314,27 @@ public enum AgentRunPlan {
             break
         }
         return plan
+    }
+
+    /// Claude Code never reuses a task ID, so after a cleared plan or a relaunch
+    /// its numbers run ahead of the rows'. An update starting a task whose number
+    /// is past them means the first unfinished row, since Claude starts tasks in
+    /// order, and the rows line up from there, so every later update finds its
+    /// own. Any other update for an unknown number could be for a task the app
+    /// never saw, and is ignored.
+    private static func renumbered(_ plan: [AIActivityStep], toReach id: String) -> [AIActivityStep] {
+        guard let wanted = Int(id), wanted < 1_000_000,
+              let highest = plan.compactMap({ Int($0.id) }).max(), wanted > highest,
+              let current = plan.first(where: { $0.state == .pending || $0.state == .working }),
+              let currentNumber = Int(current.id)
+        else { return plan }
+        let offset = wanted - currentNumber
+        return plan.map { step in
+            guard let number = Int(step.id) else { return step }
+            var moved = step
+            moved.id = String(number + offset)
+            return moved
+        }
     }
 
     /// Nil for "deleted", which drops the task.

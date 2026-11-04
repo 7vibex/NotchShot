@@ -7,7 +7,14 @@ import Foundation
 public enum StatusLineCommand {
     public static let maximumOutputBytes = 16 * 1_024
 
-    public static func run(command: String, input: Data, timeout: TimeInterval = 5) -> String {
+    /// `exitsOnTerminate` is for a process that exists only to run this one
+    /// command: it changes how the whole process handles a terminate.
+    public static func run(
+        command: String,
+        input: Data,
+        timeout: TimeInterval = 5,
+        exitsOnTerminate: Bool = false
+    ) -> String {
         guard !command.utf8.contains(0) else { return "" }
         let deadline = ProcessInfo.processInfo.systemUptime + max(0.01, min(timeout, 5))
         var incoming: [Int32] = [-1, -1]
@@ -54,6 +61,29 @@ public enum StatusLineCommand {
         guard posix_spawn(&pid, "/bin/sh", &actions, &attributes, arguments, environment) == 0 else { return "" }
         close(incoming[1]); incoming[1] = -1
         close(outgoing[1]); outgoing[1] = -1
+
+        // Claude cancels a status line that a newer update has overtaken. The
+        // cleanup below does not run for a terminated process, and the command
+        // is in a group of its own, so without this it would run on.
+        var terminate: DispatchSourceSignal?
+        var previousTerminate: sig_t?
+        if exitsOnTerminate {
+            let leader = pid
+            let source = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .global())
+            source.setEventHandler {
+                kill(-leader, SIGKILL)
+                _exit(128 + SIGTERM)
+            }
+            source.resume()
+            previousTerminate = signal(SIGTERM, SIG_IGN)
+            terminate = source
+        }
+        defer {
+            if let terminate {
+                signal(SIGTERM, previousTerminate)
+                terminate.cancel()
+            }
+        }
 
         // Keep the leader unreaped until the group has been retired, so its
         // PID cannot be reused while cleanup still sends group signals.

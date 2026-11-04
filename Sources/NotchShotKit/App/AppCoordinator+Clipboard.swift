@@ -108,7 +108,7 @@ extension AppCoordinator {
 
     /// Copies a transformed clipping (pretty JSON, a decoded token…) without
     /// adding it to history: the original stays the record.
-    public func copyClipboardTransform(_ transform: ClipboardTransform, from entry: ClipboardEntry) {
+    public func copyClipboardTransform(_ transform: ClipboardTransform) {
         clipboardMonitor.copyDerivedTextToPasteboard(transform.output)
         showContext(ContextSnapshot(
             kind: .document,
@@ -210,7 +210,11 @@ extension AppCoordinator {
         case .files:
             do {
                 let urls = try ClipboardMonitor.validatedFileURLs(for: entry)
+                // Staging presents its own error when it refuses the batch.
+                let willStage = urls.count <= Self.maximumShelfItems
+                    && validatedExternalAssets(for: urls)?.count == urls.count
                 performFileDropAction(.shelf, urls: urls, expectedItemCount: urls.count)
+                guard willStage else { return }
                 showContext(ContextSnapshot(
                     kind: .document,
                     title: "Added to Shelf",

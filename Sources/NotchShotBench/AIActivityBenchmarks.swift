@@ -154,8 +154,8 @@ enum AIActivityBenchmarks {
 
         try? FileManager.default.removeItem(at: directory)
 
-        // Scale. The hooks write one status file per session and nothing
-        // prunes them; 1,700+ were found on a real machine after a few weeks.
+        // Scale. The hooks write one status file per session; 1,700+ were found
+        // on a real machine after a few weeks, before pruning was added.
         // Only the newest 32 are read, but every poll ranks them all.
         let scaleDirectory = Fixtures.runDirectory.appendingPathComponent("ai-activity-scale", isDirectory: true)
         try? FileManager.default.createDirectory(at: scaleDirectory, withIntermediateDirectories: true)

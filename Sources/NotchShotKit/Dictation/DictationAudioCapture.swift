@@ -6,20 +6,40 @@ import Foundation
 /// Bounded buffering, single update loop for waveform, no heavy work on real-time callback.
 final class DictationAudioCapture: @unchecked Sendable {
     static let maximumBufferedBuffers = 256
-    static let sampleRateForLevel: Double = 16_000
 
+    /// Every engine call is a synchronous trip into CoreAudio, up to a second or
+    /// two when a Bluetooth route has to switch profile. They all run here, in
+    /// order, never on the main thread.
+    private let engineQueue = DispatchQueue(
+        label: "com.notchshot.dictation.audio",
+        qos: .userInitiated
+    )
     private let engine = AVAudioEngine()
     private let lock = NSLock()
     private var continuation: AsyncStream<SendableAudioBuffer>.Continuation?
     private var isRunning = false
-    private var level = AudioLevelMeter2()
+    /// `engine.isRunning` as last seen on `engineQueue`, for `available`, which
+    /// is read from the main thread at the waveform tick rate.
+    private var engineIsRunning = false
+    private var configurationObserver: (any NSObjectProtocol)?
+    private var level = AudioLevelMeter.dictation()
 
     // Waveform state published via callback outside real-time thread.
     private var pendingSamples: [Float] = []
     private let pendingLock = NSLock()
 
     /// Starts capture. Returns a bounded stream of buffers for the transcriber.
-    func start() throws -> AsyncStream<SendableAudioBuffer> {
+    /// The caller may have been cancelled by the time this returns, and owns
+    /// calling `stop()` then.
+    func start() async throws -> AsyncStream<SendableAudioBuffer> {
+        try await withCheckedThrowingContinuation { continuation in
+            engineQueue.async {
+                continuation.resume(with: Result { try self.startEngine() })
+            }
+        }
+    }
+
+    private func startEngine() throws -> AsyncStream<SendableAudioBuffer> {
         let input = engine.inputNode
         let format = input.outputFormat(forBus: 0)
         guard format.sampleRate > 0, format.channelCount > 0 else {
@@ -34,7 +54,7 @@ final class DictationAudioCapture: @unchecked Sendable {
             continuation = cont
             isRunning = true
             pendingSamples = []
-            level = AudioLevelMeter2()
+            level = AudioLevelMeter.dictation()
         }
 
         input.removeTap(onBus: 0)
@@ -69,6 +89,20 @@ final class DictationAudioCapture: @unchecked Sendable {
         do {
             engine.prepare()
             try engine.start()
+            lock.withLock { engineIsRunning = true }
+            // The engine stops itself when the input route changes. This keeps
+            // that visible to the waveform, which must not show a live trace.
+            configurationObserver = NotificationCenter.default.addObserver(
+                forName: .AVAudioEngineConfigurationChange,
+                object: engine,
+                queue: nil
+            ) { [weak self] _ in
+                guard let self else { return }
+                self.engineQueue.async {
+                    let running = self.engine.isRunning
+                    self.lock.withLock { self.engineIsRunning = running }
+                }
+            }
             return stream
         } catch {
             input.removeTap(onBus: 0)
@@ -81,13 +115,22 @@ final class DictationAudioCapture: @unchecked Sendable {
         }
     }
 
+    /// Ends the stream now, so whatever was already captured drains and nothing
+    /// new is added. The engine itself winds down on its queue.
     func stop() {
-        engine.stop()
-        engine.inputNode.removeTap(onBus: 0)
         lock.withLock {
             isRunning = false
+            engineIsRunning = false
             continuation?.finish()
             continuation = nil
+        }
+        engineQueue.async {
+            if let observer = self.configurationObserver {
+                NotificationCenter.default.removeObserver(observer)
+                self.configurationObserver = nil
+            }
+            self.engine.stop()
+            self.engine.inputNode.removeTap(onBus: 0)
         }
     }
 
@@ -119,7 +162,7 @@ final class DictationAudioCapture: @unchecked Sendable {
 
     /// Current engine state for UI: ensures we don't show fake waveform.
     var available: Bool {
-        lock.withLock { isRunning } && engine.isRunning
+        lock.withLock { isRunning && engineIsRunning }
     }
 
     // MARK: Helpers
@@ -157,26 +200,9 @@ final class DictationAudioCapture: @unchecked Sendable {
     }
 }
 
-/// Lightweight meter with attack/release smoothing for dictation waveform.
-struct AudioLevelMeter2: Sendable {
-    private let floorDB: Float = -50
-    private let attack: Float = 0.6
-    private let release: Float = 0.18
-    var smoothed: Float = 0
-    var level: Float { smoothed }
-
-    mutating func decay() {
-        smoothed *= (1 - release)
-        if smoothed < 0.001 { smoothed = 0 }
-    }
-
-    mutating func push(rms: Float) {
-        let db = rms > 0 ? 20 * log10(rms) : floorDB
-        let clamped = max(floorDB, min(0, db))
-        let linear = (clamped - floorDB) / -floorDB
-        let target = powf(linear, 0.55)
-        let coeff = target > smoothed ? attack : release
-        smoothed += (target - smoothed) * coeff
-        smoothed = max(0, min(1, smoothed))
+extension AudioLevelMeter {
+    /// The dictation waveform's tuning of the meter.
+    static func dictation() -> AudioLevelMeter {
+        AudioLevelMeter(floorDB: -50, attack: 0.6, release: 0.18, curve: 0.55)
     }
 }

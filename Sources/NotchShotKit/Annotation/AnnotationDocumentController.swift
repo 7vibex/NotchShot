@@ -33,7 +33,8 @@ public final class AnnotationDocumentController {
     public let source: CGImage
     /// The asset this document came from, when it has one.
     public let asset: CaptureAsset?
-    /// Seams carried over from a scrolling capture, drawn as warnings.
+    /// Seams carried over from a scrolling capture, drawn as warnings on the
+    /// editor canvas only.
     public var seams: [StitchSeam] = []
 
     public var selectedTool: AnnotationKind = .arrow
@@ -46,6 +47,7 @@ public final class AnnotationDocumentController {
     /// never leave a false "unsaved changes" prompt behind.
     public var hasUnsavedChanges: Bool { document != savedDocument }
     private var savedDocument: AnnotationDocument
+    private let saveOrder = ProjectSaveOrder()
     private var hasAcknowledgedProjectPrivacyWarning = false
 
     private var undoStack: [AnnotationDocument] = []
@@ -59,6 +61,8 @@ public final class AnnotationDocumentController {
     /// layer, so keep it until crop, rotation, or background geometry changes.
     @ObservationIgnored private var cachedBasePreviewKey: BasePreviewCacheKey?
     private var cachedBasePreview: NSImage?
+    /// Why the base preview could not be rendered, when it could not.
+    private(set) var basePreviewError: String?
     @ObservationIgnored private var previewRequestID: UUID?
     @ObservationIgnored var previewRenderer: @Sendable (AnnotationRenderSnapshot) async throws -> CapturedImage = {
         try await AnnotationRenderWorker.shared.render($0, isPreview: true)
@@ -87,9 +91,13 @@ public final class AnnotationDocumentController {
 
     // MARK: Undo / redo
 
-    public var canUndo: Bool { !undoStack.isEmpty }
-    public var canRedo: Bool { !redoStack.isEmpty }
+    public var canUndo: Bool { !undoStack.isEmpty || hasPendingGesture }
+    public var canRedo: Bool { !redoStack.isEmpty && !hasPendingGesture }
     var undoStepCount: Int { undoStack.count }
+
+    private var hasPendingGesture: Bool {
+        isCoalescing && document != coalescingStartDocument
+    }
 
     /// Call before any mutation that should be undoable.
     public func checkpoint() {
@@ -99,31 +107,32 @@ public final class AnnotationDocumentController {
         redoStack.removeAll()
     }
 
-    /// Groups every mutation inside `body` into a single undo step.
-    public func coalescing(_ body: () -> Void) {
-        let startedHere = !isCoalescing
-        if startedHere { beginCoalescing() }
-        body()
-        if startedHere { endCoalescing() }
-    }
-
+    /// The undo step is only recorded when the gesture ends, and only if it
+    /// changed something: a no-op must not cost the redo history or the oldest
+    /// undo entry.
     public func beginCoalescing() {
         guard !isCoalescing else { return }
         coalescingStartDocument = document
-        checkpoint()
         isCoalescing = true
     }
 
     public func endCoalescing() {
         guard isCoalescing else { return }
         isCoalescing = false
-        if document == coalescingStartDocument {
-            _ = undoStack.popLast()
+        if let start = coalescingStartDocument, document != start {
+            undoStack.append(start)
+            if undoStack.count > undoLimit { undoStack.removeFirst() }
+            redoStack.removeAll()
         }
         coalescingStartDocument = nil
     }
 
     public func undo() {
+        // Undo during a gesture, like ⌘Z while typing, first closes the gesture
+        // so its changes are the step that gets undone.
+        let wasCoalescing = isCoalescing
+        endCoalescing()
+        defer { if wasCoalescing { beginCoalescing() } }
         guard let previous = undoStack.popLast() else { return }
         redoStack.append(document)
         document = previous
@@ -131,6 +140,9 @@ public final class AnnotationDocumentController {
     }
 
     public func redo() {
+        let wasCoalescing = isCoalescing
+        endCoalescing()
+        defer { if wasCoalescing { beginCoalescing() } }
         guard let next = redoStack.popLast() else { return }
         undoStack.append(document)
         document = next
@@ -147,6 +159,26 @@ public final class AnnotationDocumentController {
 
     public func update(_ element: AnnotationElement) {
         document.update(element)
+    }
+
+    /// Takes back a text element the user clicked into place and never typed
+    /// in. It draws nothing but still has a hit box, so it would catch later
+    /// clicks. The step that added it goes too, leaving nothing to undo.
+    func removeIfEmptyText(id: UUID) {
+        guard let element = document.elements.first(where: { $0.id == id }),
+              element.kind == .text,
+              element.text.isEmpty else { return }
+        document.remove(id: id)
+        // Everything but the time matches the step before the click: go back
+        // to it, so the document doesn't read as edited either.
+        if var previous = undoStack.last {
+            let restored = previous
+            previous.modifiedAt = document.modifiedAt
+            if previous == document {
+                document = restored
+                undoStack.removeLast()
+            }
+        }
     }
 
     public func deleteSelection() {
@@ -211,7 +243,7 @@ public final class AnnotationDocumentController {
         try AnnotationRenderer.render(
             document: document,
             source: source,
-            options: AnnotationRenderer.Options(isPreview: true, seams: seams)
+            options: AnnotationRenderer.Options(isPreview: true)
         )
     }
 
@@ -220,7 +252,7 @@ public final class AnnotationDocumentController {
         try AnnotationRenderer.render(
             document: document,
             source: source,
-            options: AnnotationRenderer.Options(isPreview: false, seams: seams)
+            options: AnnotationRenderer.Options(isPreview: false)
         )
     }
 
@@ -246,8 +278,14 @@ public final class AnnotationDocumentController {
         return cachedBasePreviewKey == basePreviewKey ? preview : nil
     }
 
+    /// What the canvas shows: the last finished render, stretched to the current
+    /// geometry until the next one lands. During a slider drag every tick
+    /// discards the render in flight, so waiting for an exact match would blank
+    /// the screenshot for the whole drag.
+    var displayedBasePreview: NSImage? { cachedBasePreview }
+
     func makeRenderSnapshot() -> AnnotationRenderSnapshot {
-        AnnotationRenderSnapshot(source: source, document: document, seams: seams)
+        AnnotationRenderSnapshot(source: source, document: document)
     }
 
     func prepareBasePreview() async {
@@ -257,21 +295,19 @@ public final class AnnotationDocumentController {
         previewRequestID = requestID
         var stripped = document
         stripped.elements = []
-        let snapshot = AnnotationRenderSnapshot(source: source, document: stripped, seams: [])
+        let snapshot = AnnotationRenderSnapshot(source: source, document: stripped)
         do {
             let image = try await previewRenderer(snapshot)
             guard !Task.isCancelled, previewRequestID == requestID, basePreviewKey == key else { return }
             cachedBasePreviewKey = key
             cachedBasePreview = NSImage(cgImage: image.cgImage, size: image.pixelSize)
+            basePreviewError = nil
         } catch {
             guard !Task.isCancelled, previewRequestID == requestID, basePreviewKey == key else { return }
             cachedBasePreviewKey = key
             cachedBasePreview = nil
+            basePreviewError = error.localizedDescription
         }
-    }
-
-    public func renderFlattenedAsync() async throws -> CapturedImage {
-        try await AnnotationRenderWorker.shared.render(makeRenderSnapshot())
     }
 
     // MARK: Saving
@@ -314,30 +350,63 @@ public final class AnnotationDocumentController {
         try makeRenderSnapshot().export(to: url, format: format, quality: Preferences.shared.jpegQuality)
     }
 
-    public func exportImageResultAsync(to url: URL, format: ImageFormat) async throws -> ImageExportResult {
-        let snapshot = makeRenderSnapshot()
-        let quality = Preferences.shared.jpegQuality
-        return try await AnnotationRenderWorker.shared.export(snapshot, to: url, format: format, quality: quality)
-    }
-
     @discardableResult
     public func saveProject(to url: URL? = nil) throws -> URL {
-        let target = url ?? projectURL ?? NotchShotPackage.defaultURL(
-            named: asset.map { $0.url.deletingPathExtension().lastPathComponent }
-                ?? Preferences.shared.expandFilename()
-        )
-        try NotchShotPackage.write(document: document, source: source, to: target)
+        let target = url ?? defaultProjectURL
+        try saveOrder.write(ifCurrent: saveOrder.claim()) {
+            _ = try NotchShotPackage.write(document: document, source: source, to: target)
+        }
         projectURL = target
         savedDocument = document
         return target
     }
 
-    public func copyFlattenedToPasteboard() throws {
-        ImageExport.copyToPasteboard(try renderFlattened())
+    /// `saveProject` for the editor window, where the PNG encodes must not stop
+    /// the main actor. What counts as saved is the document as it was written:
+    /// edits made during the write stay unsaved.
+    func saveProjectOffMain() async throws -> URL {
+        let target = defaultProjectURL
+        let written = document
+        let snapshot = AnnotationRenderSnapshot(source: source, document: written)
+        let order = saveOrder
+        let claim = order.claim()
+        // Unstructured, so closing the window doesn't drop what it records, and
+        // so quit can wait for the write.
+        let save = Task { @MainActor [weak self] in
+            try await AnnotationRenderWorker.shared.saveProject(snapshot, to: target, order: order, claim: claim)
+            // A save at the prompt since then wrote a newer document.
+            guard let self, order.isCurrent(claim) else { return }
+            self.projectURL = target
+            self.savedDocument = written
+        }
+        FileWorkTracker.shared.run { _ = await save.result }
+        try await save.value
+        return target
+    }
+
+    private var defaultProjectURL: URL {
+        projectURL ?? NotchShotPackage.defaultURL(
+            named: asset.map { $0.url.deletingPathExtension().lastPathComponent }
+                ?? Preferences.shared.expandFilename()
+        )
     }
 
     public static func open(projectAt url: URL) throws -> AnnotationDocumentController {
-        let contents = try NotchShotPackage.read(from: url)
+        open(contents: try NotchShotPackage.read(from: url), projectAt: url)
+    }
+
+    /// `open(projectAt:)` with the file read and decoded off the main actor.
+    public static func openOffMain(projectAt url: URL) async throws -> AnnotationDocumentController {
+        let contents = try await Task.detached(priority: .userInitiated) {
+            try NotchShotPackage.read(from: url)
+        }.value
+        return open(contents: contents, projectAt: url)
+    }
+
+    static func open(
+        contents: NotchShotPackage.Contents,
+        projectAt url: URL
+    ) -> AnnotationDocumentController {
         let controller = AnnotationDocumentController(
             source: contents.source,
             document: contents.document

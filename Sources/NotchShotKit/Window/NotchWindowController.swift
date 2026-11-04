@@ -169,6 +169,7 @@ public final class NotchWindowController {
     private var workspaceObservers: [NSObjectProtocol] = []
     private var distributedObservers: [NSObjectProtocol] = []
     private var rebuildWorkItem: DispatchWorkItem?
+    private var activeDisplayAtLastRebuild: CGDirectDisplayID?
     private var presenceTimer: Timer?
     /// Re-asserts the locked card's level and ordering while the shield is up.
     ///
@@ -263,6 +264,7 @@ public final class NotchWindowController {
     private var hasLockedChargingContent = false
     private var mediaPanelRowCount = 0
     private var tabPageHeightHold: CGFloat = 0
+    private var isScrollingCapture = false
 
     public init(makeContent: @escaping (NotchDisplayContext) -> AnyView) {
         self.makeContent = makeContent
@@ -283,6 +285,7 @@ public final class NotchWindowController {
         installObservers()
         installMouseMonitors()
         observeCaptureInclusion()
+        observeShelfStyle()
     }
 
     public func stop() {
@@ -337,6 +340,21 @@ public final class NotchWindowController {
         let included = Preferences.shared.includesNotchInCaptures
         for entry in entries.values {
             entry.panel.applyCaptureInclusion(included)
+        }
+    }
+
+    /// The shelf's grid and detail layouts differ in height, and its view
+    /// switch writes the preference without a coordinator refresh, so the click
+    /// region follows the preference itself.
+    private func observeShelfStyle() {
+        withObservationTracking {
+            _ = Preferences.shared.shelfPresentationStyle
+        } onChange: { [weak self] in
+            Task { @MainActor in
+                guard let self else { return }
+                self.applyLayout()
+                self.observeShelfStyle()
+            }
         }
     }
 
@@ -522,6 +540,7 @@ public final class NotchWindowController {
                 entry.panel.orderOut(nil)
             }
             entries.removeAll()
+            updatePresencePoll()
             return
         }
 
@@ -531,6 +550,16 @@ public final class NotchWindowController {
         // display with the menu bar; using it prevents the song card from
         // jumping to an external monitor during the lock transition.
         let mainDisplayID = CGMainDisplayID()
+
+        // A root view only depends on its context and on the observed
+        // coordinator, plus one thing nothing observes: which display the
+        // pointer is on. A rebuild follows every Space switch and wake, so with
+        // one screen the root is only replaced when one of those two has really
+        // changed. With more, a root can have last drawn while the pointer was
+        // elsewhere, which comparing rebuilds can't see, so each is replaced.
+        let activeDisplay = activeDisplayID
+        let activeDisplayChanged = activeDisplay != activeDisplayAtLastRebuild
+        activeDisplayAtLastRebuild = activeDisplay
 
         var seen = Set<CGDirectDisplayID>()
         for screen in NSScreen.screens {
@@ -551,8 +580,10 @@ public final class NotchWindowController {
             )
 
             if var entry = entries[displayID] {
-                entry.context = context
-                entry.hosting.rootView = makeContent(context)
+                if entry.context != context || activeDisplayChanged || NSScreen.screens.count > 1 {
+                    entry.context = context
+                    entry.hosting.rootView = makeContent(context)
+                }
                 position(panel: entry.panel, for: context)
                 entries[displayID] = entry
             } else {
@@ -649,7 +680,7 @@ public final class NotchWindowController {
         // Re-assert the level: a Space change or fullscreen transition can drop
         // a panel behind the menu bar.
         panel.level = NotchPanel.notchLevel
-        applyVisibilityPolicy(to: panel, context: context)
+        applyVisibilityPolicy(to: panel, context: context, force: true)
     }
 
     // MARK: Layout / hit testing
@@ -663,9 +694,11 @@ public final class NotchWindowController {
         hasLockedActivityContent: Bool,
         hasLockedChargingContent: Bool = false,
         mediaPanelRowCount: Int = 0,
-        tabPageHeightHold: CGFloat = 0
+        tabPageHeightHold: CGFloat = 0,
+        isScrollingCapture: Bool = false
     ) {
         self.tabPageHeightHold = tabPageHeightHold
+        self.isScrollingCapture = isScrollingCapture
         self.currentActivity = activity
         self.isPeeking = isPeeking
         self.resultCount = resultCount
@@ -683,12 +716,19 @@ public final class NotchWindowController {
         return NotchLayout.layout(
             for: activity,
             metrics: context.metrics,
-            isPeeking: isPeeking && context.displayID == activeDisplayID,
-            resultCount: resultCount,
-            hasStack: hasStack,
-            mediaPanelRows: mediaPanelRowCount,
-            indicatorWings: showsIndicatorWings(on: context),
-            heldHeight: NotchTab.holdsHeight(of: activity, in: Preferences.shared.notchTabs) ? tabPageHeightHold : 0
+            inputs: NotchLayoutInputs(
+                activity: activity,
+                isActiveDisplay: context.displayID == activeDisplayID,
+                isPeeking: isPeeking,
+                resultCount: resultCount,
+                hasStack: hasStack,
+                mediaPanelRows: mediaPanelRowCount,
+                shelfStyle: Preferences.shared.shelfPresentationStyle,
+                indicatorWings: showsIndicatorWings(on: context),
+                isScrollingCapture: isScrollingCapture,
+                tabPageHeightHold: tabPageHeightHold,
+                tabs: Preferences.shared.notchTabs
+            )
         )
     }
 
@@ -727,7 +767,7 @@ public final class NotchWindowController {
                     )
                 }
                 let orderingStarted = DispatchTime.now().uptimeNanoseconds
-                applyVisibilityPolicy(to: entry.panel, context: entry.context)
+                applyVisibilityPolicy(to: entry.panel, context: entry.context, force: true)
                 lockedOrdering.record(
                     milliseconds: Double(DispatchTime.now().uptimeNanoseconds - orderingStarted) / 1_000_000,
                     stillVisibleWhenHidden: entry.panel.isVisible && !shouldShowLockedPanel(on: entry.context)
@@ -744,7 +784,13 @@ public final class NotchWindowController {
                 Log.window.notice("Locked presentation: \(presentation, privacy: .public)")
             }
             if isScreenLocked {
-                startLockedPresenceTimer()
+                // Every change that can make a card wanted lands back here, so
+                // nothing needs to tick while there is no card to keep up.
+                if shouldShowLockedPanel {
+                    startLockedPresenceTimer()
+                } else {
+                    stopLockedPresenceTimer()
+                }
             } else {
                 stopLockedPresenceTimer()
                 LockedMediaNotificationController.shared.clear()
@@ -763,9 +809,17 @@ public final class NotchWindowController {
         }
         LockedMediaNotificationController.shared.clear()
         LockedMediaNotificationController.shared.setCustomPresentationAvailable(false)
+        // Agents refresh several times a second, and an order request can wait
+        // on the WindowServer, so this pass only sends what would change.
+        // `position` still re-asserts all of it after a Space change.
+        let lockedOptIn = allowsLockedPresentation
         for entry in entries.values {
-            entry.panel.level = NotchPanel.level(sessionIsActive: true)
-            entry.panel.canBecomeVisibleWithoutLogin = allowsLockedPresentation
+            if entry.panel.level != NotchPanel.notchLevel {
+                entry.panel.level = NotchPanel.notchLevel
+            }
+            if entry.panel.canBecomeVisibleWithoutLogin != lockedOptIn {
+                entry.panel.canBecomeVisibleWithoutLogin = lockedOptIn
+            }
             applyFrame(to: entry)
             applyVisibilityPolicy(to: entry.panel, context: entry.context)
             entry.panel.setInteractiveRectFromScreenRect(
@@ -851,7 +905,9 @@ public final class NotchWindowController {
                 isPeeking: false,
                 resultCount: resultCount,
                 hasStack: hasStack,
-                indicatorWings: showsIndicatorWings(on: context)
+                shelfStyle: Preferences.shared.shelfPresentationStyle,
+                indicatorWings: showsIndicatorWings(on: context),
+                isScrollingCapture: isScrollingCapture
             ),
             activity
         )
@@ -1110,8 +1166,12 @@ public final class NotchWindowController {
     ///
     /// An idle notch does not poll at all, and a notch showing media polls
     /// slowly until the pointer comes near.
+    ///
+    /// Nothing polls while the panels are pulled for the frontmost app or there
+    /// are none: a hover acquired behind ordered-out panels would open the
+    /// notch on return. Coming back runs `applyLayout`, which lands here again.
     private func updatePresencePoll(pointerLocation: CGPoint? = nil) {
-        let needsPoll = Self.shouldPollPresence(
+        let needsPoll = !isHiddenForFrontmostApp && !entries.isEmpty && Self.shouldPollPresence(
             activity: currentActivity,
             isPeeking: isPeeking,
             isPointerOverIsland: isPointerOverIsland,
@@ -1147,6 +1207,9 @@ public final class NotchWindowController {
                 self.updatePresencePoll(pointerLocation: location)
             }
         }
+        // Coalesced with the system's other wakeups; well under the race the
+        // fast rate protects against.
+        timer.tolerance = interval * 0.2
         RunLoop.main.add(timer, forMode: .common)
         presenceTimer = timer
         presenceTimerInterval = interval
@@ -1233,8 +1296,6 @@ public final class NotchWindowController {
         }
         applyLayout()
     }
-
-    public func refreshLockedMediaPresentation() { refreshLockedPresentation() }
 
     /// Whether the locked card is currently wanted on screen.
     private var shouldShowLockedPanel: Bool {
@@ -1341,14 +1402,18 @@ public final class NotchWindowController {
         lockedPresenceTimer = nil
     }
 
+    /// - Parameter force: order the panel even if it already looks right, for
+    ///   the moments something may have moved it: a Space change, a takeover
+    ///   of the display, the lock shield.
     private func applyVisibilityPolicy(
         to panel: NotchPanel,
-        context: NotchDisplayContext
+        context: NotchDisplayContext,
+        force: Bool = false
     ) {
         // Only an unlocked session can be "in" an app; the Lock Screen card
         // keeps its own rules.
         if isSessionActive, isHiddenForFrontmostApp {
-            panel.orderOut(nil)
+            if force || panel.isVisible { panel.orderOut(nil) }
             return
         }
         if LockedMediaPresentationPolicy.shouldShowPanel(
@@ -1362,8 +1427,8 @@ public final class NotchWindowController {
             isPrimaryDisplay: context.isPrimary,
             hasChargingContent: hasLockedChargingContent
         ) {
-            panel.orderFrontRegardless()
-        } else {
+            if force || !panel.isVisible { panel.orderFrontRegardless() }
+        } else if force || panel.isVisible {
             panel.orderOut(nil)
         }
     }

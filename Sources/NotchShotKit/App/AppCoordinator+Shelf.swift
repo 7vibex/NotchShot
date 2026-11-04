@@ -89,6 +89,9 @@ extension AppCoordinator {
 
     public func dismissShelfItem(_ item: ShelfItem) {
         lastDismissed = item
+        // `push` only clears the items still on the shelf, so this bitmap would
+        // otherwise stay in memory until the next dismissal.
+        item.image = nil
         shelfItems.removeAll { $0.id == item.id }
         selectedShelfIndex = 0
         arbiter.hasResult = !shelfItems.isEmpty
@@ -114,6 +117,18 @@ extension AppCoordinator {
         arbiter.hasResult = true
         refreshActivity()
         scheduleShelfDismissal()
+        reloadImageForNewestItem(lastDismissed)
+    }
+
+    /// Dismissing dropped the bitmap, and Copy on the newest item puts the bitmap
+    /// on the pasteboard, where a bare file URL fails in apps that only take images.
+    private func reloadImageForNewestItem(_ item: ShelfItem) {
+        guard item.image == nil, item.asset.kind.isImage else { return }
+        Task { [weak self] in
+            let image = await self?.loadedImage(for: item)
+            guard let self, self.shelfItems.first?.id == item.id, item.image == nil else { return }
+            item.image = image
+        }
     }
 
     public var canRestoreDismissed: Bool { lastDismissed != nil }
@@ -283,7 +298,8 @@ extension AppCoordinator {
         }
     }
 
-    public func applicationsThatCanOpen(_ asset: CaptureAsset) -> [URL] {
+    /// Stats the file and asks LaunchServices, so call it off the main actor.
+    public nonisolated static func applicationsThatCanOpen(_ asset: CaptureAsset) -> [URL] {
         guard SafeAssetFile.isCurrentAndSafe(asset) else { return [] }
         return NSWorkspace.shared.urlsForApplications(toOpen: asset.url)
             .filter(\.isFileURL)
@@ -362,11 +378,17 @@ extension AppCoordinator {
         alert.addButton(withTitle: "Cancel")
         NSApp.activate(ignoringOtherApps: true)
         guard alert.runModal() == .alertFirstButtonReturn else { return }
-        do {
-            let renamed = try ShelfFileOperations.rename(item.asset, to: field.stringValue)
-            try relocate(item, to: renamed)
-        } catch {
-            present(error: error)
+        let asset = item.asset
+        let name = field.stringValue
+        FileWorkTracker.shared.run { [weak self] in
+            do {
+                let renamed = try await Task.detached(priority: .userInitiated) {
+                    try ShelfFileOperations.rename(asset, to: name)
+                }.value
+                try self?.relocate(item, to: renamed)
+            } catch {
+                self?.present(error: error)
+            }
         }
     }
 
@@ -379,27 +401,24 @@ extension AppCoordinator {
         panel.prompt = "Move"
         panel.message = "Choose where to move \(item.asset.url.lastPathComponent)."
         panel.directoryURL = Preferences.shared.outputFolder
+        NSApp.activate(ignoringOtherApps: true)
         guard panel.runModal() == .OK, let folder = panel.url else { return }
-        do {
-            let moved = try ShelfFileOperations.move(item.asset, toFolder: folder)
-            try relocate(item, to: moved)
-        } catch {
-            present(error: error)
+        let asset = item.asset
+        FileWorkTracker.shared.run { [weak self] in
+            do {
+                // Across volumes this is a full copy of a file up to 20 GB.
+                let moved = try await Task.detached(priority: .userInitiated) {
+                    try ShelfFileOperations.move(asset, toFolder: folder)
+                }.value
+                try self?.relocate(item, to: moved)
+            } catch {
+                self?.present(error: error)
+            }
         }
     }
 
     func compressShelfItem(_ item: ShelfItem) {
         compress([item.asset])
-    }
-
-    /// Zips the capture stack in one archive when it is collecting, so a
-    /// multi-shot flow can be handed over as a single file.
-    public func compressStack() {
-        guard !stack.isEmpty else {
-            present(error: NotchShotError.exportFailed("The stack is empty"))
-            return
-        }
-        compress(stack.items.map(\.asset))
     }
 
     func compress(_ assets: [CaptureAsset]) {
@@ -408,6 +427,7 @@ extension AppCoordinator {
         panel.allowedContentTypes = [.zip]
         panel.nameFieldStringValue = "\(ShelfFileOperations.suggestedArchiveName(for: assets)).zip"
         panel.directoryURL = Preferences.shared.outputFolder
+        NSApp.activate(ignoringOtherApps: true)
         guard panel.runModal() == .OK, let url = panel.url else { return }
 
         let processingLabel = beginProcessing("Compressing")
@@ -456,8 +476,7 @@ extension AppCoordinator {
     /// PNG. The save panel comes first so an expensive on-device analysis never
     /// runs for an operation the user then cancels.
     func removeBackground(from item: ShelfItem) {
-        let source = item.image?.cgImage ?? SafeImageFile.cgImage(for: item.asset)
-        guard SafeAssetFile.isCurrentAndSafe(item.asset), let source else {
+        guard SafeAssetFile.isCurrentAndSafe(item.asset) else {
             present(error: NotchShotError.exportFailed(
                 "That image changed or is no longer safely readable"
             ))
@@ -471,6 +490,7 @@ extension AppCoordinator {
         )
         panel.directoryURL = Preferences.shared.outputFolder
         panel.message = "The subject stays in place and the removed background becomes transparent."
+        NSApp.activate(ignoringOtherApps: true)
         guard panel.runModal() == .OK, let url = panel.url else { return }
 
         let processingLabel = beginProcessing("Removing background on this Mac")
@@ -478,6 +498,11 @@ extension AppCoordinator {
             guard let self else { return }
             defer { self.endProcessing(processingLabel) }
             do {
+                guard let source = await self.loadedImage(for: item)?.cgImage else {
+                    throw NotchShotError.exportFailed(
+                        "That image changed or is no longer safely readable"
+                    )
+                }
                 let result = try await ForegroundRemovalService.shared.removeBackground(from: source)
                 try Task.checkCancellation()
                 let captured = CapturedImage(
@@ -522,22 +547,40 @@ extension AppCoordinator {
         let panel = NSSavePanel()
         panel.nameFieldStringValue = item.asset.url.lastPathComponent
         panel.directoryURL = Preferences.shared.outputFolder
+        NSApp.activate(ignoringOtherApps: true)
         guard panel.runModal() == .OK, let url = panel.url else { return }
+        let asset = item.asset
+        FileWorkTracker.shared.run { [weak self] in
+            do {
+                // Files reach 20 GB, and this ends in an fsync: the whole copy
+                // has to stay off the main actor or the notch stops with it.
+                try await Task.detached(priority: .userInitiated) {
+                    try AppCoordinator.saveCopy(of: asset, to: url)
+                }.value
+                self?.confirmShelfAction(.save, on: item)
+            } catch {
+                self?.present(error: error)
+            }
+        }
+    }
+
+    /// Stages the copy beside its destination, then swaps it in. The asset is
+    /// a value, so taking the item off the shelf meanwhile changes nothing here.
+    private nonisolated static func saveCopy(of asset: CaptureAsset, to url: URL) throws {
+        guard SafeAssetFile.isCurrentAndSafe(asset) else {
+            throw NotchShotError.exportFailed("The capture file changed or is no longer safely readable")
+        }
         let fileManager = FileManager.default
         let stagingURL = url.deletingLastPathComponent()
             .appendingPathComponent(".notchshot-copy-\(UUID().uuidString)")
         defer { try? fileManager.removeItem(at: stagingURL) }
-        guard SafeAssetFile.isCurrentAndSafe(item.asset) else {
-            present(error: NotchShotError.exportFailed("The capture file changed or is no longer safely readable"))
-            return
-        }
         do {
             // A file the user deliberately saved should carry the permissions
             // every other app's Save As produces. The staging copy's default is
             // owner-only, which is right for an app-managed working file and
             // wrong for a screenshot being dropped into a shared folder.
             try SafeAssetFile.copy(
-                item.asset,
+                asset,
                 to: stagingURL,
                 mode: SafeAssetFile.userVisibleMode
             )
@@ -546,9 +589,8 @@ extension AppCoordinator {
             } else {
                 try fileManager.moveItem(at: stagingURL, to: url)
             }
-            confirmShelfAction(.save, on: item)
         } catch {
-            present(error: NotchShotError.destinationUnwritable(url.path))
+            throw NotchShotError.destinationUnwritable(url.path)
         }
     }
 
@@ -582,8 +624,7 @@ extension AppCoordinator {
             present(error: NotchShotError.exportFailed("This kind of file can't be converted"))
             return
         }
-        let source = item.image?.cgImage ?? SafeImageFile.cgImage(for: item.asset)
-        guard SafeAssetFile.isCurrentAndSafe(item.asset), let source else {
+        guard SafeAssetFile.isCurrentAndSafe(item.asset) else {
             present(error: NotchShotError.exportFailed("That image changed or is no longer safely readable"))
             return
         }
@@ -598,7 +639,6 @@ extension AppCoordinator {
         let popup = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 200, height: 26), pullsDown: false)
         for format in ImageFormat.allCases {
             popup.addItem(withTitle: format.title)
-            popup.lastItem?.tag = format == .png ? 0 : format == .jpeg ? 1 : 2
         }
         popup.setAccessibilityLabel("Output image format")
         let initialIndex: Int = switch currentFormat {
@@ -643,6 +683,7 @@ extension AppCoordinator {
         alert.addButton(withTitle: "Convert")
         alert.addButton(withTitle: "Cancel")
 
+        NSApp.activate(ignoringOtherApps: true)
         guard alert.runModal() == .alertFirstButtonReturn else { return }
         let selectedFormat: ImageFormat = popup.indexOfSelectedItem == 0 ? .png : popup.indexOfSelectedItem == 1 ? .jpeg : .heic
         let quality = slider.doubleValue
@@ -665,6 +706,9 @@ extension AppCoordinator {
             guard let self else { return }
             defer { self.endProcessing(processingLabel) }
             do {
+                guard let source = await self.loadedImage(for: item)?.cgImage else {
+                    throw NotchShotError.exportFailed("That image changed or is no longer safely readable")
+                }
                 let usedFormat = try await ImageExport.write(
                     CapturedImage(cgImage: source, scale: item.asset.scale, sourceRect: .zero),
                     to: url,
@@ -682,14 +726,21 @@ extension AppCoordinator {
                         )
                         try FileManager.default.moveItem(at: url, to: finalURL)
                     } else {
-                        do { try FileManager.default.moveItem(at: url, to: corrected) } catch {}
+                        try FileManager.default.moveItem(at: url, to: corrected)
                         finalURL = corrected
                     }
                 }
-                guard let cgImage = SafeImageFile.cgImage(at: finalURL, limits: .generated) else {
+                let readBackURL = finalURL
+                let scale = item.asset.scale
+                let readBack = await Task.detached(priority: .userInitiated) {
+                    SafeImageFile.cgImage(at: readBackURL, limits: .generated).map {
+                        CapturedImage(cgImage: $0, scale: scale, sourceRect: .zero)
+                    }
+                }.value
+                guard let captured = readBack else {
                     throw NotchShotError.exportFailed("Converted file could not be read back")
                 }
-                let captured = CapturedImage(cgImage: cgImage, scale: item.asset.scale, sourceRect: .zero)
+                let cgImage = captured.cgImage
                 let thumbnailImage = await ImageExport.makeThumbnail(from: captured)
                 let thumbnail = thumbnailImage.map { NSImage(cgImage: $0, size: NSSize(width: $0.width, height: $0.height)) }
                 let asset = CaptureAsset(
@@ -717,30 +768,39 @@ extension AppCoordinator {
     public func uploadShareLink(for asset: CaptureAsset) {
         let extras = ExtrasPreferences.shared
         let configuration = extras.shareLink
-        guard configuration.isComplete,
-              ShareLinkKeychain.secret(for: configuration.accessKeyID) != nil else {
-            present(error: ShareLinkUploader.UploadError.notConfigured)
-            requestedSettingsSection = "sharing"
-            onOpenSettings?()
+        guard configuration.isComplete else {
+            presentShareLinkNotConfigured()
             return
         }
-        guard SafeAssetFile.isCurrentAndSafe(asset) else {
-            present(error: NotchShotError.exportFailed("That file changed or is no longer safely readable"))
-            return
-        }
-        let selectedAsset: CaptureAsset
-        do {
-            selectedAsset = try ShareLinkUploader.assetForSelection(asset)
-        } catch {
-            present(error: error)
-            return
-        }
-        let processingLabel = beginProcessing("Uploading…")
+        // The file's identity is taken at the click, before anything suspends.
+        // What a later wait must not do is supply it for a file that has changed.
+        let isSafe = SafeAssetFile.isCurrentAndSafe(asset)
+        let selection = Result { try ShareLinkUploader.assetForSelection(asset) }
+        let accessKeyID = configuration.accessKeyID
         Task { [weak self] in
+            // A keychain read can wait on an access prompt on an ad-hoc build.
+            let secret = await Task.detached(priority: .userInitiated) {
+                ShareLinkKeychain.secret(for: accessKeyID)
+            }.value
             guard let self else { return }
+            guard secret != nil else {
+                self.presentShareLinkNotConfigured()
+                return
+            }
+            guard isSafe else {
+                self.present(error: NotchShotError.exportFailed("That file changed or is no longer safely readable"))
+                return
+            }
+            let selectedAsset: CaptureAsset
+            do {
+                selectedAsset = try selection.get()
+            } catch {
+                self.present(error: error)
+                return
+            }
+            let processingLabel = self.beginProcessing("Uploading…")
             defer { self.endProcessing(processingLabel) }
             do {
-                let secret = ShareLinkKeychain.secret(for: configuration.accessKeyID)
                 let link = try await ShareLinkUploader.upload(selectedAsset, configuration: configuration, secret: secret)
                 if extras.copiesShareLinkAfterUpload {
                     NSPasteboard.general.clearContents()
@@ -758,6 +818,12 @@ extension AppCoordinator {
                 self.present(error: error)
             }
         }
+    }
+
+    private func presentShareLinkNotConfigured() {
+        present(error: ShareLinkUploader.UploadError.notConfigured)
+        requestedSettingsSection = "sharing"
+        onOpenSettings?()
     }
 
     /// Video, GIF and PDF conversion: pick a target, write next to the output
@@ -791,7 +857,7 @@ extension AppCoordinator {
             defer { self.endProcessing(processingLabel) }
             do {
                 let outputs = try await MediaConversion.convert(source, to: target, in: directory)
-                self.stageExternalFiles(outputs, summarizesDocuments: false, forceShowShelf: true)
+                self.stageExternalFiles(outputs)
             } catch is CancellationError {
             } catch {
                 self.present(error: error)
@@ -807,8 +873,7 @@ extension AppCoordinator {
             ImageExport.copyToPasteboard(text: existing.clipboardText(format: format))
             return
         }
-        let image = item.image ?? SafeImageFile.capturedImage(for: item.asset)
-        guard let image else {
+        guard let image = await loadedImage(for: item) else {
             present(error: NotchShotError.captureFailed("That image could not be read safely"))
             return
         }
@@ -839,6 +904,7 @@ extension AppCoordinator {
         alert.addButton(withTitle: "Open")
         alert.addButton(withTitle: "Copy")
         alert.addButton(withTitle: "Cancel")
+        NSApp.activate(ignoringOtherApps: true)
         switch alert.runModal() {
         case .alertFirstButtonReturn:
             NSWorkspace.shared.open(url)
@@ -850,14 +916,29 @@ extension AppCoordinator {
     }
 
     func pin(_ item: ShelfItem) {
-        let image: NSImage?
         if let captured = item.image {
-            image = captured.makeNSImage()
-        } else {
-            image = SafeImageFile.nsImage(for: item.asset)
+            FloatingCaptureManager.shared.pin(asset: item.asset, image: captured.makeNSImage())
+            return
         }
-        guard let image else { return }
-        FloatingCaptureManager.shared.pin(asset: item.asset, image: image)
+        Task {
+            guard let cgImage = await loadedImage(for: item)?.cgImage else { return }
+            FloatingCaptureManager.shared.pin(
+                asset: item.asset,
+                image: NSImage(cgImage: cgImage, size: NSSize(width: cgImage.width, height: cgImage.height))
+            )
+        }
+    }
+
+    /// The item's bitmap, or its file read and decoded off the main actor. Only
+    /// the newest shelf item keeps its pixels, and a file read here can be up
+    /// to 1 GB. Without the immediate decode, that work would just move to the
+    /// first draw on the main thread.
+    func loadedImage(for item: ShelfItem) async -> CapturedImage? {
+        if let image = item.image { return image }
+        let asset = item.asset
+        return await Task.detached(priority: .userInitiated) {
+            SafeImageFile.capturedImage(for: asset, decodeImmediately: true)
+        }.value
     }
 
     public func share(_ asset: CaptureAsset) {
@@ -879,14 +960,24 @@ extension AppCoordinator {
     }
 
     public func openSmartExport(for asset: CaptureAsset) {
-        do {
-            let session = try SmartExportSession(asset: asset)
+        guard asset.kind.isImage else {
+            present(error: NotchShotError.exportFailed("That image could not be read safely"))
+            return
+        }
+        Task { [weak self] in
+            let source = await Task.detached(priority: .userInitiated) {
+                SafeImageFile.capturedImage(for: asset, decodeImmediately: true)
+            }.value
+            guard let self else { return }
+            guard let source else {
+                self.present(error: NotchShotError.exportFailed("That image could not be read safely"))
+                return
+            }
+            let session = SmartExportSession(asset: asset, source: source.cgImage)
             session.onExported = { [weak self] exported in
                 self?.history.record(asset: exported, image: nil)
             }
-            onOpenSmartExport?(session)
-        } catch {
-            present(error: error)
+            self.onOpenSmartExport?(session)
         }
     }
 
@@ -906,10 +997,13 @@ extension AppCoordinator {
     }
 
     public func openInspector(for asset: CaptureAsset) {
-        do {
-            onOpenInspector?(try ImageInspectionSession(asset: asset))
-        } catch {
-            present(error: error)
+        Task { [weak self] in
+            do {
+                let image = try await ImageInspectionSession.loadImage(for: asset)
+                self?.onOpenInspector?(ImageInspectionSession(asset: asset, image: image))
+            } catch {
+                self?.present(error: error)
+            }
         }
     }
 
@@ -917,31 +1011,67 @@ extension AppCoordinator {
         for item: ShelfItem,
         afterExport: ((CaptureAsset) -> Void)? = nil
     ) {
-        let controller: AnnotationDocumentController
-        if let projectURL = item.asset.projectURL,
-           let opened = try? AnnotationDocumentController.open(projectAt: projectURL) {
-            controller = opened
-        } else if let image = item.image {
-            controller = AnnotationDocumentController(image: image, asset: item.asset)
-        } else if let cgImage = SafeImageFile.cgImage(for: item.asset) {
-            let document = AnnotationDocument(
-                sourcePixelSize: CGSize(width: cgImage.width, height: cgImage.height),
-                sourceScale: item.asset.scale
+        // A capture still in memory has nothing to read, so it opens straight away.
+        if item.asset.projectURL == nil, let image = item.image {
+            showEditor(
+                AnnotationDocumentController(image: image, asset: item.asset),
+                for: item,
+                afterExport: afterExport
             )
-            controller = AnnotationDocumentController(
-                source: cgImage,
-                document: document,
-                asset: item.asset
-            )
-        } else {
-            present(error: NotchShotError.exportFailed("Can't open that capture for editing"))
             return
         }
+        // A second click while the file is still loading must not open a
+        // second window.
+        guard EditorOpenTracker.loading.insert(item.asset.id).inserted else { return }
+        let asset = item.asset
+        let newestAtOpen = shelfItems.first?.id
+        Task { [weak self] in
+            let source = await Task.detached(priority: .userInitiated) {
+                EditorSource(asset: asset)
+            }.value
+            EditorOpenTracker.loading.remove(asset.id)
+            guard let self else { return }
+            let controller: AnnotationDocumentController
+            if let project = source.project, let projectURL = asset.projectURL {
+                controller = AnnotationDocumentController.open(contents: project, projectAt: projectURL)
+            } else if let image = item.image {
+                controller = AnnotationDocumentController(image: image, asset: item.asset)
+            } else if let cgImage = source.image {
+                let document = AnnotationDocument(
+                    sourcePixelSize: CGSize(width: cgImage.width, height: cgImage.height),
+                    sourceScale: item.asset.scale
+                )
+                controller = AnnotationDocumentController(
+                    source: cgImage,
+                    document: document,
+                    asset: item.asset
+                )
+            } else {
+                self.present(error: NotchShotError.exportFailed("Can't open that capture for editing"))
+                return
+            }
+            self.showEditor(
+                controller,
+                for: item,
+                afterExport: afterExport,
+                hidesShelf: self.shelfItems.first?.id == newestAtOpen
+            )
+        }
+    }
+
+    /// - Parameter hidesShelf: false when a newer capture reached the shelf while
+    ///   the file was loading. It is not the one this was opened from.
+    private func showEditor(
+        _ controller: AnnotationDocumentController,
+        for item: ShelfItem,
+        afterExport: ((CaptureAsset) -> Void)?,
+        hidesShelf: Bool = true
+    ) {
         controller.seams = item.seams
         if let afterExport {
             editorExportActions[ObjectIdentifier(controller)] = afterExport
         }
-        hideShelf()
+        if hidesShelf { hideShelf() }
         onOpenEditor?(controller)
     }
 
@@ -982,18 +1112,22 @@ extension AppCoordinator {
     }
 
     public func openPrivacyReview(for item: ShelfItem) {
-        let source: CGImage?
         if let image = item.image {
-            source = image.cgImage
-        } else {
-            source = SafeImageFile.cgImage(for: item.asset)
-        }
-        guard let source else {
-            present(error: NotchShotError.exportFailed("Can't review that capture"))
+            hideShelf()
+            onOpenPrivacyReview?(PrivacyReviewSession(asset: item.asset, source: image.cgImage))
             return
         }
-        hideShelf()
-        onOpenPrivacyReview?(PrivacyReviewSession(asset: item.asset, source: source))
+        let newestAtOpen = shelfItems.first?.id
+        Task { [weak self] in
+            let source = await self?.loadedImage(for: item)?.cgImage
+            guard let self else { return }
+            guard let source else {
+                self.present(error: NotchShotError.exportFailed("Can't review that capture"))
+                return
+            }
+            if self.shelfItems.first?.id == newestAtOpen { self.hideShelf() }
+            self.onOpenPrivacyReview?(PrivacyReviewSession(asset: item.asset, source: source))
+        }
     }
 
     /// Called only after the user selected privacy findings. The suggested
@@ -1043,12 +1177,6 @@ extension AppCoordinator {
         refreshActivity()
     }
 
-    public func addSelectedToStack() {
-        guard let selected = selectedShelfItem, selected.asset.kind.isImage else { return }
-        if !stack.add(selected.asset) { presentStackFullError() }
-        refreshActivity()
-    }
-
     /// The menu command is worded "Add Latest Capture to Stack"; use the newest
     /// shelf item rather than whatever happens to be paged into view.
     public func addLatestToStack() {
@@ -1064,79 +1192,85 @@ extension AppCoordinator {
     }
 
     public func exportStack(style: StackExportStyle, numbersSteps: Bool) {
-        guard !stack.isEmpty else { return }
+        guard !stack.isEmpty, !stack.isExporting else { return }
 
         let panel = NSSavePanel()
         panel.allowedContentTypes = [style == .pdf ? .pdf : .png]
         panel.nameFieldStringValue = "\(Preferences.shared.expandFilename(appName: "Stack"))"
             + ".\(style.fileExtension)"
         panel.directoryURL = Preferences.shared.outputFolder
+        NSApp.activate(ignoringOtherApps: true)
         guard panel.runModal() == .OK, let url = panel.url else { return }
 
-        arbiter.isProcessing = "Building \(style.title.lowercased())"
-        refreshActivity()
+        // The items are a snapshot: the stack can change while this runs.
+        let items = stack.items
+        let assets = items.map(\.asset)
+        let options = StackExportOptions(style: style, numbersSteps: numbersSteps)
+        let processingLabel = beginProcessing("Building \(style.title.lowercased())")
+        stack.isExporting = true
+        FileWorkTracker.shared.run { [weak self] in
+            guard let self else { return }
+            defer { self.stack.isExporting = false }
+            do {
+                let sheet = try await CaptureStack.exportSheet(assets: assets, to: url, options: options)
+                let asset = CaptureAsset(
+                    url: url,
+                    kind: style == .pdf ? .document : .screenshot,
+                    pixelSize: sheet.image.map { CGSize(width: $0.width, height: $0.height) } ?? .zero,
+                    scale: style == .pdf ? 1 : 2
+                )
+                self.history.record(asset: asset, image: sheet.image, thumbnail: sheet.thumbnail)
+                // Matches `shareStack` below: the debounced save covers the normal
+                // case, but the user has just written a file to a location they
+                // chose, and losing its row to a quit inside the debounce window is
+                // the one outcome worth skipping the debounce to avoid.
+                self.persistHistory()
 
-        do {
-            let options = StackExportOptions(style: style, numbersSteps: numbersSteps)
-            _ = try stack.export(to: url, options: options)
+                let thumbnail = sheet.thumbnail
+                    .map { NSImage(cgImage: $0, size: NSSize(width: $0.width, height: $0.height)) }
 
-            let cgImage = SafeImageFile.cgImage(at: url, limits: .generated)
-            let asset = CaptureAsset(
-                url: url,
-                kind: style == .pdf ? .document : .screenshot,
-                pixelSize: cgImage.map { CGSize(width: $0.width, height: $0.height) } ?? .zero,
-                scale: style == .pdf ? 1 : 2
-            )
-            let thumbnailImage = cgImage.flatMap { ImageExport.makeThumbnail(from: $0) }
-            history.record(asset: asset, image: cgImage, thumbnail: thumbnailImage)
-            // Matches `shareStack` below: the debounced save covers the normal
-            // case, but the user has just written a file to a location they
-            // chose, and losing its row to a quit inside the debounce window is
-            // the one outcome worth paying a synchronous write to avoid.
-            persistHistory()
-
-            let thumbnail = thumbnailImage
-                .map { NSImage(cgImage: $0, size: NSSize(width: $0.width, height: $0.height)) }
-
-            arbiter.isProcessing = nil
-            stack.clear()
-            push(ShelfItem(asset: asset, thumbnail: thumbnail, image: nil))
-        } catch {
-            arbiter.isProcessing = nil
-            present(error: error)
+                self.endProcessing(processingLabel)
+                self.stack.removeExported(ids: Set(items.map(\.id)))
+                self.push(ShelfItem(asset: asset, thumbnail: thumbnail, image: nil))
+            } catch {
+                self.endProcessing(processingLabel)
+                self.present(error: error)
+            }
         }
     }
 
     public func shareStack(style: StackExportStyle, numbersSteps: Bool = false) {
-        guard !stack.isEmpty else { return }
+        guard !stack.isEmpty, !stack.isExporting else { return }
         let url = AppPaths.uniqueURL(
             in: AppPaths.captures,
             name: Preferences.shared.expandFilename(appName: "Capture Session"),
             extension: style.fileExtension
         )
-        arbiter.isProcessing = "Building \(style.title.lowercased())"
-        refreshActivity()
-        do {
-            try stack.export(
-                to: url,
-                options: StackExportOptions(style: style, numbersSteps: numbersSteps)
-            )
-            let image = SafeImageFile.cgImage(at: url, limits: .generated)
-            let asset = CaptureAsset(
-                url: url,
-                kind: style == .pdf ? .document : .screenshot,
-                pixelSize: image.map { CGSize(width: $0.width, height: $0.height) } ?? .zero,
-                scale: style == .pdf ? 1 : 2,
-                ownership: .managedTemporary
-            )
-            history.record(asset: asset, image: image)
-            persistHistory()
-            arbiter.isProcessing = nil
-            try MacSharePresenter.shared.present(items: [url])
-            refreshActivity()
-        } catch {
-            arbiter.isProcessing = nil
-            present(error: error)
+        let assets = stack.items.map(\.asset)
+        let options = StackExportOptions(style: style, numbersSteps: numbersSteps)
+        let processingLabel = beginProcessing("Building \(style.title.lowercased())")
+        stack.isExporting = true
+        FileWorkTracker.shared.run { [weak self] in
+            guard let self else { return }
+            defer { self.stack.isExporting = false }
+            do {
+                let sheet = try await CaptureStack.exportSheet(assets: assets, to: url, options: options)
+                let asset = CaptureAsset(
+                    url: url,
+                    kind: style == .pdf ? .document : .screenshot,
+                    pixelSize: sheet.image.map { CGSize(width: $0.width, height: $0.height) } ?? .zero,
+                    scale: style == .pdf ? 1 : 2,
+                    ownership: .managedTemporary
+                )
+                self.history.record(asset: asset, image: sheet.image, thumbnail: sheet.thumbnail)
+                self.persistHistory()
+                self.endProcessing(processingLabel)
+                try MacSharePresenter.shared.present(items: [url])
+                self.refreshActivity()
+            } catch {
+                self.endProcessing(processingLabel)
+                self.present(error: error)
+            }
         }
     }
 
@@ -1145,14 +1279,22 @@ extension AppCoordinator {
             present(error: NotchShotError.exportFailed("Add two captures to the stack first"))
             return
         }
-        do {
-            let session = try VisualComparisonSession(
-                beforeAsset: stack.items[0].asset,
-                afterAsset: stack.items[1].asset
-            )
-            onOpenComparison?(session)
-        } catch {
-            present(error: error)
+        let beforeAsset = stack.items[0].asset
+        let afterAsset = stack.items[1].asset
+        Task { [weak self] in
+            do {
+                let images = try await VisualComparisonSession.loadImages(
+                    beforeAsset: beforeAsset,
+                    afterAsset: afterAsset
+                )
+                self?.onOpenComparison?(VisualComparisonSession(
+                    beforeAsset: beforeAsset,
+                    afterAsset: afterAsset,
+                    images: images
+                ))
+            } catch {
+                self?.present(error: error)
+            }
         }
     }
 
@@ -1161,4 +1303,25 @@ extension AppCoordinator {
         openEditor(for: item)
     }
 
+}
+
+/// Captures whose file is being read for the editor, so opening one twice does
+/// not make two windows.
+@MainActor
+private enum EditorOpenTracker {
+    static var loading: Set<UUID> = []
+}
+
+/// What the editor opens from, read off the main actor: the project when there
+/// is a readable one, otherwise the capture file. `CGImage` is immutable.
+private struct EditorSource: @unchecked Sendable {
+    let project: NotchShotPackage.Contents?
+    let image: CGImage?
+
+    init(asset: CaptureAsset) {
+        project = asset.projectURL.flatMap { try? NotchShotPackage.read(from: $0) }
+        image = project == nil
+            ? SafeImageFile.cgImage(for: asset, decodeImmediately: true)
+            : nil
+    }
 }

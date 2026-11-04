@@ -73,7 +73,8 @@ private struct NotesToolView: View {
                 } else {
                     List(store.notes, selection: $selectedID) { note in
                         VStack(alignment: .leading, spacing: 3) {
-                            Text(note.title).lineLimit(1)
+                            // A title can be empty while its field is being typed in.
+                            Text(note.title.trimmedNonEmpty ?? "Untitled Note").lineLimit(1)
                             Text(note.updatedAt, style: .relative)
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
@@ -94,6 +95,7 @@ private struct NotesToolView: View {
                     TextField("Title", text: noteBinding(note, keyPath: \ProductivityNote.title))
                         .textFieldStyle(.roundedBorder)
                         .font(.title3.weight(.semibold))
+                        .onSubmit { store.finishEditing() }
                     TextEditor(text: noteBinding(note, keyPath: \ProductivityNote.body))
                         .font(.body)
                         .scrollContentBackground(.hidden)
@@ -122,6 +124,8 @@ private struct NotesToolView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .onAppear { selectedID = selectedID ?? store.notes.first?.id }
+        .onDisappear { store.finishEditing() }
+        .onChange(of: selectedID) { _, _ in store.finishEditing() }
     }
 
     private var selectedNote: ProductivityNote? {
@@ -138,7 +142,7 @@ private struct NotesToolView: View {
             set: { value in
                 guard var current = store.notes.first(where: { $0.id == note.id }) else { return }
                 current[keyPath: keyPath] = value
-                store.update(current)
+                store.edit(current)
             }
         )
     }
@@ -315,7 +319,10 @@ private struct LyricsToolView: View {
         panel.allowsMultipleSelection = false
         guard panel.runModal() == .OK, let url = panel.url else { return }
         do {
-            let data = try Data(contentsOf: url)
+            // One byte past the limit is enough to know, however large the file.
+            let handle = try FileHandle(forReadingFrom: url)
+            defer { try? handle.close() }
+            let data = try handle.read(upToCount: 300_001) ?? Data()
             guard data.count <= 300_000 else {
                 message = "That lyrics file is too large."
                 return
@@ -479,7 +486,7 @@ private struct LauncherToolView: View {
                         ApplicationCatalog.open(application)
                     } label: {
                         HStack {
-                            Image(nsImage: NSWorkspace.shared.icon(forFile: application.url.path))
+                            Image(nsImage: ToolAppIcons.icon(forFile: application.url.path))
                                 .resizable()
                                 .frame(width: 28, height: 28)
                                 .accessibilityHidden(true)
@@ -602,6 +609,9 @@ private struct LocalSendToolView: View {
                 ? "LocalSend sends the first 100 files per transfer."
                 : nil
         }
+        // A fingerprint belongs to the receiver it was read from.
+        .onChange(of: host) { _, _ in pendingFingerprint = nil }
+        .onChange(of: port) { _, _ in pendingFingerprint = nil }
     }
 
     private func chooseFiles() {
@@ -634,7 +644,6 @@ private struct LocalSendToolView: View {
             return
         }
         let peer = LocalSendPeer(
-            alias: host,
             host: host,
             port: portNumber,
             usesHTTPS: usesHTTPS,
@@ -698,6 +707,11 @@ private struct LocalSendToolView: View {
                 message = "Transfer cancelled."
                 if let transferID { store.markCancelled(transferID) }
             } catch {
+                // After a mismatch the offered fingerprint is stale, so Trust
+                // could only fail again. Send asks for the new one.
+                if let failure = error as? LocalSendError, case .certificateMismatch = failure {
+                    pendingFingerprint = nil
+                }
                 message = error.localizedDescription
                 if let transferID { store.finish(transferID, error: error.localizedDescription) }
             }
@@ -746,12 +760,14 @@ private struct WindowSnapToolView: View {
     }
 
     private func snap(_ position: WindowSnapPosition) {
-        do {
-            try WindowSnapService.snapFrontmost(to: position)
-            message = "Moved the frontmost window to \(position.title.lowercased())."
-        } catch {
-            message = error.localizedDescription
-            coordinator.present(error: error)
+        Task {
+            do {
+                try await WindowSnapService.snapFrontmost(to: position)
+                message = "Moved the frontmost window to \(position.title.lowercased())."
+            } catch {
+                message = error.localizedDescription
+                coordinator.present(error: error)
+            }
         }
     }
 }

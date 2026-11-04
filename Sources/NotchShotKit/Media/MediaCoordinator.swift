@@ -66,6 +66,8 @@ public final class MediaCoordinator {
     private var selectionGeneration: UInt = 0
     private var lastSelection: Date?
     private let reselectCooldown: TimeInterval = 8
+    /// A stream that ended inside the cooldown, waiting it out.
+    private var deferredReselection: Task<Void, Never>?
     /// Retries after a running player didn't answer, and the task waiting on
     /// the next one. Bounded so a player that never answers can't keep
     /// spending a two-second script timeout.
@@ -110,6 +112,8 @@ public final class MediaCoordinator {
         selectionGeneration &+= 1
         selectionTask?.cancel()
         selectionTask = nil
+        deferredReselection?.cancel()
+        deferredReselection = nil
         fallbackRetryTask?.cancel()
         fallbackRetryTask = nil
         streamTask?.cancel()
@@ -269,12 +273,31 @@ public final class MediaCoordinator {
 
     // MARK: Source selection
 
-    private func reselectIfAllowed() {
-        if let lastSelection, Date().timeIntervalSince(lastSelection) < reselectCooldown { return }
-        scheduleSelection()
+    /// - Parameter waitsOutCooldown: a backend that has died leaves nothing
+    ///   running, so inside the cooldown it gets a selection at the end of it.
+    ///   A wake has a working selection from moments ago and needs nothing.
+    private func reselectIfAllowed(waitsOutCooldown: Bool = false) {
+        guard let lastSelection else {
+            scheduleSelection()
+            return
+        }
+        let remaining = reselectCooldown - Date().timeIntervalSince(lastSelection)
+        guard remaining > 0 else {
+            scheduleSelection()
+            return
+        }
+        guard waitsOutCooldown, deferredReselection == nil else { return }
+        deferredReselection = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(remaining))
+            guard let self, !Task.isCancelled else { return }
+            self.deferredReselection = nil
+            self.scheduleSelection()
+        }
     }
 
     private func scheduleSelection() {
+        deferredReselection?.cancel()
+        deferredReselection = nil
         selectionGeneration &+= 1
         let generation = selectionGeneration
         selectionTask?.cancel()
@@ -413,7 +436,7 @@ public final class MediaCoordinator {
         artwork = nil
         artworkAccentColor = ArtworkAccentColor.fallback
         sourceApplicationIcon = nil
-        reselectIfAllowed()
+        reselectIfAllowed(waitsOutCooldown: true)
     }
 
     private func apply(_ update: MediaSnapshot) {
@@ -426,9 +449,12 @@ public final class MediaCoordinator {
         // De-duplicate: position-only ticks update the model but shouldn't be
         // treated as a track change by anything downstream.
         if snapshot.isMateriallyEqual(to: update) {
-            snapshot.position = update.position
-            snapshot.positionTimestamp = update.positionTimestamp
-            snapshot.isPlaying = update.isPlaying
+            // One write, not three: each is a `didSet` and an invalidation.
+            var moved = snapshot
+            moved.position = update.position
+            moved.positionTimestamp = update.positionTimestamp
+            moved.isPlaying = update.isPlaying
+            snapshot = moved
             return
         }
         if snapshot.artworkData != update.artworkData {
@@ -483,10 +509,6 @@ public final class MediaCoordinator {
                 Log.media.error("Media command failed: \(error.localizedDescription)")
             }
         }
-    }
-
-    public var canControlPlayback: Bool {
-        activeSource != .none && snapshot.hasContent
     }
 
     public func supports(_ kind: MediaCommandKind) -> Bool {

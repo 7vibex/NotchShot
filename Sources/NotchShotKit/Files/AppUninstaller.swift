@@ -162,7 +162,7 @@ enum AppLeftoverScanner {
             // Shared between a developer's apps, so never more than likely.
             entry.lowercased().contains(lowerIdentifier) ? .likely : nil
         }
-        scan("LaunchAgents", "Login item") { entry in
+        scan("LaunchAgents", loginItemCategory) { entry in
             // `<id>.plist` or `<id>.<helper>.plist`. A bare prefix would also
             // claim another product's agent (`com.example.app2.…` for
             // `com.example.app`), and every match here starts out selected.
@@ -173,6 +173,14 @@ enum AppLeftoverScanner {
     }
 
     static let sharedContainerCategory = "Shared container"
+    static let loginItemCategory = "Login item"
+
+    /// Trashing a loaded agent's plist leaves it running until logout, so this
+    /// has to run first: `launchctl bootout` reads the plist it is given.
+    static func agentUnloadArguments(for leftover: AppLeftover, userID: uid_t = getuid()) -> [String]? {
+        guard leftover.category == loginItemCategory else { return nil }
+        return ["bootout", "gui/\(userID)", leftover.url.path]
+    }
 
     static let genericNames: Set<String> = [
         "code", "mail", "notes", "music", "photos", "files", "terminal", "editor", "browser",
@@ -323,6 +331,10 @@ public final class AppUninstallSession: Identifiable {
         var moved = 0
         var failures: [String] = []
         for url in order {
+            if let leftover = leftovers.first(where: { $0.url == url }),
+               let arguments = AppLeftoverScanner.agentUnloadArguments(for: leftover) {
+                await Self.unloadAgent(arguments)
+            }
             do {
                 _ = try await NSWorkspace.shared.recycle([url])
                 moved += 1
@@ -336,5 +348,25 @@ public final class AppUninstallSession: Identifiable {
         } else {
             stage = .failed("Couldn't move \(failures.prefix(3).joined(separator: ", "))\(failures.count > 3 ? " and \(failures.count - 3) more" : "") to the Trash. Try those in Finder, which can ask for your password.")
         }
+    }
+
+    /// Best effort: an agent that was never loaded makes `launchctl` fail, and
+    /// that must not stop its file going to the Trash. Bounded, because a hung
+    /// `launchctl` would otherwise leave the sheet on "removing" for good.
+    private nonisolated static func unloadAgent(_ arguments: [String]) async {
+        await Task.detached(priority: .userInitiated) {
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/bin/launchctl")
+            process.arguments = arguments
+            process.standardInput = FileHandle.nullDevice
+            process.standardOutput = FileHandle.nullDevice
+            process.standardError = FileHandle.nullDevice
+            guard (try? process.run()) != nil else { return }
+            let deadline = Date().addingTimeInterval(5)
+            while process.isRunning, Date() < deadline {
+                try? await Task.sleep(for: .milliseconds(20))
+            }
+            if process.isRunning { process.terminate() }
+        }.value
     }
 }

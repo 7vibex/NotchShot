@@ -29,7 +29,7 @@ public struct CaptureTranslationView: View {
         LanguageChoice(code: "ko", name: "Korean"),
         LanguageChoice(code: "zh-Hans", name: "Chinese, Simplified"),
     ]
-    private static let maximumSourceCharacters = 50_000
+    private nonisolated static let maximumSourceCharacters = 50_000
 
     private let asset: CaptureAsset
     @Environment(\.dismiss) private var dismiss
@@ -149,20 +149,32 @@ public struct CaptureTranslationView: View {
         isLoadingSource = true
         errorMessage = nil
         do {
-            let fullText = try await Self.sourceText(for: asset)
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !fullText.isEmpty else {
-                throw NotchShotError.exportFailed("No readable text was found in this capture.")
-            }
-            wasTruncated = fullText.count > Self.maximumSourceCharacters
-            sourceText = String(fullText.prefix(Self.maximumSourceCharacters))
+            let source = try await Self.boundedSourceText(for: asset)
+            wasTruncated = source.wasTruncated
+            sourceText = source.text
         } catch {
             errorMessage = error.localizedDescription
         }
         isLoadingSource = false
     }
 
-    private static func sourceText(for asset: CaptureAsset) async throws -> String {
+    /// Nonisolated so the file reads, parsing and trimming stay off the main
+    /// actor: a `View`'s statics are on it otherwise, and a caption is up to 10 MB.
+    private nonisolated static func boundedSourceText(
+        for asset: CaptureAsset
+    ) async throws -> (text: String, wasTruncated: Bool) {
+        let fullText = try await sourceText(for: asset)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !fullText.isEmpty else {
+            throw NotchShotError.exportFailed("No readable text was found in this capture.")
+        }
+        return (
+            String(fullText.prefix(maximumSourceCharacters)),
+            fullText.count > maximumSourceCharacters
+        )
+    }
+
+    private nonisolated static func sourceText(for asset: CaptureAsset) async throws -> String {
         if asset.kind == .recording {
             guard let captionURL = asset.captionURL else {
                 throw NotchShotError.exportFailed(

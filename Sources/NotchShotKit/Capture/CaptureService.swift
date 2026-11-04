@@ -18,10 +18,6 @@ public actor CaptureService {
 
     public var previousAreaRect: CGRect? { lastAreaRect }
 
-    public func rememberArea(_ rect: CGRect) {
-        lastAreaRect = rect
-    }
-
     // MARK: Entry point
 
     /// Performs a capture. `excludedWindows` should always include NotchShot's

@@ -40,6 +40,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     // MARK: Launch
 
     public func applicationDidFinishLaunching(_ notification: Notification) {
+        MainThreadStallLogger.shared.start()
         AppPaths.ensureDirectories()
         secureUpdates = SecureUpdateController.shared
         NotchShotAppShortcuts.updateAppShortcutParameters()
@@ -162,6 +163,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             coordinator.resumePendingFirstCaptureIfPossible()
         }
 
+        Task.detached(priority: .utility) { LocalSendClient.removeStaleSnapshots() }
         Log.app.notice("NotchShot \(Bundle.main.shortVersion) launched")
     }
 
@@ -188,6 +190,8 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         // promise dies with the process that made it. Redeem it while there is
         // still something to redeem it with.
         ImageExport.redeemPromisedPasteboardImage()
+        ProductivityNoteStore.shared.flush()
+        coordinator.wellbeing.save()
         if Preferences.shared.clipboardClearsOnQuit {
             coordinator.clipboard.clear()
         }
@@ -243,7 +247,10 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
                 // finalization cannot produce a valid destination.
                 Log.recording.error("Could not finalize recording before quit: \(error.localizedDescription)")
             }
-            let shouldTerminate = resolveHistoryPersistenceBeforeTermination()
+            // Before the save below: a file that lands after it has no row, and
+            // the sweep at quit would remove it.
+            await FileWorkTracker.shared.waitUntilIdle()
+            let shouldTerminate = await resolveHistoryPersistenceBeforeTermination()
             if shouldTerminate {
                 // Keep media and its observers alive when the user cancels
                 // quitting after a history-save failure.
@@ -259,7 +266,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         return .terminateLater
     }
 
-    private func resolveHistoryPersistenceBeforeTermination() -> Bool {
+    private func resolveHistoryPersistenceBeforeTermination() async -> Bool {
         while true {
             do {
                 try coordinator.history.save()
@@ -273,7 +280,12 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
                 alert.addButton(withTitle: "Quit Without Saving")
                 alert.addButton(withTitle: "Cancel Quit")
                 NSApp.activate(ignoringOtherApps: true)
-                switch alert.runModal() {
+                // A `.terminateLater` reply runs the run loop in the modal panel
+                // mode, so the default mode alone would never open this.
+                let response = await coordinator.runModalOutsideMainQueue(
+                    modes: [.default, .modalPanel]
+                ) { alert.runModal() }
+                switch response {
                 case .alertFirstButtonReturn:
                     continue
                 case .alertSecondButtonReturn:
@@ -355,19 +367,23 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// Opening a `.notchshot` project from Finder or a documented automation URL.
     public func application(_ application: NSApplication, open urls: [URL]) {
-        for url in urls {
-            if url.scheme?.lowercased() == "notchshot" {
-                handleAutomationURL(url)
-                continue
+        // One Task, so the URLs stay in order while packages are read off main.
+        Task { [weak self] in
+            guard let self else { return }
+            for url in urls {
+                if url.scheme?.lowercased() == "notchshot" {
+                    await self.handleAutomationURL(url)
+                    continue
+                }
+                guard NotchShotPackage.isProject(url) else { continue }
+                guard let controller = try? await AnnotationDocumentController.openOffMain(projectAt: url) else {
+                    self.coordinator.present(error: NotchShotError.exportFailed(
+                        "Couldn't open \(url.lastPathComponent)"
+                    ))
+                    continue
+                }
+                self.showEditor(controller)
             }
-            guard NotchShotPackage.isProject(url) else { continue }
-            guard let controller = try? AnnotationDocumentController.open(projectAt: url) else {
-                coordinator.present(error: NotchShotError.exportFailed(
-                    "Couldn't open \(url.lastPathComponent)"
-                ))
-                continue
-            }
-            showEditor(controller)
         }
     }
 
@@ -394,7 +410,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         coordinator.acceptFilesFromFinderService(urls)
     }
 
-    private func handleAutomationURL(_ url: URL) {
+    private func handleAutomationURL(_ url: URL) async {
         guard automationRateLimiter.accept() else {
             coordinator.present(error: NotchShotError.captureFailed(
                 "Automation request ignored because NotchShot is being triggered too quickly"
@@ -403,14 +419,14 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         do {
             let command = try NotchShotURLRouter.parse(url)
-            guard authorizeExternalURLCommand(command) else { return }
+            guard await authorizeExternalURLCommand(command) else { return }
             performAutomationCommand(command)
         } catch {
             coordinator.present(error: error)
         }
     }
 
-    private func authorizeExternalURLCommand(_ command: NotchShotURLCommand) -> Bool {
+    private func authorizeExternalURLCommand(_ command: NotchShotURLCommand) async -> Bool {
         guard command.requiresExternalURLConsent else { return true }
 
         let alert = NSAlert()
@@ -422,7 +438,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         alert.addButton(withTitle: "Cancel")
         alert.addButton(withTitle: "Allow Once")
         NSApp.activate(ignoringOtherApps: true)
-        return alert.runModal() == .alertSecondButtonReturn
+        return await coordinator.runModalOutsideMainQueue { alert.runModal() } == .alertSecondButtonReturn
     }
 
     /// Shared by App Intents and the validated URL scheme. This accepts only
@@ -715,7 +731,8 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         let windowBox = WindowBox()
         let view = PrivacyReviewView(session: session) { [weak self] findings in
             self?.coordinator.applyPrivacySuggestions(from: session, findings: findings)
-            self?.privacyReviewWindows.removeValue(forKey: key)
+            // The close handler drops the reference. That entry is what holds the
+            // window, so dropping it here could release it before this close.
             windowBox.window?.performClose(nil)
         }
         let window = makeWindow(
@@ -864,8 +881,8 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
         let windowBox = WindowBox()
-        let view = DocumentSummaryView(session: session) { [weak self] in
-            self?.documentSummaryWindows.removeValue(forKey: key)
+        let view = DocumentSummaryView(session: session) {
+            // The close handler drops the reference; see `showPrivacyReview`.
             windowBox.window?.performClose(nil)
         }
         let window = makeWindow(

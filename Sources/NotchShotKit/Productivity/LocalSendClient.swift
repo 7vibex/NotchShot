@@ -5,20 +5,17 @@ import Security
 import UniformTypeIdentifiers
 
 public struct LocalSendPeer: Equatable, Sendable {
-    public var alias: String
     public var host: String
     public var port: Int
     public var usesHTTPS: Bool
     public var trustedCertificateSHA256: String?
 
     public init(
-        alias: String,
         host: String,
         port: Int = 53_317,
         usesHTTPS: Bool = true,
         trustedCertificateSHA256: String? = nil
     ) {
-        self.alias = alias
         self.host = host
         self.port = port
         self.usesHTTPS = usesHTTPS
@@ -176,6 +173,12 @@ public struct LocalSendSelection: Equatable, Sendable {
 public actor LocalSendClient {
     public static let shared = LocalSendClient()
     public static let maximumFileBytes: Int64 = 5 * 1_024 * 1_024 * 1_024
+    /// A receiver answers these with a little JSON or nothing. A device that
+    /// keeps sending must not fill memory with it.
+    static let maximumResponseBytes = 1_024 * 1_024
+    /// A receiver answers prepare-upload only once its user accepts.
+    private static let prepareTimeout: TimeInterval = 300
+    private static let snapshotDirectoryPrefix = "notchshot-localsend-"
 
     /// Whether a prepare-upload status accepted the transfer at all. LocalSend
     /// answers 204 No Content when the receiver declined it, which is the exact
@@ -236,17 +239,27 @@ public actor LocalSendClient {
         to peer: LocalSendPeer,
         progress: @escaping @Sendable (LocalSendProgress) async -> Void
     ) async throws -> Int {
-        let prepared = try prepareFiles(selections)
+        // Everything that can refuse the send comes before the copy, which can
+        // be up to 5 GB a file.
+        let base = try Self.baseURL(for: peer)
+        let sessionDelegate = LocalSendTrustDelegate(expectedFingerprint: peer.trustedCertificateSHA256)
+        let session = URLSession(configuration: .ephemeral, delegate: sessionDelegate, delegateQueue: nil)
+        defer { session.invalidateAndCancel() }
+        if peer.usesHTTPS, peer.trustedCertificateSHA256 == nil,
+           let fingerprint = await Self.untrustedFingerprint(at: base, session: session, delegate: sessionDelegate) {
+            throw LocalSendError.certificateNeedsApproval(fingerprint)
+        }
+        try Task.checkCancellation()
+
+        let prepared = try await prepareFiles(selections)
         guard !prepared.isEmpty else { throw LocalSendError.noFilesAccepted }
         // The snapshots are private copies; they leave with this call on every
         // path — success, thrown error, or cancellation.
         defer { Self.discardSnapshots(prepared) }
-        let sessionDelegate = LocalSendTrustDelegate(expectedFingerprint: peer.trustedCertificateSHA256)
-        let session = URLSession(configuration: .ephemeral, delegate: sessionDelegate, delegateQueue: nil)
-        defer { session.invalidateAndCancel() }
 
+        // Set once the receiver has opened a session, until the last file is in.
+        var openSessionID: String?
         do {
-            let base = try baseURL(for: peer)
             let device = DeviceInfo(
                 alias: Host.current().localizedName ?? "NotchShot Mac",
                 fingerprint: UUID().uuidString,
@@ -270,13 +283,15 @@ public actor LocalSendClient {
             prepareRequest.httpMethod = "POST"
             prepareRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
             prepareRequest.httpBody = try JSONEncoder().encode(requestBody)
-            let (data, response) = try await session.data(for: prepareRequest)
+            prepareRequest.timeoutInterval = Self.prepareTimeout
+            let (data, response) = try await Self.boundedResponse(to: prepareRequest, in: session)
             guard let http = response as? HTTPURLResponse else { throw LocalSendError.invalidResponse }
             guard Self.prepareAccepted(statusCode: http.statusCode) else {
                 throw LocalSendError.noFilesAccepted
             }
             guard (200 ..< 300).contains(http.statusCode) else { throw LocalSendError.rejected(http.statusCode) }
             let accepted = try JSONDecoder().decode(PrepareResponse.self, from: data)
+            openSessionID = accepted.sessionId
             let acceptedFiles = prepared.filter { accepted.files[$0.id] != nil }
             guard !acceptedFiles.isEmpty else { throw LocalSendError.noFilesAccepted }
 
@@ -321,10 +336,10 @@ public actor LocalSendClient {
                         ))
                     }
                 }
-                let (_, uploadResponse) = try await session.upload(
-                    for: uploadRequest,
+                let uploadResponse = try await uploadProgress.upload(
+                    uploadRequest,
                     fromFile: file.snapshotURL,
-                    delegate: uploadProgress
+                    in: session
                 )
                 guard let uploadHTTP = uploadResponse as? HTTPURLResponse,
                       (200 ..< 300).contains(uploadHTTP.statusCode) else {
@@ -332,6 +347,7 @@ public actor LocalSendClient {
                 }
                 completedBytes += file.size
             }
+            openSessionID = nil
             await progress(LocalSendProgress(
                 completedFiles: acceptedFiles.count,
                 totalFiles: acceptedFiles.count,
@@ -341,6 +357,9 @@ public actor LocalSendClient {
             ))
             return acceptedFiles.count
         } catch {
+            if let openSessionID {
+                Self.cancelReceiverSession(openSessionID, at: base, peer: peer)
+            }
             if peer.usesHTTPS, let actual = sessionDelegate.observedFingerprint {
                 if let expected = peer.trustedCertificateSHA256,
                    LocalSendTrustDelegate.normalized(expected) != LocalSendTrustDelegate.normalized(actual) {
@@ -354,42 +373,120 @@ public actor LocalSendClient {
         }
     }
 
-    private func baseURL(for peer: LocalSendPeer) throws -> URL {
+    nonisolated static func baseURL(for peer: LocalSendPeer) throws -> URL {
         guard LocalNetworkHostPolicy.isAllowed(peer.host), (1 ... 65_535).contains(peer.port) else {
             throw LocalSendError.invalidPeer
         }
+        let host = peer.host.trimmingCharacters(in: .whitespacesAndNewlines)
         var components = URLComponents()
         components.scheme = peer.usesHTTPS ? "https" : "http"
-        components.host = peer.host.trimmingCharacters(in: .whitespacesAndNewlines)
+        // URLComponents takes an IPv6 address only in its URL form.
+        components.host = host.contains(":") ? "[\(host)]" : host
         components.port = peer.port
         guard let url = components.url else { throw LocalSendError.invalidPeer }
         return url
     }
 
+    /// With no approved fingerprint a TLS send can only fail, so this asks for
+    /// the certificate before copying anything. The handshake decides, whatever
+    /// the receiver would make of the request. Nil falls through to the send,
+    /// which reports its own error.
+    private nonisolated static func untrustedFingerprint(
+        at base: URL,
+        session: URLSession,
+        delegate: LocalSendTrustDelegate
+    ) async -> String? {
+        var request = URLRequest(url: base.appendingPathComponent("api/localsend/v2/info"))
+        request.timeoutInterval = 5
+        _ = try? await session.data(for: request)
+        return delegate.observedFingerprint
+    }
+
+    /// `session.data(for:)` holds however much the peer sends.
+    private nonisolated static func boundedResponse(
+        to request: URLRequest,
+        in session: URLSession
+    ) async throws -> (Data, URLResponse) {
+        let (bytes, response) = try await session.bytes(for: request)
+        var data = Data()
+        for try await byte in bytes {
+            guard data.count < maximumResponseBytes else { throw LocalSendError.invalidResponse }
+            data.append(byte)
+        }
+        return (data, response)
+    }
+
+    /// A receiver still counting files answers later sends with 409 until its
+    /// user clears it, so say the session is over. Best effort: the send's own
+    /// session is about to be cancelled, and nothing waits on this one.
+    private nonisolated static func cancelReceiverSession(_ sessionID: String, at base: URL, peer: LocalSendPeer) {
+        var components = URLComponents(
+            url: base.appendingPathComponent("api/localsend/v2/cancel"),
+            resolvingAgainstBaseURL: false
+        )
+        components?.queryItems = [URLQueryItem(name: "sessionId", value: sessionID)]
+        guard let url = components?.url else { return }
+        let fingerprint = peer.trustedCertificateSHA256
+        Task.detached(priority: .utility) {
+            var request = URLRequest(url: url)
+            request.httpMethod = "POST"
+            request.timeoutInterval = 2
+            let delegate = LocalSendTrustDelegate(expectedFingerprint: fingerprint)
+            let session = URLSession(configuration: .ephemeral, delegate: delegate, delegateQueue: nil)
+            defer { session.invalidateAndCancel() }
+            _ = try? await boundedResponse(to: request, in: session)
+        }
+    }
+
     /// Copies each selected file into a private transfer snapshot before any
-    /// network work begins.
+    /// file data goes out.
     ///
     /// The identity pinned at selection is re-checked through an `O_NOFOLLOW`
     /// descriptor during the copy, so a pathname replaced since then is
     /// refused, and the bytes uploaded are the snapshot's. The 5 GB per-file
-    /// limit is enforced on both the selection and the copy.
-    func prepareFiles(_ selections: [LocalSendSelection]) throws -> [PreparedFile] {
-        var prepared: [PreparedFile] = []
-        do {
-            for selection in selections.prefix(100) {
-                prepared.append(try prepareFile(selection))
+    /// limit is enforced on both the selection and the copy. Runs off the actor
+    /// so a long copy holds nothing else up, and stops between files on Cancel.
+    func prepareFiles(_ selections: [LocalSendSelection]) async throws -> [PreparedFile] {
+        let copy = Task.detached(priority: .userInitiated) {
+            var prepared: [PreparedFile] = []
+            do {
+                for selection in selections.prefix(100) {
+                    try Task.checkCancellation()
+                    prepared.append(try Self.prepareFile(selection))
+                }
+            } catch {
+                Self.discardSnapshots(prepared)
+                throw error
             }
-        } catch {
-            Self.discardSnapshots(prepared)
-            throw error
+            return prepared
         }
-        return prepared
+        return try await withTaskCancellationHandler {
+            try await copy.value
+        } onCancel: {
+            copy.cancel()
+        }
     }
 
-    private func prepareFile(_ selection: LocalSendSelection) throws -> PreparedFile {
+    /// Removes what a crash or force quit left behind mid-send. Old ones only,
+    /// since another running copy of the app could be sending right now.
+    public nonisolated static func removeStaleSnapshots(
+        in temporary: URL = FileManager.default.temporaryDirectory,
+        olderThan age: TimeInterval = 24 * 60 * 60
+    ) {
+        guard let names = try? FileManager.default.contentsOfDirectory(atPath: temporary.path) else { return }
+        let cutoff = Date().addingTimeInterval(-age)
+        for name in names where name.hasPrefix(snapshotDirectoryPrefix) {
+            let directory = temporary.appendingPathComponent(name, isDirectory: true)
+            guard let modified = try? directory.resourceValues(forKeys: [.contentModificationDateKey])
+                .contentModificationDate, modified < cutoff else { continue }
+            try? FileManager.default.removeItem(at: directory)
+        }
+    }
+
+    private nonisolated static func prepareFile(_ selection: LocalSendSelection) throws -> PreparedFile {
         let source = selection.url.standardizedFileURL
         let directory = FileManager.default.temporaryDirectory
-            .appendingPathComponent("notchshot-localsend-\(UUID().uuidString)", isDirectory: true)
+            .appendingPathComponent("\(snapshotDirectoryPrefix)\(UUID().uuidString)", isDirectory: true)
         do {
             try FileManager.default.createDirectory(
                 at: directory,
@@ -434,14 +531,72 @@ public actor LocalSendClient {
 }
 
 /// Per-upload task delegate that forwards URLSession's sent-byte count, at
-/// most ~10 times a second plus the final value.
-final class LocalSendUploadProgress: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
+/// most ~10 times a second plus the final value, and stops a reply that runs
+/// past `maximumResponseBytes`. The reply's body is not used, so it is counted
+/// and dropped; only delegate callbacks can do that, which is why this runs the
+/// task itself instead of `session.upload(for:fromFile:delegate:)`.
+final class LocalSendUploadProgress: NSObject, URLSessionDataDelegate, @unchecked Sendable {
     private let lock = NSLock()
     private var lastReport: TimeInterval = 0
+    private var receivedBytes = 0
+    private var replyTooLarge = false
+    private var completion: CheckedContinuation<URLResponse, Error>?
+    /// A task cancelled before it started can finish before anyone waits.
+    private var finished: Result<URLResponse, Error>?
     private let report: @Sendable (Int64) -> Void
 
     init(report: @escaping @Sendable (Int64) -> Void) {
         self.report = report
+    }
+
+    /// Challenges and redirects this type does not handle still go to the
+    /// session's delegate.
+    func upload(_ request: URLRequest, fromFile file: URL, in session: URLSession) async throws -> URLResponse {
+        let task = session.uploadTask(with: request, fromFile: file)
+        task.delegate = self
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                let early = lock.withLock { () -> Result<URLResponse, Error>? in
+                    if finished == nil { completion = continuation }
+                    return finished
+                }
+                if let early {
+                    continuation.resume(with: early)
+                } else {
+                    task.resume()
+                }
+            }
+        } onCancel: {
+            task.cancel()
+        }
+    }
+
+    func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
+        let tooLarge = lock.withLock {
+            receivedBytes += data.count
+            replyTooLarge = replyTooLarge || receivedBytes > LocalSendClient.maximumResponseBytes
+            return replyTooLarge
+        }
+        if tooLarge { dataTask.cancel() }
+    }
+
+    func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+        let result: Result<URLResponse, Error>
+        if lock.withLock({ replyTooLarge }) {
+            result = .failure(LocalSendError.invalidResponse)
+        } else if let error {
+            result = .failure(error)
+        } else if let response = task.response {
+            result = .success(response)
+        } else {
+            result = .failure(LocalSendError.invalidResponse)
+        }
+        let continuation = lock.withLock { () -> CheckedContinuation<URLResponse, Error>? in
+            defer { completion = nil }
+            if completion == nil { finished = result }
+            return completion
+        }
+        continuation?.resume(with: result)
     }
 
     func urlSession(

@@ -1,4 +1,5 @@
 import AppKit
+import os
 import SwiftUI
 
 /// The banners macOS is visibly presenting, stacked the way the Dynamic
@@ -384,6 +385,27 @@ enum SystemNotificationCardLayout {
     /// second line gets it, so a short message keeps the compact card.
     static func bodyLineLimit(for snapshot: SystemNotificationSnapshot, row: Int = 0) -> Int {
         guard row == 0, snapshot.earlier.isEmpty, !snapshot.body.isEmpty else { return 1 }
+        // Every layout pass for this card asks, and the answer costs a code
+        // search and a text measurement. One entry: the card on screen.
+        let key = BodyLineKey(body: snapshot.body, title: snapshot.title, groupCount: snapshot.groupCount)
+        let known: Int? = lastBodyLineLimit.withLock { last in
+            last?.key == key ? last?.limit : nil
+        }
+        if let known { return known }
+        let limit = measuredBodyLineLimit(for: snapshot)
+        lastBodyLineLimit.withLock { $0 = (key, limit) }
+        return limit
+    }
+
+    private struct BodyLineKey: Equatable, Sendable {
+        var body: String
+        var title: String
+        var groupCount: Int
+    }
+
+    private static let lastBodyLineLimit = OSAllocatedUnfairLock<(key: BodyLineKey, limit: Int)?>(initialState: nil)
+
+    private static func measuredBodyLineLimit(for snapshot: SystemNotificationSnapshot) -> Int {
         // What sits beside the text at rest: the copy button, measured as
         // if codes were offered (at worst a short body gets a spare line),
         // and the thread count on the preview's own line.

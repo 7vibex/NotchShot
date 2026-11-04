@@ -8,8 +8,7 @@ import Foundation
 @MainActor
 extension AppCoordinator {
     func handleLookUpCapture(_ image: CapturedImage, operationID: UUID) async {
-        arbiter.isProcessing = "Looking up"
-        refreshActivity()
+        captureProcessingLabel = beginProcessing("Looking up")
         do {
             let ocr = try await OCRService.shared.recognizeText(in: image)
             guard isCurrentCapture(operationID) else { return }

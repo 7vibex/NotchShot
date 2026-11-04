@@ -15,6 +15,10 @@ public final class ExtrasPreferences {
     public static let shared = ExtrasPreferences()
 
     @ObservationIgnored private let defaults: UserDefaults
+    /// Under `@Observable` the assignments in `init` run these `didSet`s. Left
+    /// to run, they saved every default as if the user had chosen it, and a
+    /// share-link configuration that failed to decode was overwritten for good.
+    @ObservationIgnored private var isLoading = true
 
     // MARK: Share links
 
@@ -166,7 +170,7 @@ public final class ExtrasPreferences {
 
     public init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
-        shareLink = readJSON("shareLink") ?? ShareLinkConfiguration()
+        shareLink = readShareLink() ?? ShareLinkConfiguration()
         copiesShareLinkAfterUpload = bool("shareLinkCopies", true)
         notificationRepliesEnabled = bool("notificationReplies", true)
         pinnedShortcuts = defaults.stringArray(forKey: key("pinnedShortcuts")) ?? []
@@ -212,6 +216,7 @@ public final class ExtrasPreferences {
         showsWiFiJoin = bool("wifiJoin", true)
         showsAccessoryBattery = bool("accessoryBattery", true)
         controlsExternalDisplays = bool("externalDisplays", true)
+        isLoading = false
     }
 
     /// The lengths Instant Replay offers, in seconds.
@@ -229,14 +234,31 @@ public final class ExtrasPreferences {
     }
 
     private func write(_ value: Any?, _ name: String) {
+        guard !isLoading else { return }
         if let value { defaults.set(value, forKey: key(name)) } else { defaults.removeObject(forKey: key(name)) }
     }
 
     private func writeJSON<T: Encodable>(_ value: T, _ name: String) {
+        guard !isLoading else { return }
         defaults.set(try? JSONEncoder().encode(value), forKey: key(name))
     }
 
     private func readJSON<T: Decodable>(_ name: String) -> T? {
         defaults.data(forKey: key(name)).flatMap { try? JSONDecoder().decode(T.self, from: $0) }
+    }
+
+    /// The stored configuration, with defaults for any field it doesn't have.
+    /// Synthesized decoding throws on a missing key, so a field added in a
+    /// later build would otherwise read as no configuration at all.
+    private func readShareLink() -> ShareLinkConfiguration? {
+        if let stored: ShareLinkConfiguration = readJSON("shareLink") { return stored }
+        guard let data = defaults.data(forKey: key("shareLink")),
+              let stored = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let base = try? JSONEncoder().encode(ShareLinkConfiguration()),
+              let fields = try? JSONSerialization.jsonObject(with: base) as? [String: Any],
+              let merged = try? JSONSerialization.data(
+                  withJSONObject: fields.merging(stored) { _, stored in stored }
+              ) else { return nil }
+        return try? JSONDecoder().decode(ShareLinkConfiguration.self, from: merged)
     }
 }

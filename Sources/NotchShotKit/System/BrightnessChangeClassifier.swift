@@ -68,7 +68,6 @@ struct BrightnessChangeClassifier {
     private let maximumBurst = 1.2
 
     private struct Burst {
-        var anchor: Double
         var startedAt: TimeInterval
         var lastMovedAt: TimeInterval
         var latest: Double
@@ -98,7 +97,7 @@ struct BrightnessChangeClassifier {
             return .ignore
         }
 
-        // A blocked main run loop can collapse several seconds of a slow
+        // A blocked sampling queue can collapse several seconds of a slow
         // ambient ramp into one apparently large sample. Re-baseline after a
         // sampling gap instead of turning that accumulated movement into a
         // false user gesture.
@@ -118,7 +117,6 @@ struct BrightnessChangeClassifier {
         last = value
         let step = abs(delta)
         var current = burst ?? Burst(
-            anchor: previous,
             startedAt: time,
             lastMovedAt: time,
             latest: value,

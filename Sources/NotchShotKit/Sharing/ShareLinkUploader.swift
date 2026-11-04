@@ -43,7 +43,7 @@ public struct ShareLinkConfiguration: Codable, Equatable, Sendable {
     }
 
     /// The object key for an upload.
-    public func objectKey(for fileURL: URL, date: Date = Date(), randomID: String = ShareLinkConfiguration.randomID()) -> String {
+    public func objectKey(for fileURL: URL, randomID: String = ShareLinkConfiguration.randomID()) -> String {
         let ext = fileURL.pathExtension.lowercased()
         let name: String
         if randomizesNames {

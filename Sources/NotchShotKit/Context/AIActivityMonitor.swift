@@ -255,10 +255,17 @@ enum AIActivityHistoryPolicy {
 
     static func merging(
         _ activities: [AIActivitySnapshot],
-        into history: [AIActivitySnapshot]
+        into history: [AIActivitySnapshot],
+        clearedAt: Date? = nil
     ) -> [AIActivitySnapshot] {
         var latestByID: [String: AIActivitySnapshot] = [:]
-        for activity in history + activities.filter({ $0.state.isTerminal }) {
+        // Status files outlive a Clear by days, so what they say from before it
+        // must not bring the rows back.
+        let incoming = activities.filter { activity in
+            guard activity.state.isTerminal else { return false }
+            return clearedAt.map { activity.updatedAt > $0 } ?? true
+        }
+        for activity in history + incoming {
             let id = activity.displayIdentifier
             if let existing = latestByID[id], existing.updatedAt > activity.updatedAt {
                 continue
@@ -322,6 +329,7 @@ public final class AIActivityMonitor {
 
     /// Test/benchmark seam: what the most recent `loadActivities()` pass did.
     @ObservationIgnored public private(set) var lastLoadStatistics = AIActivityLoadStatistics()
+    @ObservationIgnored private var historyClearedAt: Date?
 
     public init(
         directory: URL = AppPaths.aiActivity,
@@ -332,6 +340,7 @@ public final class AIActivityMonitor {
         self.historyURL = historyURL
         self.ownsURL = ownsURL
         self.recentActivities = Self.loadHistory(from: historyURL)
+        self.historyClearedAt = Self.loadClearedAt(from: historyURL.appendingPathExtension("cleared"))
     }
 
     public func start(mayInterruptMedia: Bool) {
@@ -374,7 +383,11 @@ public final class AIActivityMonitor {
 
     public func refresh(now: Date = Date()) {
         let activities = loadActivities().filter { enabledSources.contains($0.source) }
-        let updatedHistory = AIActivityHistoryPolicy.merging(activities, into: recentActivities)
+        let updatedHistory = AIActivityHistoryPolicy.merging(
+            activities,
+            into: recentActivities,
+            clearedAt: historyClearedAt
+        )
         if updatedHistory != recentActivities {
             recentActivities = updatedHistory
             saveHistory()
@@ -396,12 +409,18 @@ public final class AIActivityMonitor {
             guard let decoded = decode(url), decoded.displayIdentifier == activity.displayIdentifier else { continue }
             try? FileManager.default.removeItem(at: url)
         }
+        // A refresh finds nothing new to save, and the row would be back after
+        // a relaunch.
+        saveHistory()
         refresh()
     }
 
     public func clearHistory() {
         recentActivities = []
         try? FileManager.default.removeItem(at: historyURL)
+        let clearedAt = Date()
+        historyClearedAt = clearedAt
+        saveClearedAt(clearedAt)
         refresh()
     }
 
@@ -669,6 +688,26 @@ public final class AIActivityMonitor {
         guard let data = try? encoder.encode(recentActivities) else { return }
         try? data.write(to: historyURL, options: .atomic)
         try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: historyURL.path)
+    }
+
+    private func saveClearedAt(_ date: Date) {
+        let url = historyURL.appendingPathExtension("cleared")
+        guard AppPaths.owns(url) else { return }
+        try? Data(String(date.timeIntervalSince1970).utf8).write(to: url, options: .atomic)
+        try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+    }
+
+    private static func loadClearedAt(from url: URL) -> Date? {
+        guard AppPaths.owns(url),
+              let values = try? url.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey]),
+              values.isRegularFile == true,
+              values.isSymbolicLink != true,
+              (values.fileSize ?? 65) <= 64,
+              let data = try? Data(contentsOf: url),
+              let seconds = TimeInterval(String(decoding: data, as: UTF8.self)),
+              seconds.isFinite
+        else { return nil }
+        return Date(timeIntervalSince1970: seconds)
     }
 
     private static func loadHistory(from url: URL) -> [AIActivitySnapshot] {

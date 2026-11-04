@@ -58,10 +58,6 @@ public struct PixelSample: Sendable, Equatable {
 }
 
 public enum ImagePixelInspector {
-    public static func sample(_ image: CGImage, at point: CGPoint) -> PixelSample? {
-        ImagePixelSampler()?.sample(image, at: point)
-    }
-
     public static func contrast(_ first: InspectedColor, _ second: InspectedColor) -> Double {
         let brighter = max(first.relativeLuminance, second.relativeLuminance)
         let darker = min(first.relativeLuminance, second.relativeLuminance)
@@ -101,12 +97,16 @@ private final class ImagePixelSampler {
         context.restoreGState()
         guard let data = context.data else { return nil }
         let bytes = data.assumingMemoryBound(to: UInt8.self)
+        // The bitmap is premultiplied. A window capture's shadow is translucent,
+        // and its real colour is not the darkened value stored here.
+        let alpha = CGFloat(bytes[3])
+        let channelMaximum = alpha > 0 ? alpha : 255
         return PixelSample(
             point: CGPoint(x: x, y: y),
             color: InspectedColor(
-                red: CGFloat(bytes[0]) / 255,
-                green: CGFloat(bytes[1]) / 255,
-                blue: CGFloat(bytes[2]) / 255
+                red: min(CGFloat(bytes[0]) / channelMaximum, 1),
+                green: min(CGFloat(bytes[1]) / channelMaximum, 1),
+                blue: min(CGFloat(bytes[2]) / channelMaximum, 1)
             )
         )
     }
@@ -117,6 +117,9 @@ private final class ImagePixelSampler {
 public final class ImageInspectionSession {
     public let asset: CaptureAsset
     public let image: CGImage
+    /// One image for the session rather than one per body evaluation: every new
+    /// hover sample re-runs the body.
+    let displayImage: NSImage
     public var hoverSample: PixelSample?
     public var firstContrastColor: InspectedColor?
     public var secondContrastColor: InspectedColor?
@@ -124,12 +127,25 @@ public final class ImageInspectionSession {
     public var measurementEnd: CGPoint?
     @ObservationIgnored private let pixelSampler = ImagePixelSampler()
 
-    public init(asset: CaptureAsset) throws {
-        guard asset.kind.isImage, let image = SafeImageFile.cgImage(for: asset) else {
-            throw NotchShotError.exportFailed("That image could not be read safely")
-        }
+    /// Reads and decodes the capture off the main actor. Sampling draws from
+    /// this image on every pointer move, so it must not be decoded lazily.
+    public nonisolated static func loadImage(for asset: CaptureAsset) async throws -> CapturedImage {
+        try await Task.detached(priority: .userInitiated) {
+            guard asset.kind.isImage,
+                  let image = SafeImageFile.capturedImage(for: asset, decodeImmediately: true) else {
+                throw NotchShotError.exportFailed("That image could not be read safely")
+            }
+            return image
+        }.value
+    }
+
+    public init(asset: CaptureAsset, image: CapturedImage) {
         self.asset = asset
-        self.image = image
+        self.image = image.cgImage
+        displayImage = NSImage(
+            cgImage: image.cgImage,
+            size: NSSize(width: image.cgImage.width, height: image.cgImage.height)
+        )
     }
 
     public var contrastDescription: String {
@@ -189,21 +205,18 @@ public struct ImageInspectorView: View {
         VStack(spacing: 0) {
             inspectorToolbar
             GeometryReader { geometry in
-                let fitted = fit(
+                let fitted = ImageViewFit.rect(
                     source: CGSize(width: session.image.width, height: session.image.height),
                     into: geometry.size,
                     margin: 28
                 )
                 ZStack {
                     Color(nsColor: .underPageBackgroundColor)
-                    Image(nsImage: NSImage(
-                        cgImage: session.image,
-                        size: NSSize(width: session.image.width, height: session.image.height)
-                    ))
-                    .resizable()
-                    .interpolation(.none)
-                    .frame(width: fitted.width, height: fitted.height)
-                    .position(x: fitted.midX, y: fitted.midY)
+                    Image(nsImage: session.displayImage)
+                        .resizable()
+                        .interpolation(.none)
+                        .frame(width: fitted.width, height: fitted.height)
+                        .position(x: fitted.midX, y: fitted.midY)
 
                     if let start = session.measurementStart,
                        let end = session.measurementEnd {
@@ -340,8 +353,11 @@ public struct ImageInspectorView: View {
             y: fitted.minY + point.y / CGFloat(session.image.height) * fitted.height
         )
     }
+}
 
-    private func fit(source: CGSize, into container: CGSize, margin: CGFloat) -> CGRect {
+/// Where an image sits, aspect-fitted, in the comparison and inspector windows.
+enum ImageViewFit {
+    static func rect(source: CGSize, into container: CGSize, margin: CGFloat) -> CGRect {
         let available = CGSize(
             width: max(1, container.width - margin * 2),
             height: max(1, container.height - margin * 2)

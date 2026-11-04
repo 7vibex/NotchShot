@@ -60,11 +60,15 @@ struct LockedNowPlayingCard: View {
                 now = Date()
             }
         }
-        // The charge moves a percent every few minutes; no need to ask often.
-        .task {
+        // The charge moves a percent every few minutes; no need to ask often,
+        // and no point at all while the screens are off.
+        .task(id: coordinator.media.areScreensAwake) {
+            power = LockedChargingPolicy.reading()
+            guard coordinator.media.areScreensAwake else { return }
             while !Task.isCancelled {
-                power = LockedChargingPolicy.reading()
                 try? await Task.sleep(for: .seconds(20))
+                guard !Task.isCancelled else { return }
+                power = LockedChargingPolicy.reading()
             }
         }
     }
@@ -456,20 +460,35 @@ enum LockedNowPlayingPresentationPolicy {
 private final class LockedNowPlayingAudioOutput {
     private(set) var route: AudioRouteReading?
     @ObservationIgnored private var registration: LockedNowPlayingOutputRegistration?
+    @ObservationIgnored private var routeRead: Task<Void, Never>?
 
     func start() {
         guard registration == nil else { return }
-        route = AudioOutputDeviceService.currentOutput()
+        readRoute()
         registration = LockedNowPlayingOutputRegistration { [weak self] _, _ in
             Task { @MainActor in
                 guard let self, self.registration != nil else { return }
-                self.route = AudioOutputDeviceService.currentOutput()
+                self.readRoute()
             }
         }
     }
 
     func stop() {
         registration = nil
+        routeRead?.cancel()
+        routeRead = nil
+    }
+
+    /// Several Core Audio calls, which block while a Bluetooth route settles.
+    private func readRoute() {
+        routeRead?.cancel()
+        routeRead = Task { [weak self] in
+            let route = await Task.detached(priority: .userInitiated) {
+                AudioOutputDeviceService.currentOutput()
+            }.value
+            guard let self, !Task.isCancelled else { return }
+            self.route = route
+        }
     }
 }
 

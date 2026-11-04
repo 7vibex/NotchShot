@@ -31,12 +31,22 @@ public struct BugReportManifest: Sendable, Codable, Equatable {
 
 /// Builds a transparent, inspectable package. It never reads unified logs,
 /// crash reports, device serials, account data, or unrelated files.
-@MainActor
+///
+/// `write` copies the whole capture, so it is not tied to the main actor.
 public enum BugReportPackager {
+    /// Only AppKit can answer this; `write` takes the answer as a value.
+    @MainActor
+    public static func displayDescriptions() -> [String] {
+        NSScreen.screens.map { screen in
+            "\(Int(screen.frame.width))x\(Int(screen.frame.height)) @ \(screen.backingScaleFactor)x"
+        }
+    }
+
     @discardableResult
     public static func write(
         asset: CaptureAsset,
         options: BugReportOptions,
+        displays: [String] = [],
         to destination: URL
     ) throws -> URL {
         let fileManager = FileManager.default
@@ -85,10 +95,7 @@ public enum BugReportPackager {
                     ? asset.sourceApplication : nil,
                 operatingSystem: options.includesMacOSVersion
                     ? ProcessInfo.processInfo.operatingSystemVersionString : nil,
-                displays: options.includesDisplayDetails
-                    ? NSScreen.screens.map { screen in
-                        "\(Int(screen.frame.width))x\(Int(screen.frame.height)) @ \(screen.backingScaleFactor)x"
-                    } : nil,
+                displays: options.includesDisplayDetails ? displays : nil,
                 captureKind: options.includesCaptureMetadata ? asset.kind.rawValue : nil,
                 captureDimensions: options.includesCaptureMetadata
                     ? asset.dimensionsDescription : nil,
@@ -172,22 +179,33 @@ public final class BugReportSession {
     public var options = BugReportOptions()
     public var errorMessage: String?
     public var exportedURL: URL?
+    public private(set) var isExporting = false
 
     public init(asset: CaptureAsset) {
         self.asset = asset
     }
 
     public func export() {
+        guard !isExporting else { return }
         let panel = NSSavePanel()
         panel.nameFieldStringValue = "Bug Report.notchbug"
         panel.directoryURL = Preferences.shared.outputFolder
         panel.message = "Creates an inspectable folder with only the attachment and details selected below."
         guard panel.runModal() == .OK, let url = panel.url else { return }
-        do {
-            exportedURL = try BugReportPackager.write(asset: asset, options: options, to: url)
-            errorMessage = nil
-        } catch {
-            errorMessage = error.localizedDescription
+        isExporting = true
+        let asset = self.asset
+        let options = self.options
+        let displays = options.includesDisplayDetails ? BugReportPackager.displayDescriptions() : []
+        FileWorkTracker.shared.run {
+            defer { self.isExporting = false }
+            do {
+                self.exportedURL = try await Task.detached(priority: .userInitiated) {
+                    try BugReportPackager.write(asset: asset, options: options, displays: displays, to: url)
+                }.value
+                self.errorMessage = nil
+            } catch {
+                self.errorMessage = error.localizedDescription
+            }
         }
     }
 
@@ -270,6 +288,7 @@ public struct BugReportView: View {
                     Spacer()
                     Button("Create Package…") { session.export() }
                         .notchShotPrimaryActionStyle()
+                        .disabled(session.isExporting)
                 }
             }
         }

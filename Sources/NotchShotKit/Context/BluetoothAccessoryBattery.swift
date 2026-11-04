@@ -73,6 +73,9 @@ public actor BluetoothAccessoryBatteryService {
     /// enough that a draining battery is not stale on screen.
     private let cacheLifetime: TimeInterval = 60
     private var lastFailedRead: Date?
+    /// The read under way. A second caller waits for it rather than starting
+    /// another report.
+    private var inFlight: Task<Void, Never>?
     /// A failed or hung report is retried at most this often, so a wedged
     /// Bluetooth stack costs one bounded attempt per interval rather than a
     /// fresh process on every card open.
@@ -86,16 +89,22 @@ public actor BluetoothAccessoryBatteryService {
         return Self.match(routeName: routeName, in: cached)
     }
 
-    public func invalidate() {
-        lastRead = nil
-        lastFailedRead = nil
-    }
-
     private func refreshIfNeeded() async {
         if let lastRead, Date().timeIntervalSince(lastRead) < cacheLifetime { return }
         if let lastFailedRead, Date().timeIntervalSince(lastFailedRead) < failureRetryDelay {
             return
         }
+        if let inFlight {
+            await inFlight.value
+            return
+        }
+        let read = Task { await self.read() }
+        inFlight = read
+        await read.value
+    }
+
+    private func read() async {
+        defer { inFlight = nil }
         guard let data = await Self.runReport() else {
             lastFailedRead = Date()
             return
@@ -130,8 +139,10 @@ public actor BluetoothAccessoryBatteryService {
 
     /// `system_profiler` normally answers in a second or two, but a wedged
     /// Bluetooth stack can hang it. The read races a hard timeout that
-    /// terminates the process, so a hung report costs the caller five seconds
-    /// once instead of forever.
+    /// terminates the process, then kills it if that didn't work, and the caller
+    /// is released either way: a hung report costs five seconds once instead of
+    /// forever. The read waits on its own thread, because one that never
+    /// returned would otherwise hold a Swift concurrency thread with it.
     private static func runReport() async -> Data? {
         let report = ReportProcess()
         do {
@@ -140,24 +151,41 @@ public actor BluetoothAccessoryBatteryService {
             Log.app.notice("Bluetooth battery report could not start")
             return nil
         }
-        return await withTaskGroup(of: Data?.self) { group in
-            group.addTask { report.read() }
-            group.addTask {
-                try? await Task.sleep(for: .seconds(Self.reportTimeout))
+        return await withCheckedContinuation { continuation in
+            let result = ReportResult(continuation)
+            let queue = DispatchQueue.global(qos: .utility)
+            queue.async { result.resume(returning: report.read()) }
+            queue.asyncAfter(deadline: .now() + Self.reportTimeout) {
                 report.terminateIfRunning()
-                return nil
+                result.resume(returning: nil)
+                queue.asyncAfter(deadline: .now() + Self.killDelay) { report.killIfRunning() }
             }
-            let first = await group.next() ?? nil
-            group.cancelAll()
-            return first
         }
     }
 
     static let reportTimeout: TimeInterval = 5
+    private static let killDelay: TimeInterval = 1
 
-    /// `Process` is not `Sendable`, but this box never touches the process from
-    /// two threads at once: one task reads it to completion, and the other only
-    /// sleeps before a single conditional `terminate`.
+    /// Hands the first answer to the waiting caller and drops the other.
+    private final class ReportResult: @unchecked Sendable {
+        private let lock = NSLock()
+        private var continuation: CheckedContinuation<Data?, Never>?
+
+        init(_ continuation: CheckedContinuation<Data?, Never>) {
+            self.continuation = continuation
+        }
+
+        func resume(returning data: Data?) {
+            lock.lock()
+            let waiting = continuation
+            continuation = nil
+            lock.unlock()
+            waiting?.resume(returning: data)
+        }
+    }
+
+    /// `Process` is not `Sendable`, but this box only ever has one thread reading
+    /// it to completion, and the timeout's conditional `terminate` and `kill`.
     private final class ReportProcess: @unchecked Sendable {
         let process = Process()
         let pipe = Pipe()
@@ -180,6 +208,11 @@ public actor BluetoothAccessoryBatteryService {
         func terminateIfRunning() {
             guard process.isRunning else { return }
             process.terminate()
+        }
+
+        func killIfRunning() {
+            guard process.isRunning else { return }
+            kill(process.processIdentifier, SIGKILL)
         }
     }
 

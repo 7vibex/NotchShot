@@ -179,8 +179,14 @@ public struct CaptureAsset: Sendable, Identifiable, Equatable {
         return "\(Int(pixelSize.width)) × \(Int(pixelSize.height))"
     }
 
+    /// Read in SwiftUI bodies. A file the user brought in may sit on a share
+    /// that has stopped responding, where a `stat` blocks the main thread until
+    /// the mount times out, so it reports the size recorded when it came in.
     public var fileSize: Int64 {
-        (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? Int64) ?? 0
+        if ownership == .externalReference, let externalFileIdentity {
+            return externalFileIdentity.size
+        }
+        return (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? Int64) ?? 0
     }
 
     public var fileSizeDescription: String {

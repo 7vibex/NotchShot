@@ -77,12 +77,7 @@ enum BoundedProcess {
         try? output.fileHandleForWriting.close()
         try? errors.fileHandleForWriting.close()
         let pid = process.processIdentifier
-        var dedicatedGroup = false
-        for _ in 0..<100 {
-            if getpgid(pid) == pid || kill(pid, 0) != 0 { dedicatedGroup = true; break }
-            usleep(1_000)
-        }
-        guard dedicatedGroup else {
+        guard DedicatedProcessGroup.waitUntilEstablished(pid) else {
             _ = kill(pid, SIGKILL)
             _ = exited.wait(timeout: .now() + 1)
             throw CocoaError(.executableNotLoadable)
@@ -92,7 +87,7 @@ enum BoundedProcess {
         for fd in [outFD, errFD] {
             let flags = fcntl(fd, F_GETFL)
             guard flags >= 0, fcntl(fd, F_SETFL, flags | O_NONBLOCK) == 0 else {
-                stopGroup(pid)
+                DedicatedProcessGroup.stop(pid)
                 _ = exited.wait(timeout: .now() + 1)
                 throw CocoaError(.fileReadUnknown)
             }
@@ -132,7 +127,7 @@ enum BoundedProcess {
         }
         // The verified runner owns a dedicated group. Stop descendants even
         // when their parent exited normally but left an inherited pipe open.
-        stopGroup(pid)
+        DedicatedProcessGroup.stop(pid)
         guard exited.wait(timeout: .now() + 1) == .success else {
             throw CocoaError(.executableRuntimeMismatch)
         }
@@ -147,16 +142,6 @@ enum BoundedProcess {
         )
     }
 
-    private static func stopGroup(_ pid: pid_t) {
-        guard kill(-pid, 0) == 0 || errno == EPERM else { return }
-        _ = kill(-pid, SIGTERM)
-        let deadline = ProcessInfo.processInfo.systemUptime + 0.2
-        while (kill(-pid, 0) == 0 || errno == EPERM), ProcessInfo.processInfo.systemUptime < deadline {
-            usleep(10_000)
-        }
-        _ = kill(-pid, SIGKILL)
-    }
-
     private final class CancellationFlag: @unchecked Sendable {
         private let lock = NSLock()
         private var cancelled = false
@@ -169,6 +154,36 @@ enum BoundedProcess {
         paths.lazy
             .map { URL(fileURLWithPath: $0) }
             .first { FileManager.default.isExecutableFile(atPath: $0.path) }
+    }
+}
+
+/// A process started through the bundled runner, which leads a process group of
+/// its own so that its descendants can be stopped with it.
+enum DedicatedProcessGroup {
+    /// False if the runner has not set up its group in time. A process that has
+    /// already exited counts as set up: there is nothing left to wait for.
+    static func waitUntilEstablished(_ processID: pid_t) -> Bool {
+        for _ in 0 ..< 100 {
+            if getpgid(processID) == processID || kill(processID, 0) != 0 { return true }
+            usleep(1_000)
+        }
+        return false
+    }
+
+    static func exists(_ processGroupID: pid_t) -> Bool {
+        errno = 0
+        return kill(-processGroupID, 0) == 0 || errno == EPERM
+    }
+
+    /// Asks the group to end, and forces it after a short grace period.
+    static func stop(_ processGroupID: pid_t) {
+        guard exists(processGroupID) else { return }
+        _ = kill(-processGroupID, SIGTERM)
+        let deadline = ProcessInfo.processInfo.systemUptime + 0.2
+        while exists(processGroupID), ProcessInfo.processInfo.systemUptime < deadline {
+            usleep(10_000)
+        }
+        if exists(processGroupID) { _ = kill(-processGroupID, SIGKILL) }
     }
 }
 
@@ -239,7 +254,6 @@ public enum ShortcutsService {
 public struct RunningAppEntry: Identifiable, Equatable, Sendable {
     public var id: pid_t
     public var name: String
-    public var bundleIdentifier: String?
     public var bundleURL: URL?
     public var isActive: Bool
     public var isHidden: Bool
@@ -256,7 +270,6 @@ public enum AppSwitcher {
                 RunningAppEntry(
                     id: $0.processIdentifier,
                     name: $0.localizedName ?? $0.bundleIdentifier ?? "App",
-                    bundleIdentifier: $0.bundleIdentifier,
                     bundleURL: $0.bundleURL,
                     isActive: $0.isActive,
                     isHidden: $0.isHidden
@@ -563,6 +576,8 @@ public final class WellbeingMonitor {
         if !extras.breakNudgesEnabled {
             nudges = BreakNudgeSchedule()
         }
+        // The timer may stay for eye breaks, but no later sample would save these.
+        if !extras.screenTimeEnabled { save() }
         if needed, timer == nil {
             let timer = Timer(timeInterval: Self.sampleInterval, repeats: true) { [weak self] _ in
                 MainActor.assumeIsolated { self?.sample() }

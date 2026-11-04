@@ -52,10 +52,6 @@ public final class SystemOSDSuppressor {
     /// instance would be a second, uncoordinated owner of both.
     init() {}
 
-    public var isSuppressing: Bool {
-        isEnabled && !pausedProcessIDs.isEmpty
-    }
-
     public var needsInputMonitoringPermission: Bool {
         guard #available(macOS 26.5, *) else { return false }
         return isEnabled && !mediaKeyInterceptor.isRunning
@@ -69,14 +65,6 @@ public final class SystemOSDSuppressor {
         runningHelpers().contains { application in
             Self.processIdentity(for: application.processIdentifier)?.status == UInt32(SSTOP)
         }
-    }
-
-    public func start() {
-        guard !isEnabled else {
-            if pausedProcessIDs.isEmpty { pauseHelper() }
-            return
-        }
-        setEnabled(Preferences.shared.suppressesSystemOSD)
     }
 
     /// One-time migration for pre-watchdog builds. This deliberately operates

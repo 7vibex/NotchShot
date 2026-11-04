@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import SwiftUI
 
 /// A transient low-battery alert backed by the real IOKit reading carried in
@@ -52,9 +53,11 @@ struct BatteryAlertCard: View {
         }
         .padding(.horizontal, NotchAlertStyle.horizontalInset)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        // Foundation posts this one on a global queue, and the closure below
+        // belongs to the main actor.
         .onReceive(NotificationCenter.default.publisher(
             for: .NSProcessInfoPowerStateDidChange
-        )) { _ in
+        ).receive(on: DispatchQueue.main)) { _ in
             isLowPowerModeEnabled = ProcessInfo.processInfo.isLowPowerModeEnabled
         }
         .accessibilityElement(children: .contain)

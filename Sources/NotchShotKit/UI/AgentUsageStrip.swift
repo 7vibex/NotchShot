@@ -6,20 +6,14 @@ import SwiftUI
 /// when a limit is close: orange past 70%, red past 90%. Draws nothing until
 /// a source has reported numbers.
 struct AgentUsageStrip: View {
-    private var coordinator: AppCoordinator?
-    private var fixedGroups: [AgentUsageGroup] = []
+    private var coordinator: AppCoordinator
 
     init(coordinator: AppCoordinator) {
         self.coordinator = coordinator
     }
 
-    /// Fixed numbers, for previews and render checks.
-    init(groups: [AgentUsageGroup]) {
-        fixedGroups = groups
-    }
-
     var body: some View {
-        let groups = (coordinator?.agentUsageGroups ?? fixedGroups)
+        let groups = coordinator.agentUsageGroups
             .filter { $0.meters.contains { $0.kind != .context } }
         if !groups.isEmpty {
             HStack(spacing: NotchIsland.Spacing.gutter + NotchIsland.Spacing.tight) {

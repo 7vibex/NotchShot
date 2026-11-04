@@ -153,9 +153,38 @@ public struct AnnotationElement: Codable, Sendable, Equatable, Identifiable {
         self.counterValue = counterValue
     }
 
+    /// `elements`, in order, split wherever highlighter meets anything else.
+    static func highlighterRuns(in elements: [AnnotationElement]) -> [[AnnotationElement]] {
+        var runs: [[AnnotationElement]] = []
+        for element in elements {
+            if let last = runs.indices.last,
+               (runs[last][0].kind == .highlighter) == (element.kind == .highlighter) {
+                runs[last].append(element)
+            } else {
+                runs.append([element])
+            }
+        }
+        return runs
+    }
+
     /// Axis-aligned bounds in source space.
     public var boundingRect: CGRect {
         guard let first = points.first else { return .zero }
+        if kind == .text {
+            // Text draws right and down from its anchor, in the renderer's font.
+            // An empty element still needs something to click and outline.
+            let fontSize = CGFloat(style.fontSize)
+            let measured = NSAttributedString(
+                string: text,
+                attributes: [.font: NSFont.systemFont(ofSize: fontSize, weight: .semibold)]
+            ).size()
+            return CGRect(
+                x: first.x,
+                y: first.y,
+                width: max(measured.width, fontSize * 2),
+                height: max(measured.height, fontSize)
+            )
+        }
         if kind.isPointAnchored {
             let side = max(style.fontSize * 2, 44)
             return CGRect(x: first.x - side / 2, y: first.y - side / 2, width: side, height: side)

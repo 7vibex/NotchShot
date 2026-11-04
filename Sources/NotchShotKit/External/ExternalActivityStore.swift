@@ -63,6 +63,7 @@ public final class ExternalActivityStore {
         expiryTask = nil
         scheduledDeadline = nil
         publishTask?.cancel()
+        publishTask = nil
         registry.removeAll()
         onChange?()
     }

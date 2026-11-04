@@ -1,6 +1,7 @@
 import AppKit
 import Foundation
 import Observation
+import SystemConfiguration
 
 public enum CrewlineLinkState: Equatable, Sendable {
     /// The integration is switched off in Settings.
@@ -50,6 +51,7 @@ public final class CrewlineMonitor {
     /// Interactions answered locally whose server echo has not arrived yet,
     /// so a stale refresh cannot bring the card back for a moment.
     private var answeredInteractionIDs: Set<String> = []
+    private var approvalFirstSeen: [String: Date] = [:]
 
     public var onChange: (() -> Void)?
 
@@ -57,13 +59,66 @@ public final class CrewlineMonitor {
     private var connection: CrewlineConnection?
     private var connectedPort: Int?
     private var refreshTask: Task<Void, Never>?
+    /// An event that arrived while a refresh was already under way, whose
+    /// bootstrap may predate it. A run blocked on a new approval sends nothing
+    /// more, so dropping that event could leave its card missing indefinitely.
+    private var refreshAgainAfter: Duration?
     private var lastNoisyRefresh = Date.distantPast
     private var generation = 0
 
     public init() {}
 
-    public var isRunning: Bool { supervisor != nil }
-    public var hasCredential: Bool { CrewlineCredentialStore.load() != nil }
+    private var credentialStored = false
+    @ObservationIgnored private var credentialLookupStarted = false
+    /// Bumped by every save and delete so a lookup that started earlier can't
+    /// overwrite the newer answer.
+    @ObservationIgnored private var credentialRevision = 0
+
+    /// Whether a pairing is stored, as last read. A Keychain read can wait on
+    /// securityd or on an access prompt until the user answers, so it never
+    /// happens here: the first read starts a lookup and observers hear the answer.
+    public var hasCredential: Bool {
+        if !credentialLookupStarted {
+            credentialLookupStarted = true
+            let revision = credentialRevision
+            Task { [weak self] in
+                let stored = await Self.keychain { CrewlineCredentialStore.load() != nil }
+                self?.noteCredential(stored, ifStillAt: revision)
+            }
+        }
+        return credentialStored
+    }
+
+    /// Every Keychain call runs here, in order, so a read queued after a delete
+    /// sees the delete.
+    private nonisolated static let keychainQueue = DispatchQueue(
+        label: "com.notchshot.crewline.keychain",
+        qos: .userInitiated
+    )
+
+    private nonisolated static func keychain<Value: Sendable>(
+        _ work: @escaping @Sendable () -> Value
+    ) async -> Value {
+        await withCheckedContinuation { continuation in
+            keychainQueue.async { continuation.resume(returning: work()) }
+        }
+    }
+
+    private func noteCredential(_ stored: Bool, ifStillAt revision: Int) {
+        guard revision == credentialRevision else { return }
+        credentialLookupStarted = true
+        credentialStored = stored
+    }
+
+    private func credentialWritten(stored: Bool) {
+        credentialRevision += 1
+        noteCredential(stored, ifStillAt: credentialRevision)
+    }
+
+    private func forgetCredential() {
+        credentialWritten(stored: false)
+        Self.keychainQueue.async { CrewlineCredentialStore.delete() }
+    }
 
     public var activities: [AIActivitySnapshot] {
         guard state == .connected else { return [] }
@@ -72,7 +127,10 @@ public final class CrewlineMonitor {
 
     public var interactions: [AgentInteraction] {
         guard state == .connected else { return [] }
-        let approvals = CrewlineActivityMapper.approvalInteractions(from: workspace)
+        let approvals = CrewlineActivityMapper.approvalInteractions(
+            from: workspace,
+            firstSeen: approvalFirstSeen
+        )
         return (approvals + questions.values)
             .filter { !answeredInteractionIDs.contains($0.id) }
             .sorted { $0.receivedAt < $1.receivedAt }
@@ -96,6 +154,7 @@ public final class CrewlineMonitor {
         supervisor = nil
         refreshTask?.cancel()
         refreshTask = nil
+        refreshAgainAfter = nil
         let connection = connection
         self.connection = nil
         connectedPort = nil
@@ -104,6 +163,7 @@ public final class CrewlineMonitor {
         questions = [:]
         usageAccounts = []
         answeredInteractionIDs = []
+        approvalFirstSeen = [:]
         setState(.off)
     }
 
@@ -112,13 +172,21 @@ public final class CrewlineMonitor {
     /// socket drops.
     private func supervise(generation: Int) async {
         while !Task.isCancelled, generation == self.generation {
-            guard let host = CrewlineLocalHost.running(), let port = host.port() else {
+            let port = await Task.detached(priority: .utility) {
+                CrewlineLocalHost.running()?.port()
+            }.value
+            guard generation == self.generation else { return }
+            guard let port else {
                 clearLiveData()
                 setState(.notRunning)
                 try? await Task.sleep(for: .seconds(5))
                 continue
             }
-            guard let credential = CrewlineCredentialStore.load() else {
+            let revision = credentialRevision
+            let stored = await Self.keychain { CrewlineCredentialStore.load() }
+            guard generation == self.generation else { return }
+            noteCredential(stored != nil, ifStillAt: revision)
+            guard let credential = stored else {
                 clearLiveData()
                 setState(.needsPairing)
                 try? await Task.sleep(for: .seconds(5))
@@ -130,7 +198,7 @@ public final class CrewlineMonitor {
             guard generation == self.generation else { return }
             clearLiveData()
             if closed.invalidatesCredential {
-                CrewlineCredentialStore.delete()
+                forgetCredential()
                 lastError = "Crewline revoked NotchShot's access. Connect again to restore it."
                 setState(.needsPairing)
             }
@@ -150,6 +218,12 @@ public final class CrewlineMonitor {
             closedContinuation.yield(error)
             closedContinuation.finish()
         }
+        // stop() may have run during the wait above, and it can't close what
+        // it hasn't been given.
+        guard generation == self.generation else {
+            await connection.close()
+            return .closed
+        }
         self.connection = connection
         connectedPort = port
         defer {
@@ -163,7 +237,9 @@ public final class CrewlineMonitor {
             try await refreshWorkspace(on: connection)
         } catch let error as CrewlineConnectionError {
             await connection.close()
-            if !error.invalidatesCredential { setState(.failed(error.localizedDescription)) }
+            if generation == self.generation, !error.invalidatesCredential {
+                setState(.failed(error.localizedDescription))
+            }
             return error
         } catch {
             await connection.close()
@@ -186,12 +262,32 @@ public final class CrewlineMonitor {
     }
 
     private func watch(_ method: String, on connection: CrewlineConnection) async {
-        guard let stream = try? await connection.subscribe(method) else { return }
-        for await item in stream {
-            guard !Task.isCancelled else { return }
-            handleStreamItem(item, from: method)
+        var retryDelay = Self.minimumResubscribeSeconds
+        var isResubscribing = false
+        while !Task.isCancelled {
+            // Fails once the socket has closed, and supervise handles that.
+            guard let stream = try? await connection.subscribe(method) else { return }
+            // Whatever happened while no stream was open is only in a bootstrap.
+            if isResubscribing { scheduleRefresh(after: .milliseconds(150)) }
+            var delivered = false
+            for await item in stream {
+                guard !Task.isCancelled else { return }
+                delivered = true
+                handleStreamItem(item, from: method)
+            }
+            // The server ended this stream, maybe with the socket still up.
+            // A server that keeps refusing it costs a bootstrap each time, so
+            // those retries back off.
+            retryDelay = delivered
+                ? Self.minimumResubscribeSeconds
+                : min(retryDelay * 2, Self.maximumResubscribeSeconds)
+            isResubscribing = true
+            try? await Task.sleep(for: .seconds(retryDelay))
         }
     }
+
+    private static let minimumResubscribeSeconds = 3
+    private static let maximumResubscribeSeconds = 60
 
     private func pollUsage(on connection: CrewlineConnection) async {
         while !Task.isCancelled {
@@ -213,17 +309,13 @@ public final class CrewlineMonitor {
         "text.delta", "reasoning.delta", "tool.output.delta", "usage.tokens", "diff.updated",
     ]
 
-    private func handleStreamItem(_ item: Data, from method: String) {
-        let object = (try? JSONSerialization.jsonObject(with: item)) as? [String: Any]
-        let event = object?["event"] as? [String: Any]
-        let type = event?["type"] as? String ?? ""
-
-        if type == "input.requested" || type == "input.resolved",
-           let runID = object?["runId"] as? String {
+    private func handleStreamItem(_ item: CrewlineStreamItem, from method: String) {
+        if item.type == "input.requested" || item.type == "input.resolved",
+           let runID = item.runID {
             questions[runID] = nil
         }
 
-        if Self.noisyEventTypes.contains(type) {
+        if Self.noisyEventTypes.contains(item.type) {
             // Token streams arrive many times a second; the island only needs
             // the latest line every few seconds.
             guard Date().timeIntervalSince(lastNoisyRefresh) > 8 else { return }
@@ -233,19 +325,40 @@ public final class CrewlineMonitor {
     }
 
     private func scheduleRefresh(after delay: Duration) {
-        guard refreshTask == nil, let connection else { return }
+        guard let connection else { return }
+        guard refreshTask == nil else {
+            refreshAgainAfter = min(refreshAgainAfter ?? delay, delay)
+            return
+        }
+        let generation = generation
         refreshTask = Task { [weak self] in
             try? await Task.sleep(for: delay)
             guard !Task.isCancelled else { return }
+            // The request below covers everything up to here; only what
+            // arrives after it can be missing from the reply.
+            self?.refreshAgainAfter = nil
             try? await self?.refreshWorkspace(on: connection)
-            self?.refreshTask = nil
+            guard let self, generation == self.generation else { return }
+            self.refreshTask = nil
+            if let again = self.refreshAgainAfter {
+                self.refreshAgainAfter = nil
+                self.scheduleRefresh(after: again)
+            }
         }
     }
 
     private func refreshWorkspace(on connection: CrewlineConnection) async throws {
         let data = try await connection.request("workspace.bootstrap")
-        let object = try JSONSerialization.jsonObject(with: data, options: .fragmentsAllowed)
-        let updated = CrewlineParser.workspace(from: object)
+        // A bootstrap runs to megabytes and comes up to twice a second during
+        // a busy run. Decoding and comparing it stay off the main actor.
+        let current = workspace
+        let (updated, isUnchanged) = try await Task.detached(priority: .userInitiated) {
+            () throws -> (CrewlineWorkspace, Bool) in
+            let object = try JSONSerialization.jsonObject(with: data, options: .fragmentsAllowed)
+            let updated = CrewlineParser.workspace(from: object)
+            return (updated, updated == current)
+        }.value
+        guard self.connection === connection else { throw CrewlineConnectionError.closed }
 
         let waitingRuns = Set(updated.runs.filter { $0.status == .awaitingInput }.map(\.id))
         var nextQuestions = questions.filter { waitingRuns.contains($0.key) }
@@ -254,11 +367,17 @@ public final class CrewlineMonitor {
                 nextQuestions[runID] = question
             }
         }
+        guard self.connection === connection else { throw CrewlineConnectionError.closed }
 
         let liveIDs = Set(updated.approvals.map(\.id)).union(nextQuestions.values.map(\.id))
         answeredInteractionIDs.formIntersection(liveIDs)
+        let seenAt = Date()
+        approvalFirstSeen = Dictionary(
+            updated.approvals.map { ($0.id, approvalFirstSeen[$0.id] ?? seenAt) },
+            uniquingKeysWith: { first, _ in first }
+        )
 
-        guard updated != workspace || nextQuestions != questions else { return }
+        guard !isUnchanged || nextQuestions != questions else { return }
         workspace = updated
         questions = nextQuestions
         onChange?()
@@ -270,8 +389,10 @@ public final class CrewlineMonitor {
             "includeEvents": true,
             "recentTurns": 1,
         ])
-        let object = try JSONSerialization.jsonObject(with: data, options: .fragmentsAllowed)
-        return CrewlineParser.pendingQuestion(inRunEvents: object, runID: runID)
+        return try await Task.detached(priority: .userInitiated) { () throws -> AgentInteraction? in
+            let object = try JSONSerialization.jsonObject(with: data, options: .fragmentsAllowed)
+            return CrewlineParser.pendingQuestion(inRunEvents: object, runID: runID)
+        }.value
     }
 
     private func clearLiveData() {
@@ -280,6 +401,7 @@ public final class CrewlineMonitor {
         questions = [:]
         usageAccounts = []
         answeredInteractionIDs = []
+        approvalFirstSeen = [:]
         onChange?()
     }
 
@@ -298,12 +420,17 @@ public final class CrewlineMonitor {
         guard !isPairing else { return }
         isPairing = true
         defer { isPairing = false }
-        guard let host = CrewlineLocalHost.running(), let port = host.port() else {
+        let local = await Task.detached(priority: .userInitiated) { () -> (port: Int, rootToken: String?)? in
+            guard let host = CrewlineLocalHost.running(), let port = host.port() else { return nil }
+            return (port, host.rootToken())
+        }.value
+        guard let local else {
             lastError = "Open Crewline first, then connect."
             onChange?()
             return
         }
-        guard let rootToken = host.rootToken() else {
+        let port = local.port
+        guard let rootToken = local.rootToken else {
             lastError = "NotchShot couldn't read Crewline's local token. Paste a pairing code instead."
             onChange?()
             return
@@ -330,7 +457,10 @@ public final class CrewlineMonitor {
         guard !isPairing else { return }
         isPairing = true
         defer { isPairing = false }
-        guard let port = CrewlineLocalHost.running()?.port() else {
+        let port = await Task.detached(priority: .userInitiated) {
+            CrewlineLocalHost.running()?.port()
+        }.value
+        guard let port else {
             lastError = "Open Crewline first, then connect."
             onChange?()
             return
@@ -343,7 +473,8 @@ public final class CrewlineMonitor {
             let device = try await CrewlineHTTP.pair(
                 port: port,
                 code: code,
-                deviceName: "NotchShot on \(Host.current().localizedName ?? "this Mac")",
+                // Not Host.current(), which can wait on name resolution.
+                deviceName: "NotchShot on \(SCDynamicStoreCopyComputerName(nil, nil) as String? ?? "this Mac")",
                 scopes: Self.requestedScopes
             )
             let credential = CrewlineCredential(
@@ -352,11 +483,13 @@ public final class CrewlineMonitor {
                 scopes: device.scopes,
                 pairedAt: Date()
             )
-            guard CrewlineCredentialStore.save(credential) else {
+            let saved = await Self.keychain { CrewlineCredentialStore.save(credential) }
+            guard saved else {
                 lastError = "NotchShot couldn't save the pairing to the Keychain."
                 onChange?()
                 return
             }
+            credentialWritten(stored: true)
             lastError = nil
             restart()
         } catch {
@@ -368,7 +501,7 @@ public final class CrewlineMonitor {
     /// Forgets this Mac's pairing. The device stays listed in Crewline until
     /// the user revokes it there.
     public func unpair() {
-        CrewlineCredentialStore.delete()
+        forgetCredential()
         restart()
     }
 
@@ -458,9 +591,10 @@ public final class CrewlineMonitor {
     /// Uploads files and queues them, with an optional note, as the next turn
     /// of a run. The run keeps its own permission mode.
     public func sendFollowUp(runID: String, note: String, files: [AgentAttachment]) async throws {
-        guard let connection, let port = connectedPort,
-              let credential = CrewlineCredentialStore.load()
-        else { throw CrewlineConnectionError.notRunning }
+        guard let connection, let port = connectedPort else { throw CrewlineConnectionError.notRunning }
+        guard let credential = await Self.keychain({ CrewlineCredentialStore.load() }) else {
+            throw CrewlineConnectionError.notRunning
+        }
         guard let run = workspace.run(runID) else {
             throw CrewlineConnectionError.server(code: "not_found", message: "That run is no longer in Crewline.")
         }

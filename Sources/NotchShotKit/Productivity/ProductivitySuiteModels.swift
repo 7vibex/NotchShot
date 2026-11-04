@@ -109,18 +109,38 @@ public final class ProductivityNoteStore {
     public private(set) var lastError: String?
     public var isWriteLocked: Bool { !file.canWrite }
     public var recoveryBackupURL: URL? { file.recoveryBackupURL }
+    /// The file as of the latest save, for the two properties above. The
+    /// writer owns the live one.
     private var file: AuthoredContentFile
+    @ObservationIgnored private let writer: AuthoredContentWriter
+    /// Half a second after typing stops. Every keystroke used to re-encode and
+    /// rewrite the whole store on the main thread.
+    private static let typingSaveDelay: Duration = .milliseconds(500)
+    @ObservationIgnored private var pendingSave: Task<Void, Never>?
+    @ObservationIgnored private var editGeneration = 0
+    @ObservationIgnored private var savedGeneration = 0
+    @ObservationIgnored private var latestSaveReported = 0
+    /// Titles kept exactly as typed while their field is in use: trimming each
+    /// keystroke took the space out of "two words" and turned an emptied field
+    /// into "Untitled Note" mid-edit. Disk always gets the finished form.
+    @ObservationIgnored private var titlesBeingTyped: Set<UUID> = []
 
     public init(storeURL: URL = AppPaths.support.appendingPathComponent("productivity-notes.json")) {
-        file = AuthoredContentFile(url: storeURL)
+        var loaded = AuthoredContentFile(url: storeURL)
+        var loadedNotes: [ProductivityNote] = []
+        var loadError: String?
         do {
-            notes = try file.load([ProductivityNote].self)?.sorted { $0.updatedAt > $1.updatedAt } ?? []
-            if file.recoveredOversizedContent {
-                lastError = "Oversized Notes were recovered. Reduce them to 8 MiB before saving; the original file is retained."
+            loadedNotes = try loaded.load([ProductivityNote].self)?.sorted { $0.updatedAt > $1.updatedAt } ?? []
+            if loaded.recoveredOversizedContent {
+                loadError = "Oversized Notes were recovered. Reduce them to 8 MiB before saving; the original file is retained."
             }
         } catch {
-            lastError = "Notes could not be loaded: \(error.localizedDescription) The file was left untouched and saving is locked."
+            loadError = "Notes could not be loaded: \(error.localizedDescription) The file was left untouched and saving is locked."
         }
+        file = loaded
+        writer = AuthoredContentWriter(file: loaded)
+        notes = loadedNotes
+        lastError = loadError
     }
 
     @discardableResult
@@ -132,41 +152,142 @@ public final class ProductivityNoteStore {
         return note
     }
 
+    /// Saves before returning, and changes nothing if the save fails.
     public func update(_ note: ProductivityNote) {
-        guard let index = notes.firstIndex(where: { $0.id == note.id }) else { return }
-        // Legacy notes can exceed the current field limit. Keep them editable
-        // without silently trimming an untouched body during a title change.
-        guard note.body.count <= max(200_000, notes[index].body.count) else {
-            lastError = AuthoredContentFile.PersistenceError.textTooLong(200_000).localizedDescription
+        guard let candidate = applying(note, keepsTitleAsTyped: false) else { return }
+        commit(candidate)
+    }
+
+    /// One keystroke in the editor. It shows at once and reaches the disk
+    /// after typing pauses, or at `finishEditing()` or `flush()`. If that save
+    /// fails, `lastError` says so and the text stays on screen for the next try.
+    public func edit(_ note: ProductivityNote) {
+        // A locked file is refused up front, as a save would be.
+        guard file.canWrite else {
+            update(note)
             return
         }
-        var updated = note
-        if updated.title != notes[index].title {
-            let title = updated.title.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard title.count <= max(160, notes[index].title.count) else {
-                lastError = AuthoredContentFile.PersistenceError.textTooLong(160).localizedDescription
-                return
-            }
-            updated.title = title.isEmpty ? "Untitled Note" : title
+        guard let candidate = applying(note, keepsTitleAsTyped: true) else { return }
+        notes = candidate
+        editGeneration += 1
+        pendingSave?.cancel()
+        pendingSave = Task { [weak self] in
+            try? await Task.sleep(for: Self.typingSaveDelay)
+            guard !Task.isCancelled else { return }
+            self?.saveEditsInBackground()
         }
-        updated.updatedAt = Date()
-        var candidate = notes
-        candidate[index] = updated
-        candidate.sort { $0.updatedAt > $1.updatedAt }
-        commit(candidate)
+    }
+
+    /// The editor closed or moved to another note, or Return was pressed in
+    /// the title: tidies the title and saves now, off the main thread.
+    public func finishEditing() {
+        tidyTypedTitles()
+        saveEditsInBackground()
+    }
+
+    /// Everything typed so far is on disk when this returns. For quitting.
+    public func flush() {
+        tidyTypedTitles()
+        guard editGeneration != savedGeneration else { return }
+        commit(notes)
+        if let lastError, editGeneration != savedGeneration {
+            Log.app.error("Final Notes save failed: \(lastError)")
+        }
     }
 
     public func delete(id: UUID) {
         commit(notes.filter { $0.id != id })
     }
 
+    private func applying(_ note: ProductivityNote, keepsTitleAsTyped: Bool) -> [ProductivityNote]? {
+        guard let index = notes.firstIndex(where: { $0.id == note.id }) else { return nil }
+        // Legacy notes can exceed the current field limit. Keep them editable
+        // without silently trimming an untouched body during a title change.
+        guard Self.fits(note.body, limit: 200_000, existing: notes[index].body) else {
+            lastError = AuthoredContentFile.PersistenceError.textTooLong(200_000).localizedDescription
+            return nil
+        }
+        var updated = note
+        if updated.title != notes[index].title {
+            let title = updated.title.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard Self.fits(title, limit: 160, existing: notes[index].title) else {
+                lastError = AuthoredContentFile.PersistenceError.textTooLong(160).localizedDescription
+                return nil
+            }
+            if keepsTitleAsTyped {
+                titlesBeingTyped.insert(note.id)
+            } else {
+                updated.title = title.isEmpty ? "Untitled Note" : title
+            }
+        }
+        updated.updatedAt = Date()
+        var candidate = notes
+        candidate[index] = updated
+        candidate.sort { $0.updatedAt > $1.updatedAt }
+        return candidate
+    }
+
+    /// A string has at most as many characters as UTF-8 bytes, so most text
+    /// answers without walking the whole of it on every keystroke.
+    private static func fits(_ text: String, limit: Int, existing: String) -> Bool {
+        text.utf8.count <= limit || text.count <= max(limit, existing.count)
+    }
+
     private func commit(_ candidate: [ProductivityNote]) {
-        do {
-            try file.save(candidate)
-            notes = candidate
+        let saved = withTitlesTidied(candidate)
+        let outcome = writer.saveNow(saved)
+        latestSaveReported = outcome.sequence
+        file = outcome.file
+        if let failure = outcome.errorDescription {
+            lastError = "Notes could not be saved: \(failure)"
+        } else {
+            pendingSave?.cancel()
+            pendingSave = nil
+            titlesBeingTyped.removeAll()
+            notes = saved
+            savedGeneration = editGeneration
             lastError = nil
-        } catch {
-            lastError = "Notes could not be saved: \(error.localizedDescription)"
+        }
+    }
+
+    private func saveEditsInBackground() {
+        pendingSave?.cancel()
+        pendingSave = nil
+        guard editGeneration != savedGeneration else { return }
+        let generation = editGeneration
+        writer.save(withTitlesTidied(notes)) { [weak self] outcome in
+            self?.finishBackgroundSave(outcome, generation: generation)
+        }
+    }
+
+    private func finishBackgroundSave(_ outcome: AuthoredContentWriter.Outcome, generation: Int) {
+        // A synchronous save that ran later has already reported, and it wrote
+        // everything this one did.
+        guard outcome.sequence > latestSaveReported else { return }
+        latestSaveReported = outcome.sequence
+        file = outcome.file
+        if let failure = outcome.errorDescription {
+            lastError = "Notes could not be saved: \(failure)"
+        } else {
+            savedGeneration = max(savedGeneration, generation)
+            lastError = nil
+        }
+    }
+
+    private func tidyTypedTitles() {
+        guard !titlesBeingTyped.isEmpty else { return }
+        notes = withTitlesTidied(notes)
+        titlesBeingTyped.removeAll()
+    }
+
+    private func withTitlesTidied(_ candidate: [ProductivityNote]) -> [ProductivityNote] {
+        guard !titlesBeingTyped.isEmpty else { return candidate }
+        return candidate.map { note in
+            guard titlesBeingTyped.contains(note.id) else { return note }
+            var tidied = note
+            let title = note.title.trimmingCharacters(in: .whitespacesAndNewlines)
+            tidied.title = title.isEmpty ? "Untitled Note" : title
+            return tidied
         }
     }
 }
@@ -231,7 +352,6 @@ public struct WeatherReading: Equatable, Sendable {
     public var apparentTemperatureCelsius: Double
     public var windKilometersPerHour: Double
     public var weatherCode: Int
-    public var observedAt: Date
 
     public var summary: String {
         switch weatherCode {
@@ -313,13 +433,11 @@ public actor WeatherService {
             throw WeatherServiceError.invalidResponse
         }
         let payload = try JSONDecoder().decode(Response.self, from: data)
-        let formatter = ISO8601DateFormatter()
         return WeatherReading(
             temperatureCelsius: payload.current.temperature2m,
             apparentTemperatureCelsius: payload.current.apparentTemperature,
             windKilometersPerHour: payload.current.windSpeed10m,
-            weatherCode: payload.current.weatherCode,
-            observedAt: formatter.date(from: payload.current.time) ?? Date()
+            weatherCode: payload.current.weatherCode
         )
     }
 }
@@ -418,7 +536,7 @@ public enum TerminalRunner {
             process.standardError = handle
             try process.run()
             let processID = process.processIdentifier
-            guard waitForDedicatedProcessGroup(processID: processID) else {
+            guard DedicatedProcessGroup.waitUntilEstablished(processID) else {
                 process.terminate()
                 await process.waitForExit()
                 throw CocoaError(.executableNotLoadable)
@@ -440,16 +558,14 @@ public enum TerminalRunner {
             }
 
             if process.isRunning, timedOut || exceededOutputLimit {
-                await terminateProcessGroup(processID)
+                DedicatedProcessGroup.stop(processID)
             }
             // A full test run once hung here for five hours.
             await process.waitForExit()
             // A shell can exit successfully after forking. Do not let a
             // descendant escape the timeout/output boundary just because its
             // parent returned first.
-            if processGroupExists(processID) {
-                await terminateProcessGroup(processID)
-            }
+            DedicatedProcessGroup.stop(processID)
             try handle.synchronize()
 
             let byteCount = outputSize(at: temporaryURL)
@@ -482,32 +598,6 @@ public enum TerminalRunner {
             return 0
         }
         return (attributes[.size] as? NSNumber)?.intValue ?? 0
-    }
-
-    private static func waitForDedicatedProcessGroup(processID: pid_t) -> Bool {
-        for _ in 0 ..< 100 {
-            if getpgid(processID) == processID { return true }
-            if kill(processID, 0) != 0 { return true }
-            usleep(1_000)
-        }
-        return false
-    }
-
-    private static func processGroupExists(_ processGroupID: pid_t) -> Bool {
-        errno = 0
-        return kill(-processGroupID, 0) == 0 || errno == EPERM
-    }
-
-    private static func terminateProcessGroup(_ processGroupID: pid_t) async {
-        _ = kill(-processGroupID, SIGTERM)
-        let graceDeadline = ProcessInfo.processInfo.systemUptime + 0.2
-        while processGroupExists(processGroupID),
-              ProcessInfo.processInfo.systemUptime < graceDeadline {
-            try? await Task.sleep(for: .milliseconds(10))
-        }
-        if processGroupExists(processGroupID) {
-            _ = kill(-processGroupID, SIGKILL)
-        }
     }
 }
 
@@ -618,18 +708,18 @@ public enum WindowSnapService {
     private static var previousApplication: NSRunningApplication?
     private static var activationObserver: NSObjectProtocol?
 
-    /// Remember the user's app before Productivity Center takes keyboard focus.
-    /// Keep following subsequent activations while that window stays open.
+    /// Remember the user's app before Productivity Center takes keyboard focus,
+    /// and keep following activations from then on. The observer stays for the
+    /// rest of the session, so it uses the app the notification carries rather
+    /// than asking LaunchServices at every app switch.
     static func rememberFrontmostApplication() {
         remember(NSWorkspace.shared.frontmostApplication)
         guard activationObserver == nil else { return }
         activationObserver = NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.didActivateApplicationNotification, object: nil, queue: .main
         ) { notification in
-            let processID = (notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication)?.processIdentifier
-            MainActor.assumeIsolated {
-                remember(processID.flatMap { NSRunningApplication(processIdentifier: $0) })
-            }
+            let application = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication
+            MainActor.assumeIsolated { remember(application) }
         }
     }
 
@@ -650,7 +740,29 @@ public enum WindowSnapService {
         return AXIsProcessTrustedWithOptions(options)
     }
 
-    public static func snapFrontmost(to position: WindowSnapPosition) throws {
+    /// Asking another app about its window waits on that app, and a hung one
+    /// would hold the main thread for the system's six-second default on each
+    /// call. Those calls run here, in order, with a shorter limit.
+    private nonisolated static let accessibilityQueue = DispatchQueue(label: "NotchShot.WindowSnap", qos: .userInitiated)
+    private nonisolated static let messagingTimeout: Float = 1
+
+    private struct FocusedWindow: @unchecked Sendable {
+        var element: AXUIElement
+        var position: CGPoint
+        var size: CGSize
+    }
+
+    private nonisolated static func onAccessibilityQueue<Value: Sendable>(
+        _ work: @escaping @Sendable () throws -> Value
+    ) async throws -> Value {
+        try await withCheckedThrowingContinuation { continuation in
+            accessibilityQueue.async {
+                continuation.resume(with: Result { try work() })
+            }
+        }
+    }
+
+    public static func snapFrontmost(to position: WindowSnapPosition) async throws {
         guard isAccessibilityTrusted(prompt: true) else {
             throw NotchShotError.exportFailed("Accessibility permission is required to move another app's window")
         }
@@ -662,7 +774,35 @@ public enum WindowSnapService {
         ) else {
             throw NotchShotError.exportFailed("Bring another app to the front, then try Window Snap again")
         }
+        let window = try await onAccessibilityQueue { try focusedWindow(of: processID) }
+        // AX positions are global CoreGraphics (top-left) points, while
+        // `NSScreen.frame` and `WindowSnapLayout` are Cocoa (bottom-left).
+        // Converting both here is what keeps Top Half on the top half and
+        // keeps a window on the display that actually contains it.
+        let primaryFrame = ScreenLookup.primaryFrame
+        let centerInCG = CGPoint(
+            x: window.position.x + window.size.width / 2,
+            y: window.position.y + window.size.height / 2
+        )
+        let centerInCocoa = CGPoint(
+            x: centerInCG.x,
+            y: ScreenGeometry.globalHeight(primaryFrame: primaryFrame) - centerInCG.y
+        )
+        let screen = NSScreen.screens.first(where: { NSMouseInRect(centerInCocoa, $0.frame, false) })
+            ?? NSScreen.main
+        guard let visibleFrame = screen?.visibleFrame else {
+            throw NotchShotError.exportFailed("No display is available for Window Snap")
+        }
+        let target = ScreenGeometry.cgRect(
+            fromCocoa: WindowSnapLayout.frame(for: position, in: visibleFrame),
+            primaryFrame: primaryFrame
+        )
+        try await onAccessibilityQueue { try move(window, to: target) }
+    }
+
+    private nonisolated static func focusedWindow(of processID: pid_t) throws -> FocusedWindow {
         let application = AXUIElementCreateApplication(processID)
+        AXUIElementSetMessagingTimeout(application, messagingTimeout)
         var rawWindow: CFTypeRef?
         guard AXUIElementCopyAttributeValue(application, kAXFocusedWindowAttribute as CFString, &rawWindow) == .success,
               let rawWindow,
@@ -670,6 +810,7 @@ public enum WindowSnapService {
             throw NotchShotError.exportFailed("The frontmost app did not expose a movable window")
         }
         let window = rawWindow as! AXUIElement
+        AXUIElementSetMessagingTimeout(window, messagingTimeout)
         var rawPosition: CFTypeRef?
         var rawSize: CFTypeRef?
         var currentPosition = CGPoint.zero
@@ -684,34 +825,16 @@ public enum WindowSnapService {
            CFGetTypeID(rawSize) == AXValueGetTypeID() {
             AXValueGetValue(rawSize as! AXValue, .cgSize, &currentSize)
         }
-        // AX positions are global CoreGraphics (top-left) points, while
-        // `NSScreen.frame` and `WindowSnapLayout` are Cocoa (bottom-left).
-        // Converting both here is what keeps Top Half on the top half and
-        // keeps a window on the display that actually contains it.
-        let primaryFrame = ScreenLookup.primaryFrame
-        let centerInCG = CGPoint(
-            x: currentPosition.x + currentSize.width / 2,
-            y: currentPosition.y + currentSize.height / 2
-        )
-        let centerInCocoa = ScreenGeometry.cocoaPoint(
-            fromCG: centerInCG,
-            primaryFrame: primaryFrame
-        )
-        let screen = NSScreen.screens.first(where: { NSMouseInRect(centerInCocoa, $0.frame, false) })
-            ?? NSScreen.main
-        guard let visibleFrame = screen?.visibleFrame else {
-            throw NotchShotError.exportFailed("No display is available for Window Snap")
-        }
-        let target = ScreenGeometry.cgRect(
-            fromCocoa: WindowSnapLayout.frame(for: position, in: visibleFrame),
-            primaryFrame: primaryFrame
-        )
+        return FocusedWindow(element: window, position: currentPosition, size: currentSize)
+    }
+
+    private nonisolated static func move(_ window: FocusedWindow, to target: CGRect) throws {
         var targetPosition = target.origin
         var targetSize = target.size
         guard let positionValue = AXValueCreate(.cgPoint, &targetPosition),
               let sizeValue = AXValueCreate(.cgSize, &targetSize),
-              AXUIElementSetAttributeValue(window, kAXPositionAttribute as CFString, positionValue) == .success,
-              AXUIElementSetAttributeValue(window, kAXSizeAttribute as CFString, sizeValue) == .success else {
+              AXUIElementSetAttributeValue(window.element, kAXPositionAttribute as CFString, positionValue) == .success,
+              AXUIElementSetAttributeValue(window.element, kAXSizeAttribute as CFString, sizeValue) == .success else {
             throw NotchShotError.exportFailed("macOS refused to resize that window")
         }
     }

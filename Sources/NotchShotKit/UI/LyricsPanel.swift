@@ -16,14 +16,6 @@ enum LyricsPanelState: Equatable {
         return false
     }
 
-    var query: LyricsQuery? {
-        switch self {
-        case .idle: nil
-        case .loading(let query): query
-        case .loaded(let query, _): query
-        case .unavailable(_, let query): query
-        }
-    }
 }
 
 /// Lyrics inside the expanded player. Synced lyrics follow the track: the

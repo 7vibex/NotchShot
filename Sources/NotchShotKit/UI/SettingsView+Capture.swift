@@ -163,7 +163,7 @@ struct CaptureSettings: View {
 
 struct RecordingSettings: View {
     @Bindable var preferences: Preferences
-    @State private var microphones: [AVCaptureDevice] = []
+    @State private var microphones: [MicrophoneOption] = []
     @State private var retainedDiscardCount = 0
     @State private var retainedDiscardMessage: String?
 
@@ -194,8 +194,8 @@ struct RecordingSettings: View {
                     set: { preferences.preferredMicrophoneID = $0.isEmpty ? nil : $0 }
                 )) {
                     Text("System default").tag("")
-                    ForEach(microphones, id: \.uniqueID) { device in
-                        Text(device.localizedName).tag(device.uniqueID)
+                    ForEach(microphones) { microphone in
+                        Text(microphone.name).tag(microphone.id)
                     }
                 }
                 .disabled(!preferences.recordsMicrophone)
@@ -259,9 +259,58 @@ struct RecordingSettings: View {
         }
         .settingsWorkbenchFormStyle()
         .task {
-            microphones = PermissionCenter.shared.availableMicrophones()
-            retainedDiscardCount = RecordingService.retainedDiscardedRecordings().count
+            retainedDiscardCount = await Task.detached(priority: .userInitiated) { RecordingService.retainedDiscardedRecordings().count }.value
+            // The first discovery in a process loads the device stack: 3.7 s was
+            // measured on a loaded Mac, with every window stopped behind it.
+            microphones = await Task.detached(priority: .userInitiated) {
+                MicrophoneOption.discover()
+            }.value
         }
+    }
+}
+
+/// Plain values, so the list can leave the discovery task.
+private struct MicrophoneOption: Identifiable, Sendable {
+    let id: String
+    let name: String
+
+    static func discover() -> [MicrophoneOption] {
+        AVCaptureDevice.DiscoverySession(
+            deviceTypes: [.microphone, .external],
+            mediaType: .audio,
+            position: .unspecified
+        ).devices.map { MicrophoneOption(id: $0.uniqueID, name: $0.localizedName) }
+    }
+}
+
+// MARK: - Comma-separated lists
+
+/// A list edited as one line of text. The text is held as typed and only ever
+/// parsed outward: reading the parsed list back into the field took the comma or
+/// space away as soon as it was typed, so a second word could only be pasted.
+struct CommaSeparatedTextField: View {
+    private let title: String
+    @Binding private var values: [String]
+    @State private var text: String
+
+    init(_ title: String, values: Binding<[String]>) {
+        self.title = title
+        _values = values
+        _text = State(initialValue: values.wrappedValue.joined(separator: ", "))
+    }
+
+    static func parse(_ text: String) -> [String] {
+        text.split(separator: ",")
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+    }
+
+    var body: some View {
+        TextField(title, text: $text)
+            .onChange(of: text) { _, newValue in
+                let parsed = Self.parse(newValue)
+                if parsed != values { values = parsed }
+            }
     }
 }
 
@@ -365,10 +414,10 @@ struct DictationSettings: View {
             }
 
             Section("Dictionary") {
-                TextField("Custom words, comma separated", text: Binding(
-                    get: { preferences.dictationCustomWords.joined(separator: ", ") },
-                    set: { preferences.dictationCustomWords = $0.split(separator: ",").map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty } }
-                ))
+                CommaSeparatedTextField(
+                    "Custom words, comma separated",
+                    values: $preferences.dictationCustomWords
+                )
                 Text("Deterministic replacements and custom dictionary are applied locally.")
                     .font(.caption)
                     .foregroundStyle(.secondary)

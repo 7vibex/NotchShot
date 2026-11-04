@@ -18,10 +18,6 @@ public final class QuickLookPresenter: NSObject,
 
     private override init() { super.init() }
 
-    public var isPresenting: Bool {
-        QLPreviewPanel.sharedPreviewPanelExists() && QLPreviewPanel.shared().isVisible
-    }
-
     public func present(_ candidates: [URL]) throws {
         let readable = candidates.filter { url in
             guard url.isFileURL else { return false }
@@ -40,11 +36,6 @@ public final class QuickLookPresenter: NSObject,
         panel?.updateController()
         panel?.makeKeyAndOrderFront(nil)
         panel?.reloadData()
-    }
-
-    public func dismiss() {
-        guard isPresenting else { return }
-        QLPreviewPanel.shared()?.orderOut(nil)
     }
 
     // MARK: QLPreviewPanelDataSource

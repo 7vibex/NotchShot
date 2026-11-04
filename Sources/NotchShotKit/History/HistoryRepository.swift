@@ -150,7 +150,6 @@ public struct HistoryEntry: Codable, Sendable, Identifiable, Equatable {
 /// restriction falls back to the original comparison, which is no worse than
 /// before for those rows.
 public struct HistoryQuery: Sendable {
-    public let text: String
     let isEmpty: Bool
     private let unicodeNeedle: String
     /// Non-nil only when the query itself is pure ASCII, which is what makes the
@@ -158,7 +157,6 @@ public struct HistoryQuery: Sendable {
     private let asciiNeedle: [UInt8]?
 
     public init(_ query: String) {
-        text = query
         isEmpty = query.isEmpty
         let lowered = query.lowercased()
         unicodeNeedle = lowered
@@ -274,6 +272,17 @@ public final class HistoryRepository {
     public private(set) var lastPersistenceError: String?
     public private(set) var loadOutcome: HistoryLoadOutcome = .missing
     public var hasUnpersistedChanges: Bool { persistedRevision < mutationRevision }
+
+    /// True while an index that may own files on disk is out of reach, so a file
+    /// with no row here cannot be called untracked: a store this build quarantined,
+    /// or one that went missing with captures still in place. The note beside the
+    /// store says so, not the quarantined file: older builds wrote those too, and
+    /// their one-launch protection has already run.
+    /// A file with no row is only garbage if this store is the whole record of
+    /// what NotchShot owns. Without this the protection lasted one launch: the
+    /// next one started from a near-empty store and swept every capture away.
+    /// It outlives every launch until the user clears History and its files.
+    @ObservationIgnored public private(set) var holdsUntrackedCleanup = false
     public var loadRecoveryMessage: String? {
         guard case .failed(_, let backupURL) = loadOutcome else { return nil }
         let message = "History could not be loaded, so NotchShot preserved every managed capture and disabled automatic cleanup."
@@ -282,6 +291,9 @@ public final class HistoryRepository {
     }
 
     private let storeURL: URL
+    /// When this launch opened the store. Files from before it are the only ones
+    /// a lost index can have owned.
+    private let openedAt = Date()
     private let usesManagedStore: Bool
     private let managedArtifactDirectories: [URL]
     private let historyEnabledOverride: Bool?
@@ -338,6 +350,18 @@ public final class HistoryRepository {
             return
         }
         load()
+        if Self.hasStandingCleanupHold(for: storeURL) { holdsUntrackedCleanup = true }
+        if !holdsUntrackedCleanup,
+           loadOutcome == .missing,
+           historyEnabled ?? Preferences.shared.historyEnabled,
+           !untrackedSweepCandidates().isEmpty {
+            // With History on, a missing store next to existing captures means
+            // the index was lost, not that it never existed. The first capture
+            // writes a new store, so only a durable note carries this past the
+            // next launch; History off legitimately has no store and still sweeps.
+            holdCleanup()
+            Log.history.notice("History store is missing beside existing captures; automatic cleanup of untracked files is on hold")
+        }
     }
 
     // MARK: Queries
@@ -643,16 +667,6 @@ public final class HistoryRepository {
         return total
     }
 
-    /// Exact encoded size after JSON serialization — used only when the estimate
-    /// suggests we may be near the budget, so we don't pay encode cost on every
-    /// capture.
-    nonisolated static func exactEncodedStoreBytes(_ entries: [HistoryEntry]) -> Int {
-        let encoder = JSONEncoder()
-        encoder.dateEncodingStrategy = .iso8601
-        encoder.outputFormatting = [.prettyPrinted]
-        return (try? encoder.encode(entries).count) ?? Int.max
-    }
-
     /// Follows a file that was renamed or moved.
     ///
     /// Deliberately not expressed as `record()` with an updated asset: that path
@@ -774,12 +788,65 @@ public final class HistoryRepository {
     /// kept so failure is visible and retryable.
     @discardableResult
     public func clearAll(includingFiles: Bool) -> [URL] {
+        let outcome = Self.clearRows(
+            entries,
+            includingFiles: includingFiles,
+            sweptDirectories: managedArtifactDirectories,
+            historyEnabled: Preferences.shared.historyEnabled
+        )
+        finishClear(outcome)
+        if includingFiles, outcome.failed.isEmpty, canReleaseCleanupHold {
+            releaseCleanupHold(trash: Self.moveToTrash)
+        }
+        return outcome.failed
+    }
+
+    /// `clearAll` with the file work off the main actor: each row can cost a
+    /// Trash operation, and a full History is 10,000 rows. Rows are removed by
+    /// id, so a capture recorded while this runs survives it.
+    @discardableResult
+    public func clearAllInBackground(includingFiles: Bool) async -> [URL] {
+        let snapshot = entries
+        let directories = managedArtifactDirectories
+        let historyEnabled = Preferences.shared.historyEnabled
+        let outcome = await Task.detached(priority: .userInitiated) {
+            Self.clearRows(
+                snapshot,
+                includingFiles: includingFiles,
+                sweptDirectories: directories,
+                historyEnabled: historyEnabled
+            )
+        }.value
+        finishClear(outcome)
+        if includingFiles, outcome.failed.isEmpty, canReleaseCleanupHold {
+            let holdFiles = Self.cleanupHoldFiles(for: storeURL)
+            let candidates = heldUntrackedFiles()
+            let released = await Task.detached(priority: .userInitiated) {
+                Self.trashHeldFiles(candidates + holdFiles, trash: Self.moveToTrash)
+            }.value
+            if released { holdsUntrackedCleanup = false }
+        }
+        return outcome.failed
+    }
+
+    private func finishClear(_ outcome: (cleared: Set<UUID>, failed: [URL])) {
+        entries.removeAll { outcome.cleared.contains($0.id) }
+        scheduleSave()
+        syncSpotlightIfEnabled()
+    }
+
+    private nonisolated static func clearRows(
+        _ rows: [HistoryEntry],
+        includingFiles: Bool,
+        sweptDirectories: [URL],
+        historyEnabled: Bool
+    ) -> (cleared: Set<UUID>, failed: [URL]) {
+        var cleared = Set<UUID>()
         var failed: [URL] = []
-        var retained: [HistoryEntry] = []
-        for entry in entries {
-            if includingFiles {
-                do {
-                    try Self.trashCaptureAndCaption(
+        for entry in rows {
+            do {
+                if includingFiles {
+                    try trashCaptureAndCaption(
                         at: entry.fileURL,
                         primaryIdentity: entry.externalFileIdentity,
                         captionURL: entry.captionPath.map { URL(fileURLWithPath: $0) },
@@ -788,28 +855,24 @@ public final class HistoryRepository {
                         projectIdentity: entry.projectFileIdentity,
                         toleratingMissingPrimary: true
                     )
-                } catch {
-                    failed.append(entry.fileURL)
-                    retained.append(entry)
-                    continue
+                } else {
+                    try removeManagedArtifacts(
+                        for: entry,
+                        excluding: [],
+                        sweptDirectories: sweptDirectories,
+                        historyEnabled: historyEnabled
+                    )
                 }
-            } else {
-                do {
-                    try removeManagedArtifacts(for: entry, excluding: [])
-                } catch {
-                    failed.append(entry.fileURL)
-                    retained.append(entry)
-                    continue
-                }
+            } catch {
+                failed.append(entry.fileURL)
+                continue
             }
             if let thumbnailURL = entry.thumbnailURL {
                 try? FileManager.default.removeItem(at: thumbnailURL)
             }
+            cleared.insert(entry.id)
         }
-        entries = retained
-        scheduleSave()
-        syncSpotlightIfEnabled()
-        return failed
+        return (cleared, failed)
     }
 
     /// Trashes captions before their MP4, then the primary capture last. A
@@ -941,23 +1004,12 @@ public final class HistoryRepository {
             Log.history.error("Skipped untracked-file cleanup because History did not load safely")
             return 0
         }
-        let fileManager = FileManager.default
-        var candidates: [URL] = []
-        for directory in managedArtifactDirectories {
-            guard let contents = try? fileManager.contentsOfDirectory(
-                at: directory,
-                includingPropertiesForKeys: [.isRegularFileKey, .isSymbolicLinkKey],
-                options: [.skipsHiddenFiles]
-            ) else { continue }
-            candidates.append(contentsOf: contents.filter { url in
-                let values = try? url.resourceValues(
-                    forKeys: [.isRegularFileKey, .isSymbolicLinkKey]
-                )
-                return values?.isRegularFile == true
-                    && values?.isSymbolicLink != true
-                    && Self.untrackedSweepExtensions.contains(url.pathExtension.lowercased())
-            })
+        guard !holdsUntrackedCleanup else {
+            Log.history.notice("Skipped untracked-file cleanup because an earlier History index is still set aside")
+            return 0
         }
+        let fileManager = FileManager.default
+        let candidates = untrackedSweepCandidates()
 
         let untracked = Self.untrackedManagedArtifacts(
             candidates: candidates,
@@ -975,7 +1027,7 @@ public final class HistoryRepository {
             Self.untrackedSweepRemoves(
                 url,
                 sweptDirectories: managedArtifactDirectories,
-                historyEnabled: Preferences.shared.historyEnabled
+                historyEnabled: historyEnabledOverride ?? Preferences.shared.historyEnabled
             )
         }
         let preservedRecordings = untracked.count - deletable.count
@@ -989,6 +1041,134 @@ public final class HistoryRepository {
             Log.history.info("Removed \(deletable.count) untracked managed artifacts")
         }
         return untracked.count
+    }
+
+    /// Regular files in the swept folders with an extension the sweep covers.
+    private func untrackedSweepCandidates() -> [URL] {
+        let fileManager = FileManager.default
+        var candidates: [URL] = []
+        for directory in managedArtifactDirectories {
+            guard let contents = try? fileManager.contentsOfDirectory(
+                at: directory,
+                includingPropertiesForKeys: [.isRegularFileKey, .isSymbolicLinkKey],
+                options: [.skipsHiddenFiles]
+            ) else { continue }
+            candidates.append(contentsOf: contents.filter { url in
+                let values = try? url.resourceValues(
+                    forKeys: [.isRegularFileKey, .isSymbolicLinkKey]
+                )
+                return values?.isRegularFile == true
+                    && values?.isSymbolicLink != true
+                    && Self.untrackedSweepExtensions.contains(url.pathExtension.lowercased())
+            })
+        }
+        return candidates
+    }
+
+    // MARK: Cleanup hold
+
+    nonisolated static func cleanupHoldURL(for storeURL: URL) -> URL {
+        storeURL.appendingPathExtension("cleanup-hold")
+    }
+
+    /// Holds for this launch whatever happens, and for later ones if the note
+    /// can be written.
+    private func holdCleanup() {
+        holdsUntrackedCleanup = true
+        if !FileManager.default.createFile(atPath: Self.cleanupHoldURL(for: storeURL).path, contents: nil) {
+            Log.history.error("Could not record the untracked-file cleanup hold")
+        }
+    }
+
+    /// The note beside `storeURL` and the quarantined stores that go with it.
+    nonisolated static func cleanupHoldFiles(for storeURL: URL) -> [URL] {
+        let directory = storeURL.deletingLastPathComponent()
+        let quarantinePrefix = storeURL.lastPathComponent + ".corrupt-"
+        let holdName = cleanupHoldURL(for: storeURL).lastPathComponent
+        let names = (try? FileManager.default.contentsOfDirectory(atPath: directory.path)) ?? []
+        // The note last: it alone keeps the hold, and a release can stop part way.
+        return (names.filter { $0.hasPrefix(quarantinePrefix) } + names.filter { $0 == holdName })
+            .map { directory.appendingPathComponent($0) }
+    }
+
+    /// Fails closed: a store folder that exists but cannot be listed may hold a
+    /// note this launch simply cannot see.
+    nonisolated static func hasStandingCleanupHold(for storeURL: URL) -> Bool {
+        let directory = storeURL.deletingLastPathComponent().path
+        let fileManager = FileManager.default
+        guard let names = try? fileManager.contentsOfDirectory(atPath: directory) else {
+            return fileManager.fileExists(atPath: directory)
+        }
+        return names.contains(cleanupHoldURL(for: storeURL).lastPathComponent)
+    }
+
+    /// An unrecovered store is still the only copy of the index, in place, and
+    /// clearing rows says nothing about it.
+    private var canReleaseCleanupHold: Bool {
+        guard holdsUntrackedCleanup else { return false }
+        if case .failed(_, nil) = loadOutcome { return false }
+        return true
+    }
+
+    /// What the lost index could have owned and the sweep would take. Anything
+    /// touched since this launch began cannot be the lost index's, and may be on
+    /// the shelf or still waiting for its row.
+    private func heldUntrackedFiles() -> [URL] {
+        let historyEnabled = historyEnabledOverride ?? Preferences.shared.historyEnabled
+        return Self.untrackedManagedArtifacts(
+            candidates: untrackedSweepCandidates(),
+            entries: entries,
+            managedRoots: managedArtifactDirectories
+        ).filter { url in
+            Self.untrackedSweepRemoves(
+                url,
+                sweptDirectories: managedArtifactDirectories,
+                historyEnabled: historyEnabled
+            ) && !Self.wasTouched(url, since: openedAt)
+        }
+    }
+
+    /// Fails closed: a file that can't be read back is left alone.
+    private nonisolated static func wasTouched(_ url: URL, since date: Date) -> Bool {
+        guard let values = try? url.resourceValues(forKeys: [
+            .creationDateKey, .contentModificationDateKey, .attributeModificationDateKey,
+        ]) else { return true }
+        return [values.creationDate, values.contentModificationDate, values.attributeModificationDate]
+            .contains { ($0 ?? date) >= date }
+    }
+
+    /// "Clear History and Move Files to Trash" is the one explicit request that
+    /// covers captures no row can show. They go to the Trash with the set-aside
+    /// index, recoverable, and only then does automatic cleanup resume.
+    @discardableResult
+    func releaseCleanupHold(trash: (URL) throws -> Void) -> Bool {
+        let released = Self.trashHeldFiles(
+            heldUntrackedFiles() + Self.cleanupHoldFiles(for: storeURL),
+            trash: trash
+        )
+        if released { holdsUntrackedCleanup = false }
+        return released
+    }
+
+    /// Callers list the hold files last, so a failure part way leaves the hold
+    /// standing.
+    private nonisolated static func trashHeldFiles(
+        _ urls: [URL],
+        trash: (URL) throws -> Void
+    ) -> Bool {
+        for url in urls {
+            do {
+                try trash(url)
+            } catch {
+                Log.history.error("Could not move a held capture to Trash: \(error.localizedDescription)")
+                return false
+            }
+        }
+        return true
+    }
+
+    private nonisolated static func moveToTrash(_ url: URL) throws {
+        try FileManager.default.trashItem(at: url, resultingItemURL: nil)
     }
 
     nonisolated static func untrackedManagedArtifacts(
@@ -1079,33 +1259,93 @@ public final class HistoryRepository {
             return 0
         }
 
-        let protectedPaths = Self.referencedPaths(in: kept)
-        var successfullyRemoved = Set<UUID>()
+        let retired = Self.retireRows(
+            removed,
+            protectedPaths: Self.referencedPaths(in: kept),
+            sweptDirectories: managedArtifactDirectories,
+            historyEnabled: Preferences.shared.historyEnabled
+        )
+        entries.removeAll { retired[$0.id] != nil }
+
+        Log.history.info("Retention removed \(retired.count) history entries")
+        scheduleSave()
+        removeOrphanedThumbnails()
+        return retired.count
+    }
+
+    /// `applyRetention` with its file checks and removals off the main actor.
+    /// One stat per row can block for seconds on a disconnected volume, which
+    /// the partition above expects to happen.
+    @discardableResult
+    public func applyRetentionInBackground(now: Date = Date()) async -> Int {
+        guard loadOutcome.permitsManagedCleanup else {
+            Log.history.error("Skipped retention because History did not load safely")
+            return 0
+        }
+        let snapshot = entries
+        let retentionDays = Preferences.shared.historyRetentionDays
+        let directories = managedArtifactDirectories
+        let historyEnabled = Preferences.shared.historyEnabled
+        let retired = await Task.detached(priority: .utility) {
+            let (kept, removed) = Self.partitionByRetention(
+                snapshot,
+                retentionDays: retentionDays,
+                now: now,
+                fileExists: { $0.fileExists }
+            )
+            guard !removed.isEmpty else { return [UUID: URL]() }
+            return Self.retireRows(
+                removed,
+                protectedPaths: Self.referencedPaths(in: kept),
+                sweptDirectories: directories,
+                historyEnabled: historyEnabled
+            )
+        }.value
+        if !retired.isEmpty {
+            // By id and location: a capture recorded meanwhile is not in the
+            // snapshot, and a row whose file moved meanwhile no longer matches
+            // what was retired.
+            entries.removeAll { retired[$0.id] == $0.fileURL }
+            Log.history.info("Retention removed \(retired.count) history entries")
+            scheduleSave()
+        }
+        await removeOrphanedThumbnailsInBackground()
+        return retired.count
+    }
+
+    /// Removes each row's hidden managed files. Returns the rows that are gone,
+    /// with the location each was retired from. A row left out is a durable
+    /// retry: losing it would strand an unredacted project with no visible
+    /// owner or future cleanup attempt.
+    private nonisolated static func retireRows(
+        _ removed: [HistoryEntry],
+        protectedPaths: Set<String>,
+        sweptDirectories: [URL],
+        historyEnabled: Bool
+    ) -> [UUID: URL] {
+        var retired: [UUID: URL] = [:]
         for entry in removed {
             // A user-visible capture can still have an editable project in the
             // app's private Projects directory. Expiry must remove that hidden
             // unredacted copy without touching the user's primary document.
             do {
-                try removeManagedArtifacts(for: entry, excluding: protectedPaths)
+                try removeManagedArtifacts(
+                    for: entry,
+                    excluding: protectedPaths,
+                    sweptDirectories: sweptDirectories,
+                    historyEnabled: historyEnabled
+                )
                 if let thumbnailURL = entry.thumbnailURL {
                     try? FileManager.default.removeItem(at: thumbnailURL)
                 }
-                successfullyRemoved.insert(entry.id)
+                retired[entry.id] = entry.fileURL
             } catch {
-                // Keep a durable retry row if a private artifact cannot be
-                // removed. Losing the row would strand an unredacted project
-                // with no visible owner or future cleanup attempt.
                 Log.history.error(
                     "Retention could not remove managed artifacts for \(entry.fileURL.lastPathComponent): \(error.localizedDescription)"
                 )
             }
         }
-        entries.removeAll { successfullyRemoved.contains($0.id) }
-
-        Log.history.info("Retention removed \(successfullyRemoved.count) history entries")
-        scheduleSave()
-        removeOrphanedThumbnails()
-        return successfullyRemoved.count
+        return retired
     }
 
     /// Retention deletes hidden managed working files, but never documents in a
@@ -1368,6 +1608,7 @@ public final class HistoryRepository {
     }
 
     private func removeOrphanedThumbnails() {
+        guard !holdsUntrackedCleanup else { return }
         let known = Set(entries.compactMap(\.thumbnailFilename))
         guard let contents = try? FileManager.default.contentsOfDirectory(
             at: AppPaths.thumbnails,
@@ -1376,6 +1617,27 @@ public final class HistoryRepository {
         for url in contents where !known.contains(url.lastPathComponent) {
             try? FileManager.default.removeItem(at: url)
         }
+    }
+
+    /// The known names are read after the listing, on the main actor: `record`
+    /// writes a thumbnail and adds its row in one turn, so a file in the listing
+    /// that no row names here cannot be one a capture is still committing.
+    private func removeOrphanedThumbnailsInBackground() async {
+        guard !holdsUntrackedCleanup else { return }
+        let contents = await Task.detached(priority: .utility) {
+            (try? FileManager.default.contentsOfDirectory(
+                at: AppPaths.thumbnails,
+                includingPropertiesForKeys: nil
+            )) ?? []
+        }.value
+        let known = Set(entries.compactMap(\.thumbnailFilename))
+        let orphans = contents.filter { !known.contains($0.lastPathComponent) }
+        guard !orphans.isEmpty else { return }
+        await Task.detached(priority: .utility) {
+            for url in orphans {
+                try? FileManager.default.removeItem(at: url)
+            }
+        }.value
     }
 
     // MARK: Storage
@@ -1420,31 +1682,46 @@ public final class HistoryRepository {
             MainActor.assumeIsolated {
                 guard let self else { return }
                 self.saveWorkItem = nil
-                do {
-                    let request = try self.makeWriteRequest()
-                    Self.writeQueue.async { [weak self] in
-                        do {
-                            let result = try Self.performWrite(request)
-                            Task { @MainActor [weak self] in
-                                self?.recordWriteSuccess(result)
-                            }
-                        } catch {
-                            let message = error.localizedDescription
-                            Log.history.error("History save failed: \(message)")
-                            Task { @MainActor [weak self] in
-                                self?.recordWriteFailure(message, revision: request.revision)
-                            }
-                        }
-                    }
-                } catch {
-                    let message = error.localizedDescription
-                    Log.history.error("History save failed: \(message)")
-                    self.recordWriteFailure(message, revision: self.mutationRevision)
-                }
+                self.enqueueWrite()
             }
         }
         saveWorkItem = item
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.6, execute: item)
+    }
+
+    /// Hands the current rows to the write queue now, skipping the debounce,
+    /// without waiting for the encode. Quit still drains: `save()` queues behind
+    /// this and blocks until both are on disk.
+    func saveWithoutWaiting(onFailure: @escaping @MainActor @Sendable (String) -> Void) {
+        saveWorkItem?.cancel()
+        saveWorkItem = nil
+        enqueueWrite(onFailure: onFailure)
+    }
+
+    private func enqueueWrite(onFailure: (@MainActor @Sendable (String) -> Void)? = nil) {
+        do {
+            let request = try makeWriteRequest()
+            Self.writeQueue.async { [weak self] in
+                do {
+                    let result = try Self.performWrite(request)
+                    Task { @MainActor [weak self] in
+                        self?.recordWriteSuccess(result)
+                    }
+                } catch {
+                    let message = error.localizedDescription
+                    Log.history.error("History save failed: \(message)")
+                    Task { @MainActor [weak self] in
+                        self?.recordWriteFailure(message, revision: request.revision)
+                        onFailure?(message)
+                    }
+                }
+            }
+        } catch {
+            let message = error.localizedDescription
+            Log.history.error("History save failed: \(message)")
+            recordWriteFailure(message, revision: mutationRevision)
+            onFailure?(message)
+        }
     }
 
     /// Writes the store and does not return until it is on disk. Failures are
@@ -1657,6 +1934,9 @@ public final class HistoryRepository {
             do {
                 try FileManager.default.moveItem(at: storeURL, to: backup)
                 quarantinedURL = backup
+                // A store that could not be set aside is still in place, and the
+                // next launch reads it again, so only this one needs the note.
+                holdCleanup()
             } catch {
                 Log.history.error("Could not quarantine damaged History: \(error.localizedDescription)")
             }

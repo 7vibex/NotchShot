@@ -53,6 +53,13 @@ public final class DisplayBrightnessController {
     @ObservationIgnored private let ddc = DDCQueue()
     @ObservationIgnored private let dimmer = GammaDimmer()
     @ObservationIgnored private var refreshGeneration = 0
+    @ObservationIgnored private var nativeReadGeneration = 0
+    /// The newest level of a drag that hasn't reached the display yet.
+    @ObservationIgnored private var dragLevels: [CGDirectDisplayID: Double] = [:]
+    /// What the display really shows during a drag, for the bar to return to
+    /// if the drag's last value is refused.
+    @ObservationIgnored private var dragAppliedLevels: [CGDirectDisplayID: Double] = [:]
+    @ObservationIgnored private var dragFlush: Task<Void, Never>?
     @ObservationIgnored private var screenObserver: NSObjectProtocol?
     @ObservationIgnored private var wakeObserver: NSObjectProtocol?
     @ObservationIgnored private let defaults = UserDefaults.standard
@@ -88,6 +95,8 @@ public final class DisplayBrightnessController {
         screenObserver = nil
         wakeObserver = nil
         dimmer.restoreAll()
+        dragLevels = [:]
+        dragAppliedLevels = [:]
         displays = []
     }
 
@@ -118,7 +127,11 @@ public final class DisplayBrightnessController {
             $0.isBuiltIn != $1.isBuiltIn ? $0.isBuiltIn : $0.name.localizedStandardCompare($1.name) == .orderedAscending
         }
         reapplyDimming()
-        guard !probe.isEmpty else { return }
+        guard !probe.isEmpty else {
+            // A probe this refresh replaced will no longer report back.
+            isRefreshing = false
+            return
+        }
         isRefreshing = true
         let identities = probe.map { DDCDisplayIdentity(displayID: $0) }
         ddc.probe(identities) { [weak self] results in
@@ -137,12 +150,32 @@ public final class DisplayBrightnessController {
 
     /// Re-reads displays macOS dims itself, whose level the brightness keys
     /// and Control Center change behind NotchShot's back. Cheap, unlike
-    /// `refresh()`, which asks every monitor over DDC again.
+    /// `refresh()`, which asks every monitor over DDC again, but still a call
+    /// to the brightness daemon each, so not one the menu waits for as it opens.
     public func refreshNativeLevels() {
-        for index in displays.indices where displays[index].method == .native {
-            if let level = BrightnessReader.shared.level(displayID: displays[index].id) {
-                displays[index].level = level
+        let ids = displays.filter { $0.method == .native }.map(\.id)
+        guard !ids.isEmpty else { return }
+        nativeReadGeneration += 1
+        let generation = nativeReadGeneration
+        Task.detached(priority: .userInitiated) { [weak self] in
+            var levels: [CGDirectDisplayID: Double] = [:]
+            for id in ids {
+                levels[id] = BrightnessReader.shared.level(displayID: id)
             }
+            let read = levels
+            await self?.deliverNativeLevels(read, generation: generation)
+        }
+    }
+
+    private func deliverNativeLevels(_ levels: [CGDirectDisplayID: Double], generation: Int) {
+        guard generation == nativeReadGeneration else { return }
+        for (id, level) in levels {
+            // A drag under way knows better than a read from before it.
+            guard dragAppliedLevels[id] == nil,
+                  let index = displays.firstIndex(where: { $0.id == id }),
+                  displays[index].method == .native,
+                  displays[index].level != level else { continue }
+            displays[index].level = level
         }
     }
 
@@ -151,23 +184,77 @@ public final class DisplayBrightnessController {
     }
 
     /// Sets a level from a slider or a key press. Returns the level applied.
+    ///
+    /// - Parameter isFinal: false while a bar is dragged. The bar follows every
+    ///   pointer event, the display gets one level a frame, and only the last
+    ///   one is saved.
     @discardableResult
-    public func setLevel(_ level: Double, for id: CGDirectDisplayID) -> Double? {
+    public func setLevel(_ level: Double, for id: CGDirectDisplayID, isFinal: Bool = true) -> Double? {
         guard let index = displays.firstIndex(where: { $0.id == id }) else { return nil }
+        // A native read under way started before this change.
+        nativeReadGeneration += 1
         let clamped = min(max(level, 0), 1)
-        switch displays[index].method {
-        case .native:
-            guard BrightnessReader.shared.setBrightness(clamped, displayID: id) else { return nil }
-        case .hardware:
-            ddc.write(level: clamped, to: id)
-        case .software:
-            guard dimmer.apply(level: clamped, to: id) else { return nil }
+        guard isFinal else {
+            if dragAppliedLevels[id] == nil { dragAppliedLevels[id] = displays[index].level }
+            displays[index].level = clamped
+            dragLevels[id] = clamped
+            if dragFlush == nil {
+                dragFlush = Task { [weak self] in
+                    try? await Task.sleep(for: .milliseconds(16))
+                    self?.flushDragLevels()
+                }
+            }
+            return clamped
+        }
+        dragLevels[id] = nil
+        let levelBeforeDrag = dragAppliedLevels.removeValue(forKey: id)
+        let method = displays[index].method
+        guard apply(clamped, to: id, method: method) else {
+            if let levelBeforeDrag { displays[index].level = levelBeforeDrag }
+            return nil
+        }
+        if method == .software {
             var stored = storedLevels()
             stored[Self.storageKey(for: id)] = clamped < 1 ? clamped : nil
             defaults.set(stored, forKey: Self.storedLevelsKey)
         }
         displays[index].level = clamped
         return clamped
+    }
+
+    /// Applies and saves a drag whose last event never came because the menu
+    /// closed under it.
+    public func finishDrags() {
+        for id in Array(dragAppliedLevels.keys) {
+            guard let level = display(id)?.level else {
+                dragAppliedLevels[id] = nil
+                dragLevels[id] = nil
+                continue
+            }
+            setLevel(level, for: id)
+        }
+    }
+
+    private func flushDragLevels() {
+        dragFlush = nil
+        let levels = dragLevels
+        dragLevels = [:]
+        for (id, level) in levels {
+            guard let method = display(id)?.method else { continue }
+            if apply(level, to: id, method: method) { dragAppliedLevels[id] = level }
+        }
+    }
+
+    private func apply(_ level: Double, to id: CGDirectDisplayID, method: DisplayBrightnessMethod) -> Bool {
+        switch method {
+        case .native:
+            return BrightnessReader.shared.setBrightness(level, displayID: id)
+        case .hardware:
+            ddc.write(level: level, to: id)
+            return true
+        case .software:
+            return dimmer.apply(level: level, to: id)
+        }
     }
 
     /// One brightness-key step on an external display. `nil` when NotchShot

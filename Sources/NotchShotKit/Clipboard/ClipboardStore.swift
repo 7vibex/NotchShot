@@ -128,23 +128,8 @@ public final class ClipboardStore {
         guard isEnabled() else { return nil }
         guard acceptsFileCount(entry.kind == .files ? entry.filePaths.count : 0) else { return nil }
 
-        // Re-copying something already held is the common case, and it should
-        // feel like the row moving to the top rather than the list growing a
-        // near-identical neighbour.
         if let existingIndex = entries.firstIndex(where: { $0.kind == entry.kind && $0.contentHash == entry.contentHash }) {
-            var existing = entries.remove(at: existingIndex)
-            // Completion order can differ from copy order. Older completions
-            // must not replace the latest timestamp or source metadata.
-            if entry.createdAt >= existing.createdAt {
-                existing.createdAt = entry.createdAt
-                existing.sourceApplicationName = entry.sourceApplicationName
-                existing.sourceApplicationBundleID = entry.sourceApplicationBundleID
-            }
-            if entry.kind == .files, entry.createdAt >= existing.createdAt {
-                existing.filePaths = entry.filePaths
-                existing.fileIdentities = entry.fileIdentities
-            }
-            insert(existing)
+            let existing = promote(existingIndex, with: entry)
             enforceStoreBudget()
             scheduleSave()
             return existing
@@ -161,6 +146,61 @@ public final class ClipboardStore {
         enforceStoreBudget()
         scheduleSave()
         return stored
+    }
+
+    /// Re-copying something already held is the common case, and it should feel
+    /// like the row moving to the top rather than the list growing a
+    /// near-identical neighbour.
+    private func promote(_ index: Int, with entry: ClipboardEntry) -> ClipboardEntry {
+        var existing = entries.remove(at: index)
+        // Completion order can differ from copy order. Older completions
+        // must not replace the latest timestamp or source metadata.
+        if entry.createdAt >= existing.createdAt {
+            existing.createdAt = entry.createdAt
+            existing.sourceApplicationName = entry.sourceApplicationName
+            existing.sourceApplicationBundleID = entry.sourceApplicationBundleID
+            // The budget may have shortened this row while its hash still names
+            // the full text. The user just copied that full text, so it comes
+            // back. Images are left alone: their text is requested OCR.
+            if existing.kind != .image, existing.kind != .files, let text = entry.text {
+                existing.text = text
+            }
+        }
+        if entry.kind == .files, entry.createdAt >= existing.createdAt {
+            existing.filePaths = entry.filePaths
+            existing.fileIdentities = entry.fileIdentities
+        }
+        insert(existing)
+        return existing
+    }
+
+    /// Records a clipping read off the main actor. A Clear can land while that
+    /// read is out, so this applies the same copy-time check `recordImage` does.
+    @discardableResult
+    func recordRead(_ entry: ClipboardEntry) -> ClipboardEntry? {
+        guard clearedThrough.map({ entry.createdAt > $0 }) ?? true else { return nil }
+        return record(entry)
+    }
+
+    /// Adds many clippings at once with one budget pass and one save. Per-row
+    /// `record` calls would run both for every row of an import, on the main
+    /// actor. The rows are expected oldest first, as `record` would see them.
+    func record(contentsOf newEntries: [ClipboardEntry]) {
+        guard isEnabled(), !newEntries.isEmpty else { return }
+        var held = Set(entries.map { $0.kind.rawValue + ":" + $0.contentHash })
+        for entry in newEntries {
+            guard acceptsFileCount(entry.kind == .files ? entry.filePaths.count : 0) else { continue }
+            let key = entry.kind.rawValue + ":" + entry.contentHash
+            if held.contains(key),
+               let index = entries.firstIndex(where: { $0.kind == entry.kind && $0.contentHash == entry.contentHash }) {
+                _ = promote(index, with: entry)
+            } else {
+                insert(entry)
+                held.insert(key)
+            }
+        }
+        enforceStoreBudget()
+        scheduleSave()
     }
 
     /// Image decoding happens in `ClipboardMonitor`; PNG encoding and disk I/O
@@ -412,26 +452,43 @@ public final class ClipboardStore {
         // JSON escaping can expand a clipping far beyond its UTF-8 size (for
         // example, control characters become `\u0000`). Budget the encoded
         // document, not only an estimate, or a store that looks like 6 MB here
-        // can exceed the loader's 8 MB contract on disk.
-        while !Self.isStoreGuaranteedWithinByteBudget(entries)
-            && Self.encodedStoreBytes(entries) > Self.storeByteBudget {
-            let unpinnedText = entries.indices.filter {
+        // can exceed the loader's 8 MB contract on disk. The bound below counts
+        // the escapes each string really has, so this needs no encode on the
+        // main actor; only an uncountable row falls back to the encoder. The
+        // bound runs high, so nothing is trimmed until the encoder confirms an
+        // overrun, which only happens this close to the limit.
+        var measured = Self.storeByteUpperBound(entries) ?? Self.encodedStoreBytes(entries)
+        if measured > Self.storeByteBudget { measured = Self.encodedStoreBytes(entries) }
+        while measured > Self.storeByteBudget {
+            // Oldest first and one row at a time, so an overrun of a few bytes
+            // costs a few rows some text instead of halving every long clipping.
+            // Pinned means keep the clipping, not allow one clipping to make the
+            // entire store unreadable. Unpinned rows are reduced first; pinned
+            // text is shortened only when it is necessary to preserve the store
+            // as a whole.
+            let unpinnedText = entries.indices.reversed().filter {
                 !entries[$0].isPinned && (entries[$0].text?.utf8.count ?? 0) > 4_096
             }
             let textCandidates = unpinnedText.isEmpty
-                ? entries.indices.filter { (entries[$0].text?.utf8.count ?? 0) > 4_096 }
+                ? entries.indices.reversed().filter { (entries[$0].text?.utf8.count ?? 0) > 4_096 }
                 : unpinnedText
-            if !textCandidates.isEmpty {
-                // Pinned means keep the clipping, not allow one clipping to
-                // make the entire store unreadable. Unpinned rows are reduced
-                // first; pinned text is shortened only when it is necessary to
-                // preserve the store as a whole.
-                for index in textCandidates {
-                    guard let text = entries[index].text else { continue }
-                    let targetCharacters = max(2_048, text.count / 2)
-                    entries[index].text = String(text.prefix(targetCharacters)) + "…"
-                }
+            var shortened = false
+            for index in textCandidates where measured > Self.storeByteBudget {
+                guard let text = entries[index].text else { continue }
+                let targetCharacters = max(2_048, text.count / 2)
+                let reduced = String(text.prefix(targetCharacters)) + "…"
+                // Wide characters can sit over the byte floor below the
+                // character floor, where this would only add an ellipsis.
+                guard reduced.utf8.count < text.utf8.count else { continue }
+                entries[index].text = reduced
+                measured -= Self.encodedStringBound(text) - Self.encodedStringBound(reduced)
+                shortened = true
                 changed = true
+            }
+            if shortened {
+                // The bound's savings can outrun the real ones, which only the
+                // encoder can settle.
+                if measured <= Self.storeByteBudget { measured = Self.encodedStoreBytes(entries) }
                 continue
             }
 
@@ -443,6 +500,7 @@ public final class ClipboardStore {
             let entry = entries.remove(at: index)
             removeManagedImage(for: entry)
             changed = true
+            measured = Self.encodedStoreBytes(entries)
         }
         return changed
     }
@@ -466,38 +524,51 @@ public final class ClipboardStore {
         return (try? encoder.encode(entries).count) ?? Int.max
     }
 
-    /// A strict upper bound, not the optimistic retention estimate above.
-    /// JSON uses at most six bytes per UTF-8 input byte (a control character's
-    /// escape). Fixed fields include every Codable key, punctuation, UUID,
-    /// date, boolean and two full-width integers with ample room to spare.
-    /// Uncertain or large inputs still use the exact encoder and old policy.
     nonisolated static func isStoreGuaranteedWithinByteBudget(_ entries: [ClipboardEntry]) -> Bool {
-        var remaining = storeByteBudget - 2 // Array brackets.
-        func account(_ value: String?) -> Bool {
-            guard let value else { return true }
-            let count = value.utf8.count
-            guard remaining >= 3, count <= (remaining - 3) / 6 else { return false }
-            remaining -= 3 + count * 6 // Quotes and a possible comma.
-            return true
+        storeByteUpperBound(entries).map { $0 <= storeByteBudget } ?? false
+    }
+
+    /// A strict upper bound, not the optimistic retention estimate above.
+    /// Fixed fields include every Codable key, punctuation, UUID, date, boolean
+    /// and two full-width integers with ample room to spare. Nil when a row
+    /// cannot be bounded this way and only the real encoder can say.
+    nonisolated static func storeByteUpperBound(_ entries: [ClipboardEntry]) -> Int? {
+        var total = 2 // Array brackets.
+        func account(_ value: String?) {
+            guard let value else { return }
+            total += 3 + encodedStringBound(value) // Quotes and a possible comma.
         }
         for entry in entries {
-            guard remaining >= 1_024,
-                  entry.createdAt >= .distantPast, entry.createdAt <= .distantFuture else { return false }
-            remaining -= 1_024
-            guard account(entry.label), account(entry.text), account(entry.imageFilename),
-                  account(entry.sourceApplicationName), account(entry.sourceApplicationBundleID),
-                  account(entry.contentHash) else { return false }
-            for tag in entry.tags ?? [] {
-                guard account(tag) else { return false }
-            }
-            for path in entry.filePaths {
-                guard account(path) else { return false }
-            }
-            let identityCount = entry.fileIdentities?.count ?? 0
-            guard identityCount <= remaining / 512 else { return false }
-            remaining -= identityCount * 512
+            guard entry.createdAt >= .distantPast, entry.createdAt <= .distantFuture else { return nil }
+            total += 1_024
+            account(entry.label)
+            account(entry.text)
+            account(entry.imageFilename)
+            account(entry.sourceApplicationName)
+            account(entry.sourceApplicationBundleID)
+            account(entry.contentHash)
+            for tag in entry.tags ?? [] { account(tag) }
+            for path in entry.filePaths { account(path) }
+            total += (entry.fileIdentities?.count ?? 0) * 512
         }
-        return true
+        return total
+    }
+
+    /// What `JSONEncoder` can make of a string's contents: `"`, `\` and `/` take
+    /// two bytes, a control character at most six (`\u0000`), and everything
+    /// else, multi-byte UTF-8 included, is copied as it is. Counted rather than
+    /// assumed: taking six for every byte called ordinary text over budget
+    /// from 0.9 MB, and every later copy then encoded the store on main.
+    nonisolated static func encodedStringBound(_ value: String) -> Int {
+        var value = value
+        return value.withUTF8 { bytes in
+            var extra = 0
+            for byte in bytes {
+                extra &+= (byte < 0x20 ? 5 : 0)
+                    &+ ((byte == 0x22) || (byte == 0x5C) || (byte == 0x2F) ? 1 : 0)
+            }
+            return bytes.count + extra
+        }
     }
 
     // MARK: Storage

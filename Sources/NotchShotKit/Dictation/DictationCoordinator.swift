@@ -27,6 +27,9 @@ public final class DictationCoordinator {
 
     private var sessionID: UInt64 = 0
     private var audioCapture: DictationAudioCapture?
+    /// Drains the capture stream into the engine. Awaited before finalising, so
+    /// everything captured reaches the analyzer.
+    private var audioFeedTask: Task<Void, Never>?
     private var engine: SpeechAnalyzerDictationEngine?
     private var insertionTarget: DictationInsertionTarget?
     private var targetDisplayID: CGDirectDisplayID?
@@ -42,6 +45,9 @@ public final class DictationCoordinator {
     private var isLatched = false
     /// A press that arrived while the previous session was still finalising.
     private var pendingPushToTalkStart = false
+    /// That press was already released, so the session it starts has no release
+    /// coming. It counts as a tap and latches, and the next tap ends it.
+    private var pendingPushToTalkReleased = false
     /// Anything shorter than this is a tap, not a hold.
     private static let latchDuration: TimeInterval = 0.6
 
@@ -57,18 +63,19 @@ public final class DictationCoordinator {
     public private(set) var modelInstallProgress: Double?
     public private(set) var modelInstallError: String?
     private var modelInstallTask: Task<Void, Never>?
+    /// Which install owns the two fields above: a cancelled one is still
+    /// unwinding when the next starts, and must not clear the new one's state.
+    private var modelInstallGeneration: UInt64 = 0
+    private var modelStatusRequest: UInt64 = 0
 
     public var onSnapshotChange: ((DictationSnapshot) -> Void)?
     public var onRequestDisplay: ((CGDirectDisplayID?) -> Void)?
     public var onAnnounce: ((String) -> Void)?
 
     private let insertionService = TextInsertionService.shared
+    private var insertionCancellation: InsertionCancellation?
 
     public init() {}
-
-    // MARK: Permissions helpers
-
-    public var isAccessibilityGranted: Bool { AXIsProcessTrusted() }
 
     // MARK: Public API
 
@@ -112,8 +119,11 @@ public final class DictationCoordinator {
         meter = DictationMeter()
         elapsedSeconds = 0
 
-        insertionTarget = insertionService.captureTarget()
-        targetDisplayID = insertionTarget?.displayID ?? activeDisplayID()
+        // The app is pinned here, before anything else happens. Its focused
+        // field is asked for below, off the main thread, so a slow app cannot
+        // hold up the notch at the moment it should expand.
+        let frontmostTarget = insertionService.frontmostTarget()
+        targetDisplayID = frontmostTarget.displayID
         onRequestDisplay?(targetDisplayID)
 
         state = .requestingMicrophone
@@ -123,6 +133,11 @@ public final class DictationCoordinator {
         Log.dictation.notice(
             "Starting dictation session \(currentSession, privacy: .public) in \(Preferences.shared.dictationLanguage, privacy: .public)"
         )
+
+        // Before the microphone prompt below can move focus.
+        let resolvedTarget = await insertionService.resolvingFocusedField(of: frontmostTarget)
+        guard checkSession(currentSession) else { return }
+        insertionTarget = resolvedTarget
 
         // Check Notch Dictation enabled
         guard Preferences.shared.dictationEnabled else {
@@ -190,11 +205,20 @@ public final class DictationCoordinator {
         let capture = DictationAudioCapture()
         let stream: AsyncStream<SendableAudioBuffer>
         do {
-            stream = try capture.start()
+            stream = try await capture.start()
         } catch {
             await eng.cancel()
+            guard checkSession(currentSession) else { return }
             engine = nil
             fail("Microphone unavailable: \(error.localizedDescription)", session: currentSession)
+            return
+        }
+        // The microphone can take a second to open. A cancel or an engine failure
+        // in that time has already moved this session on, and neither could
+        // reach a capture that had not been handed over yet.
+        guard checkSession(currentSession), case .preparingModel = state else {
+            capture.stop()
+            await eng.cancel()
             return
         }
         audioCapture = capture
@@ -214,15 +238,16 @@ public final class DictationCoordinator {
         }
 
         // Feed audio buffers
-        Task { [weak self] in
+        audioFeedTask = Task { [weak self] in
             guard let self else { return }
             for await buffer in stream {
-                guard await MainActor.run(body: { self.checkSession(currentSession) }) else { break }
+                guard self.checkSession(currentSession) else { break }
                 do {
                     try await eng.consume(buffer)
                 } catch {
-                    await MainActor.run {
-                        guard self.checkSession(currentSession) else { return }
+                    // Once finalising, the words already recognised are still
+                    // worth inserting. Only a live session fails on this.
+                    if self.checkSession(currentSession), self.state == .listening {
                         self.fail(error.localizedDescription, session: currentSession)
                     }
                     break
@@ -250,16 +275,24 @@ public final class DictationCoordinator {
         // Keep capture alive until engine finishes
         let eng = engine
 
+        // The stream ends after its buffered items, so this is what stops the
+        // tail of the speech being cut off, and stops a late buffer finding the
+        // engine already closed.
+        await audioFeedTask?.value
+        // A cancel in either wait has already dealt with the engine, and a newer
+        // session may own these fields by now.
+        guard checkSession(currentSession) else { return }
+        audioFeedTask = nil
+
         // Finalize engine
         do {
             try await eng?.finish()
         } catch {
             // Continue to insertion attempt even if finalize throws?
         }
+        guard checkSession(currentSession) else { return }
         engine = nil
         audioCapture = nil
-
-        guard checkSession(currentSession) else { return }
 
         let combined = combinedTranscript()
         if combined.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -274,7 +307,7 @@ public final class DictationCoordinator {
             mode: Preferences.shared.dictationPostProcessing,
             removeFillerWords: Preferences.shared.dictationRemovesFillerWords,
             deterministicReplacements: Preferences.shared.dictationDeterministicReplacements,
-            customDictionary: Dictionary(uniqueKeysWithValues: Preferences.shared.dictationCustomWords.map { ($0, $0) }),
+            customDictionary: DictationTextProcessor.customDictionary(from: Preferences.shared.dictationCustomWords),
             appendMode: Preferences.shared.dictationAppendMode,
             enableSpokenFormatting: Preferences.shared.dictationSpokenFormattingEnabled
         )
@@ -282,11 +315,13 @@ public final class DictationCoordinator {
         state = .inserting
         publish()
 
+        let cancellation = InsertionCancellation()
+        insertionCancellation = cancellation
         let result: TextInsertionResult
         if let target = insertionTarget {
-            result = await insertionService.insert(processed, into: target, mode: Preferences.shared.dictationInsertMode)
+            result = await insertionService.insert(processed, into: target, mode: Preferences.shared.dictationInsertMode, cancellation: cancellation)
         } else {
-            result = await insertionService.insert(processed, into: DictationInsertionTarget(), mode: Preferences.shared.dictationInsertMode)
+            result = await insertionService.insert(processed, into: DictationInsertionTarget(), mode: Preferences.shared.dictationInsertMode, cancellation: cancellation)
         }
 
         guard checkSession(currentSession) else { return }
@@ -322,8 +357,12 @@ public final class DictationCoordinator {
         sessionID &+= 1
         let cancellationSession = sessionID
         // Immediately discard transient audio and text, insert nothing, collapse.
+        insertionCancellation?.cancel()
+        insertionCancellation = nil
         audioCapture?.stop()
         audioCapture = nil
+        audioFeedTask?.cancel()
+        audioFeedTask = nil
         let activeEngine = engine
         engine = nil
         Task { await activeEngine?.cancel() }
@@ -337,6 +376,7 @@ public final class DictationCoordinator {
         // A press queued behind a finishing session must not survive the
         // cancel, or the next terminal transition starts an unprompted take.
         pendingPushToTalkStart = false
+        pendingPushToTalkReleased = false
         pushToTalkPressedAt = nil
 
         // Faster collapse: set cancelled and schedule immediate collapse
@@ -387,6 +427,7 @@ public final class DictationCoordinator {
             // it instead, so a quick second attempt still records.
             if state == .finalizing || state == .inserting {
                 pendingPushToTalkStart = true
+                pendingPushToTalkReleased = false
                 Log.dictation.notice("Push-to-talk queued behind the session still finishing")
                 return
             }
@@ -402,6 +443,10 @@ public final class DictationCoordinator {
             Log.dictation.notice("Push-to-talk pressed")
             Task { await start() }
         } else {
+            if pendingPushToTalkStart {
+                pendingPushToTalkReleased = true
+                return
+            }
             guard !isLatched else { return }
 
             let held = pushToTalkPressedAt.map { Date().timeIntervalSince($0) } ?? .infinity
@@ -440,16 +485,15 @@ public final class DictationCoordinator {
     private func startQueuedPushToTalkIfNeeded() {
         guard pendingPushToTalkStart else { return }
         pendingPushToTalkStart = false
-        // Treated as a fresh hold: the key is still down, so it latches or
-        // stops on the same rules as any other.
+        // Treated as a fresh hold when the key is still down, so it latches or
+        // stops on the same rules as any other. If the key is already up no
+        // release will arrive, and without the latch the microphone would stay
+        // open with nothing the user could do to end it short of the time limit.
         pushToTalkPressedAt = Date()
-        isLatched = false
+        isLatched = pendingPushToTalkReleased
+        pendingPushToTalkReleased = false
         Log.dictation.notice("Starting the queued push-to-talk session")
         Task { await start() }
-    }
-
-    public func handleEscape() {
-        cancel()
     }
 
     // MARK: Language model
@@ -458,12 +502,14 @@ public final class DictationCoordinator {
     /// language picker changes or the Settings pane appears.
     public func refreshModelStatus(for identifier: String? = nil) async {
         let language = identifier ?? Preferences.shared.dictationLanguage
+        modelStatusRequest &+= 1
+        let request = modelStatusRequest
         isCheckingModel = true
         let status = await DictationModelCatalog.status(forLanguage: language)
-        isCheckingModel = false
         // A slower check for a language the user has since switched away from
         // must not overwrite the newer one.
-        guard language == (identifier ?? Preferences.shared.dictationLanguage) else { return }
+        guard request == modelStatusRequest else { return }
+        isCheckingModel = false
         modelStatus = status
         if status.isInstalled { modelInstallError = nil }
     }
@@ -475,25 +521,32 @@ public final class DictationCoordinator {
         let language = identifier ?? Preferences.shared.dictationLanguage
         modelInstallError = nil
         modelInstallProgress = 0
+        modelInstallGeneration &+= 1
+        let generation = modelInstallGeneration
         modelInstallTask = Task { [weak self] in
             guard let self else { return }
             do {
                 try await DictationModelCatalog.install(languageIdentifier: language) { fraction in
+                    guard generation == self.modelInstallGeneration else { return }
                     self.modelInstallProgress = fraction
                 }
                 await self.refreshModelStatus(for: language)
             } catch is CancellationError {
                 // Cancelled by the user; leave the last known status alone.
             } catch {
-                self.modelInstallError = error.localizedDescription
+                if generation == self.modelInstallGeneration {
+                    self.modelInstallError = error.localizedDescription
+                }
                 await self.refreshModelStatus(for: language)
             }
+            guard generation == self.modelInstallGeneration else { return }
             self.modelInstallProgress = nil
             self.modelInstallTask = nil
         }
     }
 
     public func cancelModelInstall() {
+        modelInstallGeneration &+= 1
         modelInstallTask?.cancel()
         modelInstallTask = nil
         modelInstallProgress = nil
@@ -504,15 +557,6 @@ public final class DictationCoordinator {
     public func setHoverExpanded(_ expanded: Bool) {
         snapshot.isHoverExpanded = expanded
         publish()
-    }
-
-    public func handleDisplayChange(to displayID: CGDirectDisplayID) {
-        // If originating display disconnects, move safely without losing transcript
-        if targetDisplayID != nil, snapshot.displayID != displayID {
-            snapshot.displayID = displayID
-            targetDisplayID = displayID
-            publish()
-        }
     }
 
     // MARK: - Private
@@ -561,6 +605,8 @@ public final class DictationCoordinator {
         maxDurationTimer = nil
         audioCapture?.stop()
         audioCapture = nil
+        audioFeedTask?.cancel()
+        audioFeedTask = nil
         let activeEngine = engine
         engine = nil
         Task { await activeEngine?.cancel() }
@@ -658,16 +704,5 @@ public final class DictationCoordinator {
                 self.publish()
             }
         }
-    }
-
-    private func activeDisplayID() -> CGDirectDisplayID? {
-        if let main = NSScreen.main, let id = ScreenLookup.displayID(for: main) { return id }
-        return nil
-    }
-}
-
-extension DictationCoordinator {
-    func setAppCoordinator(_ coordinator: AppCoordinator) {
-        // retained weakly via closure capture in AppCoordinator; no strong cycle needed here
     }
 }

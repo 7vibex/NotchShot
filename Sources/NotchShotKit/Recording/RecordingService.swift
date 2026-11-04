@@ -215,7 +215,11 @@ public final class RecordingService {
     private var tickTimer: Timer?
     private var tickCount = 0
     private var hasRequestedLowDiskStop = false
-    private let availableCapacity: @MainActor (URL) -> Int64
+    private var isCheckingCapacity = false
+    /// Runs off main. Asking for the important-usage capacity goes through the
+    /// system's purgeable-space accounting: measured 78 ms typical and 800 ms
+    /// worst on a loaded Mac, once a second for the whole recording.
+    private let availableCapacity: @Sendable (URL) -> Int64
     private let audioMeterQueue = DispatchQueue(
         label: "com.notchshot.audio-meter",
         qos: .userInitiated
@@ -225,9 +229,10 @@ public final class RecordingService {
     /// owns or moves the temporary recording.
     private var stopTask: Task<CaptureAsset, Error>?
     private var stopTaskSessionID: UUID?
+    private var lastDestinationMove: Task<Void, Never>?
 
     public init(
-        availableCapacity: @escaping @MainActor (URL) -> Int64 = { AppPaths.availableCapacity(at: $0) }
+        availableCapacity: @escaping @Sendable (URL) -> Int64 = { AppPaths.availableCapacity(at: $0) }
     ) {
         self.availableCapacity = availableCapacity
     }
@@ -284,7 +289,13 @@ public final class RecordingService {
             .appendingPathExtension("mp4")
         scratchURL = temporary
 
-        guard availableCapacity(inProgress) > RecordingCapacityPolicy.minimumStartBytes else {
+        let capacityProbe = availableCapacity
+        let startingCapacity = await Task.detached(priority: .userInitiated) {
+            capacityProbe(inProgress)
+        }.value
+        try Task.checkCancellation()
+        guard lifecycleIsStarting(sessionID) else { throw CancellationError() }
+        guard startingCapacity > RecordingCapacityPolicy.minimumStartBytes else {
             throw NotchShotError.diskSpaceUnavailable
         }
 
@@ -482,7 +493,7 @@ public final class RecordingService {
         setLifecycle(.cancelling(sessionID))
         stopTicking()
         if let stream {
-            try? await stream.stopCapture()
+            try? await stopCaptureWithDeadline(stream)
         }
         if let bridge {
             try? await bridge.waitForRecordingToFinish(timeout: 4)
@@ -500,6 +511,9 @@ public final class RecordingService {
         discardedDirectory: URL,
         trash: (URL) throws -> Void = { try FileManager.default.trashItem(at: $0, resultingItemURL: nil) }
     ) -> URL? {
+        // A writer that failed before its first frame leaves nothing to keep,
+        // so there is no partial recording to report as retained.
+        guard FileManager.default.fileExists(atPath: temporary.path) else { return nil }
         do {
             try trash(temporary)
         } catch {
@@ -515,7 +529,7 @@ public final class RecordingService {
                 extension: "mp4"
             )
             do {
-                return try moveOrCopy(from: temporary, to: fallback)
+                return try Self.moveOrCopySynchronously(from: temporary, to: fallback)
             } catch {
                 // The source remains recoverable on disk, but mark it so
                 // orphan scanning cannot resurrect the user's discard.
@@ -555,7 +569,7 @@ public final class RecordingService {
 
     /// Partial files the user chose to discard but macOS could not move to
     /// Trash. These are never mixed into crash recovery.
-    public static func retainedDiscardedRecordings() -> [URL] {
+    public nonisolated static func retainedDiscardedRecordings() -> [URL] {
         let fileManager = FileManager.default
         var retained: [URL] = []
         if let contents = try? fileManager.contentsOfDirectory(
@@ -605,16 +619,16 @@ public final class RecordingService {
 
     /// Finalizes a single paused segment through the same move/copy/rollback
     /// path as a normal recording stop.
-    public func commitPausedSegment(from source: URL, to destination: URL) throws -> URL {
+    public func commitPausedSegment(from source: URL, to destination: URL) async throws -> URL {
         guard Self.isManagedScratchRecording(source) else {
             throw NotchShotError.recordingFailed("The paused recording segment is not a trusted NotchShot scratch file")
         }
-        return try moveOrCopy(from: source, to: destination)
+        return try await Self.moveOrCopy(from: source, to: destination)
     }
 
     /// Retires the source segments of an already-committed joined recording.
     /// Every still-present source is marked before any deletion begins.
-    public static func retireCommittedPausedSegments(_ urls: [URL]) throws {
+    public nonisolated static func retireCommittedPausedSegments(_ urls: [URL]) throws {
         guard urls.allSatisfy(isManagedScratchRecording) else {
             throw NotchShotError.recordingFailed("A paused recording segment is not a trusted NotchShot scratch file")
         }
@@ -648,7 +662,7 @@ public final class RecordingService {
         try await recover(url, inProgress: AppPaths.inProgress, destination: { self.defaultRecordingURL() })
     }
 
-    func recover(_ url: URL, inProgress: URL, destination: () -> URL) async throws -> CaptureAsset {
+    func recover(_ url: URL, inProgress: URL, destination: @escaping () -> URL) async throws -> CaptureAsset {
         guard let originalIdentity = Self.recoveryCandidateIdentity(for: url, inProgress: inProgress) else {
             throw NotchShotError.recordingFailed("The recovery item is not a trusted NotchShot scratch recording")
         }
@@ -656,7 +670,7 @@ public final class RecordingService {
         guard Self.recoveryCandidateIdentity(for: url, inProgress: inProgress) == originalIdentity else {
             throw NotchShotError.recordingFailed("The recovery item changed while it was being validated")
         }
-        let moved = try moveOrCopy(from: url, to: destination())
+        let moved = try await moveToNewDestination(from: url, destination: destination)
         return CaptureAsset(
             url: moved,
             kind: .recording,
@@ -714,7 +728,7 @@ public final class RecordingService {
         }
 
         do {
-            try await stream.stopCapture()
+            try await stopCaptureWithDeadline(stream)
         } catch {
             // The delegate is authoritative about whether the MP4 finalized.
             // Keep waiting, but never accept the file if finalization fails.
@@ -737,8 +751,14 @@ public final class RecordingService {
         // Validate while the file is still in InProgress. A failed or timed-out
         // writer must never move a corrupt artifact into user history.
         let metadata = try await validatedVideoMetadata(of: temporary)
-        let finalURL = destination ?? defaultRecordingURL()
-        let moved = try moveOrCopy(from: temporary, to: finalURL)
+        // The lifecycle stays `.stopping` across this copy, so a second stop
+        // joins this task and a new recording is still refused.
+        let moved: URL
+        if let destination {
+            moved = try await Self.moveOrCopy(from: temporary, to: destination)
+        } else {
+            moved = try await moveToNewDestination(from: temporary) { self.defaultRecordingURL() }
+        }
 
         let reportedDuration = recordingOutput.recordedDuration.seconds
         if reportedDuration.isFinite,
@@ -757,6 +777,26 @@ public final class RecordingService {
             duration: metadata.duration,
             ownership: AppPaths.owns(moved) ? .managedTemporary : .userDocument
         )
+    }
+
+    /// ScreenCaptureKit sets no limit on how long a stop may take, and a stop
+    /// that never completes would hold the session in `.stopping` and hang
+    /// quit. Past the deadline the caller falls through to the finalization
+    /// wait, whose failure path keeps the scratch file for recovery.
+    private func stopCaptureWithDeadline(_ stream: SCStream, timeout: TimeInterval = 30) async throws {
+        let stopped = RecordingFinalization()
+        requestStopCapture(stream, reportingTo: stopped)
+        try await stopped.wait(timeout: timeout)
+    }
+
+    private func requestStopCapture(_ stream: SCStream, reportingTo stopped: RecordingFinalization) {
+        stream.stopCapture { @Sendable error in
+            if let error {
+                stopped.complete(.failure(error))
+            } else {
+                stopped.complete(.success(()))
+            }
+        }
     }
 
     private func setLifecycle(_ newValue: Lifecycle) {
@@ -812,7 +852,7 @@ public final class RecordingService {
         setLifecycle(.cancelling(sessionID))
         stopTicking()
         if let stream {
-            try? await stream.stopCapture()
+            try? await stopCaptureWithDeadline(stream)
         }
         if let bridge {
             try? await bridge.waitForRecordingToFinish(timeout: 4)
@@ -987,7 +1027,7 @@ public final class RecordingService {
         setLifecycle(.failing(sessionID))
         let candidateURL = temporaryURL
         if let stream {
-            try? await stream.stopCapture()
+            try? await stopCaptureWithDeadline(stream)
         }
 
         var recoveryURL: URL?
@@ -1042,23 +1082,47 @@ public final class RecordingService {
         status.appendMeterSnapshot(system: levels.system, microphone: levels.microphone)
         status.fileSizeBytes = Int64(recordingOutput?.recordedFileSize ?? 0)
         tickCount &+= 1
-        if tickCount % 10 == 0, !hasRequestedLowDiskStop {
-            switch RecordingCapacityPolicy.action(for: availableCapacity(AppPaths.inProgress)) {
-            case .continueRecording:
-                break
-            case .warn:
-                Log.recording.warning("Recording volume is approaching the safety reserve")
-            case .stopAndFinalize:
-                hasRequestedLowDiskStop = true
-                Log.recording.error("Recording reached the disk safety reserve; finalizing early")
-                if let onLowDiskThresholdReached {
-                    onLowDiskThresholdReached()
-                } else {
-                    Task { _ = try? await self.stop() }
-                }
-            }
+        if tickCount % 10 == 0 {
+            checkCapacityOffMain()
         }
         publishStatus()
+    }
+
+    /// At most one query in flight: a slow one coalesces the next ticks instead
+    /// of queueing them. The answer is dropped if this session has since ended.
+    private func checkCapacityOffMain() {
+        guard !isCheckingCapacity, case .recording(let sessionID) = lifecycle else { return }
+        isCheckingCapacity = true
+        let probe = availableCapacity
+        let directory = AppPaths.inProgress
+        Task.detached(priority: .utility) { [weak self] in
+            let capacity = probe(directory)
+            await self?.applyCapacity(capacity, sessionID: sessionID)
+        }
+    }
+
+    private func applyCapacity(_ availableBytes: Int64, sessionID: UUID) {
+        isCheckingCapacity = false
+        guard case .recording(let current) = lifecycle, current == sessionID else { return }
+        switch RecordingCapacityPolicy.action(for: availableBytes) {
+        case .continueRecording:
+            break
+        case .warn:
+            Log.recording.warning("Recording volume is approaching the safety reserve")
+        case .stopAndFinalize:
+            if !hasRequestedLowDiskStop {
+                hasRequestedLowDiskStop = true
+                Log.recording.error("Recording reached the disk safety reserve; finalizing early")
+            }
+            // Asked again on every check until the session really stops: the
+            // handler refuses while the discard alert is open, and a single
+            // request would then let the recording run on until the disk fills.
+            if let onLowDiskThresholdReached {
+                onLowDiskThresholdReached()
+            } else {
+                Task { _ = try? await self.stop() }
+            }
+        }
     }
 
     private func publishStatus() {
@@ -1077,10 +1141,34 @@ public final class RecordingService {
         )
     }
 
+    /// Picks a destination and moves there, one at a time. A name from
+    /// `uniqueURL` is only free until its file lands, and a move racing another
+    /// onto the same name replaces that file instead of failing.
+    private func moveToNewDestination(
+        from source: URL,
+        destination: @escaping () -> URL
+    ) async throws -> URL {
+        let previous = lastDestinationMove
+        let move = Task { () throws -> URL in
+            await previous?.value
+            return try await Self.moveOrCopy(from: source, to: destination())
+        }
+        lastDestinationMove = Task { _ = try? await move.value }
+        return try await move.value
+    }
+
     /// Moves when possible and copies across volumes. If the copy succeeds but
     /// the app cannot remove its scratch file, a sidecar prevents that source
     /// from being recovered as a duplicate on the next launch.
-    private func moveOrCopy(from source: URL, to destination: URL) throws -> URL {
+    ///
+    /// Off main, because across volumes this copies the whole recording.
+    private nonisolated static func moveOrCopy(from source: URL, to destination: URL) async throws -> URL {
+        try await Task.detached(priority: .userInitiated) {
+            try RecordingService.moveOrCopySynchronously(from: source, to: destination)
+        }.value
+    }
+
+    private nonisolated static func moveOrCopySynchronously(from source: URL, to destination: URL) throws -> URL {
         let fm = FileManager.default
         try fm.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
         do {
@@ -1132,11 +1220,11 @@ public final class RecordingService {
         }
     }
 
-    private static func recoveryExclusionMarker(for url: URL) -> URL {
+    private nonisolated static func recoveryExclusionMarker(for url: URL) -> URL {
         RecordingScratchRetirement.marker(for: url)
     }
 
-    private static func isSafeRetainedDiscard(_ url: URL) -> Bool {
+    private nonisolated static func isSafeRetainedDiscard(_ url: URL) -> Bool {
         guard url.pathExtension.lowercased() == "mp4" else { return false }
         let values = try? url.resourceValues(forKeys: [
             .isRegularFileKey,
@@ -1145,11 +1233,11 @@ public final class RecordingService {
         return values?.isRegularFile == true && values?.isSymbolicLink != true
     }
 
-    private static func markExcludedFromRecovery(_ url: URL) throws {
+    private nonisolated static func markExcludedFromRecovery(_ url: URL) throws {
         try Data().write(to: recoveryExclusionMarker(for: url), options: .atomic)
     }
 
-    private static func isManagedScratchRecording(_ url: URL) -> Bool {
+    private nonisolated static func isManagedScratchRecording(_ url: URL) -> Bool {
         let resolved = url.standardizedFileURL
         return resolved.deletingLastPathComponent() == AppPaths.inProgress.standardizedFileURL
             && resolved.pathExtension.lowercased() == "mp4"

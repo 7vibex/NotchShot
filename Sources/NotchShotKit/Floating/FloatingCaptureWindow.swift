@@ -32,9 +32,14 @@ public final class FloatingCaptureWindow: NSPanel {
         width = max(width, 160)
         height = max(height, 120)
 
+        // Borderless panels are not kept on screen by AppKit, and the caller's
+        // origin cannot know this size.
+        let visible = screen.visibleFrame
         let frame = CGRect(
-            x: origin?.x ?? (screen.visibleFrame.maxX - width - 40),
-            y: origin?.y ?? (screen.visibleFrame.maxY - height - 40),
+            x: origin.map { min(max($0.x, visible.minX), visible.maxX - width) }
+                ?? (visible.maxX - width - 40),
+            y: origin.map { min(max($0.y, visible.minY), visible.maxY - height) }
+                ?? (visible.maxY - height - 40),
             width: width,
             height: height
         )
@@ -117,8 +122,6 @@ public final class FloatingCaptureWindow: NSPanel {
         currentOpacity = min(max(value, 0.15), 1)
         alphaValue = currentOpacity
     }
-
-    public var opacity: CGFloat { currentOpacity }
 
     /// Locking makes the window click-through so it can sit over a workspace
     /// as a reference without intercepting anything.
@@ -229,8 +232,6 @@ public final class FloatingCaptureManager {
     private let maximumPins = 12
 
     public init() {}
-
-    public var pinCount: Int { windows.count }
 
     @discardableResult
     public func pin(asset: CaptureAsset, image: NSImage) -> FloatingCaptureWindow {

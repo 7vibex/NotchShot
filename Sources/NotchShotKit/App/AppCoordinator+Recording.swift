@@ -14,6 +14,7 @@ extension AppCoordinator {
         target: RecordingTarget? = nil,
         mode: RecordingTargetMode? = nil
     ) {
+        guard openDeferredModals == 0 else { return }
         if let dictation = arbiter.dictation, dictation.state != .idle {
             present(error: NotchShotError.recordingFailed("Finish dictation before starting a recording"))
             return
@@ -28,6 +29,7 @@ extension AppCoordinator {
               recordingCompletionTask == nil,
               !isRecordingPaused,
               !RecordingService.shared.hasActiveSession else { return }
+        recordingStoppedForLowDisk = false
         recordingSegments.removeAll()
         recordingInteractionSegments.removeAll()
         pendingRecordingInteractionTimeline = nil
@@ -201,12 +203,10 @@ extension AppCoordinator {
 
     func finishRecording() async {
         arbiter.isRecording = false
-        arbiter.isProcessing = "Finishing recording"
-        refreshActivity()
+        var processingLabel = beginProcessing("Finishing recording")
         defer {
             recordingCompletionTask = nil
-            arbiter.isProcessing = nil
-            refreshActivity()
+            endProcessing(processingLabel)
         }
         do {
             var asset = try await finishRecordingSegments()
@@ -214,26 +214,31 @@ extension AppCoordinator {
             // encoder fails, the user's finished recording remains findable.
             history.record(asset: asset, image: nil)
             persistHistory()
+            var effectsWarning: Error?
             if let timeline = pendingRecordingInteractionTimeline,
                recordingUsesSmoothCursor || recordingUsesClickZoom {
-                arbiter.isProcessing = "Smoothing pointer and click zoom"
-                refreshActivity()
-                try await RecordingEffectsProcessor.process(
-                    recordingURL: asset.url,
-                    timeline: timeline,
-                    smoothsCursor: recordingUsesSmoothCursor,
-                    autoZoomsOnClicks: recordingUsesClickZoom
-                )
-                asset.refreshOwnedFileIdentities()
-                history.record(asset: asset, image: nil)
-                persistHistory()
+                processingLabel = beginProcessing("Smoothing pointer and click zoom")
+                do {
+                    try await RecordingEffectsProcessor.process(
+                        recordingURL: asset.url,
+                        timeline: timeline,
+                        smoothsCursor: recordingUsesSmoothCursor,
+                        autoZoomsOnClicks: recordingUsesClickZoom
+                    )
+                    asset.refreshOwnedFileIdentities()
+                    history.record(asset: asset, image: nil)
+                    persistHistory()
+                } catch {
+                    // Effects are optional like captions: the intact base file
+                    // still gets its thumbnail and its place on the shelf.
+                    effectsWarning = error
+                }
             }
             pendingRecordingInteractionTimeline = nil
             var captionWarning: Error?
 
             if Preferences.shared.recordingGeneratesCaptions {
-                arbiter.isProcessing = "Creating captions on this Mac"
-                refreshActivity()
+                processingLabel = beginProcessing("Creating captions on this Mac")
                 do {
                     let transcript = try await OnDeviceTranscriptionService.shared.transcribe(
                         recordingURL: asset.url
@@ -274,6 +279,11 @@ extension AppCoordinator {
                 recordingStoppedForLowDisk = false
                 present(error: NotchShotError.diskSpaceUnavailable)
             }
+            if let effectsWarning {
+                present(error: NotchShotError.recordingFailed(
+                    "The recording was saved, but its effects could not be applied: \(effectsWarning.localizedDescription)"
+                ))
+            }
             if let captionWarning {
                 present(error: NotchShotError.recordingFailed(
                     "The recording was saved, but captions could not be created: \(captionWarning.localizedDescription)"
@@ -281,6 +291,13 @@ extension AppCoordinator {
             }
         } catch {
             recordingStoppedForLowDisk = false
+            // Parked parts with no live writer: bring the paused island back so
+            // Stop can retry the join and Discard stays reachable.
+            if !RecordingService.shared.isRecording, !recordingSegments.isEmpty {
+                isRecordingPaused = true
+                arbiter.isRecording = true
+                recordingStatus.elapsed = completedRecordingDuration
+            }
             present(error: error)
         }
     }
@@ -316,8 +333,19 @@ extension AppCoordinator {
             } catch {
                 if RecordingService.shared.isRecording {
                     RecordingInteractionRecorder.shared.start(configuration: configuration)
+                } else if !self.recordingSegments.isEmpty {
+                    // The writer is gone but earlier parts are parked, so this
+                    // is a paused take that Stop can still finish.
+                    self.pausedRecordingConfiguration = configuration
+                    self.isRecordingPaused = true
+                    self.recordingStatus.elapsed = self.completedRecordingDuration
+                } else {
+                    // No writer and nothing parked: nothing is recording, and
+                    // the island must not keep saying so.
+                    self.arbiter.isRecording = false
                 }
                 self.recordingCompletionTask = nil
+                self.refreshActivity()
                 self.present(error: error)
             }
         }
@@ -338,9 +366,12 @@ extension AppCoordinator {
                 self.recordingStartTask = nil
                 self.refreshActivity()
             } catch {
+                // A cancelled start was already cleared by the canceller, and a
+                // newer resume may own the task slot and the overlay by now.
+                if !Task.isCancelled { self.recordingStartTask = nil }
                 // The session never started, so the overlay must not outlive it.
-                self.recordingPresentation.stop()
-                self.recordingStartTask = nil
+                if self.recordingStartTask == nil { self.recordingPresentation.stop() }
+                guard !Task.isCancelled, !(error is CancellationError) else { return }
                 self.present(error: error)
             }
         }
@@ -370,6 +401,7 @@ extension AppCoordinator {
             let segment = try await RecordingService.shared.stop(destination: url)
             appendInteractionSegment(interaction, duration: segment.duration)
             recordingSegments.append(segment)
+            completedRecordingDuration += segment.duration ?? 0
         }
         guard !recordingSegments.isEmpty else {
             throw NotchShotError.recordingFailed("Nothing is recording")
@@ -377,7 +409,7 @@ extension AppCoordinator {
 
         let preferences = Preferences.shared
         let folder = preferences.saveToDiskAfterCapture ? preferences.outputFolder : AppPaths.recordings
-        let destination = AppPaths.uniqueURL(
+        var destination = AppPaths.uniqueURL(
             in: folder,
             name: preferences.expandFilename(appName: "Recording"),
             extension: "mp4",
@@ -385,14 +417,16 @@ extension AppCoordinator {
         )
         let urls = recordingSegments.map(\.url)
         if urls.count == 1 {
-            _ = try RecordingService.shared.commitPausedSegment(
+            _ = try await RecordingService.shared.commitPausedSegment(
                 from: urls[0],
                 to: destination
             )
         } else {
-            try await RecordingSegmentJoiner.join(urls, to: destination)
+            destination = try await RecordingSegmentJoiner.join(urls, to: destination)
             do {
-                try RecordingService.retireCommittedPausedSegments(urls)
+                try await Task.detached(priority: .userInitiated) {
+                    try RecordingService.retireCommittedPausedSegments(urls)
+                }.value
             } catch {
                 // The joined file is the user's recording; it must not be lost
                 // because scratch cleanup failed. Keep the sources out of crash
@@ -453,6 +487,9 @@ extension AppCoordinator {
            let asset = try await RecordingService.shared.finishForTermination() {
             return asset
         }
+        // A failed take is joined or recovered there, and its parts can come
+        // back parked if the join fails.
+        await FileWorkTracker.shared.waitUntilIdle()
         guard isRecordingPaused else { return nil }
         return try await finishRecordingSegments()
     }
@@ -472,10 +509,13 @@ extension AppCoordinator {
         alert.addButton(withTitle: "Move to Trash")
         NSApp.activate(ignoringOtherApps: true)
         guard alert.runModal() == .alertSecondButtonReturn else { return }
+        // The main queue kept running under the alert, and the stream may have
+        // died meanwhile: its parts are being joined, not waiting to be discarded.
+        guard recordingCompletionTask == nil,
+              RecordingService.shared.isRecording || isRecordingPaused else { return }
 
         arbiter.isRecording = false
-        arbiter.isProcessing = "Discarding recording"
-        refreshActivity()
+        let processingLabel = beginProcessing("Discarding recording")
         recordingCompletionTask = Task { [weak self] in
             guard let self else { return }
             var retainedURLs: [URL] = []
@@ -513,17 +553,12 @@ extension AppCoordinator {
                     excludesCrashRecovery = false
                 }
             }
-            self.recordingSegments.removeAll()
-            self.recordingInteractionSegments.removeAll()
-            self.pendingRecordingInteractionTimeline = nil
-            self.pausedRecordingConfiguration = nil
-            self.completedRecordingDuration = 0
-            self.isRecordingPaused = false
+            self.recordingStoppedForLowDisk = false
+            self.clearParkedSegments()
             self.recordingCompletionTask = nil
-            self.arbiter.isProcessing = nil
-            self.refreshActivity()
+            self.endProcessing(processingLabel)
             if let retainedURL = retainedURLs.first {
-                self.presentRetainedDiscard(
+                await self.presentRetainedDiscard(
                     at: retainedURL,
                     excludesCrashRecovery: excludesCrashRecovery
                 )
@@ -531,10 +566,36 @@ extension AppCoordinator {
         }
     }
 
+    /// Forgets the take's parts. Their files stay where they are, and any still
+    /// in InProgress is offered by crash recovery on the next launch.
+    func clearParkedSegments() {
+        recordingSegments.removeAll()
+        recordingInteractionSegments.removeAll()
+        pendingRecordingInteractionTimeline = nil
+        pausedRecordingConfiguration = nil
+        completedRecordingDuration = 0
+        isRecordingPaused = false
+    }
+
     func presentRetainedDiscard(
         at url: URL,
         excludesCrashRecovery: Bool
-    ) {
+    ) async {
+        let alert = retainedDiscardAlert(at: url, excludesCrashRecovery: excludesCrashRecovery)
+        let response = await runModalOutsideMainQueue(modes: Self.quitWaitableModalModes) { alert.runModal() }
+        if response == .alertFirstButtonReturn {
+            NSWorkspace.shared.activateFileViewerSelecting([url])
+        }
+    }
+
+    /// Recording flows that quit can join: a `.terminateLater` reply runs the
+    /// run loop in the modal panel mode, so a default-mode dialog would never open.
+    private static let quitWaitableModalModes: [RunLoop.Mode] = [.default, .modalPanel]
+
+    private func retainedDiscardAlert(
+        at url: URL,
+        excludesCrashRecovery: Bool
+    ) -> NSAlert {
         let alert = NSAlert()
         alert.alertStyle = .warning
         alert.messageText = "The recording could not be moved to Trash"
@@ -546,9 +607,7 @@ extension AppCoordinator {
         alert.addButton(withTitle: "Reveal in Finder")
         alert.addButton(withTitle: "OK")
         NSApp.activate(ignoringOtherApps: true)
-        if alert.runModal() == .alertFirstButtonReturn {
-            NSWorkspace.shared.activateFileViewerSelecting([url])
-        }
+        return alert
     }
 
     func finishRecordingAfterFailure(
@@ -556,8 +615,26 @@ extension AppCoordinator {
         recoveryURL: URL?
     ) async {
         arbiter.isRecording = false
-        _ = RecordingInteractionRecorder.shared.stop()
+        let interaction = RecordingInteractionRecorder.shared.stop()
         recordingPresentation.stop()
+        recordingStoppedForLowDisk = false
+        // A stop that lost the race with this failure may be joining the parts.
+        if let completion = recordingCompletionTask {
+            await completion.value
+        }
+        if !recordingSegments.isEmpty {
+            // A completion task, so a new recording cannot clear the parts
+            // mid-join and quit waits for the join to finish.
+            let task: Task<Void, Never> = Task { [weak self] in
+                await self?.finishSegmentsAfterFailure(
+                    recoveryURL: recoveryURL,
+                    interaction: interaction
+                )
+            }
+            recordingCompletionTask = task
+            await task.value
+            return
+        }
         // Recover this exact session. Picking the newest global orphan could
         // move an unrelated file left by an older crash.
         guard let recoveryURL,
@@ -568,25 +645,78 @@ extension AppCoordinator {
 
         do {
             let asset = try await RecordingService.shared.recover(recoveryURL)
-            history.record(asset: asset, image: nil)
-            persistHistory()
-            let thumbnail = await VideoThumbnail.make(for: asset.url)
-            history.record(
-                asset: asset,
-                image: thumbnail?.cgImage(forProposedRect: nil, context: nil, hints: nil)
-            )
-            push(ShelfItem(asset: asset, thumbnail: thumbnail, image: nil))
+            await publishRecoveredRecording(asset)
             present(error: NotchShotError.recordingFailed("Recording stopped early — the partial file was kept"))
         } catch {
             Log.recording.error(
                 "Could not recover interrupted recording \(recoveryURL.lastPathComponent): \(error.localizedDescription)"
             )
-            presentRecoveryFiles(
+            await presentRecoveryFiles(
                 title: "An interrupted recording needs attention",
                 urls: [recoveryURL],
                 explanation: "NotchShot could not safely validate or move this recording, so it remains in the recovery folder."
             )
         }
+    }
+
+    /// The stream died after a pause and resume. Joins everything recorded so
+    /// far, because the last part alone would leave most of the take out. The last
+    /// part was validated by the service and is already in InProgress, so it
+    /// joins in place; one that failed validation stays there for recovery.
+    private func finishSegmentsAfterFailure(
+        recoveryURL: URL?,
+        interaction: RecordingInteractionTimeline?
+    ) async {
+        arbiter.isRecording = false
+        let processingLabel = beginProcessing("Finishing recording")
+        defer {
+            recordingCompletionTask = nil
+            endProcessing(processingLabel)
+        }
+        var lastPartKept = false
+        if let recoveryURL, RecordingService.isRecoverableRecording(recoveryURL) {
+            let metadata = await VideoThumbnail.metadata(for: recoveryURL)
+            appendInteractionSegment(interaction, duration: metadata?.duration)
+            recordingSegments.append(CaptureAsset(
+                url: recoveryURL,
+                kind: .recording,
+                pixelSize: metadata?.pixelSize ?? .zero,
+                scale: 1,
+                duration: metadata?.duration,
+                ownership: .managedTemporary
+            ))
+            lastPartKept = true
+        }
+        do {
+            let asset = try await finishRecordingSegments()
+            pendingRecordingInteractionTimeline = nil
+            await publishRecoveredRecording(asset)
+            present(error: NotchShotError.recordingFailed(
+                lastPartKept
+                    ? "Recording stopped early — the partial file was kept"
+                    : "Recording stopped early — the parts before it were kept"
+            ))
+        } catch {
+            Log.recording.error("Could not join interrupted recording: \(error.localizedDescription)")
+            let urls = recordingSegments.map(\.url)
+            clearParkedSegments()
+            await presentRecoveryFiles(
+                title: "An interrupted recording needs attention",
+                urls: urls,
+                explanation: "NotchShot could not join its parts, so they remain in the recovery folder and will be offered again on the next launch."
+            )
+        }
+    }
+
+    private func publishRecoveredRecording(_ asset: CaptureAsset) async {
+        history.record(asset: asset, image: nil)
+        persistHistory()
+        let thumbnail = await VideoThumbnail.make(for: asset.url)
+        history.record(
+            asset: asset,
+            image: thumbnail?.cgImage(forProposedRect: nil, context: nil, hints: nil)
+        )
+        push(ShelfItem(asset: asset, thumbnail: thumbnail, image: nil))
     }
 
     /// Offers to recover recordings a crash left behind.
@@ -595,32 +725,26 @@ extension AppCoordinator {
         guard !orphans.isEmpty else { return }
         guard Preferences.shared.historyEnabled
                 || Preferences.shared.saveToDiskAfterCapture else {
-            presentRecoveryFiles(
+            presentRecoveryFilesDuringLaunch(
                 title: "Interrupted recordings need a save destination",
                 urls: orphans,
                 explanation: "History and automatic saving are both off, so NotchShot left these files in its recovery folder instead of recovering and later deleting them as untracked data."
             )
             return
         }
-        Task {
+        FileWorkTracker.shared.run { [self] in
             var recoveredCount = 0
             var failed: [URL] = []
+            var waiting: [URL] = []
             for orphan in orphans {
                 guard recoveredCount < 3 else {
-                    failed.append(orphan)
+                    waiting.append(orphan)
                     continue
                 }
                 do {
                     let asset = try await RecordingService.shared.recover(orphan)
                     recoveredCount += 1
-                    history.record(asset: asset, image: nil)
-                    persistHistory()
-                    let thumbnail = await VideoThumbnail.make(for: asset.url)
-                    history.record(
-                        asset: asset,
-                        image: thumbnail?.cgImage(forProposedRect: nil, context: nil, hints: nil)
-                    )
-                    push(ShelfItem(asset: asset, thumbnail: thumbnail, image: nil))
+                    await publishRecoveredRecording(asset)
                 } catch {
                     failed.append(orphan)
                     Log.recording.error(
@@ -628,11 +752,18 @@ extension AppCoordinator {
                     )
                 }
             }
-            if !failed.isEmpty {
-                presentRecoveryFiles(
+            if !failed.isEmpty || !waiting.isEmpty {
+                var reasons: [String] = []
+                if !failed.isEmpty {
+                    reasons.append("Some remain in NotchShot’s recovery folder because validation or export did not complete.")
+                }
+                if !waiting.isEmpty {
+                    reasons.append("NotchShot recovers three at each launch, so the rest wait in that folder for the next one.")
+                }
+                await presentRecoveryFiles(
                     title: "Some interrupted recordings need attention",
-                    urls: failed,
-                    explanation: "They remain in NotchShot’s recovery folder because validation or export did not complete."
+                    urls: failed + waiting,
+                    explanation: reasons.joined(separator: " ")
                 )
             }
         }
@@ -642,17 +773,78 @@ extension AppCoordinator {
         title: String,
         urls: [URL],
         explanation: String
+    ) async {
+        let alert = recoveryFilesAlert(title: title, urls: urls, explanation: explanation)
+        let response = await runModalOutsideMainQueue(modes: Self.quitWaitableModalModes) { alert.runModal() }
+        switch response {
+        case .alertFirstButtonReturn:
+            NSWorkspace.shared.activateFileViewerSelecting(urls)
+        case .alertThirdButtonReturn:
+            if let kept = discardRecoveryFiles(urls) {
+                await presentRetainedDiscard(at: kept.url, excludesCrashRecovery: kept.excludesCrashRecovery)
+            }
+        default:
+            break
+        }
+    }
+
+    /// The launch path has no Task and holds launch until this is answered, as
+    /// it always has: onboarding and first-capture resume wait behind it.
+    private func presentRecoveryFilesDuringLaunch(
+        title: String,
+        urls: [URL],
+        explanation: String
     ) {
+        switch recoveryFilesAlert(title: title, urls: urls, explanation: explanation).runModal() {
+        case .alertFirstButtonReturn:
+            NSWorkspace.shared.activateFileViewerSelecting(urls)
+        case .alertThirdButtonReturn:
+            if let kept = discardRecoveryFiles(urls) {
+                let alert = retainedDiscardAlert(at: kept.url, excludesCrashRecovery: kept.excludesCrashRecovery)
+                if alert.runModal() == .alertFirstButtonReturn {
+                    NSWorkspace.shared.activateFileViewerSelecting([kept.url])
+                }
+            }
+        default:
+            break
+        }
+    }
+
+    private func recoveryFilesAlert(
+        title: String,
+        urls: [URL],
+        explanation: String
+    ) -> NSAlert {
         let alert = NSAlert()
         alert.alertStyle = .warning
         alert.messageText = title
         alert.informativeText = "\(explanation) \(urls.count) file(s) are still present."
         alert.addButton(withTitle: "Reveal in Finder")
         alert.addButton(withTitle: "Later")
+        alert.addButton(withTitle: "Move to Trash")
         NSApp.activate(ignoringOtherApps: true)
-        if alert.runModal() == .alertFirstButtonReturn {
-            NSWorkspace.shared.activateFileViewerSelecting(urls)
+        return alert
+    }
+
+    /// A file that never validates would otherwise bring this alert back on
+    /// every launch. Uses the same disposition as discarding a live recording.
+    /// Returns what could not be moved, for the caller to report.
+    private func discardRecoveryFiles(_ urls: [URL]) -> (url: URL, excludesCrashRecovery: Bool)? {
+        var retained: [URL] = []
+        for url in urls {
+            if let kept = RecordingService.shared.discardScratchRecording(
+                url,
+                discardedDirectory: AppPaths.discardedRecordings
+            ) {
+                retained.append(kept)
+            }
         }
+        guard let first = retained.first else { return nil }
+        var excludesCrashRecovery = true
+        for url in retained where !RecordingService.ensureExcludedFromCrashRecovery(url) {
+            excludesCrashRecovery = false
+        }
+        return (first, excludesCrashRecovery)
     }
 
 }

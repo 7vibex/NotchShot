@@ -47,8 +47,9 @@ public enum ClaudeRunReport {
             nil
         }
         guard let raw else { return nil }
-        // The first line before redacting: redaction joins lines.
-        let text = CommandSecretRedactor.redactText(firstLine(raw))
+        // The first line before redacting: redaction joins lines. Bounded
+        // too, since only the first few words survive the clip below.
+        let text = CommandSecretRedactor.redactText(String(firstLine(raw).prefix(4_096)))
         return clip(text, maximumTargetCharacters)
     }
 

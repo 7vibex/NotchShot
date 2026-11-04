@@ -53,7 +53,23 @@ enum SafeImageFile {
               (1 ... RecordingExportService.maximumGIFFrames).contains(
                   CGImageSourceGetCount(source)
               ),
-              let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil)
+              let size = acceptedPixelSize(of: source, limits: limits),
+              let image = decodeImmediately
+                  ? decodedImage(from: data)
+                  : CGImageSourceCreateImageAtIndex(source, 0, options),
+              image.width == size.width,
+              image.height == size.height else { return nil }
+        return image
+    }
+
+    /// Reads the first frame's header and applies the size limits, before any
+    /// pixels are decoded. The file and pasteboard paths must not drift apart
+    /// here; they differ only in which frame counts they accept.
+    private static func acceptedPixelSize(
+        of source: CGImageSource,
+        limits: Limits
+    ) -> (width: Int, height: Int)? {
+        guard let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil)
                 as? [CFString: Any],
               let width = (properties[kCGImagePropertyPixelWidth] as? NSNumber)?.intValue,
               let height = (properties[kCGImagePropertyPixelHeight] as? NSNumber)?.intValue,
@@ -61,13 +77,8 @@ enum SafeImageFile {
               height > 0,
               width <= limits.maximumDimension,
               height <= limits.maximumDimension,
-              width <= limits.maximumPixels / height,
-              let image = decodeImmediately
-                  ? decodedImage(from: data)
-                  : CGImageSourceCreateImageAtIndex(source, 0, options),
-              image.width == width,
-              image.height == height else { return nil }
-        return image
+              width <= limits.maximumPixels / height else { return nil }
+        return (width, height)
     }
 
     /// Only for bytes `cgImage(at:)` has already accepted. A fresh source,
@@ -98,19 +109,13 @@ enum SafeImageFile {
         )
     }
 
-    static func capturedImage(for asset: CaptureAsset) -> CapturedImage? {
-        cgImage(for: asset).map {
+    static func capturedImage(for asset: CaptureAsset, decodeImmediately: Bool = false) -> CapturedImage? {
+        cgImage(for: asset, decodeImmediately: decodeImmediately).map {
             CapturedImage(
                 cgImage: $0,
                 scale: max(1, asset.scale),
                 sourceRect: .zero
             )
-        }
-    }
-
-    static func nsImage(for asset: CaptureAsset) -> NSImage? {
-        cgImage(for: asset).map {
-            NSImage(cgImage: $0, size: NSSize(width: $0.width, height: $0.height))
         }
     }
 
@@ -154,18 +159,10 @@ enum SafeImageFile {
         guard data.count <= limits.maximumBytes,
               let source = CGImageSourceCreateWithData(data as CFData, options),
               CGImageSourceGetCount(source) >= 1,
-              let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil)
-                as? [CFString: Any],
-              let width = (properties[kCGImagePropertyPixelWidth] as? NSNumber)?.intValue,
-              let height = (properties[kCGImagePropertyPixelHeight] as? NSNumber)?.intValue,
-              width > 0,
-              height > 0,
-              width <= limits.maximumDimension,
-              height <= limits.maximumDimension,
-              width <= limits.maximumPixels / height,
+              let size = acceptedPixelSize(of: source, limits: limits),
               let image = CGImageSourceCreateImageAtIndex(source, 0, options),
-              image.width == width,
-              image.height == height else { return nil }
+              image.width == size.width,
+              image.height == size.height else { return nil }
         return image
     }
 }

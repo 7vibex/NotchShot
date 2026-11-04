@@ -165,7 +165,8 @@ enum SafeAssetFile {
             expectedIdentity: expectedIdentity,
             changedMessage: "The source file changed after it was selected. Nothing was copied.",
             to: destination,
-            mode: mode
+            mode: mode,
+            clonesWhenPossible: true
         )
     }
 
@@ -175,7 +176,8 @@ enum SafeAssetFile {
         expectedIdentity: ExternalFileIdentity?,
         changedMessage: String,
         to destination: URL,
-        mode: mode_t
+        mode: mode_t,
+        clonesWhenPossible: Bool = false
     ) throws {
         guard destination.isFileURL,
               !FileManager.default.fileExists(atPath: destination.path) else {
@@ -199,6 +201,23 @@ enum SafeAssetFile {
         }
         if let expectedIdentity, identity(from: information, descriptor: sourceDescriptor) != expectedIdentity {
             throw NotchShotError.exportFailed(changedMessage)
+        }
+
+        // A clone is a snapshot too, and a large one costs no copy. Only for
+        // transient snapshots: it keeps the source's dates and extended
+        // attributes. Any failure, such as another volume, takes the copy below.
+        if clonesWhenPossible,
+           fclonefileat(sourceDescriptor, AT_FDCWD, destination.path, UInt32(CLONE_NOOWNERCOPY)) == 0 {
+            // A clone inherits Finder's lock, which refuses the chmod below and
+            // would leave a copy nothing can remove.
+            lchflags(destination.path, 0)
+            var cloned = stat()
+            if chmod(destination.path, mode) == 0, lstat(destination.path, &cloned) == 0 {
+                if cloned.st_size <= maximumBytes { return }
+                unlink(destination.path)
+                throw NotchShotError.exportFailed("The source file grew beyond the safe copy limit")
+            }
+            unlink(destination.path)
         }
 
         let destinationDescriptor = Darwin.open(

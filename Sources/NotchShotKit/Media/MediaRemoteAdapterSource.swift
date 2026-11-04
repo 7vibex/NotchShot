@@ -42,6 +42,9 @@ public actor MediaRemoteAdapterSource: MediaSource {
     private var outputPipe: Pipe?
     private var continuation: AsyncStream<MediaSnapshot>.Continuation?
     private var buffer = Data()
+    private var outputChunks: AsyncStream<Data>.Continuation?
+    /// The payload the adapter's `diff` lines build on.
+    private var streamPayload: [String: Any] = [:]
 
     var runningProcessIdentifier: pid_t? { process?.processIdentifier }
     var bufferedOutputByteCount: Int { buffer.count }
@@ -175,6 +178,9 @@ public actor MediaRemoteAdapterSource: MediaSource {
         continuation = nil
         buffer.removeAll()
         pipe?.fileHandleForReading.readabilityHandler = nil
+        streamPayload = [:]
+        outputChunks?.finish()
+        outputChunks = nil
         let cleanup = Task<Void, Never> {
             if let runningProcess {
                 if groupID.map(Self.processGroupExists) ?? runningProcess.isRunning {
@@ -256,10 +262,19 @@ public actor MediaRemoteAdapterSource: MediaSource {
         // business and must not fill a pipe buffer and stall the child.
         process.standardError = FileHandle.nullDevice
 
+        // One consumer: a task per chunk reaches the actor in no set order, and a
+        // line longer than one pipe read (any line with artwork) came out scrambled.
+        let (chunks, chunkFeed) = AsyncStream.makeStream(of: Data.self)
+        outputChunks = chunkFeed
+        Task {
+            for await chunk in chunks {
+                self.ingest(chunk, generation: generation)
+            }
+        }
         output.fileHandleForReading.readabilityHandler = { handle in
             let data = handle.availableData
             guard !data.isEmpty else { return }
-            Task { await self.ingest(data, generation: generation) }
+            chunkFeed.yield(data)
         }
 
         let exited = DispatchSemaphore(value: 0)
@@ -289,6 +304,8 @@ public actor MediaRemoteAdapterSource: MediaSource {
         } catch {
             output.fileHandleForReading.readabilityHandler = nil
             output.fileHandleForReading.closeFile()
+            outputChunks?.finish()
+            outputChunks = nil
             Log.media.error("Could not start media adapter: \(error.localizedDescription)")
             continuation.yield(.empty)
             continuation.finish()
@@ -306,6 +323,9 @@ public actor MediaRemoteAdapterSource: MediaSource {
         processGroupID = nil
         processExit = nil
         buffer.removeAll()
+        streamPayload = [:]
+        outputChunks?.finish()
+        outputChunks = nil
         continuation?.yield(.empty)
         continuation?.finish()
         continuation = nil
@@ -329,7 +349,7 @@ public actor MediaRemoteAdapterSource: MediaSource {
             let lineData = buffer[buffer.startIndex ..< newlineIndex]
             buffer.removeSubrange(buffer.startIndex ... newlineIndex)
             guard !lineData.isEmpty else { continue }
-            if let snapshot = AdapterPayload.snapshot(from: Data(lineData)) {
+            if let snapshot = AdapterPayload.snapshot(mergingLine: Data(lineData), into: &streamPayload) {
                 continuation?.yield(snapshot)
             }
         }
@@ -608,8 +628,29 @@ enum AdapterPayload {
             return nil
         }
         // Some releases wrap everything in `payload`, some don't.
-        let payload = (object["payload"] as? [String: Any]) ?? object
+        return snapshot(payload: (object["payload"] as? [String: Any]) ?? object)
+    }
 
+    /// One line of `stream`. By default the adapter sends a full payload first
+    /// and then only what changed, marked `diff`, so a pause has no title in it
+    /// and has to be read against the payload so far. A line with no `diff`
+    /// flag replaces that payload, which is also what older releases send.
+    static func snapshot(mergingLine data: Data, into current: inout [String: Any]) -> MediaSnapshot? {
+        guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return nil
+        }
+        let payload = (object["payload"] as? [String: Any]) ?? object
+        if object["diff"] as? Bool == true {
+            for (key, value) in payload {
+                current[key] = value is NSNull ? nil : value
+            }
+        } else {
+            current = payload
+        }
+        return snapshot(payload: current)
+    }
+
+    private static func snapshot(payload: [String: Any]) -> MediaSnapshot {
         let title = string(payload, "title")
         let artist = string(payload, "artist", "trackArtist", "albumArtist")
         let album = string(payload, "album")
@@ -703,12 +744,6 @@ public enum AdapterCompatibility {
         // sysctl returns a NUL-terminated C string; trim it before decoding.
         let bytes = buffer.prefix { $0 != 0 }
         return String(decoding: bytes, as: UTF8.self)
-    }
-
-    /// True when the adapter needs re-testing: never tested, or macOS has been
-    /// updated since the last successful test.
-    public static var needsCheck: Bool {
-        Preferences.shared.lastAdapterCheckBuild != currentSystemBuild
     }
 
     public static func recordSuccessfulCheck() {

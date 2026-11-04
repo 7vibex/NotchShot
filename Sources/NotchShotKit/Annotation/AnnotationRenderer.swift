@@ -21,13 +21,26 @@ public enum AnnotationRenderer {
         /// Skip redaction burn-in. Only ever used by the live editor preview,
         /// never by an export path.
         public var isPreview: Bool
-        /// Draw seam markers from a scrolling stitch.
-        public var seams: [StitchSeam]
 
-        public init(isPreview: Bool = false, seams: [StitchSeam] = []) {
+        public init(isPreview: Bool = false) {
             self.isPreview = isPreview
-            self.seams = seams
         }
+    }
+
+    static let maximumRenderDimension = 65_535
+    static let maximumRenderPixels = 80_000_000
+
+    /// Whether a framed canvas is small enough to allocate. A forced aspect
+    /// ratio grows the short side, so a tall scrolling capture can otherwise ask
+    /// for gigabytes. Twice the content's pixels stays allowed so a capture that
+    /// is already past the budget can still take modest padding.
+    static func canvasFits(_ canvas: CGSize, content: CGSize) -> Bool {
+        guard canvas.width.isFinite, canvas.height.isFinite,
+              canvas.width > 0, canvas.height > 0,
+              canvas.width <= CGFloat(maximumRenderDimension),
+              canvas.height <= CGFloat(maximumRenderDimension) else { return false }
+        let budget = max(CGFloat(maximumRenderPixels), content.width * content.height * 2)
+        return canvas.width * canvas.height <= budget
     }
 
     /// Renders the finished, flattened image.
@@ -91,7 +104,12 @@ public enum AnnotationRenderer {
         context.translateBy(x: 0, y: CGFloat(height))
         context.scaleBy(x: 1, y: -1)
 
-        for element in document.sortedElements where element.kind.isRedaction {
+        // A mosaic is sampled from the untouched source, so one stacked above a
+        // blackout would put a readable version of the hidden pixels back. Every
+        // blackout goes on last, whatever the stacking order.
+        let redactions = document.sortedElements.filter { $0.kind == .pixelate }
+            + document.sortedElements.filter { $0.kind == .blackout }
+        for element in redactions {
             let rect = element.boundingRect.integral
             guard rect.width >= 1, rect.height >= 1 else { continue }
             let clipped = rect.intersection(CGRect(x: 0, y: 0, width: width, height: height))
@@ -215,7 +233,7 @@ public enum AnnotationRenderer {
         options: Options
     ) throws -> CGImage {
         let visible = document.sortedElements.filter { !$0.kind.isRedaction || options.isPreview }
-        guard !visible.isEmpty || !options.seams.isEmpty else { return image }
+        guard !visible.isEmpty else { return image }
 
         guard let context = makeContext(width: image.width, height: image.height) else {
             throw NotchShotError.exportFailed("Could not allocate the annotation canvas")
@@ -237,10 +255,6 @@ public enum AnnotationRenderer {
 
         NSGraphicsContext.restoreGraphicsState()
         context.restoreGState()
-
-        if !options.seams.isEmpty {
-            drawSeams(options.seams, in: context, width: image.width, height: image.height)
-        }
 
         guard let annotated = context.makeImage() else {
             throw NotchShotError.exportFailed("Could not draw annotations")
@@ -403,12 +417,7 @@ public enum AnnotationRenderer {
         context.interpolationQuality = .none
         context.draw(
             checker,
-            in: CGRect(
-                x: 0,
-                y: 0,
-                width: (rect.width / block).rounded(.up) * 2,
-                height: (rect.height / block).rounded(.up) * 2
-            ),
+            in: CGRect(x: 0, y: 0, width: 2, height: 2),
             byTiling: true
         )
     }
@@ -457,21 +466,30 @@ public enum AnnotationRenderer {
         context.fillPath()
     }
 
-    private static func drawSeams(_ seams: [StitchSeam], in context: CGContext, width: Int, height: Int) {
+    /// Marks uncertain stitch seams on the live editor canvas. They warn the
+    /// person editing and never reach an exported file. `context` is already in
+    /// source space, with `viewScale` view points per source pixel, so the marks
+    /// follow crop and rotation and keep their on-screen size.
+    static func drawSeamMarkers(
+        _ seams: [StitchSeam],
+        in context: CGContext,
+        sourceSize: CGSize,
+        viewScale: CGFloat
+    ) {
+        guard viewScale > 0 else { return }
         context.saveGState()
         defer { context.restoreGState() }
-        context.setLineWidth(2)
-        context.setLineDash(phase: 0, lengths: [8, 6])
+        context.setLineWidth(2 / viewScale)
+        context.setLineDash(phase: 0, lengths: [8 / viewScale, 6 / viewScale])
+        context.setStrokeColor(NSColor.systemOrange.withAlphaComponent(0.9).cgColor)
         for seam in seams where seam.isSuspect {
-            context.setStrokeColor(NSColor.systemOrange.withAlphaComponent(0.9).cgColor)
+            let position = CGFloat(seam.y)
             if seam.axis == .horizontal {
-                let x = CGFloat(seam.y)
-                context.move(to: CGPoint(x: x, y: 0))
-                context.addLine(to: CGPoint(x: x, y: CGFloat(height)))
+                context.move(to: CGPoint(x: position, y: 0))
+                context.addLine(to: CGPoint(x: position, y: sourceSize.height))
             } else {
-                let y = CGFloat(height - seam.y)
-                context.move(to: CGPoint(x: 0, y: y))
-                context.addLine(to: CGPoint(x: CGFloat(width), y: y))
+                context.move(to: CGPoint(x: 0, y: position))
+                context.addLine(to: CGPoint(x: sourceSize.width, y: position))
             }
             context.strokePath()
         }
@@ -486,6 +504,9 @@ public enum AnnotationRenderer {
     ) throws -> CGImage {
         let contentSize = CGSize(width: content.width, height: content.height)
         let layout = background.layout(for: contentSize, scale: scale)
+        guard canvasFits(layout.canvas, content: contentSize) else {
+            throw NotchShotError.exportFailed("That framing would make the image too large")
+        }
 
         guard let context = makeContext(
             width: Int(layout.canvas.width),

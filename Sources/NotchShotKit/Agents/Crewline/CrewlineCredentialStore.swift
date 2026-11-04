@@ -34,7 +34,29 @@ enum CrewlineCredentialStore {
     @discardableResult
     static func save(_ credential: CrewlineCredential) -> Bool {
         guard let data = try? JSONEncoder().encode(credential) else { return false }
-        delete()
+        // The old pairing goes only when the new one has a way in: a locked
+        // Keychain or a declined prompt must not cost both.
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: account,
+        ]
+        let changes: [String: Any] = [
+            kSecValueData as String: data,
+            kSecAttrLabel as String: "NotchShot Crewline pairing",
+        ]
+        switch SecItemUpdate(query as CFDictionary, changes as CFDictionary) {
+        case errSecSuccess:
+            return true
+        case errSecItemNotFound:
+            break
+        case errSecAuthFailed, errSecNoAccessForItem, errSecInvalidOwnerEdit:
+            // An item an earlier build's signature owns can't be edited, only
+            // replaced.
+            delete()
+        default:
+            return false
+        }
         let item: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,

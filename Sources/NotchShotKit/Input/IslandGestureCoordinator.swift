@@ -129,8 +129,14 @@ final class IslandGestureCoordinator {
             return swallowMomentum
         }
 
+        // Before the window check: a swipe with no flick leaves this set, and the
+        // next gesture's own momentum, in any window, must not be swallowed by it.
+        if event.phase.contains(.began) { swallowMomentum = false }
+        // Every scroll in every NotchShot window comes through here. A gesture
+        // that started on the panel keeps going wherever the pointer drifts.
+        guard event.window is NotchPanel || ownsGesture || compactGesture != nil else { return false }
+
         guard let coordinator else { return false }
-        let reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
 
         // A mouse wheel has no phases: each click is one minute on a timer.
         if event.phase.isEmpty {
@@ -143,7 +149,6 @@ final class IslandGestureCoordinator {
         }
 
         if event.phase.contains(.began) {
-            swallowMomentum = false
             compactGesture = nil
             if shouldBegin(event, coordinator: coordinator),
                case .island(let descriptor) = coordinator.activity {
@@ -201,7 +206,9 @@ final class IslandGestureCoordinator {
                 return false
             }
             coordinator.islandGesture.isTracking = tracker.phase == .tracking
-            coordinator.islandGesture.offset = tracker.visualOffset(reduceMotion: reduceMotion)
+            coordinator.islandGesture.offset = tracker.visualOffset(
+                reduceMotion: NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+            )
             return consumed
         }
 
@@ -229,10 +236,10 @@ final class IslandGestureCoordinator {
     }
 
     private func shouldBegin(_ event: NSEvent, coordinator: AppCoordinator) -> Bool {
-        guard Preferences.shared.swipesBetweenActivities,
+        guard let window = event.window as? NotchPanel,
+              Preferences.shared.swipesBetweenActivities,
               event.hasPreciseScrollingDeltas,
               NSEvent.pressedMouseButtons == 0,
-              let window = event.window as? NotchPanel,
               case .island(let descriptor) = coordinator.activity,
               descriptor.hasPrimary,
               descriptor.satelliteCount > 0,
@@ -252,7 +259,7 @@ final class IslandGestureCoordinator {
 
     /// Which compact gesture a scroll over the closed island starts, if any.
     private func compactGestureKind(for event: NSEvent, coordinator: AppCoordinator) -> CompactGesture? {
-        guard NSEvent.pressedMouseButtons == 0, event.window is NotchPanel else { return nil }
+        guard event.window is NotchPanel, NSEvent.pressedMouseButtons == 0 else { return nil }
         let primary: IslandActivityKind?
         switch coordinator.activity {
         case .island(let descriptor):
@@ -280,7 +287,7 @@ final class IslandGestureCoordinator {
     /// What pulling the closed notch down would open, if anything. A timer
     /// keeps vertical scrolls for its minutes.
     private func pullOpenTarget(for event: NSEvent, coordinator: AppCoordinator) -> PullOpenTarget? {
-        guard event.hasPreciseScrollingDeltas, NSEvent.pressedMouseButtons == 0, event.window is NotchPanel else {
+        guard event.window is NotchPanel, event.hasPreciseScrollingDeltas, NSEvent.pressedMouseButtons == 0 else {
             return nil
         }
         switch coordinator.activity {

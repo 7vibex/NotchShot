@@ -34,17 +34,6 @@ public struct CapturedImage: @unchecked Sendable {
     public func makeNSImage() -> NSImage {
         NSImage(cgImage: cgImage, size: pointSize)
     }
-
-    public func cropped(to pixelRect: CGRect) -> CapturedImage? {
-        guard let cropped = cgImage.cropping(to: pixelRect.integral) else { return nil }
-        let pointRect = CGRect(
-            x: sourceRect.origin.x + pixelRect.origin.x / scale,
-            y: sourceRect.origin.y + pixelRect.origin.y / scale,
-            width: pixelRect.width / scale,
-            height: pixelRect.height / scale
-        )
-        return CapturedImage(cgImage: cropped, scale: scale, sourceRect: pointRect)
-    }
 }
 
 /// Writes bitmaps to disk and the pasteboard.
@@ -204,9 +193,12 @@ public enum ImageExport {
     /// another 90 ms for TIFF. Doing that here froze the main actor for close to
     /// half a second on every single capture — paid in full even though most
     /// captures are never pasted anywhere. Promising the types instead defers
-    /// the work to whoever actually asks for the bytes, and holding the
-    /// immutable `CGImage` in the meantime costs less memory than the
-    /// uncompressed TIFF it replaces.
+    /// the work away from the capture.
+    ///
+    /// The promise alone would only move the stall: AppKit redeems it on the main
+    /// thread when another process reads the clipboard, which a clipboard manager
+    /// does right after every copy. So the bytes are also encoded off the main
+    /// thread straight away, and the callback normally just hands them over.
     @MainActor
     public static func copyToPasteboard(_ image: CGImage) {
         copyToPasteboard(image, to: .general)
@@ -226,6 +218,7 @@ public enum ImageExport {
         }
         pasteboard.writeObjects([item])
         noteSelfWrite(pasteboard.changeCount, to: pasteboard)
+        Task.detached(priority: .utility) { provider.prepareRepresentations() }
     }
 
     /// Encodes any clipboard image still held as a promise.
@@ -319,18 +312,20 @@ public enum ImageExport {
 /// receiving app asks for a particular representation.
 ///
 /// The pasteboard keeps this alive while its content is current, so the source
-/// image stays valid for as long as the promise can be redeemed.
+/// image stays valid until every representation is encoded.
 ///
 /// `NSPasteboardItemDataProvider` carries no actor isolation, and the callback
-/// arrives on whichever thread redeems the promise, so the cache is locked
-/// rather than assumed to be on the main one. `CGImage` is immutable and safe
-/// to read from anywhere.
+/// runs on the main thread when another process reads the clipboard, while
+/// `prepareRepresentations` runs off it, so the state is locked. `CGImage` is
+/// immutable and safe to read from anywhere.
 private final class PromisedImage: NSObject, NSPasteboardItemDataProvider, @unchecked Sendable {
     /// TIFF first: the order is what the pasteboard advertises, and apps that
     /// take the first type they recognise have historically expected TIFF.
     static let types: [NSPasteboard.PasteboardType] = [.tiff, .png]
 
-    private let image: CGImage
+    /// Dropped once every representation is cached, when nothing can need it.
+    private var image: CGImage?
+    private var isFinished = false
     private let lock = NSLock()
     /// Encoding the same representation twice is pure waste when several apps
     /// read one clipboard entry, and TIFF of a full-screen capture is not cheap.
@@ -351,7 +346,25 @@ private final class PromisedImage: NSObject, NSPasteboardItemDataProvider, @unch
 
     /// The pasteboard has moved on, so nothing can ask for these pixels again.
     func pasteboardFinishedWithDataProvider(_ pasteboard: NSPasteboard) {
+        lock.lock()
+        isFinished = true
+        lock.unlock()
         ImageExport.promisedImageFinished(ObjectIdentifier(self))
+    }
+
+    /// Encodes every representation ahead of the read, off the main thread.
+    /// Stops if the pasteboard moves on, since nobody can ask for them then.
+    func prepareRepresentations() {
+        for type in Self.types {
+            lock.lock()
+            let finished = isFinished
+            lock.unlock()
+            guard !finished else { return }
+            _ = data(for: type)
+        }
+        lock.lock()
+        if Self.types.allSatisfy({ encoded[$0] != nil }) { image = nil }
+        lock.unlock()
     }
 
     private func data(for type: NSPasteboard.PasteboardType) -> Data? {
@@ -364,12 +377,14 @@ private final class PromisedImage: NSObject, NSPasteboardItemDataProvider, @unch
 
         lock.lock()
         let cached = encoded[type]
+        let source = image
         lock.unlock()
         if let cached { return cached }
+        guard let source else { return nil }
 
         // Encoded outside the lock: this is the expensive part, and a second
         // reader waiting on it would be worse than encoding twice.
-        let representation = NSBitmapImageRep(cgImage: image)
+        let representation = NSBitmapImageRep(cgImage: source)
         guard let data = representation.representation(using: fileType, properties: [:]) else {
             return nil
         }

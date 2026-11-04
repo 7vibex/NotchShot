@@ -151,7 +151,7 @@ public final class ContextCoordinator {
     /// hear about them when the visible run list actually moved.
     public func updateCrewline() {
         let activities = crewline.activities
-        guard activities != crewlineActivities else { return }
+        guard Self.withoutLiveStamps(activities) != Self.withoutLiveStamps(crewlineActivities) else { return }
         crewlineActivities = activities
         guard snapshot == nil
                 || snapshot?.kind == .ai
@@ -159,6 +159,32 @@ public final class ContextCoordinator {
                 || snapshot.map({ isExpired($0) }) == true
         else { return }
         restorePersistentSnapshot()
+    }
+
+    /// The mapper stamps a live run with the time of each read, which says
+    /// nothing about whether the run moved.
+    static func withoutLiveStamps(_ activities: [AIActivitySnapshot]) -> [AIActivitySnapshot] {
+        activities.map { activity in
+            guard !activity.state.isTerminal else { return activity }
+            var unstamped = activity
+            unstamped.updatedAt = .distantPast
+            return unstamped
+        }
+    }
+
+    /// A live run that sits quiet for half an hour, say awaiting approval, is
+    /// still live, so it never ages out of the card. Rows sort by this stamp,
+    /// so it keeps its last real change, and a newer Claude event still leads,
+    /// until it comes within five minutes of expiring; the expiry timer then
+    /// merges again and moves it on.
+    static func stampingLive(_ activities: [AIActivitySnapshot], at now: Date) -> [AIActivitySnapshot] {
+        let floor = now.addingTimeInterval(300 - AIActivityPolicy.activeLifetime)
+        return activities.map { activity in
+            guard !activity.state.isTerminal else { return activity }
+            var stamped = activity
+            stamped.updatedAt = max(activity.updatedAt, floor)
+            return stamped
+        }
     }
 
     public func updateClaude(_ claude: ContextSnapshot?) {
@@ -278,7 +304,7 @@ public final class ContextCoordinator {
             : aiSnapshot?.aiActivities ?? []
         let direct = claudeSnapshot?.aiActivities ?? []
         var merged = AIActivityPolicy.contextSnapshot(
-            from: generic + direct + crewlineActivities,
+            from: generic + direct + Self.stampingLive(crewlineActivities, at: timing.now()),
             mayInterruptMedia: claudeSnapshot?.mayInterruptMedia
                 ?? aiSnapshot?.mayInterruptMedia
                 ?? false

@@ -67,15 +67,19 @@ extension AppCoordinator {
         // sit below an `NSImage(pasteboard:)` that had already rasterised the
         // whole bitmap, so a single very large copy could cost hundreds of
         // megabytes on the main actor before anything rejected it.
-        guard let cgImage = SafeImageFile.cgImage(fromPasteboard: .general) else {
-            present(error: NotchShotError.captureFailed(
-                "The clipboard does not contain a safely readable image"
-            ))
-            return
-        }
-        let processingLabel = beginProcessing("Reading clipboard")
         Task { [weak self] in
+            // Reading the data can block on the app that owns the pasteboard.
+            let image = await ClipboardMonitor.onReadQueue {
+                SafeImageFile.cgImage(fromPasteboard: NSPasteboard.general)
+            }
             guard let self else { return }
+            guard let cgImage = image else {
+                self.present(error: NotchShotError.captureFailed(
+                    "The clipboard does not contain a safely readable image"
+                ))
+                return
+            }
+            let processingLabel = self.beginProcessing("Reading clipboard")
             defer { self.endProcessing(processingLabel) }
             do {
                 let result = try await OCRService.shared.recognizeText(in: CapturedImage(
@@ -99,20 +103,35 @@ extension AppCoordinator {
             present(error: NotchShotError.exportFailed("No safely readable recent capture was found"))
             return
         }
-        let image = SafeImageFile.capturedImage(for: entry.asset)
-        let thumbnail: NSImage?
-        if let cgImage = image?.cgImage,
-           let rendered = ImageExport.makeThumbnail(from: cgImage) {
-            thumbnail = NSImage(
-                cgImage: rendered,
-                size: NSSize(width: rendered.width, height: rendered.height)
-            )
-        } else {
-            thumbnail = nil
+        guard !showShelfItem(id: entry.asset.id) else { return }
+        let asset = entry.asset
+        Task { [weak self] in
+            // Reading and downsampling the whole file does not belong on main.
+            let loaded = await Task.detached(priority: .userInitiated) { () -> (CapturedImage, CGImage?)? in
+                guard let image = SafeImageFile.capturedImage(for: asset) else { return nil }
+                return (image, ImageExport.makeThumbnail(from: image.cgImage))
+            }.value
+            guard let self else { return }
+            // A second request can have put it on the shelf during the load.
+            guard !self.showShelfItem(id: asset.id) else { return }
+            let thumbnail = loaded?.1.map {
+                NSImage(cgImage: $0, size: NSSize(width: $0.width, height: $0.height))
+            }
+            self.push(ShelfItem(asset: asset, thumbnail: thumbnail, image: loaded?.0))
+            self.arbiter.userExpanded = true
+            self.refreshActivity()
         }
-        push(ShelfItem(asset: entry.asset, thumbnail: thumbnail, image: image))
+    }
+
+    /// Shows an item already on the shelf. Items are identified by their asset,
+    /// so pushing the same one twice would give two rows one identity.
+    private func showShelfItem(id: UUID) -> Bool {
+        guard let index = shelfItems.firstIndex(where: { $0.id == id }) else { return false }
+        selectShelfItem(at: index)
+        arbiter.hasResult = Preferences.shared.showsShelfAfterCapture
         arbiter.userExpanded = true
         refreshActivity()
+        return true
     }
 
     public func pinExternalFile(_ url: URL) {
@@ -137,12 +156,6 @@ extension AppCoordinator {
 
     // MARK: File drop
 
-    /// Files dragged onto the notch land in the shelf, so the notch works as a
-    /// staging area for AirDrop and drag-out as well as for captures.
-    public func acceptDroppedFiles(_ urls: [URL]) {
-        stageExternalFiles(urls, summarizesDocuments: true, forceShowShelf: false)
-    }
-
     /// Performs the destination selected while the Finder drag is still held.
     /// Non-shelf actions validate the whole batch before doing anything so a
     /// partially loaded drag can never AirDrop, share, or archive fewer files
@@ -163,9 +176,9 @@ extension AppCoordinator {
         }
 
         if action == .shelf {
-            // Choosing Shelf is an explicit park operation. Unlike the legacy
-            // generic document drop, it must not turn a PDF into a summary.
-            stageExternalFiles(urls, summarizesDocuments: false, forceShowShelf: true)
+            // Choosing Shelf is an explicit park operation: it must not turn a
+            // PDF into a summary.
+            stageExternalFiles(urls)
             return
         }
 
@@ -217,86 +230,36 @@ extension AppCoordinator {
     /// documents stay as shelf references instead of opening the separate
     /// document-summary workflow.
     public func acceptFilesFromFinderService(_ urls: [URL]) {
-        stageExternalFiles(urls, summarizesDocuments: false, forceShowShelf: true)
+        stageExternalFiles(urls)
     }
 
-    func stageExternalFiles(
-        _ urls: [URL],
-        summarizesDocuments: Bool,
-        forceShowShelf: Bool
-    ) {
+    /// Parks files on the shelf. These are explicit operations (the AirDrop-style
+    /// Shelf target, Finder Service, and Floating Basket), and transactional:
+    /// validate the whole batch before the first visible shelf mutation.
+    func stageExternalFiles(_ urls: [URL]) {
         guard !urls.isEmpty else { return }
 
-        // Explicit park operations (the AirDrop-style Shelf target, Finder
-        // Service, and Floating Basket) are transactional: validate the whole
-        // batch before the first visible shelf mutation.
-        if forceShowShelf {
-            guard urls.count <= Self.maximumShelfItems,
-                  let assets = validatedExternalAssets(for: urls),
-                  assets.count == urls.count else {
-                arbiter.isDraggingFiles = false
-                refreshActivity()
-                present(error: NotchShotError.exportFailed(
-                    "Every selected item must be a distinct regular file under 500 MB. Nothing was added."
-                ))
-                return
-            }
-            var newItems: [ShelfItem] = []
-            newItems.reserveCapacity(assets.count)
-            for asset in assets {
-                let item = ShelfItem(asset: asset, thumbnail: nil, image: nil)
-                newItems.append(item)
-                push(item)
-            }
-            for item in newItems where item.asset.kind.isImage {
-                loadExternalImagePreview(for: item)
-            }
-            arbiter.hasResult = true
+        guard urls.count <= Self.maximumShelfItems,
+              let assets = validatedExternalAssets(for: urls),
+              assets.count == urls.count else {
             arbiter.isDraggingFiles = false
             refreshActivity()
+            present(error: NotchShotError.exportFailed(
+                "Every selected item must be a distinct regular file under 500 MB. Nothing was added."
+            ))
             return
         }
-
-        var rejected = 0
-        // Dropping the extras silently made a batch park look complete when it
-        // was not: eight files selected in Finder produced five on the shelf and
-        // no indication the other three had gone anywhere.
-        let dropped = max(0, urls.count - Self.maximumShelfItems)
-        for url in urls.prefix(Self.maximumShelfItems) {
-            if summarizesDocuments, DocumentSummaryService.supports(url) {
-                summarizeDocument(at: url)
-                continue
-            }
-            guard let dropped = Self.validatedDropMetadata(at: url) else {
-                rejected += 1
-                continue
-            }
-            let asset = CaptureAsset(
-                url: dropped.url,
-                kind: dropped.kind,
-                pixelSize: .zero,
-                scale: 1,
-                ownership: .externalReference,
-                externalFileIdentity: dropped.identity
-            )
+        var newItems: [ShelfItem] = []
+        newItems.reserveCapacity(assets.count)
+        for asset in assets {
             let item = ShelfItem(asset: asset, thumbnail: nil, image: nil)
+            newItems.append(item)
             push(item)
-            if dropped.kind.isImage {
-                loadExternalImagePreview(for: item)
-            }
         }
-        if rejected > 0 {
-            present(error: NotchShotError.exportFailed(
-                "Add a regular file under 500 MB"
-            ))
-        } else if dropped > 0 {
-            present(error: NotchShotError.exportFailed(
-                "Parked \(Self.maximumShelfItems) of \(urls.count) files — the shelf holds \(Self.maximumShelfItems)"
-            ))
+        for item in newItems where item.asset.kind.isImage {
+            loadExternalImagePreview(for: item)
         }
-        if forceShowShelf, !shelfItems.isEmpty {
-            arbiter.hasResult = true
-        }
+        arbiter.hasResult = true
         arbiter.isDraggingFiles = false
         refreshActivity()
     }
@@ -309,14 +272,17 @@ extension AppCoordinator {
             return
         }
         let session = DocumentSummarySession(sourceURL: url)
+        // The label this session holds now: only that one is its to release, so
+        // it cannot blank a compress or OCR running alongside it.
+        var processingLabel: String?
         session.onStageChange = { [weak self, weak session] stage in
             guard let self else { return }
             switch stage {
             case .validating, .extracting, .recognizingScans, .summarizing:
-                self.arbiter.isProcessing = stage.title
-                self.refreshActivity()
+                processingLabel = self.beginProcessing(stage.title)
             case .complete:
-                self.arbiter.isProcessing = nil
+                if let label = processingLabel { self.endProcessing(label) }
+                processingLabel = nil
                 let sourceName = session?.result?.sourceName ?? url.lastPathComponent
                 self.showContext(ContextSnapshot(
                     kind: .document,
@@ -328,7 +294,8 @@ extension AppCoordinator {
                     mayInterruptMedia: true
                 ))
             case .awaitingConfirmation, .failed:
-                self.arbiter.isProcessing = nil
+                if let label = processingLabel { self.endProcessing(label) }
+                processingLabel = nil
                 self.refreshActivity()
             }
         }

@@ -19,6 +19,7 @@ public struct ClipboardView: View {
     @State private var renameText = ""
     @State private var tagEntry: ClipboardEntry?
     @State private var tagText = ""
+    @State private var thumbnails = HistoryThumbnailCache()
 
     public init(coordinator: AppCoordinator) {
         self.coordinator = coordinator
@@ -196,7 +197,7 @@ public struct ClipboardView: View {
                     )
                 } else {
                     List(entries, selection: $selection) { entry in
-                        ClipboardRow(entry: entry)
+                        ClipboardRow(entry: entry, thumbnails: thumbnails)
                             .tag(entry.id)
                             .contextMenu { contextMenu(for: entry) }
                             .listRowSeparator(.hidden)
@@ -237,7 +238,7 @@ public struct ClipboardView: View {
                             Menu("Transform") {
                                 ForEach(transforms) { transform in
                                     Button {
-                                        coordinator.copyClipboardTransform(transform, from: entry)
+                                        coordinator.copyClipboardTransform(transform)
                                     } label: {
                                         Label("\(transform.title) — \(transform.preview)", systemImage: transform.symbolName)
                                     }
@@ -314,7 +315,7 @@ public struct ClipboardView: View {
             Divider()
             ForEach(transforms) { transform in
                 Button {
-                    coordinator.copyClipboardTransform(transform, from: entry)
+                    coordinator.copyClipboardTransform(transform)
                 } label: {
                     Label(transform.title, systemImage: transform.symbolName)
                 }
@@ -331,7 +332,10 @@ public struct ClipboardView: View {
 }
 
 private struct ClipboardRow: View {
+    private static let thumbnailSize = CGSize(width: 40, height: 30)
+
     let entry: ClipboardEntry
+    let thumbnails: HistoryThumbnailCache
     @State private var thumbnail: NSImage?
 
     var body: some View {
@@ -349,7 +353,7 @@ private struct ClipboardRow: View {
                         }
                 }
             }
-            .frame(width: 40, height: 30)
+            .frame(width: Self.thumbnailSize.width, height: Self.thumbnailSize.height)
             .clipShape(RoundedRectangle(cornerRadius: 5))
 
             VStack(alignment: .leading, spacing: 3) {
@@ -409,9 +413,20 @@ private struct ClipboardRow: View {
     private func loadThumbnail() async {
         guard entry.kind == .image, let url = entry.imageURL else { return }
         // Read and decoded off the main actor. The full-size clipping used to
-        // decode at the next commit on the main thread: 15–35 ms a row.
+        // decode at the next commit on the main thread: 15–35 ms a row. The row
+        // keeps only its drawn size, with the same limits checked first.
+        let cache = thumbnails
+        let size = Self.thumbnailSize
         let image = await Task.detached(priority: .userInitiated) {
-            SafeImageFile.cgImage(at: url, limits: .generated, decodeImmediately: true)
+            let limits = SafeImageFile.Limits.generated
+            return cache.image(
+                at: url,
+                read: { try? SafeAssetFile.readData(at: $0, maximumBytes: Int64(limits.maximumBytes)) },
+                decode: { data in
+                    guard SafeImageFile.cgImage(from: data, limits: limits) != nil else { return nil }
+                    return HistoryThumbnailCache.rowImage(from: data, fitting: size)
+                }
+            )
         }.value
         guard !Task.isCancelled else { return }
         thumbnail = image.map {

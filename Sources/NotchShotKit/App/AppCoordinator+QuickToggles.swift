@@ -61,10 +61,10 @@ extension AppCoordinator {
     /// Fed from `refreshActivity`, which runs on every recording and agent
     /// change: the replay buffer steps aside for a recording, and the agent
     /// Keep Awake mode follows whether any agent is working.
-    func syncQuickToggleInputs() {
+    func syncQuickToggleInputs(aiActivities: [AIActivitySnapshot]) {
         InstantReplayController.shared.setRecordingActive(isRecordingActive || RecordingService.shared.isRecording)
         KeepAwakeController.shared.setAgentsWorking(
-            context.islandAIActivities.contains { $0.state == .working }
+            aiActivities.contains { $0.state == .working }
         )
     }
 

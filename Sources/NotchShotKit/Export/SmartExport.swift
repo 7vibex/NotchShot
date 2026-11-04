@@ -191,6 +191,8 @@ public enum SmartExportService {
 public final class SmartExportSession {
     public let asset: CaptureAsset
     public let source: CGImage
+    /// One image, because a body evaluation building its own redraws the source.
+    let previewImage: NSImage
     public var preset: SmartExportPreset = .messages
     public var customWidth = 1_920
     public var errorMessage: String?
@@ -198,12 +200,21 @@ public final class SmartExportSession {
     public private(set) var isExporting = false
     public var onExported: ((CaptureAsset) -> Void)?
 
-    public init(asset: CaptureAsset) throws {
+    public convenience init(asset: CaptureAsset) throws {
         guard asset.kind.isImage, let source = SafeImageFile.cgImage(for: asset) else {
             throw NotchShotError.exportFailed("That image could not be read safely")
         }
+        self.init(asset: asset, source: source)
+    }
+
+    /// For a caller that read and decoded the image off main first.
+    public init(asset: CaptureAsset, source: CGImage) {
         self.asset = asset
         self.source = source
+        previewImage = NSImage(
+            cgImage: source,
+            size: NSSize(width: source.width, height: source.height)
+        )
     }
 
     public var plan: SmartExportPlan {
@@ -355,10 +366,7 @@ public struct SmartExportView: View {
     public var body: some View {
         VStack(spacing: 0) {
             HStack(alignment: .top, spacing: 20) {
-                Image(nsImage: NSImage(
-                    cgImage: session.source,
-                    size: NSSize(width: session.source.width, height: session.source.height)
-                ))
+                Image(nsImage: session.previewImage)
                 .resizable()
                 .aspectRatio(contentMode: .fit)
                 .accessibilityLabel("Source image for optimized export")

@@ -28,6 +28,7 @@ public struct NotchRootView: View {
     @State private var fileDropPull: CGFloat = 0
     /// Counts accepted drops; each one plays the island's swallow.
     @State private var dropGulps = 0
+    private let pass = RootPassMemo()
 
     public init(coordinator: AppCoordinator, context: NotchDisplayContext) {
         self.coordinator = coordinator
@@ -35,27 +36,48 @@ public struct NotchRootView: View {
     }
 
     private var isActiveDisplay: Bool {
-        coordinator.rendersAsActiveDisplay
+        if let cached = pass.isActiveDisplay { return cached }
+        let resolved = coordinator.rendersAsActiveDisplay
             || coordinator.windowController?.activeDisplayID == context.displayID
+        pass.isActiveDisplay = resolved
+        return resolved
     }
 
     private var isLockedSession: Bool { !coordinator.media.isSessionActive }
 
+    /// A power-source read, about a millisecond when plugged in.
+    private var hasLockedCharging: Bool {
+        if let cached = pass.hasLockedCharging { return cached }
+        let resolved = LockedChargingPolicy.reading() != nil
+        pass.hasLockedCharging = resolved
+        return resolved
+    }
+
     private var lockedPresentationContent: LockedMediaPresentationPolicy.Content {
-        LockedMediaPresentationPolicy.content(
+        if let cached = pass.lockedPresentationContent { return cached }
+        let resolved = LockedMediaPresentationPolicy.content(
             mediaOptedIn: Preferences.shared.showsMediaWhileLocked,
             hasMediaContent: coordinator.media.snapshot.hasContent,
             activityStackOptedIn: Preferences.shared.showsActivityStackWhileLocked,
             hasActivityContent: notificationStore.lockScreenItem() != nil
                 || coordinator.context.timer.current != nil
-                || LockedChargingPolicy.reading() != nil,
+                || hasLockedCharging,
             isPrimaryDisplay: context.isPrimary,
-            hasChargingContent: LockedChargingPolicy.reading() != nil
+            hasChargingContent: hasLockedCharging
         )
+        pass.lockedPresentationContent = resolved
+        return resolved
+    }
+
+    private var effectiveActivity: NotchActivity {
+        if let cached = pass.effectiveActivity { return cached }
+        let resolved = resolvedEffectiveActivity
+        pass.effectiveActivity = resolved
+        return resolved
     }
 
     /// A non-active display shows media at most, never a capture UI.
-    private var effectiveActivity: NotchActivity {
+    private var resolvedEffectiveActivity: NotchActivity {
         if isLockedSession {
             return LockedMediaPresentationPolicy.effectiveActivity(
                 sessionIsActive: false,
@@ -65,9 +87,9 @@ public struct NotchRootView: View {
                 activityStackOptedIn: Preferences.shared.showsActivityStackWhileLocked,
                 hasActivityContent: !notificationStore.activeItems.isEmpty
                     || coordinator.context.timer.current != nil
-                    || LockedChargingPolicy.reading() != nil,
+                    || hasLockedCharging,
                 isPrimaryDisplay: context.isPrimary,
-                hasChargingContent: LockedChargingPolicy.reading() != nil
+                hasChargingContent: hasLockedCharging
             )
         }
         if case .systemLevel(let level) = coordinator.activity,
@@ -94,31 +116,29 @@ public struct NotchRootView: View {
         return .idle
     }
 
+    /// Built from the same inputs as the window controller's `currentLayout`,
+    /// or the shell and its click target part ways.
     private var baseLayout: NotchLayout {
-        let isPeekingForLayout: Bool
-        if case .dictation(let snap) = effectiveActivity {
-            isPeekingForLayout = snap.isHoverExpanded || (!isLockedSession && coordinator.isPeeking && isActiveDisplay)
-        } else {
-            isPeekingForLayout = !isLockedSession && coordinator.isPeeking && isActiveDisplay
-        }
-        return NotchLayout.layout(
+        if let cached = pass.baseLayout { return cached }
+        let resolved = NotchLayout.layout(
             for: effectiveActivity,
             metrics: context.metrics,
-            isPeeking: isPeekingForLayout,
-            resultCount: coordinator.shelfItems.count,
-            hasStack: coordinator.stack.isCollecting || !coordinator.stack.isEmpty,
-            mediaPanelRows: coordinator.mediaPanelRowCount,
-            shelfStyle: Preferences.shared.shelfPresentationStyle,
-            indicatorWings: showsIndicatorWings,
-            isScrollingCapture: coordinator.isScrollingCaptureActive,
-            heldHeight: holdsTabPageHeight ? coordinator.tabPageHeightHold : 0
+            inputs: NotchLayoutInputs(
+                activity: effectiveActivity,
+                isActiveDisplay: isActiveDisplay,
+                isPeeking: !isLockedSession && coordinator.isPeeking,
+                resultCount: coordinator.shelfItems.count,
+                hasStack: coordinator.stack.isCollecting || !coordinator.stack.isEmpty,
+                mediaPanelRows: coordinator.mediaPanelRowCount,
+                shelfStyle: Preferences.shared.shelfPresentationStyle,
+                indicatorWings: showsIndicatorWings,
+                isScrollingCapture: coordinator.isScrollingCaptureActive,
+                tabPageHeightHold: coordinator.tabPageHeightHold,
+                tabs: Preferences.shared.notchTabs
+            )
         )
-    }
-
-    /// Must match the window controller's `currentLayout`, or the pill and
-    /// its click target part ways.
-    private var holdsTabPageHeight: Bool {
-        isActiveDisplay && NotchTab.holdsHeight(of: effectiveActivity, in: Preferences.shared.notchTabs)
+        pass.baseLayout = resolved
+        return resolved
     }
 
     /// The camera band the open island's cards put their header in.
@@ -143,6 +163,13 @@ public struct NotchRootView: View {
     /// the activity arbiter, keep that UI in place and append a dedicated HUD
     /// strip. Native OSD is never suppressed without visible replacement.
     private var overlaidSystemLevel: SystemLevel? {
+        if let cached = pass.overlaidSystemLevel { return cached }
+        let resolved = resolvedOverlaidSystemLevel
+        pass.overlaidSystemLevel = .some(resolved)
+        return resolved
+    }
+
+    private var resolvedOverlaidSystemLevel: SystemLevel? {
         guard !isLockedSession else { return nil }
         if case .systemLevel = effectiveActivity { return nil }
         // The island presents a level change as its own overlay.
@@ -155,6 +182,13 @@ public struct NotchRootView: View {
     }
 
     private var layout: NotchLayout {
+        if let cached = pass.layout { return cached }
+        let resolved = resolvedLayout
+        pass.layout = resolved
+        return resolved
+    }
+
+    private var resolvedLayout: NotchLayout {
         let base = baseLayout
         guard overlaidSystemLevel != nil else { return base }
         let hud = NotchLayout.layout(
@@ -184,6 +218,7 @@ public struct NotchRootView: View {
 
     @ViewBuilder
     public var body: some View {
+        let _ = pass.begin()
         if isLockedSession, lockedPresentationContent == .activityStack {
             lockedActivityStack
         } else if isLockedSession, lockedPresentationContent == .compactMedia {
@@ -290,6 +325,13 @@ public struct NotchRootView: View {
     /// The page pill under the open notch. Must match the window
     /// controller's `tabBarRect`, or the pill draws where clicks fall through.
     private var visibleTab: NotchTab? {
+        if let cached = pass.visibleTab { return cached }
+        let resolved = resolvedVisibleTab
+        pass.visibleTab = .some(resolved)
+        return resolved
+    }
+
+    private var resolvedVisibleTab: NotchTab? {
         guard Preferences.shared.showsNotchTabBar,
               !isLockedSession,
               NotchTabBarGeometry.topOffset(below: layout) != nil
@@ -520,7 +562,7 @@ public struct NotchRootView: View {
         .animation(contentAnimation, value: overlaidSystemLevel)
         .accessibilityElement(children: .contain)
         .accessibilityLabel("NotchShot")
-        .accessibilityValue(accessibilityDescription)
+        .modifier(LiveAccessibilityValue { accessibilityDescription })
         .onDrop(
             of: [.fileURL],
             delegate: NotchFileDropDelegate(
@@ -886,7 +928,6 @@ public struct NotchRootView: View {
             IslandActivityContainer(
                 descriptor: descriptor,
                 metrics: context.metrics,
-                isActiveDisplay: isActiveDisplay,
                 coordinator: coordinator,
                 gesture: coordinator.islandGesture
             )
@@ -980,6 +1021,41 @@ public struct NotchRootView: View {
                 )
             }
         }
+    }
+}
+
+// MARK: - One root pass
+
+/// One root pass's answers to what nearly every part of `body` asks.
+///
+/// These were computed properties read throughout `body`: about 40 layouts and
+/// 240 pointer-to-display lookups in a pass, and on the Lock Screen a pair of
+/// power-source reads per activity. Each is cheap; the count was not, and the
+/// pointer could cross displays mid-pass and leave a layout for one activity
+/// around content for another. Filled on first read during the pass, so `body`
+/// observes the same properties as before. Closures that run after the pass,
+/// such as the staged slot's content, see that pass's answers, and any change
+/// they depend on invalidates `body` and hands them new ones.
+@MainActor
+private final class RootPassMemo {
+    var isActiveDisplay: Bool?
+    var hasLockedCharging: Bool?
+    var lockedPresentationContent: LockedMediaPresentationPolicy.Content?
+    var effectiveActivity: NotchActivity?
+    var baseLayout: NotchLayout?
+    var overlaidSystemLevel: SystemLevel??
+    var layout: NotchLayout?
+    var visibleTab: NotchTab??
+
+    func begin() {
+        isActiveDisplay = nil
+        hasLockedCharging = nil
+        lockedPresentationContent = nil
+        effectiveActivity = nil
+        baseLayout = nil
+        overlaidSystemLevel = nil
+        layout = nil
+        visibleTab = nil
     }
 }
 

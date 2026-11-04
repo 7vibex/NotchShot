@@ -114,7 +114,10 @@ public final class ScrollingCaptureSession {
             _ = try ImageExport.write(image, to: url, format: .png, quality: 1, dpiScale: 2)
         },
         scrollDriver: @escaping ScrollDriver = { axis, region in
-            let primary = Int32(max(80, (axis == .vertical ? region.height : region.width) * 0.72))
+            // Each step has to leave the stitcher's matching band on screen: 140
+            // pixels, which on a 1x display is 140 points.
+            let length = axis == .vertical ? region.height : region.width
+            let primary = Int32(max(24, min(length * 0.72, length - 170)))
             let event = CGEvent(
                 scrollWheelEvent2Source: nil,
                 units: .pixel,
@@ -480,15 +483,15 @@ public final class ScrollingCaptureSession {
                     self.capturedPixels += cost.pixels
                     self.capturedBytes += cost.decodedBytes
                     self.consecutiveCaptureFailures = 0
-                    let fingerprint = Self.fingerprint(image)
-                    if self.mode.isAutomatic,
-                       let previous = self.lastFrameFingerprint,
-                       previous == fingerprint {
-                        self.consecutiveDuplicateFrames += 1
-                    } else {
-                        self.consecutiveDuplicateFrames = 0
+                    if self.mode.isAutomatic {
+                        let fingerprint = Self.fingerprint(image)
+                        if self.lastFrameFingerprint == fingerprint {
+                            self.consecutiveDuplicateFrames += 1
+                        } else {
+                            self.consecutiveDuplicateFrames = 0
+                        }
+                        self.lastFrameFingerprint = fingerprint
                     }
-                    self.lastFrameFingerprint = fingerprint
                 } catch {
                     await self.failAndPreserveFrames(
                         self.frames,
@@ -547,17 +550,22 @@ public final class ScrollingCaptureSession {
     private nonisolated static func fingerprint(_ image: CGImage) -> UInt64 {
         let dimension = 16
         var pixels = Array(repeating: UInt8.zero, count: dimension * dimension)
-        guard let context = CGContext(
-            data: &pixels,
-            width: dimension,
-            height: dimension,
-            bitsPerComponent: 8,
-            bytesPerRow: dimension,
-            space: CGColorSpaceCreateDeviceGray(),
-            bitmapInfo: CGImageAlphaInfo.none.rawValue
-        ) else { return 0 }
-        context.interpolationQuality = .low
-        context.draw(image, in: CGRect(x: 0, y: 0, width: dimension, height: dimension))
+        // The context writes through this pointer, so it must not outlive the closure.
+        let didDraw = pixels.withUnsafeMutableBytes { buffer -> Bool in
+            guard let context = CGContext(
+                data: buffer.baseAddress,
+                width: dimension,
+                height: dimension,
+                bitsPerComponent: 8,
+                bytesPerRow: dimension,
+                space: CGColorSpaceCreateDeviceGray(),
+                bitmapInfo: CGImageAlphaInfo.none.rawValue
+            ) else { return false }
+            context.interpolationQuality = .low
+            context.draw(image, in: CGRect(x: 0, y: 0, width: dimension, height: dimension))
+            return true
+        }
+        guard didDraw else { return 0 }
         return pixels.reduce(into: UInt64(0xcbf29ce484222325)) { hash, byte in
             hash = (hash ^ UInt64(byte)) &* 0x100000001b3
         }

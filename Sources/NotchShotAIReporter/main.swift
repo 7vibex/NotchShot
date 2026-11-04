@@ -58,19 +58,12 @@ private struct Options {
     var values: [String: [String]] = [:]
 
     init(_ arguments: ArraySlice<String>) throws {
-        var index = arguments.startIndex
-        while index < arguments.endIndex {
-            let argument = arguments[index]
-            guard argument.hasPrefix("--") else {
-                throw ReporterError.usage("Unexpected argument: \(argument)")
+        do throws(LongOptions.Failure) {
+            for (key, value) in try LongOptions.parse(arguments) {
+                values[key, default: []].append(value)
             }
-            let key = String(argument.dropFirst(2))
-            let next = arguments.index(after: index)
-            guard next < arguments.endIndex, !arguments[next].hasPrefix("--") else {
-                throw ReporterError.usage("Missing value for --\(key)")
-            }
-            values[key, default: []].append(arguments[next])
-            index = arguments.index(after: next)
+        } catch {
+            throw ReporterError.usage(error.message)
         }
     }
 
@@ -129,6 +122,10 @@ private enum Reporter {
         case "update":
             try update(Options(arguments.dropFirst()))
         case "hook":
+            // Runs on every event of the user's agents, and a broken pipe to
+            // the app or to the agent must not fail the agent's hook. Only here:
+            // an ignored signal would be inherited by the command `run` starts.
+            signal(SIGPIPE, SIG_IGN)
             let response = try hook(Options(arguments.dropFirst()))
             // A neutral JSON response is accepted by hook runners that parse stdout.
             print(response ?? "{}")
@@ -220,8 +217,10 @@ private enum Reporter {
         )
         let existing = try? read(source: source, identifier: identifier)
         let prompt = firstString(in: json, keys: ["prompt", "user_prompt", "userPrompt"])
+        // Only 160 characters survive, so a pasted prompt is not tokenized whole
+        // while the agent waits to submit it.
         let title = boundedOptional(
-            prompt.map(CommandSecretRedactor.redactText),
+            prompt.map { CommandSecretRedactor.redactText(String($0.prefix(4_096))) },
             maximum: 160
         )
             ?? existing?.title
@@ -235,7 +234,9 @@ private enum Reporter {
         }.flatMap { boundedOptional($0, maximum: 120) }
             ?? existing?.workspace
 
-        try write(Activity(
+        // A label file the app can do without. Failing here would skip the
+        // socket below, and with it approvals, Pause and Stop for this event.
+        try? write(Activity(
             id: identifier,
             source: source,
             state: state(for: event),
@@ -382,7 +383,7 @@ private enum Reporter {
         if let snapshot { try? writeStatus(snapshot) }
 
         if let command = options.value("then"), !command.isEmpty {
-            return chainedStatusLine(command: command, input: input)
+            return StatusLineCommand.run(command: command, input: input, exitsOnTerminate: true)
         }
         return snapshot.map(ClaudeStatusLine.defaultLine) ?? ""
     }
@@ -397,22 +398,27 @@ private enum Reporter {
         )
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
-        let data = try encoder.encode(snapshot)
-        let destination = folder.appendingPathComponent("\(snapshot.sessionID).json")
-        let temporary = folder.appendingPathComponent(".\(snapshot.sessionID).\(UUID().uuidString).tmp")
-        try data.write(to: temporary, options: .atomic)
-        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: temporary.path)
-        if FileManager.default.fileExists(atPath: destination.path) {
-            _ = try FileManager.default.replaceItemAt(destination, withItemAt: temporary)
-        } else {
-            try FileManager.default.moveItem(at: temporary, to: destination)
-        }
+        try replace(
+            folder.appendingPathComponent("\(snapshot.sessionID).json"),
+            with: encoder.encode(snapshot),
+            temporary: folder.appendingPathComponent(".\(snapshot.sessionID).\(UUID().uuidString).tmp")
+        )
     }
 
-    /// Runs the user's previous status line command with the same input and
-    /// returns its output, bounded in size and time.
-    private static func chainedStatusLine(command: String, input: Data) -> String {
-        StatusLineCommand.run(command: command, input: input)
+    /// `rename` replaces an existing file atomically with nothing to check
+    /// first, so parallel hooks of one session cannot lose a race on it. The
+    /// temporary already has its mode and does not outlive a failure.
+    private static func replace(_ destination: URL, with data: Data, temporary: URL) throws {
+        do {
+            try data.write(to: temporary, options: .atomic)
+            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: temporary.path)
+            guard rename(temporary.path, destination.path) == 0 else {
+                throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+            }
+        } catch {
+            unlink(temporary.path)
+            throw error
+        }
     }
 
     private static func runCommand(_ arguments: [String]) throws {
@@ -444,12 +450,13 @@ private enum Reporter {
             startedAt: started,
             updatedAt: started
         )
-        try write(running)
+        // A failed write is ignored here and below: the command and its exit
+        // status are the user's, not ours.
+        try? write(running)
 
         // The app drops a working activity after 30 minutes without an
         // update, so a long command is rewritten unchanged but for its time.
-        // A failed write is ignored: the command is the user's, not ours. The
-        // heartbeat stops before the final report so it cannot overwrite it.
+        // The heartbeat stops before the final report so it cannot overwrite it.
         let heartbeat = ActivityHeartbeat()
         heartbeat.start {
             var refreshed = running
@@ -462,7 +469,7 @@ private enum Reporter {
             heartbeat.stop()
         } catch {
             heartbeat.stop()
-            try write(Activity(
+            try? write(Activity(
                 id: identifier, source: source, state: .failed, title: title,
                 detail: error.localizedDescription, progress: nil,
                 workspace: URL(fileURLWithPath: workspace).lastPathComponent,
@@ -477,7 +484,7 @@ private enum Reporter {
         case .signaled(let signal): "Command stopped by signal \(signal)"
         }
         let succeeded = outcome == .exited(0)
-        try write(Activity(
+        try? write(Activity(
             id: identifier, source: source, state: succeeded ? .finished : .failed,
             title: title,
             detail: detail,
@@ -503,17 +510,11 @@ private enum Reporter {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         encoder.dateEncodingStrategy = .iso8601
-        let data = try encoder.encode(activity)
-        let destination = fileURL(source: activity.source, identifier: activity.id)
-        let temporary = directory.appendingPathComponent(".\(UUID().uuidString).tmp")
-        try data.write(to: temporary, options: [.atomic])
-        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: temporary.path)
-        if FileManager.default.fileExists(atPath: destination.path) {
-            _ = try FileManager.default.replaceItemAt(destination, withItemAt: temporary)
-        } else {
-            try FileManager.default.moveItem(at: temporary, to: destination)
-        }
-        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: destination.path)
+        try replace(
+            fileURL(source: activity.source, identifier: activity.id),
+            with: encoder.encode(activity),
+            temporary: directory.appendingPathComponent(".\(UUID().uuidString).tmp")
+        )
     }
 
     private static func read(source: Source, identifier: String) throws -> Activity {
@@ -685,31 +686,9 @@ private enum Reporter {
     }
 
     private static func connectToClaudeSocket() -> Int32? {
-        let fileDescriptor = socket(AF_UNIX, SOCK_STREAM, 0)
-        guard fileDescriptor >= 0 else { return nil }
-
-        var address = sockaddr_un()
-        address.sun_family = sa_family_t(AF_UNIX)
-        claudeSocketPath.withCString { path in
-            withUnsafeMutablePointer(to: &address.sun_path) { pathPointer in
-                let buffer = UnsafeMutableRawPointer(pathPointer).assumingMemoryBound(to: CChar.self)
-                strcpy(buffer, path)
-            }
-        }
-        let result = withUnsafePointer(to: &address) { pointer in
-            pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { sockaddrPointer in
-                connect(fileDescriptor, sockaddrPointer, socklen_t(MemoryLayout<sockaddr_un>.size))
-            }
-        }
-        guard result == 0 else {
-            close(fileDescriptor)
-            return nil
-        }
-        guard ClaudeHookSocket.isTrustedPeer(fileDescriptor) else {
-            close(fileDescriptor)
-            return nil
-        }
-        return fileDescriptor
+        // Replies are awaited with `poll`, so no receive timeout: approvals and
+        // answers can take minutes.
+        try? OwnerOnlySocket.connection(to: claudeSocketPath)
     }
 
     private static func writeAll(_ data: Data, to fileDescriptor: Int32) -> Bool {
@@ -759,9 +738,7 @@ private enum Reporter {
     }
 
     private static func safeIdentifier(_ value: String) -> String {
-        String(value.unicodeScalars.filter {
-            CharacterSet.alphanumerics.contains($0) || "._-".unicodeScalars.contains($0)
-        }.prefix(64))
+        ClaudeRunReport.safeIdentifier(value) ?? ""
     }
 
     private static func boundedOptional(_ value: String?, maximum: Int) -> String? {

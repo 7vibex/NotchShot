@@ -152,9 +152,9 @@ enum Fixtures {
 
     /// Writes a history store into the run-owned directory and returns its URL.
     ///
-    /// The file is verified against the deterministic fixture's bytes and row
-    /// count before any benchmark is allowed to use it, and a pre-existing file
-    /// is never trusted just because the name matches.
+    /// The file is verified against the fixture's bytes and row count before any
+    /// benchmark is allowed to use it. A pre-existing file is never reused: asset
+    /// IDs are random, so no two calls encode the same bytes.
     static func historyStore(count: Int, withIndexedText: Bool = true) -> URL {
         let store = runDirectory.appendingPathComponent(
             "history-\(count)-\(withIndexedText ? "text" : "plain").json"
@@ -165,9 +165,6 @@ enum Fixtures {
         encoder.outputFormatting = [.prettyPrinted]
         let data = try! encoder.encode(expected)
 
-        if let storedDigest = verifiedDigest(of: store), storedDigest == digest(of: data) {
-            return store
-        }
         try! data.write(to: store, options: .atomic)
         let written = try! Data(contentsOf: store)
         guard digest(of: written) == digest(of: data) else {
@@ -181,11 +178,6 @@ enum Fixtures {
             fatalError("history fixture failed verification at \(store.path)")
         }
         return store
-    }
-
-    private static func verifiedDigest(of store: URL) -> String? {
-        guard let data = try? Data(contentsOf: store) else { return nil }
-        return digest(of: data)
     }
 
     static func entries(count: Int, withIndexedText: Bool = true) -> [HistoryEntry] {

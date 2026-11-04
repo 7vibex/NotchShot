@@ -177,9 +177,13 @@ public enum MediaConversion {
                     throw NotchShotError.exportFailed("PDF page \(index + 1) could not be read")
                 }
                 let bounds = page.bounds(for: .mediaBox)
+                // `bounds` ignores the page's rotation, but `draw` applies it.
+                let isSideways = page.rotation % 180 != 0
+                let pageWidth = isSideways ? bounds.height : bounds.width
+                let pageHeight = isSideways ? bounds.width : bounds.height
                 // 2× the page's point size, capped so a poster-sized page stays sane.
-                let scale = min(2, 6_000 / max(bounds.width, bounds.height, 1))
-                let size = CGSize(width: max(1, bounds.width * scale), height: max(1, bounds.height * scale))
+                let scale = min(2, 6_000 / max(pageWidth, pageHeight, 1))
+                let size = CGSize(width: max(1, pageWidth * scale), height: max(1, pageHeight * scale))
                 guard let context = CGContext(
                     data: nil,
                     width: Int(size.width),
@@ -193,8 +197,8 @@ public enum MediaConversion {
                 }
                 context.setFillColor(NSColor.white.cgColor)
                 context.fill(CGRect(origin: .zero, size: size))
+                // `draw` already places the box's origin at the context's origin.
                 context.scaleBy(x: scale, y: scale)
-                context.translateBy(x: -bounds.minX, y: -bounds.minY)
                 page.draw(with: .mediaBox, to: context)
                 try Task.checkCancellation()
                 guard let image = context.makeImage() else {

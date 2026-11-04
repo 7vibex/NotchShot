@@ -10,7 +10,6 @@ import SwiftUI
 struct IslandActivityContainer: View {
     var descriptor: IslandLayoutDescriptor
     var metrics: NotchMetrics
-    var isActiveDisplay: Bool
     @Bindable var coordinator: AppCoordinator
     @Bindable var gesture: IslandGestureState
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -288,7 +287,6 @@ struct IslandSatelliteLayer: View {
             activity: activity,
             diameter: layout.satelliteDiameter,
             valueWidth: layout.satelliteValueWidth,
-            slot: slot,
             coordinator: coordinator
         )
         .offset(x: direction * distance + gesture.offset * 0.5)
@@ -309,7 +307,6 @@ struct IslandSatelliteView: View {
     var activity: IslandActivity
     var diameter: CGFloat
     var valueWidth: CGFloat = 0
-    var slot: IslandSlot = .trailing
     @Bindable var coordinator: AppCoordinator
     @State private var isHovered = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -394,7 +391,7 @@ struct IslandSatelliteView: View {
         .animation(NotchShotMotion.interaction(reduceMotion: reduceMotion), value: isHovered)
         .help(activity.accessibilitySummary)
         .accessibilityLabel(activity.kind.title)
-        .accessibilityValue(IslandAccessibility.value(for: activity, coordinator: coordinator))
+        .modifier(LiveAccessibilityValue { IslandAccessibility.value(for: activity, coordinator: coordinator) })
         .accessibilityHint(needsAnswer ? "An agent is waiting for your answer" : "Shows this activity in the notch")
     }
 

@@ -117,8 +117,6 @@ final class InstantReplayRecorder: NSObject, SCStreamOutput, SCStreamDelegate, A
         }
     }
 
-    var bufferedDuration: TimeInterval { queue.sync { buffer.bufferedDuration } }
-
     /// The buffered stretch as a playable fragmented MP4. With
     /// `includingNewest`, waits up to `timeout` for the segment being encoded
     /// right now, so the moment the user reacted to is in the clip.

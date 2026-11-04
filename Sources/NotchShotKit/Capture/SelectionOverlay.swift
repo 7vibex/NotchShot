@@ -39,7 +39,6 @@ public final class SelectionOverlayController {
     private var windows: [SelectionOverlayWindow] = []
     private var continuation: CheckedContinuation<SelectionResult, Never>?
     private var keyMonitor: Any?
-    private var previousActivationPolicy: NSApplication.ActivationPolicy?
 
     public private(set) var isPresenting = false
 
@@ -99,10 +98,29 @@ public final class SelectionOverlayController {
             // finish removes it instead of leaving a monitor behind.
             self.installKeyMonitor()
             guard self.isPresenting else { return }
-            self.windows.first?.makeKeyAndOrderFront(nil)
+            // The keyboard has to reach the view holding the restored selection,
+            // or Return does nothing until the other display is clicked.
+            let keyWindow = self.keyWindow(forInitialRect: initialRect)
+            keyWindow?.makeFirstResponder(keyWindow?.contentView)
+            keyWindow?.makeKeyAndOrderFront(nil)
             guard self.isPresenting else { return }
             NSApp.activate(ignoringOtherApps: true)
         }
+    }
+
+    private func keyWindow(forInitialRect initialRect: CGRect?) -> SelectionOverlayWindow? {
+        if let initialRect {
+            let rect = ScreenGeometry.cocoaRect(fromCG: initialRect, primaryFrame: ScreenLookup.primaryFrame)
+            func overlap(_ window: SelectionOverlayWindow) -> CGFloat {
+                let shared = window.frame.intersection(rect)
+                return shared.isNull ? 0 : shared.width * shared.height
+            }
+            if let best = windows.max(by: { overlap($0) < overlap($1) }), overlap(best) > 0 {
+                return best
+            }
+        }
+        let pointer = NSEvent.mouseLocation
+        return windows.first { $0.frame.contains(pointer) } ?? windows.first
     }
 
     public func cancel() {
@@ -145,10 +163,6 @@ public final class SelectionOverlayController {
         // next screen-parameters change. Deactivating gives back focus without
         // touching our own windows.
         NSApp.deactivate()
-        if let policy = previousActivationPolicy {
-            NSApp.setActivationPolicy(policy)
-            previousActivationPolicy = nil
-        }
         onDismiss?()
 
         if let continuation {
@@ -166,9 +180,7 @@ public final class SelectionOverlayController {
 // MARK: - Overlay window
 
 final class SelectionOverlayWindow: NSPanel {
-    let displayID: CGDirectDisplayID
     var onResult: ((SelectionResult) -> Void)?
-    var onSelectionChanged: ((CGRect?, CGDirectDisplayID) -> Void)?
 
     private let overlayView: SelectionOverlayView
 
@@ -181,7 +193,6 @@ final class SelectionOverlayWindow: NSPanel {
         showsMagnifier: Bool,
         windows: [WindowInfo]
     ) {
-        self.displayID = displayID
         self.overlayView = SelectionOverlayView(
             frame: CGRect(origin: .zero, size: screen.frame.size),
             screenFrame: screen.frame,
@@ -216,10 +227,6 @@ final class SelectionOverlayWindow: NSPanel {
 
         contentView = overlayView
         overlayView.onResult = { [weak self] in self?.onResult?($0) }
-        overlayView.onSelectionChanged = { [weak self] rect in
-            guard let self else { return }
-            self.onSelectionChanged?(rect, self.displayID)
-        }
     }
 
     override var canBecomeKey: Bool { true }
@@ -227,10 +234,6 @@ final class SelectionOverlayWindow: NSPanel {
 
     func setInitialGlobalRect(_ rect: CGRect) {
         overlayView.setInitialGlobalRect(rect)
-    }
-
-    func applyExternalSelection(_ globalRect: CGRect?) {
-        overlayView.applyExternalSelection(globalRect)
     }
 }
 
@@ -247,12 +250,10 @@ final class SelectionOverlayView: NSView {
     }
 
     var onResult: ((SelectionResult) -> Void)?
-    var onSelectionChanged: ((CGRect?) -> Void)?
 
     private let screenFrame: CGRect
     private let displayID: CGDirectDisplayID
     private let mode: SelectionMode
-    private let freezeFrame: CapturedImage?
     private let showsFreeze: Bool
     private let showsMagnifier: Bool
     private let allWindows: [WindowInfo]
@@ -261,9 +262,10 @@ final class SelectionOverlayView: NSView {
     private var dragOrigin: CGPoint?
     /// Selection in this view's local Cocoa space.
     private var selection: CGRect?
-    /// A selection that originated on another display, in local space.
-    private var externalSelection: CGRect?
     private var mouseLocation: CGPoint = .zero
+    /// Each display has its own view, and only the pointer's one draws the
+    /// crosshair and magnifier.
+    private var isPointerInside = false
     private var isMovingSelection = false
     private var moveAnchor: CGPoint = .zero
     private var activeResizeHandle: ResizeHandle?
@@ -295,7 +297,6 @@ final class SelectionOverlayView: NSView {
         self.screenFrame = screenFrame
         self.displayID = displayID
         self.mode = mode
-        self.freezeFrame = freezeFrame
         self.showsFreeze = showsFreeze
         self.showsMagnifier = showsMagnifier
         self.allWindows = windows
@@ -346,6 +347,40 @@ final class SelectionOverlayView: NSView {
         trackingArea = area
     }
 
+    /// Until the first move there is no event to say where the pointer is, and
+    /// a click without a move still has to find the window under it.
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        guard let window else { return }
+        mouseLocation = convert(window.convertPoint(fromScreen: NSEvent.mouseLocation), from: nil)
+        isPointerInside = bounds.contains(mouseLocation)
+        if isPointerInside { updateHoveredWindow() }
+        needsDisplay = true
+    }
+
+    override func mouseEntered(with event: NSEvent) {
+        mouseLocation = convert(event.locationInWindow, from: nil)
+        isPointerInside = true
+        updateHoveredWindow()
+        needsDisplay = true
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        isPointerInside = false
+        hoveredWindow = nil
+        updateAccessibilityValue(announce: false)
+        needsDisplay = true
+    }
+
+    private func updateHoveredWindow() {
+        guard mode.wantsWindowHighlight, selection == nil else { return }
+        let global = globalCGPoint(mouseLocation)
+        let candidate = allWindows.first { $0.frame.contains(global) }
+        if candidate?.id != hoveredWindow?.id {
+            hoveredWindow = candidate
+        }
+    }
+
     override func resetCursorRects() {
         // A crosshair everywhere, except over the moving hand.
         addCursorRect(bounds, cursor: isMovingSelection ? .closedHand : .crosshair)
@@ -378,28 +413,20 @@ final class SelectionOverlayView: NSView {
         }
     }
 
-    func applyExternalSelection(_ globalRect: CGRect?) {
-        externalSelection = globalRect.map { localRect(fromGlobalCG: $0) }
-        needsDisplay = true
-    }
-
     // MARK: Mouse
 
     override func mouseMoved(with event: NSEvent) {
         mouseLocation = convert(event.locationInWindow, from: nil)
-        if mode.wantsWindowHighlight, selection == nil {
-            let global = globalCGPoint(mouseLocation)
-            let candidate = allWindows.first { $0.frame.contains(global) }
-            if candidate?.id != hoveredWindow?.id {
-                hoveredWindow = candidate
-            }
-        }
+        isPointerInside = true
+        updateHoveredWindow()
         needsDisplay = true
     }
 
     override func mouseDown(with event: NSEvent) {
         let point = convert(event.locationInWindow, from: nil)
         mouseLocation = point
+        isPointerInside = true
+        updateHoveredWindow()
         hasDragged = false
         currentShiftRatio = nil
 
@@ -461,7 +488,6 @@ final class SelectionOverlayView: NSView {
             ).intersection(bounds)
         }
 
-        onSelectionChanged?(selection.map { globalCGRect($0) })
         updateAccessibilityValue()
         needsDisplay = true
     }
@@ -471,12 +497,16 @@ final class SelectionOverlayView: NSView {
         mouseLocation = point
 
         if isMovingSelection || activeResizeHandle != nil {
+            // Every click inside a selection lands here, so this is where a
+            // double-click confirms it.
+            let confirms = isMovingSelection && !hasDragged && event.clickCount >= 2
             isMovingSelection = false
             activeResizeHandle = nil
             resizeStartRect = nil
             currentShiftRatio = nil
             window?.invalidateCursorRects(for: self)
             needsDisplay = true
+            if confirms { _ = confirmSelection() }
             return
         }
 
@@ -495,7 +525,6 @@ final class SelectionOverlayView: NSView {
             // Too small to be intentional: treat as a cancel rather than
             // producing a 2-pixel screenshot.
             self.selection = nil
-            onSelectionChanged?(nil)
             needsDisplay = true
             return
         }
@@ -599,7 +628,6 @@ final class SelectionOverlayView: NSView {
         selection.origin.x = min(max(selection.origin.x, bounds.minX), bounds.maxX - selection.width)
         selection.origin.y = min(max(selection.origin.y, bounds.minY), bounds.maxY - selection.height)
         self.selection = selection
-        onSelectionChanged?(globalCGRect(selection))
         updateAccessibilityValue()
         needsDisplay = true
     }
@@ -617,7 +645,6 @@ final class SelectionOverlayView: NSView {
         selection.size.width = min(max(selection.width, 4), bounds.maxX - selection.minX)
         selection.size.height = min(max(selection.height, 4), bounds.maxY - selection.minY)
         self.selection = selection
-        onSelectionChanged?(globalCGRect(selection))
         updateAccessibilityValue()
         needsDisplay = true
     }
@@ -634,7 +661,6 @@ final class SelectionOverlayView: NSView {
             height: height
         ).integral
         hoveredWindow = nil
-        onSelectionChanged?(selection.map { globalCGRect($0) })
         updateAccessibilityValue()
         needsDisplay = true
         return true
@@ -701,7 +727,7 @@ final class SelectionOverlayView: NSView {
     override func draw(_ dirtyRect: NSRect) {
         guard let context = NSGraphicsContext.current?.cgContext else { return }
 
-        let active = selection ?? externalSelection
+        let active = selection
         let highlight = (mode.wantsWindowHighlight && selection == nil)
             ? hoveredWindow.map { localRect(fromGlobalCG: $0.frame).intersection(bounds) }
             : nil
@@ -713,11 +739,11 @@ final class SelectionOverlayView: NSView {
             drawSelectionChrome(clearRect, in: context, isWindowHighlight: active == nil)
         }
 
-        if selection == nil && externalSelection == nil {
+        if selection == nil, isPointerInside {
             drawCrosshair(in: context)
         }
 
-        if showsMagnifier, freezeImage != nil, !isMovingSelection {
+        if showsMagnifier, freezeImage != nil, !isMovingSelection, isPointerInside {
             drawMagnifier(in: context)
         }
 
@@ -884,13 +910,19 @@ final class SelectionOverlayView: NSView {
             width: sampleSide,
             height: sampleSide
         )
-        guard let cropped = freezeImage.cropping(to: sampleRect) else { return }
 
         // Keep the loupe on screen when the cursor is near an edge.
         var origin = CGPoint(x: mouseLocation.x + 20, y: mouseLocation.y - side - 20)
         if origin.x + side > bounds.maxX { origin.x = mouseLocation.x - side - 20 }
         if origin.y < bounds.minY { origin.y = mouseLocation.y + 20 }
         let frame = CGRect(origin: origin, size: CGSize(width: side, height: side))
+
+        guard let sample = Self.loupeSample(
+            sampleRect: sampleRect,
+            imageBounds: CGRect(x: 0, y: 0, width: freezeImage.width, height: freezeImage.height),
+            frame: frame,
+            magnification: magnification
+        ), let cropped = freezeImage.cropping(to: sample.crop) else { return }
 
         context.saveGState()
         context.setShadow(offset: .zero, blur: 12, color: NSColor.black.withAlphaComponent(0.5).cgColor)
@@ -901,7 +933,7 @@ final class SelectionOverlayView: NSView {
         context.saveGState()
         context.clip(to: frame)
         context.interpolationQuality = .none
-        context.draw(cropped, in: frame)
+        context.draw(cropped, in: sample.destination)
 
         // Pixel grid.
         context.setStrokeColor(NSColor.white.withAlphaComponent(0.12).cgColor)
@@ -937,6 +969,26 @@ final class SelectionOverlayView: NSView {
             near: CGPoint(x: frame.midX, y: frame.minY - 12),
             in: context
         )
+    }
+
+    /// The part of the sampled square that is on the image, and where it goes in
+    /// the loupe. Near a screen edge the rest stays black: stretching what is
+    /// left would make pixels non-square and put the reticle on the wrong one.
+    /// `sampleRect` is in image space (top-down), `frame` in view space (bottom-up).
+    static func loupeSample(
+        sampleRect: CGRect,
+        imageBounds: CGRect,
+        frame: CGRect,
+        magnification: CGFloat
+    ) -> (crop: CGRect, destination: CGRect)? {
+        let visible = sampleRect.intersection(imageBounds)
+        guard !visible.isNull, !visible.isEmpty else { return nil }
+        return (visible, CGRect(
+            x: frame.minX + (visible.minX - sampleRect.minX) * magnification,
+            y: frame.maxY - (visible.maxY - sampleRect.minY) * magnification,
+            width: visible.width * magnification,
+            height: visible.height * magnification
+        ))
     }
 
     private func drawInstructions(in context: CGContext) {

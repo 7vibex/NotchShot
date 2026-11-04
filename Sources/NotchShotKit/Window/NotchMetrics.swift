@@ -363,6 +363,26 @@ public struct NotchLayout: Sendable, Equatable {
         return layout
     }
 
+    /// The layout for one display from the same inputs the view draws with.
+    static func layout(
+        for activity: NotchActivity,
+        metrics: NotchMetrics,
+        inputs: NotchLayoutInputs
+    ) -> NotchLayout {
+        layout(
+            for: activity,
+            metrics: metrics,
+            isPeeking: inputs.isPeeking,
+            resultCount: inputs.resultCount,
+            hasStack: inputs.hasStack,
+            mediaPanelRows: inputs.mediaPanelRows,
+            shelfStyle: inputs.shelfStyle,
+            indicatorWings: inputs.indicatorWings,
+            isScrollingCapture: inputs.isScrollingCapture,
+            heldHeight: inputs.heldHeight
+        )
+    }
+
     /// `heldHeight` keeps an open page at least that tall. Switching pages
     /// from the tab pill holds the height the pill was clicked at, so a
     /// shorter page doesn't pull the pill out from under the pointer and
@@ -1024,5 +1044,52 @@ public struct NotchLayout: Sendable, Equatable {
             width: size.width,
             height: size.height
         )
+    }
+}
+
+/// What sizes the island besides its activity and display.
+///
+/// The root view draws from these and the window controller hit-tests from
+/// them. They used to be two argument lists, and every input one of them
+/// forgot was a stretch of island that could not be clicked, or an invisible
+/// band that swallowed clicks meant for the app underneath.
+struct NotchLayoutInputs: Equatable, Sendable {
+    var isPeeking: Bool
+    var resultCount: Int
+    var hasStack: Bool
+    var mediaPanelRows: Int
+    var shelfStyle: ShelfPresentationStyle
+    var indicatorWings: Bool
+    var isScrollingCapture: Bool
+    var heldHeight: CGFloat
+
+    /// - Parameters:
+    ///   - activity: what this display shows, after display routing.
+    ///   - isActiveDisplay: only the display the user is on opens or holds.
+    ///   - tabPageHeightHold: the height a page switch from the pill holds.
+    ///     It applies only to the pill's own pages.
+    init(
+        activity: NotchActivity,
+        isActiveDisplay: Bool,
+        isPeeking: Bool,
+        resultCount: Int,
+        hasStack: Bool,
+        mediaPanelRows: Int,
+        shelfStyle: ShelfPresentationStyle,
+        indicatorWings: Bool,
+        isScrollingCapture: Bool,
+        tabPageHeightHold: CGFloat,
+        tabs: [NotchTab]
+    ) {
+        self.isPeeking = isPeeking && isActiveDisplay
+        self.resultCount = resultCount
+        self.hasStack = hasStack
+        self.mediaPanelRows = mediaPanelRows
+        self.shelfStyle = shelfStyle
+        self.indicatorWings = indicatorWings
+        self.isScrollingCapture = isScrollingCapture
+        self.heldHeight = isActiveDisplay && NotchTab.holdsHeight(of: activity, in: tabs)
+            ? tabPageHeightHold
+            : 0
     }
 }

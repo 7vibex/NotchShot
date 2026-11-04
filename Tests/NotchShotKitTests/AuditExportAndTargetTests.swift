@@ -27,7 +27,9 @@ struct AuditExportAndTargetTests {
         let session = try SmartExportSession(asset: asset)
         session.preset = .standard1x
         session.export(to: root.appendingPathComponent("standard.png"))
-        let deadline = ContinuousClock.now + .seconds(10)
+        // Run alongside the whole suite, the export can wait a long time for a
+        // thread of the shared pool.
+        let deadline = ContinuousClock.now + .seconds(120)
         while session.isExporting, ContinuousClock.now < deadline {
             try await Task.sleep(for: .milliseconds(10))
         }

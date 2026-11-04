@@ -1,6 +1,5 @@
 import AppKit
 import Foundation
-import NotchShotAIReporterSupport
 import Observation
 
 /// The multi-activity island: collecting activities from every source, feeding
@@ -43,6 +42,7 @@ extension AppCoordinator {
         }
         refreshIslandServices()
         observeIslandSources()
+        IdleAnimationStore.preloadImage()
     }
 
     /// Re-applies island preferences: services, gesture monitor, and layout.
@@ -58,7 +58,9 @@ extension AppCoordinator {
         } else {
             focusStatus.stop()
         }
-        if preferences.multipleActivitiesEnabled, preferences.swipesBetweenActivities {
+        // The monitor also carries track swipes, pull-to-open and the timer's
+        // minutes; "swipe between activities" is checked where a swipe begins.
+        if preferences.multipleActivitiesEnabled {
             islandGestureCoordinator?.start()
         } else {
             islandGestureCoordinator?.stop()
@@ -71,13 +73,6 @@ extension AppCoordinator {
             islandCollapseTask?.cancel()
         }
         refreshActivity()
-    }
-
-    func stopIslandServices() {
-        externalActivities.stop()
-        focusStatus.stop()
-        islandGestureCoordinator?.stop()
-        stopUtilities()
     }
 
     /// Sources that change without passing through `refreshActivity` on their
@@ -133,17 +128,23 @@ extension AppCoordinator {
     /// Rebuilds the activity set, resolves the presentation, and hands the
     /// arbiter the island's structural descriptor. Called from
     /// `refreshActivity`, before the arbiter resolves.
-    func refreshIsland(now: Date = Date()) {
+    func refreshIsland(now: Date = Date(), aiActivities: [AIActivitySnapshot]? = nil) {
         let preferences = Preferences.shared
-        arbiter.islandOwnsAmbientActivities = preferences.multipleActivitiesEnabled
-        arbiter.allowsContextOverlay = preferences.allowsAlertsOverActivities
+        // A write through an observable struct property notifies even when the
+        // value is equal, and the root view reads `arbiter`.
+        if arbiter.islandOwnsAmbientActivities != preferences.multipleActivitiesEnabled {
+            arbiter.islandOwnsAmbientActivities = preferences.multipleActivitiesEnabled
+        }
+        if arbiter.allowsContextOverlay != preferences.allowsAlertsOverActivities {
+            arbiter.allowsContextOverlay = preferences.allowsAlertsOverActivities
+        }
         guard preferences.multipleActivitiesEnabled else {
             if arbiter.island != nil { arbiter.island = nil }
             if islandPresentation != .empty { islandPresentation = .empty }
             return
         }
 
-        islandEngine.sync(collectIslandActivities(now: now), now: now)
+        islandEngine.sync(collectIslandActivities(now: now, aiActivities: aiActivities), now: now)
         islandEvents.expire(now: now)
 
         var presentation = islandEngine.present(
@@ -195,7 +196,7 @@ extension AppCoordinator {
         return islandEvents.current.map { .event($0) }
     }
 
-    func collectIslandActivities(now: Date) -> [IslandActivity] {
+    func collectIslandActivities(now: Date, aiActivities: [AIActivitySnapshot]? = nil) -> [IslandActivity] {
         let preferences = Preferences.shared
         var activities: [IslandActivity] = []
 
@@ -235,10 +236,12 @@ extension AppCoordinator {
                 CallActivityPolicy.isCall(bundleIdentifier: $0.bundleIdentifier)
             }
             let live = Set(calls.map(\.bundleIdentifier))
-            callActivityStartedAt = callActivityStartedAt.filter { live.contains($0.key) }
-            hiddenCallActivities.formIntersection(live)
-            meetingMutedApps.formIntersection(live)
-            meetingCameraOffApps.formIntersection(live)
+            if !callActivityStartedAt.keys.allSatisfy({ live.contains($0) }) {
+                callActivityStartedAt = callActivityStartedAt.filter { live.contains($0.key) }
+            }
+            if !hiddenCallActivities.isSubset(of: live) { hiddenCallActivities.formIntersection(live) }
+            if !meetingMutedApps.isSubset(of: live) { meetingMutedApps.formIntersection(live) }
+            if !meetingCameraOffApps.isSubset(of: live) { meetingCameraOffApps.formIntersection(live) }
             for call in calls where !hiddenCallActivities.contains(call.bundleIdentifier) {
                 let startedAt = callActivityStartedAt[call.bundleIdentifier] ?? now
                 callActivityStartedAt[call.bundleIdentifier] = startedAt
@@ -248,7 +251,7 @@ extension AppCoordinator {
                     startedAt: startedAt
                 ))
             }
-        } else {
+        } else if !callActivityStartedAt.isEmpty {
             callActivityStartedAt = [:]
         }
 
@@ -261,7 +264,7 @@ extension AppCoordinator {
         }
 
         if preferences.aiActivityEnabled, preferences.showsAIIslandActivity,
-           let agents = IslandActivityAdapters.ai(context.islandAIActivities, now: now) {
+           let agents = IslandActivityAdapters.ai(aiActivities ?? context.islandAIActivities, now: now) {
             activities.append(agents)
         }
 
@@ -405,11 +408,6 @@ extension AppCoordinator {
             [event.title, event.detail].compactMap { $0 }.joined(separator: ", "),
             priority: event.severity == .error ? .high : .medium
         )
-        refreshActivity()
-    }
-
-    public func dismissIslandEvent() {
-        islandEvents.dismissCurrent()
         refreshActivity()
     }
 

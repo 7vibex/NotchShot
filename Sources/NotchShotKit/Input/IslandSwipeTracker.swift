@@ -59,8 +59,6 @@ public struct IslandSwipeTracker: Sendable, Equatable {
         self.configuration = configuration
     }
 
-    public var isActive: Bool { phase == .undecided || phase == .tracking }
-
     public mutating func begin(
         canNavigateLeading: Bool,
         canNavigateTrailing: Bool,

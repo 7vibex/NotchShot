@@ -4,8 +4,6 @@ import Foundation
 import Observation
 
 public enum FocusTimerPolicy {
-    public static let presets: [TimeInterval] = [5, 15, 25, 45].map { $0 * 60 }
-
     /// What a scroll of `minutes` leaves on a timer: clamped to at least a
     /// minute, and to a day including what has already run.
     public static func adjustedRemaining(_ remaining: TimeInterval, byMinutes minutes: Int, elapsed: TimeInterval) -> TimeInterval {
@@ -70,7 +68,14 @@ public final class FocusTimerCoordinator {
     }
 
     public func pause() {
+        let wasRunning = current?.state == .running
         updateElapsed()
+        // Finished in the last second before this tick, so the ticker, now
+        // cancelled, will never announce it.
+        if wasRunning, current?.state == .completed {
+            publish()
+            return
+        }
         guard current?.state == .running else { return }
         current?.state = .paused
         tickTask?.cancel()
@@ -100,7 +105,12 @@ public final class FocusTimerCoordinator {
     /// Returns whether the time changed, so the scroll can tick once.
     @discardableResult
     public func adjust(byMinutes minutes: Int) -> Bool {
+        let wasRunning = current?.state == .running
         updateElapsed()
+        if wasRunning, current?.state == .completed {
+            publish()
+            return false
+        }
         guard var timer = current, timer.state != .completed, minutes != 0 else { return false }
         let remaining = FocusTimerPolicy.adjustedRemaining(timer.remaining, byMinutes: minutes, elapsed: timer.elapsed)
         guard remaining != timer.remaining else { return false }
@@ -293,42 +303,56 @@ public final class PlannerEntryService {
 
     public init() {}
 
+    /// Saving is synchronous XPC to calaccessd, so it stays off the main actor.
     public func save(_ draft: PlannerDraft) async throws {
+        let reference = EventStoreReference(store: store)
         switch draft.kind {
         case .event:
             guard try await store.requestWriteOnlyAccessToEvents() else {
                 throw PlannerServiceError.permissionDenied
             }
-            guard let calendar = store.defaultCalendarForNewEvents else {
-                throw PlannerServiceError.noWritableCalendar
-            }
-            let event = EKEvent(eventStore: store)
-            event.title = draft.title
-            event.isAllDay = draft.isAllDay
-            event.startDate = draft.date
-            event.endDate = draft.date.addingTimeInterval(max(60, draft.duration))
-            event.calendar = calendar
-            try store.save(event, span: .thisEvent, commit: true)
+            try await Task.detached(priority: .userInitiated) {
+                try Self.saveEvent(draft, in: reference.store)
+            }.value
         case .reminder:
             guard try await store.requestFullAccessToReminders() else {
                 throw PlannerServiceError.permissionDenied
             }
-            guard let calendar = store.defaultCalendarForNewReminders() else {
-                throw PlannerServiceError.noWritableCalendar
-            }
-            let reminder = EKReminder(eventStore: store)
-            reminder.title = draft.title
-            reminder.calendar = calendar
-            reminder.dueDateComponents = Calendar.autoupdatingCurrent.dateComponents(
-                [.year, .month, .day, .hour, .minute, .timeZone],
-                from: draft.date
-            )
-            // A due date alone never notifies; the user asked NotchShot to
-            // remind them, so attach an alarm at the parsed time.
-            reminder.addAlarm(EKAlarm(absoluteDate: draft.date))
-            try store.save(reminder, commit: true)
+            try await Task.detached(priority: .userInitiated) {
+                try Self.saveReminder(draft, in: reference.store)
+            }.value
         }
         statusMessage = draft.kind == .event ? "Added to Calendar" : "Added to Reminders"
+    }
+
+    private nonisolated static func saveEvent(_ draft: PlannerDraft, in store: EKEventStore) throws {
+        guard let calendar = store.defaultCalendarForNewEvents else {
+            throw PlannerServiceError.noWritableCalendar
+        }
+        let event = EKEvent(eventStore: store)
+        event.title = draft.title
+        event.isAllDay = draft.isAllDay
+        event.startDate = draft.date
+        event.endDate = draft.date.addingTimeInterval(max(60, draft.duration))
+        event.calendar = calendar
+        try store.save(event, span: .thisEvent, commit: true)
+    }
+
+    private nonisolated static func saveReminder(_ draft: PlannerDraft, in store: EKEventStore) throws {
+        guard let calendar = store.defaultCalendarForNewReminders() else {
+            throw PlannerServiceError.noWritableCalendar
+        }
+        let reminder = EKReminder(eventStore: store)
+        reminder.title = draft.title
+        reminder.calendar = calendar
+        reminder.dueDateComponents = Calendar.autoupdatingCurrent.dateComponents(
+            [.year, .month, .day, .hour, .minute, .timeZone],
+            from: draft.date
+        )
+        // A due date alone never notifies; the user asked NotchShot to
+        // remind them, so attach an alarm at the parsed time.
+        reminder.addAlarm(EKAlarm(absoluteDate: draft.date))
+        try store.save(reminder, commit: true)
     }
 }
 
@@ -341,6 +365,8 @@ public final class VoiceNoteCoordinator {
     public var onSnapshotChange: ((ContextSnapshot?) -> Void)?
 
     private var recorder: VoiceNoteAudioCapture?
+    /// Still closing its file after `stop()`. Quit must wait for it.
+    private var finishingRecorder: VoiceNoteAudioCapture?
     private var liveTranscriber: LiveVoiceNoteTranscriber?
     private var liveTranscriptionTask: Task<Void, Never>?
     private var tickTask: Task<Void, Never>?
@@ -407,10 +433,19 @@ public final class VoiceNoteCoordinator {
 
         do {
             let recorder = VoiceNoteAudioCapture()
-            let audioStream = try recorder.start(
+            let audioStream = try await recorder.beginCapture(
                 recordingURL: url,
-                streamsAudioForTranscription: self.liveTranscriber != nil
+                streamsAudioForTranscription: self.liveTranscriber != nil,
+                onInputLost: { [weak self] in
+                    guard let self, self.generation == generation else { return }
+                    self.stop()
+                }
             )
+            guard self.generation == generation else {
+                try? await recorder.finishCapture()
+                await liveTranscriber.cancel()
+                return
+            }
             self.recorder = recorder
             startedAt = Date()
             publish(VoiceNoteSnapshot(
@@ -448,6 +483,7 @@ public final class VoiceNoteCoordinator {
     /// meant for the short save that closing this file is — not for speech
     /// recognition that scales with the length of the note.
     public func finalizeForTermination() {
+        try? finishingRecorder?.stop()
         guard let recorder else { return }
         generation &+= 1
         isStarting = false
@@ -473,16 +509,7 @@ public final class VoiceNoteCoordinator {
         // bumps the generation again, and every `publish` below is dropped.
         generation &+= 1
         let generation = self.generation
-        let recordingError: Error?
-        do {
-            try recorder.stop()
-            recordingError = nil
-        } catch {
-            recordingError = error
-        }
-        if let fileURL = current.fileURL {
-            try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: fileURL.path)
-        }
+        finishingRecorder = recorder
         self.recorder = nil
         tickTask?.cancel()
         tickTask = nil
@@ -490,12 +517,26 @@ public final class VoiceNoteCoordinator {
         transcribing.state = .transcribing
         transcribing.elapsed = startedAt.map { Date().timeIntervalSince($0) } ?? current.elapsed
         publish(transcribing)
-        guard let url = transcribing.fileURL else { return }
+        let fileURL = transcribing.fileURL
         let liveTask = liveTranscriptionTask
         liveTranscriptionTask = nil
         let liveTranscriber = liveTranscriber
         self.liveTranscriber = nil
         Task { [weak self] in
+            var recordingError: Error?
+            // The microphone changing ends the note where it was, with the file
+            // intact, so it still gets its transcript.
+            var inputLost: Error?
+            do {
+                try await recorder.finishCapture()
+            } catch VoiceNoteAudioCapture.CaptureError.inputChanged {
+                inputLost = VoiceNoteAudioCapture.CaptureError.inputChanged
+            } catch {
+                recordingError = error
+            }
+            if self?.finishingRecorder === recorder { self?.finishingRecorder = nil }
+            guard let url = fileURL else { return }
+            try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
             await liveTask?.value
             if let recordingError {
                 var finished = transcribing
@@ -512,12 +553,12 @@ public final class VoiceNoteCoordinator {
                 var finished = transcribing
                 finished.state = .completed
                 finished.transcript = result.text
-                finished.errorMessage = nil
+                finished.errorMessage = inputLost?.localizedDescription
                 self?.publish(finished, ifGenerationIs: generation)
             } catch {
                 var finished = transcribing
                 finished.state = .completed
-                finished.errorMessage = "Saved audio. \(error.localizedDescription)"
+                finished.errorMessage = "Saved audio. \((inputLost ?? error).localizedDescription)"
                 self?.publish(finished, ifGenerationIs: generation)
             }
             if let liveTranscriber {

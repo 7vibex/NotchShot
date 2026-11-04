@@ -9,16 +9,27 @@ extension Process {
     /// sometimes never runs: in a probe on macOS 26, 13 of 568 such waits
     /// never returned, with `isRunning` already false. Foundation's exit
     /// handler clears `isRunning` itself, so polling it cannot miss the exit.
+    ///
+    /// Starts at 5 ms for the many short children, and backs off so one that
+    /// runs for minutes doesn't wake this 200 times a second.
     func waitForExit() async {
+        var milliseconds = 5
         while isRunning {
             // Cancellation can't end the wait, because the caller reads the
             // exit status next; it only stops the sleep from yielding.
-            if (try? await Task.sleep(for: .milliseconds(5))) == nil { usleep(5_000) }
+            if (try? await Task.sleep(for: .milliseconds(milliseconds))) == nil {
+                usleep(useconds_t(milliseconds * 1_000))
+            }
+            milliseconds = min(milliseconds * 2, 100)
         }
     }
 
     /// The same for a synchronous caller, which is already holding a thread.
     func blockUntilExit() {
-        while isRunning { usleep(5_000) }
+        var milliseconds = 5
+        while isRunning {
+            usleep(useconds_t(milliseconds * 1_000))
+            milliseconds = min(milliseconds * 2, 100)
+        }
     }
 }

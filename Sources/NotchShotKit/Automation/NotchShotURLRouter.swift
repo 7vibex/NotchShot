@@ -69,7 +69,7 @@ public enum NotchShotURLCommand: Sendable, Equatable {
     private static func abbreviatedPath(for url: URL) -> String {
         let path = url.standardizedFileURL.path
         let home = FileManager.default.homeDirectoryForCurrentUser.standardizedFileURL.path
-        if path.hasPrefix(home) {
+        if path == home || path.hasPrefix(home + "/") {
             return "~" + path.dropFirst(home.count)
         }
         return path
@@ -259,13 +259,24 @@ public enum NotchShotURLRouter {
             guard value.hasPrefix("/") else {
                 throw NotchShotURLRouterError.invalidParameter("file")
             }
-            candidate = URL(fileURLWithPath: value)
+            // Not `URL(fileURLWithPath:)`, which looks the path up to learn
+            // whether it is a directory, before anything below has judged it.
+            candidate = URL(filePath: value, directoryHint: .notDirectory)
         }
         guard candidate.host == nil || candidate.host?.isEmpty == true
                 || candidate.host?.lowercased() == "localhost" else {
             throw NotchShotURLRouterError.invalidParameter("file")
         }
         let standardized = candidate.standardizedFileURL
+        // Any webpage can send this link, and this runs before the consent alert.
+        // Looking up a path on an automount or a network volume makes the Mac
+        // contact that server first, and stops the main thread until it answers.
+        // So this is decided from the text and the mount table, which are never
+        // looked up on disk. Files on a share can still be dragged to the notch.
+        guard let mounts = PinPathLocality.currentMounts(),
+              PinPathLocality.isLocal(path: standardized.path, mounts: mounts) else {
+            throw NotchShotURLRouterError.invalidParameter("file")
+        }
         // Resolving the link before the consent dialog is built showed the user
         // the *target's* name, so a link named after something harmless could
         // stand in for any readable file elsewhere and the alert would never
@@ -278,6 +289,72 @@ public enum NotchShotURLRouter {
             throw NotchShotURLRouterError.invalidParameter("file")
         }
         return standardized
+    }
+}
+
+/// Whether a pin path stays on this Mac, answered without touching the path.
+enum PinPathLocality {
+    struct Mount: Sendable, Equatable {
+        var path: String
+        var isLocal: Bool
+    }
+
+    /// Autofs roots, whether or not this Mac's auto_master has them switched on.
+    private static let automountRoots: Set<String> = ["net", "network", "home"]
+
+    static func isLocal(path: String, mounts: [Mount]) -> Bool {
+        let components = normalizedComponents(of: path)
+        if let first = components.first, automountRoots.contains(first) { return false }
+        var best: (depth: Int, isLocal: Bool)?
+        for mount in mounts {
+            let mountComponents = normalizedComponents(of: mount.path)
+            guard components.starts(with: mountComponents),
+                  mountComponents.count >= (best?.depth ?? 0) else { continue }
+            best = (mountComponents.count, mount.isLocal)
+        }
+        return best?.isLocal ?? false
+    }
+
+    /// The kernel's mount table. `MNT_NOWAIT` reads what it already holds, so a
+    /// dead server cannot stall this. Nil when the table cannot be read.
+    static func currentMounts() -> [Mount]? {
+        let count = getfsstat(nil, 0, MNT_NOWAIT)
+        guard count > 0 else { return nil }
+        // Room for a mount that appears between the two calls.
+        var buffer = Array(repeating: statfs(), count: Int(count) + 8)
+        let filled = buffer.withUnsafeMutableBufferPointer { pointer in
+            getfsstat(pointer.baseAddress, Int32(pointer.count * MemoryLayout<statfs>.stride), MNT_NOWAIT)
+        }
+        guard filled > 0 else { return nil }
+        return buffer.prefix(Int(filled)).map { entry in
+            var entry = entry
+            let path = withUnsafeBytes(of: &entry.f_mntonname) {
+                String(cString: $0.bindMemory(to: CChar.self).baseAddress!)
+            }
+            let type = withUnsafeBytes(of: &entry.f_fstypename) {
+                String(cString: $0.bindMemory(to: CChar.self).baseAddress!)
+            }
+            return Mount(path: path, isLocal: entry.f_flags & UInt32(MNT_LOCAL) != 0 && type != "autofs")
+        }
+    }
+
+    /// Lowercased because the boot volume ignores case, so `/NET` reaches `/net`.
+    /// The Data volume prefix goes because `/home` is mounted at
+    /// `/System/Volumes/Data/home` and reached through a firmlink.
+    private static func normalizedComponents(of path: String) -> [String] {
+        var components: [String] = []
+        for component in path.split(separator: "/") {
+            switch component {
+            case ".": continue
+            case "..": _ = components.popLast()
+            default: components.append(component.lowercased())
+            }
+        }
+        for prefix in [["system", "volumes", "data"], ["private"], ["var", "automount"]]
+        where components.starts(with: prefix) {
+            components.removeFirst(prefix.count)
+        }
+        return components
     }
 }
 

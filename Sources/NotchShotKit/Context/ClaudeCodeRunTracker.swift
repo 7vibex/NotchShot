@@ -69,8 +69,11 @@ enum ClaudeCodeRunTracker {
             )
         case "posttooluse":
             session.reportsToolEnds = true
+            // Plan tools never open a row, so they have none to end.
+            guard !ClaudeRunReport.isPlanTool(tool) else { break }
             AgentRunTimeline.end(toolUseID: toolUseID, tool: tool, at: now, failed: false, in: &session.actions)
         case "posttoolusefailure":
+            guard !ClaudeRunReport.isPlanTool(tool) else { break }
             AgentRunTimeline.end(toolUseID: toolUseID, tool: tool, at: now, failed: true, in: &session.actions)
         case "stop", "stopfailure", "sessionend":
             endTurn(of: &session, at: now)

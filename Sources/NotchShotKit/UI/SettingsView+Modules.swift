@@ -18,6 +18,9 @@ struct ContextModuleSettings: View {
     @State private var plannerMessage: String?
     @State private var pendingHookIntegration: AIHookIntegration?
     @State private var hookMessage: String?
+    /// Read once per appearance and after installing: this parses a settings
+    /// file, and `body` re-runs on every keystroke in the planner field.
+    @State private var hasClaudeStatusLine = false
     @State private var customTimerMinutes = 25
     @State private var timerLabel = "Focus"
     @Bindable private var focusTimer = FocusTimerCoordinator.shared
@@ -83,10 +86,10 @@ struct ContextModuleSettings: View {
                 HStack {
                     Text("Usage rings")
                         .foregroundStyle(.secondary)
-                    Button(AIHookInstaller.shared.hasClaudeStatusLine()
+                    Button(hasClaudeStatusLine
                         ? "Claude Usage Connected"
                         : "Show Claude Usage in the Notch") { installClaudeStatusLine() }
-                        .disabled(AIHookInstaller.shared.hasClaudeStatusLine())
+                        .disabled(hasClaudeStatusLine)
                         .help("Routes Claude Code's status line through notchshot-ai so the notch can show your 5-hour and weekly limits and the context window. An existing status line keeps showing.")
                 }
                 if let hookMessage {
@@ -272,6 +275,7 @@ struct ContextModuleSettings: View {
         .settingsWorkbenchFormStyle()
         .onAppear {
             if preferences.calendarGlanceEnabled { calendar.start() }
+            hasClaudeStatusLine = AIHookInstaller.shared.hasClaudeStatusLine()
         }
         .alert(item: $pendingHookIntegration) { integration in
             Alert(
@@ -315,6 +319,7 @@ struct ContextModuleSettings: View {
         } catch {
             hookMessage = error.localizedDescription
         }
+        hasClaudeStatusLine = AIHookInstaller.shared.hasClaudeStatusLine()
     }
 
     private func setCalendarEnabled(_ enabled: Bool) {
@@ -464,13 +469,15 @@ struct RecipeSettings: View {
                         get: { store.activeRecipe.runsOCR == true },
                         set: { recipeBinding(\.runsOCR).wrappedValue = $0 ? true : nil }
                     ))
-                    TextField("Library tags, comma separated", text: Binding(
-                        get: { (store.activeRecipe.libraryTags ?? []).joined(separator: ", ") },
-                        set: { value in
-                            recipeBinding(\.libraryTags).wrappedValue = value
-                                .split(separator: ",").map { String($0).trimmingCharacters(in: .whitespaces) }
-                        }
-                    ))
+                    CommaSeparatedTextField(
+                        "Library tags, comma separated",
+                        values: Binding(
+                            get: { store.activeRecipe.libraryTags ?? [] },
+                            set: { recipeBinding(\.libraryTags).wrappedValue = $0 }
+                        )
+                    )
+                    // The field holds its own text, so a different recipe needs a new one.
+                    .id(store.activeRecipeID)
                     TextField("Library collection", text: Binding(
                         get: { store.activeRecipe.collectionName ?? "" },
                         set: { recipeBinding(\.collectionName).wrappedValue = $0.isEmpty ? nil : $0 }

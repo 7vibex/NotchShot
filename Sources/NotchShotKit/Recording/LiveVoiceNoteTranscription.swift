@@ -43,25 +43,22 @@ private final class ConverterInput: @unchecked Sendable {
     }
 }
 
-private final class SpeechBufferConverter: @unchecked Sendable {
-    enum ConversionError: LocalizedError {
-        case couldNotCreateConverter
-        case couldNotCreateBuffer
-        case conversionFailed(NSError?)
-
-        var errorDescription: String? {
-            switch self {
-            case .couldNotCreateConverter:
-                "The live speech audio converter could not start."
-            case .couldNotCreateBuffer:
-                "The live speech audio buffer could not be created."
-            case let .conversionFailed(error):
-                error?.localizedDescription ?? "Live speech audio conversion failed."
-            }
-        }
+/// Shared by voice notes and dictation, which name themselves in its errors.
+final class SpeechBufferConverter: @unchecked Sendable {
+    struct ConversionError: LocalizedError {
+        let errorDescription: String?
     }
 
+    /// Begins "… converter could not start." and "… buffer could not be created."
+    private let componentPrefix: String
+    /// Begins "… conversion failed."
+    private let conversionPrefix: String
     private var converter: AVAudioConverter?
+
+    init(componentPrefix: String, conversionPrefix: String) {
+        self.componentPrefix = componentPrefix
+        self.conversionPrefix = conversionPrefix
+    }
 
     func convert(_ buffer: AVAudioPCMBuffer, to format: AVAudioFormat) throws -> AVAudioPCMBuffer {
         guard buffer.format != format else { return buffer }
@@ -70,7 +67,9 @@ private final class SpeechBufferConverter: @unchecked Sendable {
             converter = AVAudioConverter(from: buffer.format, to: format)
             converter?.primeMethod = .none
         }
-        guard let converter else { throw ConversionError.couldNotCreateConverter }
+        guard let converter else {
+            throw ConversionError(errorDescription: "\(componentPrefix) converter could not start.")
+        }
 
         let ratio = converter.outputFormat.sampleRate / converter.inputFormat.sampleRate
         let capacity = AVAudioFrameCount((Double(buffer.frameLength) * ratio).rounded(.up))
@@ -78,7 +77,7 @@ private final class SpeechBufferConverter: @unchecked Sendable {
             pcmFormat: converter.outputFormat,
             frameCapacity: max(1, capacity)
         ) else {
-            throw ConversionError.couldNotCreateBuffer
+            throw ConversionError(errorDescription: "\(componentPrefix) buffer could not be created.")
         }
 
         var conversionError: NSError?
@@ -93,7 +92,9 @@ private final class SpeechBufferConverter: @unchecked Sendable {
             return input.buffer
         }
         guard status != .error else {
-            throw ConversionError.conversionFailed(conversionError)
+            throw ConversionError(
+                errorDescription: conversionError?.localizedDescription ?? "\(conversionPrefix) conversion failed."
+            )
         }
         return output
     }
@@ -102,12 +103,14 @@ private final class SpeechBufferConverter: @unchecked Sendable {
 /// A single progressive SpeechAnalyzer session. Audio never leaves the Mac.
 public actor LiveVoiceNoteTranscriber {
     private var analyzer: SpeechAnalyzer?
-    private var transcriber: SpeechTranscriber?
     private var analyzerFormat: AVAudioFormat?
     private var inputContinuation: AsyncStream<AnalyzerInput>.Continuation?
     private var resultTask: Task<Void, Never>?
     private var accumulator = LiveTranscriptAccumulator()
-    private let converter = SpeechBufferConverter()
+    private let converter = SpeechBufferConverter(
+        componentPrefix: "The live speech audio",
+        conversionPrefix: "Live speech audio"
+    )
 
     public init() {}
 
@@ -134,7 +137,6 @@ public actor LiveVoiceNoteTranscriber {
         }
         let (inputSequence, continuation) = AsyncStream<AnalyzerInput>.makeStream()
 
-        self.transcriber = transcriber
         self.analyzer = analyzer
         analyzerFormat = format
         inputContinuation = continuation
@@ -204,7 +206,6 @@ public actor LiveVoiceNoteTranscriber {
         resultTask?.cancel()
         resultTask = nil
         analyzer = nil
-        transcriber = nil
         analyzerFormat = nil
     }
 }
@@ -212,20 +213,88 @@ public actor LiveVoiceNoteTranscriber {
 /// Captures one microphone stream, writes every buffer to disk, and exposes the
 /// same buffers to live transcription. The lock prevents Stop from closing the
 /// file while the audio render callback is writing its final buffer.
+///
+/// All engine calls run on `engineQueue`: opening the input device can take
+/// hundreds of milliseconds, longer for a Bluetooth input that has to switch
+/// profile, and the island animates through it.
 final class VoiceNoteAudioCapture: @unchecked Sendable {
     /// About 45 seconds at a 4,096-frame tap on a 44.1 kHz input — far more
     /// slack than a healthy transcriber needs, and a hard ceiling if it stalls.
     static let maximumBufferedAudioBuffers = 512
 
+    enum CaptureError: LocalizedError {
+        case inputChanged
+
+        var errorDescription: String? {
+            "The microphone changed during the recording, so it stopped there."
+        }
+    }
+
+    /// Long enough for a tap on any input rate to deliver a buffer if it is
+    /// still alive, and short against the speech lost while the note looks live.
+    private static let inputCheckDelay: TimeInterval = 1
+
     private let engine = AVAudioEngine()
+    private let engineQueue = DispatchQueue(
+        label: "com.notchshot.voice-note-capture",
+        qos: .userInitiated
+    )
     private let lock = NSLock()
     private var file: AVAudioFile?
     private var continuation: AsyncStream<SendableAudioBuffer>.Continuation?
     private var writeError: Error?
+    private var buffersWritten: UInt64 = 0
+    private var onInputLost: (@MainActor @Sendable () -> Void)?
+    /// Confined to `engineQueue`.
+    private var configurationObserver: NSObjectProtocol?
 
-    func start(
+    /// Starts off the caller's thread. `onInputLost` runs on main if the input
+    /// hardware changes and capture does not survive it; `finishCapture()`
+    /// then reports `CaptureError.inputChanged`.
+    func beginCapture(
         recordingURL: URL,
-        streamsAudioForTranscription: Bool
+        streamsAudioForTranscription: Bool,
+        onInputLost: @escaping @MainActor @Sendable () -> Void
+    ) async throws -> AsyncStream<SendableAudioBuffer>? {
+        try await withCheckedThrowingContinuation { continuation in
+            engineQueue.async {
+                do {
+                    continuation.resume(returning: try self.startOnQueue(
+                        recordingURL: recordingURL,
+                        streamsAudioForTranscription: streamsAudioForTranscription,
+                        onInputLost: onInputLost
+                    ))
+                } catch {
+                    continuation.resume(throwing: error)
+                }
+            }
+        }
+    }
+
+    /// Stops off the caller's thread.
+    func finishCapture() async throws {
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            engineQueue.async {
+                do {
+                    try self.stopOnQueue()
+                    continuation.resume()
+                } catch {
+                    continuation.resume(throwing: error)
+                }
+            }
+        }
+    }
+
+    /// Waits for the file to close. For quitting, which has no animation to
+    /// protect and must not exit before the WAV is complete.
+    func stop() throws {
+        try engineQueue.sync { try stopOnQueue() }
+    }
+
+    private func startOnQueue(
+        recordingURL: URL,
+        streamsAudioForTranscription: Bool,
+        onInputLost: (@MainActor @Sendable () -> Void)?
     ) throws -> AsyncStream<SendableAudioBuffer>? {
         let input = engine.inputNode
         let format = input.outputFormat(forBus: 0)
@@ -249,6 +318,7 @@ final class VoiceNoteAudioCapture: @unchecked Sendable {
         lock.withLock {
             self.file = file
             self.continuation = continuation
+            self.onInputLost = onInputLost
             writeError = nil
         }
 
@@ -258,6 +328,7 @@ final class VoiceNoteAudioCapture: @unchecked Sendable {
             lock.withLock {
                 do {
                     try file.write(from: buffer)
+                    buffersWritten &+= 1
                     if let continuation, let copy = Self.copy(buffer) {
                         continuation.yield(SendableAudioBuffer(copy))
                     }
@@ -267,31 +338,69 @@ final class VoiceNoteAudioCapture: @unchecked Sendable {
             }
         }
 
+        configurationObserver = NotificationCenter.default.addObserver(
+            forName: .AVAudioEngineConfigurationChange,
+            object: engine,
+            queue: nil
+        ) { [weak self] _ in
+            self?.scheduleInputCheck()
+        }
+
         do {
             engine.prepare()
             try engine.start()
             return stream
         } catch {
+            removeConfigurationObserver()
             input.removeTap(onBus: 0)
             lock.withLock {
                 continuation?.finish()
                 self.continuation = nil
                 self.file = nil
+                self.onInputLost = nil
             }
             throw error
         }
     }
 
-    func stop() throws {
+    private func stopOnQueue() throws {
+        removeConfigurationObserver()
         engine.stop()
         engine.inputNode.removeTap(onBus: 0)
         let error = lock.withLock { () -> Error? in
             continuation?.finish()
             continuation = nil
             file = nil
+            onInputLost = nil
             return writeError
         }
         if let error { throw error }
+    }
+
+    private func removeConfigurationObserver() {
+        guard let configurationObserver else { return }
+        NotificationCenter.default.removeObserver(configurationObserver)
+        self.configurationObserver = nil
+    }
+
+    /// A hardware change usually stops and uninitializes the engine, so the tap
+    /// falls silent while the note still looks live. The buffers are the proof
+    /// either way: if they keep coming, the change lost nothing.
+    private func scheduleInputCheck() {
+        let written = lock.withLock { buffersWritten }
+        engineQueue.asyncAfter(deadline: .now() + Self.inputCheckDelay) { [weak self] in
+            self?.reportInputLost(ifNothingWrittenSince: written)
+        }
+    }
+
+    private func reportInputLost(ifNothingWrittenSince written: UInt64) {
+        let handler = lock.withLock { () -> (@MainActor @Sendable () -> Void)? in
+            guard file != nil, buffersWritten == written, writeError == nil else { return nil }
+            writeError = CaptureError.inputChanged
+            return onInputLost
+        }
+        guard let handler else { return }
+        Task { @MainActor in handler() }
     }
 
     private static func copy(_ source: AVAudioPCMBuffer) -> AVAudioPCMBuffer? {

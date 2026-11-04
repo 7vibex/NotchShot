@@ -25,7 +25,7 @@ while IFS= read -r line; do
 done < <(find Sources -name "*.swift" -exec wc -l {} \; | awk '{print $1" "$2}')
 
 # 3. Sparkle must stay exactly pinned — the updater is a privileged path.
-grep -q 'Sparkle.*exact: "2\.9\.[0-9]*"' Package.swift \
+grep -qE 'Sparkle.*exact: "[0-9]+\.[0-9]+\.[0-9]+"' Package.swift \
     || fail "Package.swift must pin Sparkle with exact:"
 
 # 4. Updater must stay fail-closed (HTTPS + EdDSA required, nil otherwise).

@@ -301,7 +301,8 @@ enum LRCParser {
     static func timestamp(_ tag: Substring) -> TimeInterval? {
         let parts = tag.split(separator: ":", omittingEmptySubsequences: false)
         guard parts.count == 2 || parts.count == 3,
-              let minutes = Int(parts[0]), minutes >= 0
+              // 100 hours is already absurd; past it, it's bad data in a public database.
+              let minutes = Int(parts[0]), minutes >= 0, minutes <= 6_000
         else { return nil }
         let secondsText = parts.count == 3 ? "\(parts[1]).\(parts[2])" : String(parts[1])
         guard let seconds = Double(secondsText), seconds >= 0, seconds < 60 else { return nil }

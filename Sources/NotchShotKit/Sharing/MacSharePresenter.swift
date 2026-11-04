@@ -73,10 +73,17 @@ public final class MacSharePresenter: NSObject,
         didFailToShareItems items: [Any],
         error: any Error
     ) {
+        // AppKit reports a user closing the sheet through this same callback.
+        let nsError = error as NSError
+        let wasCancelled = nsError.domain == NSCocoaErrorDomain && nsError.code == NSUserCancelledError
         if let airDropTransferID {
-            TransferActivityStore.shared.finish(airDropTransferID, error: error.localizedDescription)
+            if wasCancelled {
+                TransferActivityStore.shared.markCancelled(airDropTransferID)
+            } else {
+                TransferActivityStore.shared.finish(airDropTransferID, error: error.localizedDescription)
+            }
         }
-        onFailure?(error)
+        if !wasCancelled { onFailure?(error) }
         finish()
     }
 

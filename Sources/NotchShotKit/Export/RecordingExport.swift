@@ -135,7 +135,21 @@ public enum RecordingExportService {
         let staging = try stagingURL(for: destinationURL, fileExtension: "mp4")
         defer { try? FileManager.default.removeItem(at: staging.deletingLastPathComponent()) }
         try await exporter.export(to: staging, as: .mp4)
+        // `fileLengthLimit` stops writing at the limit rather than lowering the
+        // bitrate. A cap must not quietly become a shorter video.
+        if let maximum = options.maximumFileBytes, maximum > 0 {
+            let exportedDuration = try await AVURLAsset(url: staging).load(.duration).seconds
+            if isCutShort(exportedDuration, comparedTo: duration.seconds) {
+                throw NotchShotError.exportFailed(
+                    "That video would not fit under \(maximum / 1_048_576) MB without cutting it short. Lower the pixel size or raise the cap."
+                )
+            }
+        }
         try publishOutput(at: staging, to: destinationURL)
+    }
+
+    static func isCutShort(_ exported: TimeInterval, comparedTo source: TimeInterval) -> Bool {
+        !exported.isFinite || source - exported > 0.5
     }
 
     public static func exportGIF(
@@ -154,7 +168,12 @@ public enum RecordingExportService {
         generator.requestedTimeToleranceBefore = .zero
         generator.requestedTimeToleranceAfter = .zero
 
-        let frames = try gifFrames(duration: duration.seconds, requestedFPS: options.framesPerSecond)
+        let framePixels = try await gifFramePixels(of: asset, maximumWidth: options.maximumWidth)
+        let frames = try gifFrames(
+            duration: duration.seconds,
+            requestedFPS: options.framesPerSecond,
+            maximumFrames: gifFrameLimit(framePixels: framePixels)
+        )
         let staging = try stagingURL(for: destinationURL, fileExtension: "gif")
         defer { try? FileManager.default.removeItem(at: staging.deletingLastPathComponent()) }
         try await encodeGIF(generator: generator, frames: frames, at: staging,
@@ -188,30 +207,55 @@ public enum RecordingExportService {
         for frame in frames {
             try Task.checkCancellation()
             let result = try await generator.image(at: CMTime(seconds: frame.time, preferredTimescale: 60_000))
-            CGImageDestinationAddImage(destination, result.image, [
-                kCGImagePropertyGIFDictionary: [
-                    kCGImagePropertyGIFDelayTime: frame.delay,
-                    kCGImagePropertyGIFUnclampedDelayTime: frame.delay,
-                ],
-            ] as CFDictionary)
+            autoreleasepool {
+                CGImageDestinationAddImage(destination, result.image, [
+                    kCGImagePropertyGIFDictionary: [
+                        kCGImagePropertyGIFDelayTime: frame.delay,
+                        kCGImagePropertyGIFUnclampedDelayTime: frame.delay,
+                    ],
+                ] as CFDictionary)
+            }
         }
         guard CGImageDestinationFinalize(destination) else {
             throw NotchShotError.exportFailed("The GIF encoder could not finish the file")
         }
     }
 
+    /// Frames that fit in half of this Mac's memory, up to `maximumGIFFrames`.
+    /// ImageIO holds every frame until it finishes the file. Measured on macOS
+    /// 26: a peak of about 2.8 times the raw RGBA size of all frames, so 600
+    /// frames at 1280×720 reach 5.8 GB and at 2560×1440 reach 23 GB.
+    static func gifFrameLimit(
+        framePixels: CGFloat,
+        physicalMemory: UInt64 = ProcessInfo.processInfo.physicalMemory
+    ) -> Int {
+        let bytesPerFrame = Double(max(framePixels, 1)) * 4 * 2.8
+        return max(1, min(maximumGIFFrames, Int(Double(physicalMemory) / 2 / bytesPerFrame)))
+    }
+
+    /// The pixel count of one GIF frame: the video's oriented size, scaled down
+    /// to fit the generator's `maximumSize` square, never up.
+    private static func gifFramePixels(of asset: AVURLAsset, maximumWidth: Int) async throws -> CGFloat {
+        let box = CGFloat(maximumWidth)
+        guard let track = try await asset.loadTracks(withMediaType: .video).first else { return box * box }
+        let size = try await track.load(.naturalSize)
+        let scale = min(1, box / max(size.width, size.height, 1))
+        return size.width * size.height * scale * scale
+    }
+
     /// GIF stores each delay in hundredths of a second. Distribute the rounding
     /// across the timeline so 600 rounded delays don't lose seconds of footage.
     private static func gifFrames(
         duration: TimeInterval,
-        requestedFPS: Int
+        requestedFPS: Int,
+        maximumFrames: Int
     ) throws -> [(time: TimeInterval, delay: TimeInterval)] {
         guard duration.isFinite, duration > 0,
-              duration <= Double(maximumGIFFrames * 65_535) / 100 else {
+              duration <= Double(maximumFrames * 65_535) / 100 else {
             throw NotchShotError.exportFailed("That recording is too long for a complete GIF export")
         }
         let fps = min(max(requestedFPS, 1), 30)
-        let count = max(1, Int(min(ceil(duration * Double(fps)), Double(maximumGIFFrames))))
+        let count = max(1, Int(min(ceil(duration * Double(fps)), Double(maximumFrames))))
         let ticks = max(count * 2, Int((duration * 100).rounded()))
         return (0 ..< count).map { index in
             let start = index * ticks / count
@@ -223,7 +267,7 @@ public enum RecordingExportService {
         }
     }
 
-    private static func stagingURL(for destination: URL, fileExtension: String) throws -> URL {
+    static func stagingURL(for destination: URL, fileExtension: String) throws -> URL {
         // ImageIO may leave its own temporary sidecar when encoding is cancelled.
         // A private sibling directory contains every file owned by this attempt.
         let directory = destination.deletingLastPathComponent()
@@ -233,7 +277,7 @@ public enum RecordingExportService {
         return directory.appendingPathComponent("output.\(fileExtension)")
     }
 
-    private static func publishOutput(at staging: URL, to destination: URL) throws {
+    static func publishOutput(at staging: URL, to destination: URL) throws {
         try validateOutput(at: staging)
         try Task.checkCancellation()
         // The staging directory is a sibling on the same volume. POSIX rename
@@ -243,11 +287,30 @@ public enum RecordingExportService {
         }
     }
 
+    static func publishOutputWithoutReplacing(at staging: URL, to destination: URL) throws {
+        try validateOutput(at: staging)
+        try Task.checkCancellation()
+        guard renamex_np(staging.path, destination.path, UInt32(RENAME_EXCL)) == 0 else {
+            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+        }
+    }
+
     private static func validateOutput(at url: URL) throws {
         let values = try url.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey])
         guard values.isRegularFile == true, (values.fileSize ?? 0) > 0 else {
             throw NotchShotError.exportFailed("The export did not produce a complete file")
         }
+    }
+
+    /// The GIF's own size. AVFoundation finds no video track in a GIF, and the
+    /// width and height fields describe the MP4 option.
+    static func gifPixelSize(at url: URL) -> CGSize? {
+        guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
+              let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+              let width = properties[kCGImagePropertyPixelWidth] as? Int,
+              let height = properties[kCGImagePropertyPixelHeight] as? Int,
+              width > 0, height > 0 else { return nil }
+        return CGSize(width: width, height: height)
     }
 }
 
@@ -325,10 +388,16 @@ public final class RecordingExportSession {
                 )
             }
             let metadata = await VideoThumbnail.metadata(for: url)
+            var gifSize: CGSize?
+            if exportFormat == .gif {
+                gifSize = await Task.detached(priority: .userInitiated) {
+                    RecordingExportService.gifPixelSize(at: url)
+                }.value
+            }
             let exported = CaptureAsset(
                 url: url,
                 kind: exportFormat == .video ? .recording : .screenshot,
-                pixelSize: metadata?.pixelSize ?? exportSize,
+                pixelSize: gifSize ?? metadata?.pixelSize ?? exportSize,
                 scale: 1,
                 duration: exportFormat == .video ? metadata?.duration : nil,
                 ownership: .userDocument

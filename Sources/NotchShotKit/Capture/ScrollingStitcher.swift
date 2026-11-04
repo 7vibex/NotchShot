@@ -205,9 +205,11 @@ public enum ScrollingStitcher {
         var seams: [StitchSeam] = []
         var dropped: [Int] = []
         // (sourceFrameIndex, sourceTopRow, rowCount) draw instructions.
-        let firstLength = axis == .vertical ? frames[0].height : frames[0].width
+        // A fixed footer is left out here and added once at the very end. Drawn
+        // with the first frame, it would sit in the middle of the image.
+        let firstLength = (axis == .vertical ? frames[0].height : frames[0].width) - sticky.bottom
         var segments: [(frame: Int, top: Int, rows: Int)] = [(0, 0, firstLength)]
-        var totalLength = axis == .vertical ? frames[0].height : frames[0].width
+        var totalLength = firstLength
         var previousIndex = 0
 
         for index in 1 ..< frames.count {
@@ -258,6 +260,17 @@ public enum ScrollingStitcher {
         }
         if seams.contains(where: \.isSuspect) {
             warnings.append("Some joins are uncertain — check the marked seams before sharing.")
+        }
+        if sticky.bottom > 0 {
+            let lastFrame = frames[previousIndex]
+            let lastLength = axis == .vertical ? lastFrame.height : lastFrame.width
+            segments.append((previousIndex, lastLength - sticky.bottom, sticky.bottom))
+            totalLength += sticky.bottom
+            try validateComposite(
+                width: axis == .vertical ? crossLength : totalLength,
+                height: axis == .vertical ? totalLength : crossLength,
+                limits: limits
+            )
         }
 
         try Task.checkCancellation()
@@ -314,7 +327,16 @@ public enum ScrollingStitcher {
         guard usableBottom - usableTop > settings.templateHeight else { return nil }
 
         let templateHeight = min(settings.templateHeight, (usableBottom - usableTop) / 2)
-        let templateTop = usableBottom - templateHeight
+        // A blank band matches any other blank band perfectly, at the wrong place.
+        // Match from the nearest band with something in it, and when there is
+        // none, say that this join is a guess.
+        let texturedTop = texturedBandTop(
+            in: previous,
+            from: usableBottom - templateHeight,
+            through: usableTop,
+            height: templateHeight
+        )
+        let templateTop = texturedTop ?? usableBottom - templateHeight
 
         var bestScore = Double.greatestFiniteMagnitude
         var bestPosition = -1
@@ -347,14 +369,41 @@ public enum ScrollingStitcher {
 
         guard bestPosition >= 0, bestScore <= settings.maximumMeanDifference else { return nil }
 
-        // Everything below the matched band — and above any fixed footer — is
-        // content the previous frame never showed.
-        let sourceTop = bestPosition + templateHeight
+        // Everything below where the previous frame's content ended — and above
+        // any fixed footer — is content the previous frame never showed.
+        let sourceTop = bestPosition + (usableBottom - templateTop)
         let newRows = (next.height - sticky.bottom) - sourceTop
         guard newRows > 0 else { return nil }
 
-        let confidence = max(0, 1 - bestScore / settings.maximumMeanDifference)
+        let matchConfidence = max(0, 1 - bestScore / settings.maximumMeanDifference)
+        let confidence = texturedTop == nil
+            ? min(matchConfidence, StitchSettings.warningConfidence / 2)
+            : matchConfidence
         return Match(sourceTop: sourceTop, addedRows: newRows, confidence: confidence)
+    }
+
+    /// The nearest band, searching upward, whose rows differ along the scroll
+    /// direction. A band can be busy across and still repeat exactly as it
+    /// scrolls, so it is compared with itself a few rows on.
+    private static func texturedBandTop(
+        in buffer: GrayBuffer,
+        from start: Int,
+        through end: Int,
+        height: Int
+    ) -> Int? {
+        let shift = min(8, height / 2)
+        guard shift > 0 else { return nil }
+        for top in stride(from: start, through: end, by: -max(1, height / 2)) {
+            let texture = buffer.meanAbsoluteDifference(
+                templateTop: top,
+                templateHeight: height - shift,
+                against: buffer,
+                at: top + shift,
+                earlyExit: .greatestFiniteMagnitude
+            )
+            if texture >= 2 { return top }
+        }
+        return nil
     }
 
     public struct StickyBands: Sendable, Equatable {

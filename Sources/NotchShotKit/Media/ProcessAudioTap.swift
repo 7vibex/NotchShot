@@ -9,7 +9,11 @@ import OSLog
 /// The sound still plays normally (the tap is unmuted), nothing is written
 /// anywhere, and the tap and its private aggregate device are torn down on
 /// `stop()`. The first tap asks for macOS's "System Audio Recording Only"
-/// permission; a denial surfaces as `start` throwing.
+/// permission; a denial surfaces in `start`'s completion.
+///
+/// Setting up and tearing down are several synchronous calls to coreaudiod, so
+/// both run in order on `setupQueue` and return at once. Samples simply don't
+/// arrive until the tap is up.
 final class ProcessAudioTap: @unchecked Sendable {
     enum Target: Equatable {
         /// Only these apps (and their helper processes).
@@ -31,19 +35,44 @@ final class ProcessAudioTap: @unchecked Sendable {
     }
 
     /// Mono-ish float frames, the format they arrived in, and the sample rate.
-    typealias Handler = (_ samples: UnsafeBufferPointer<Float>, _ channels: Int, _ sampleRate: Double) -> Void
+    ///
+    /// `@Sendable` because it runs on the tap's queue: without it, a closure
+    /// written on the main actor would be taken to be isolated to it, and Swift 6
+    /// traps when such a closure runs anywhere else.
+    typealias Handler = @Sendable (_ samples: UnsafeBufferPointer<Float>, _ channels: Int, _ sampleRate: Double) -> Void
 
     private let queue = DispatchQueue(label: "com.notchshot.audio-tap", qos: .userInitiated)
+    private let setupQueue = DispatchQueue(label: "com.notchshot.audio-tap-setup", qos: .userInitiated)
+    // Touched only on `setupQueue`, and by `deinit` once nothing else can.
     private var tapID = AudioObjectID(kAudioObjectUnknown)
     private var aggregateID = AudioObjectID(kAudioObjectUnknown)
     private var procID: AudioDeviceIOProcID?
-    private(set) var sampleRate: Double = 48_000
-    private(set) var isRunning = false
 
-    deinit { stop() }
+    deinit { tearDown() }
 
-    func start(_ target: Target, handler: @escaping Handler) throws {
-        stop()
+    /// Replaces any running tap. `completion` runs on a background queue, with
+    /// the error when the tap couldn't start.
+    func start(
+        _ target: Target,
+        handler: @escaping Handler,
+        completion: @escaping @Sendable ((any Error)?) -> Void
+    ) {
+        setupQueue.async { [self] in
+            do {
+                try build(target, handler: handler)
+                completion(nil)
+            } catch {
+                completion(error)
+            }
+        }
+    }
+
+    func stop() {
+        setupQueue.async { [self] in tearDown() }
+    }
+
+    private func build(_ target: Target, handler: @escaping Handler) throws {
+        tearDown()
         let description: CATapDescription
         switch target {
         case .applications(let bundleIDs):
@@ -79,7 +108,7 @@ final class ProcessAudioTap: @unchecked Sendable {
         var device = AudioObjectID(kAudioObjectUnknown)
         status = AudioHardwareCreateAggregateDevice(aggregate as CFDictionary, &device)
         guard status == noErr else {
-            stop()
+            tearDown()
             throw TapError.coreAudio("device", status)
         }
         aggregateID = device
@@ -91,10 +120,11 @@ final class ProcessAudioTap: @unchecked Sendable {
             mScope: kAudioObjectPropertyScopeGlobal,
             mElement: kAudioObjectPropertyElementMain
         )
+        var rate = 48_000.0
         if AudioObjectGetPropertyData(tap, &address, 0, nil, &size, &format) == noErr, format.mSampleRate > 0 {
-            sampleRate = format.mSampleRate
+            rate = format.mSampleRate
         }
-        let rate = sampleRate
+        let sampleRate = rate
         let interleaved = format.mFormatFlags & kAudioFormatFlagIsNonInterleaved == 0
         let isFloat = format.mFormatFlags & kAudioFormatFlagIsFloat != 0 || format.mFormatFlags == 0
 
@@ -108,22 +138,21 @@ final class ProcessAudioTap: @unchecked Sendable {
             let samples = UnsafeBufferPointer(start: data.assumingMemoryBound(to: Float.self), count: count)
             // Non-interleaved delivers one channel per buffer; the first is
             // enough for a level meter and for matching.
-            handler(samples, interleaved ? Int(max(first.mNumberChannels, 1)) : 1, rate)
+            handler(samples, interleaved ? Int(max(first.mNumberChannels, 1)) : 1, sampleRate)
         }
         guard status == noErr, let proc else {
-            stop()
+            tearDown()
             throw TapError.coreAudio("io", status)
         }
         procID = proc
         status = AudioDeviceStart(device, proc)
         guard status == noErr else {
-            stop()
+            tearDown()
             throw TapError.coreAudio("start", status)
         }
-        isRunning = true
     }
 
-    func stop() {
+    private func tearDown() {
         if aggregateID != kAudioObjectUnknown {
             if let procID {
                 AudioDeviceStop(aggregateID, procID)
@@ -137,7 +166,6 @@ final class ProcessAudioTap: @unchecked Sendable {
         procID = nil
         aggregateID = AudioObjectID(kAudioObjectUnknown)
         tapID = AudioObjectID(kAudioObjectUnknown)
-        isRunning = false
     }
 
     // MARK: Process lookup
@@ -232,5 +260,12 @@ enum AudioTapProcessPolicy {
             result.append(webKitAudioProcess)
         }
         return result
+    }
+
+    /// What a tap on this app should take. `running` has one entry per process,
+    /// so an app whose renderers share a helper bundle ID would otherwise list
+    /// it once per renderer, and look changed each time one started or quit.
+    static func tapTargets(for bundleID: String, among running: [String]) -> [String] {
+        Array(Set(matches(for: bundleID, among: running))).sorted()
     }
 }

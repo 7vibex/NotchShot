@@ -53,8 +53,8 @@ extension AppCoordinator {
     private func reviewClaudePermissionInTerminal(sessionID: String, requestID: String) {
         context.claude.answerInTerminal(sessionID: sessionID, requestID: requestID)
         if let session = context.claude.session(for: sessionID) {
-            _ = AgentTerminalJumper.jump(pid: session.pid, tty: session.tty)
             collapseAfterAgentJump()
+            Task { await AgentTerminalJumper.jump(pid: session.pid, tty: session.tty) }
         }
     }
 
@@ -120,8 +120,8 @@ extension AppCoordinator {
             case (.question, .answerElsewhere), (.approval, .answerElsewhere):
                 context.claude.answerInTerminal(sessionID: sessionID, requestID: interaction.id)
                 if let session = context.claude.session(for: sessionID) {
-                    _ = AgentTerminalJumper.jump(pid: session.pid, tty: session.tty)
                     collapseAfterAgentJump()
+                    Task { await AgentTerminalJumper.jump(pid: session.pid, tty: session.tty) }
                 }
             default:
                 break
@@ -193,11 +193,16 @@ extension AppCoordinator {
         case .crewline:
             context.crewline.openRun(activity.id)
         case .claude:
-            if let session = context.claude.session(for: activity.id),
-               AgentTerminalJumper.jump(pid: session.pid, tty: session.tty) {
-                return
+            guard let session = context.claude.session(for: activity.id) else {
+                AgentIconCatalog.activate(.claude)
+                break
             }
-            AgentIconCatalog.activate(.claude)
+            Task { [weak self] in
+                if await AgentTerminalJumper.jump(pid: session.pid, tty: session.tty) { return }
+                AgentIconCatalog.activate(.claude)
+                self?.collapseAfterAgentJump()
+            }
+            return
         case .codex, .cursor, .terminal:
             AgentIconCatalog.activate(activity.source)
         }
@@ -268,6 +273,7 @@ extension AppCoordinator {
         alert.addButton(withTitle: "Send")
         alert.addButton(withTitle: "Cancel")
         alert.window.initialFirstResponder = note
+        NSApp.activate(ignoringOtherApps: true)
         guard alert.runModal() == .alertFirstButtonReturn,
               targets.indices.contains(popup.indexOfSelectedItem) else { return }
         let target = targets[popup.indexOfSelectedItem]
@@ -294,8 +300,10 @@ extension AppCoordinator {
                 clipboardMonitor.copyDerivedTextToPasteboard(combined)
             }
             let session = context.claude.session(for: sessionID)
-            if !AgentTerminalJumper.jump(pid: session?.pid, tty: session?.tty) {
-                AgentIconCatalog.activate(.claude)
+            Task {
+                if !(await AgentTerminalJumper.jump(pid: session?.pid, tty: session?.tty)) {
+                    AgentIconCatalog.activate(.claude)
+                }
             }
             presentIslandEvent(IslandTransientEvent(
                 kind: .notice,

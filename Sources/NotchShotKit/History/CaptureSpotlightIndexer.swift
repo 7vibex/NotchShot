@@ -25,6 +25,7 @@ extension CSSearchableIndex: SpotlightIndexing {}
 /// expensive `CSSearchableItem` construction happens later, when a refresh is
 /// actually about to hand items to the index, so a replacement that arrives
 /// while an earlier refresh is in flight never materializes the superseded set.
+/// Construction runs off the main actor: up to 5,000 items, each with OCR text.
 @MainActor
 public final class CaptureSpotlightIndexer {
     public static let shared = CaptureSpotlightIndexer()
@@ -35,6 +36,14 @@ public final class CaptureSpotlightIndexer {
     private var desiredEntries: [HistoryEntry] = []
     private var refreshRequested = false
     private var isRefreshing = false
+    /// The last delete succeeded and nothing has been indexed since. With the
+    /// preference off, every History mutation asks to clear an empty domain.
+    private var domainIsKnownEmpty = false
+
+    /// A hop for items built off the main actor. Nothing else holds them.
+    private struct BuiltItems: @unchecked Sendable {
+        let items: [CSSearchableItem]
+    }
 
     /// Test seam: number of items materialized by the most recent refresh.
     @ObservationIgnored private(set) var lastMaterializedItemCount = 0
@@ -59,6 +68,7 @@ public final class CaptureSpotlightIndexer {
     }
 
     private func requestRefresh() {
+        if desiredEntries.isEmpty, domainIsKnownEmpty, !isRefreshing { return }
         refreshRequested = true
         guard !isRefreshing else { return }
         beginRefresh()
@@ -87,13 +97,17 @@ public final class CaptureSpotlightIndexer {
                 // so index the newest set directly and never build the one it
                 // superseded.
                 self.refreshRequested = false
-                let items = self.desiredEntries.prefix(Self.maximumItems).map(Self.item)
-                self.lastMaterializedItemCount = items.count
-                guard !items.isEmpty else {
+                let snapshot = Array(self.desiredEntries.prefix(Self.maximumItems))
+                self.lastMaterializedItemCount = snapshot.count
+                self.domainIsKnownEmpty = snapshot.isEmpty
+                guard !snapshot.isEmpty else {
                     self.finishRefresh()
                     return
                 }
-                searchableIndex.indexSearchableItems(items) { [weak self] error in
+                let built = await Task.detached(priority: .utility) {
+                    BuiltItems(items: snapshot.map(Self.item))
+                }.value
+                searchableIndex.indexSearchableItems(built.items) { [weak self] error in
                     if let error {
                         Log.history.error(
                             "Could not write Spotlight capture index: \(error.localizedDescription)"

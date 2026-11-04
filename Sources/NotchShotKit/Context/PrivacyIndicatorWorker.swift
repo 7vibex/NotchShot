@@ -15,7 +15,7 @@ protocol PrivacyIndicatorBackend: Sendable {
     func client(for process: UInt32) -> MicrophoneClient?
 }
 
-enum PrivacyIndicatorProperty: Equatable, Sendable {
+enum PrivacyIndicatorProperty: Hashable, Sendable {
     case audioProcesses, cameraDevices, audioRunning(UInt32), cameraRunning(UInt32)
 }
 
@@ -41,7 +41,7 @@ final class PrivacyIndicatorWorker: @unchecked Sendable {
     private var generation: UInt64?
     private var publish: (@Sendable (PrivacyIndicatorSnapshot) -> Void)?
     private var listListeners: [PrivacyIndicatorListener] = []
-    private var runningListeners: [PrivacyIndicatorListener] = []
+    private var runningListeners: [PrivacyIndicatorProperty: PrivacyIndicatorListener] = [:]
     private var audioProcesses: [UInt32] = []
     private var cameraDevices: [UInt32] = []
 
@@ -79,24 +79,29 @@ final class PrivacyIndicatorWorker: @unchecked Sendable {
     }
 
     private func removeRunningListeners() {
-        runningListeners.forEach { $0.cancel() }
+        runningListeners.values.forEach { $0.cancel() }
         runningListeners.removeAll()
         audioProcesses.removeAll()
         cameraDevices.removeAll()
     }
 
+    /// Only the difference is registered. Re-adding every process cost about
+    /// three HAL calls each per list change, and removing a listener from a
+    /// process that had just exited logs "no object with given ID". Its object
+    /// is gone with its listeners, so dropping the token is all that's left.
     private func rebuild(generation: UInt64) {
         dispatchPrecondition(condition: .onQueue(queue))
         guard self.generation == generation else { return }
-        removeRunningListeners()
         audioProcesses = backend.otherAudioProcesses()
         cameraDevices = backend.cameraDeviceIDs()
         let properties = audioProcesses.map(PrivacyIndicatorProperty.audioRunning)
             + cameraDevices.map(PrivacyIndicatorProperty.cameraRunning)
-        for property in properties {
+        let current = Set(properties)
+        runningListeners = runningListeners.filter { current.contains($0.key) }
+        for property in properties where runningListeners[property] == nil {
             if let listener = backend.addListener(property, queue: queue, handler: { [weak self] in
                 self?.refresh(generation: generation)
-            }) { runningListeners.append(listener) }
+            }) { runningListeners[property] = listener }
         }
         refresh(generation: generation)
     }

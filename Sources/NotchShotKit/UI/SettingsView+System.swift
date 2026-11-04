@@ -461,7 +461,7 @@ struct PrivacySettings: View {
                 .onChange(of: preferences.historyRetentionDays) { _, _ in
                     // Applying only at launch left rows past a just-shortened
                     // window alive for the rest of the session.
-                    _ = coordinator.history.applyRetention()
+                    Task { _ = await coordinator.history.applyRetentionInBackground() }
                 }
 
                 Toggle("Search capture text", isOn: Binding(
@@ -493,14 +493,16 @@ struct PrivacySettings: View {
                         isPresented: $confirmClear
                     ) {
                         Button("Clear History Only") {
-                            _ = coordinator.history.clearAll(includingFiles: false)
+                            Task { _ = await coordinator.history.clearAllInBackground(includingFiles: false) }
                         }
                         Button("Clear History and Move Files to Trash", role: .destructive) {
-                            let failed = coordinator.history.clearAll(includingFiles: true)
-                            if !failed.isEmpty {
-                                coordinator.present(error: NotchShotError.destinationUnwritable(
-                                    "Could not move \(failed.count) capture file(s) to Trash"
-                                ))
+                            Task {
+                                let failed = await coordinator.history.clearAllInBackground(includingFiles: true)
+                                if !failed.isEmpty {
+                                    coordinator.present(error: NotchShotError.destinationUnwritable(
+                                        "Could not move \(failed.count) capture file(s) to Trash"
+                                    ))
+                                }
                             }
                         }
                         Button("Cancel", role: .cancel) {}
@@ -743,7 +745,10 @@ private struct ShortcutRecorder: NSViewRepresentable {
                 guard let self else { return event }
                 let handled = MainActor.assumeIsolated { () -> Bool in
                     guard self.isRecording else { return false }
-                    let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+                    // Only the four Carbon can register. Arrow and function keys
+                    // carry .function and .numericPad, and Caps Lock its own flag,
+                    // none of which make a shortcut.
+                    let modifiers = event.modifierFlags.intersection([.command, .shift, .option, .control])
                     // A shortcut with no modifier would fire while typing.
                     guard !modifiers.isEmpty else { return false }
                     self.onCapture?(HotKeyBinding(
@@ -772,18 +777,18 @@ private struct ShortcutRecorder: NSViewRepresentable {
 private struct NotchHiddenAppRow: View {
     let bundleID: String
     let onRemove: () -> Void
+    @State private var app: NotchHiddenAppInfo?
+    @State private var didLookUp = false
 
     var body: some View {
-        let appURL = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID)
         HStack(spacing: 8) {
-            if let appURL {
-                Image(nsImage: NSWorkspace.shared.icon(forFile: appURL.path))
+            if let app {
+                Image(nsImage: app.icon)
                     .resizable()
                     .frame(width: 20, height: 20)
                     .accessibilityHidden(true)
-                Text(FileManager.default.displayName(atPath: appURL.path)
-                    .replacingOccurrences(of: ".app", with: ""))
-            } else {
+                Text(app.displayName.replacingOccurrences(of: ".app", with: ""))
+            } else if didLookUp {
                 Text(bundleID)
                     .font(.caption.monospaced())
                     .foregroundStyle(.secondary)
@@ -793,6 +798,27 @@ private struct NotchHiddenAppRow: View {
                 .buttonStyle(.link)
         }
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("Hidden in \(appURL.map { FileManager.default.displayName(atPath: $0.path) } ?? bundleID)")
+        .accessibilityLabel("Hidden in \(app?.displayName ?? bundleID)")
+        // Once per row: this view's closure input stops SwiftUI skipping it, so
+        // anything in `body` ran again on every tick of the Hover delay slider.
+        .task(id: bundleID) {
+            let id = bundleID
+            app = await Task.detached(priority: .userInitiated) {
+                NotchHiddenAppInfo(bundleID: id)
+            }.value
+            didLookUp = true
+        }
+    }
+}
+
+private struct NotchHiddenAppInfo: Sendable {
+    let icon: NSImage
+    let displayName: String
+
+    /// Apple documents both NSWorkspace methods as safe from any thread.
+    init?(bundleID: String) {
+        guard let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID) else { return nil }
+        icon = NSWorkspace.shared.icon(forFile: url.path)
+        displayName = FileManager.default.displayName(atPath: url.path)
     }
 }

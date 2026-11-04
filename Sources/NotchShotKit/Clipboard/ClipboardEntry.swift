@@ -130,17 +130,25 @@ public struct ClipboardEntry: Codable, Sendable, Identifiable, Equatable {
             return "\(filePaths.count) files"
         case .text, .link, .color:
             let raw = text ?? ""
-            let collapsed = raw
-                .replacingOccurrences(of: "\n", with: " ")
-                .replacingOccurrences(of: "\t", with: " ")
-                .trimmingCharacters(in: .whitespacesAndNewlines)
+            // A row shows 180 characters of up to 256 KB and is drawn often. The
+            // head alone decides it, unless it is nearly all whitespace.
+            if raw.utf8.count > 4_096 {
+                let head = Self.collapsedForPreview(String(raw.prefix(1_024)))
+                if head.count > 180 { return String(head.prefix(180)) + "…" }
+            }
+            let collapsed = Self.collapsedForPreview(raw)
             return collapsed.count > 180 ? String(collapsed.prefix(180)) + "…" : collapsed
         }
     }
 
-    public var displayTitle: String { label ?? kind.displayName }
+    private static func collapsedForPreview(_ raw: String) -> String {
+        raw
+            .replacingOccurrences(of: "\n", with: " ")
+            .replacingOccurrences(of: "\t", with: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
 
-    public var isSearchable: Bool { kind != .image || !(text?.isEmpty ?? true) }
+    public var displayTitle: String { label ?? kind.displayName }
 
     public func matches(_ query: HistoryQuery) -> Bool {
         guard !query.isEmpty else { return true }

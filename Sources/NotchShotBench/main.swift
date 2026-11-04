@@ -461,3 +461,4 @@ private func decodedDimensions(_ data: Data) -> (width: Int, height: Int)? {
 }
 
 await runBenchmarks()
+if Benchmark.anyInvalid { exit(1) }

@@ -54,8 +54,8 @@ public enum NotchShotPackage {
     // pixel budgets while allowing their supported per-axis extent.
     private static let maximumSourceDimension = 65_535
     private static let maximumImagePixels = 50_000_000
-    private static let maximumRenderDimension = 65_535
-    private static let maximumRenderPixels = 80_000_000
+    private static let maximumRenderDimension = AnnotationRenderer.maximumRenderDimension
+    private static let maximumRenderPixels = AnnotationRenderer.maximumRenderPixels
     private static let maximumElements = 5_000
     private static let maximumPoints = 500_000
 

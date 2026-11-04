@@ -14,13 +14,12 @@ struct EncodedAnnotationImage: Sendable {
 struct AnnotationRenderSnapshot: @unchecked Sendable {
     let source: CGImage
     let document: AnnotationDocument
-    let seams: [StitchSeam]
 
     func render(isPreview: Bool = false) throws -> CapturedImage {
         try Task.checkCancellation()
         let image = try AnnotationRenderer.render(
             document: document, source: source,
-            options: AnnotationRenderer.Options(isPreview: isPreview, seams: seams)
+            options: AnnotationRenderer.Options(isPreview: isPreview)
         )
         try Task.checkCancellation()
         return CapturedImage(cgImage: image, scale: document.sourceScale, sourceRect: .zero)
@@ -59,6 +58,35 @@ struct AnnotationRenderSnapshot: @unchecked Sendable {
     }
 }
 
+/// Keeps a queued background save from landing on top of a newer one. A save
+/// made on main, from the prompt at close or quit, moves `generation` first, so
+/// one still queued is skipped and one already writing finishes before it. The
+/// write under the lock never needs the main thread, so main waiting here cannot
+/// deadlock.
+final class ProjectSaveOrder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var generation = 0
+
+    func claim() -> Int {
+        lock.withLock {
+            generation += 1
+            return generation
+        }
+    }
+
+    func isCurrent(_ claim: Int) -> Bool {
+        lock.withLock { generation == claim }
+    }
+
+    /// Writes unless a newer save has claimed its place since.
+    func write(ifCurrent claim: Int, _ body: () throws -> Void) rethrows {
+        try lock.withLock {
+            guard generation == claim else { return }
+            try body()
+        }
+    }
+}
+
 /// One bitmap job at a time across editors. Canceled queued jobs check before
 /// allocating canvases; views allow one output action and cancel stale previews.
 actor AnnotationRenderWorker {
@@ -68,11 +96,20 @@ actor AnnotationRenderWorker {
         try autoreleasepool { try snapshot.render(isPreview: isPreview) }
     }
 
-    func encode(_ snapshot: AnnotationRenderSnapshot, format: ImageFormat, quality: Double) throws -> EncodedAnnotationImage {
-        try autoreleasepool { try snapshot.encode(format: format, quality: quality) }
-    }
-
     func export(_ snapshot: AnnotationRenderSnapshot, to url: URL, format: ImageFormat, quality: Double) throws -> AnnotationDocumentController.ImageExportResult {
         try autoreleasepool { try snapshot.export(to: url, format: format, quality: quality) }
+    }
+
+    func saveProject(
+        _ snapshot: AnnotationRenderSnapshot,
+        to url: URL,
+        order: ProjectSaveOrder,
+        claim: Int
+    ) throws {
+        try autoreleasepool {
+            try order.write(ifCurrent: claim) {
+                _ = try NotchShotPackage.write(document: snapshot.document, source: snapshot.source, to: url)
+            }
+        }
     }
 }

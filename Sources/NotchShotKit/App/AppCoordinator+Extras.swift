@@ -78,13 +78,14 @@ extension AppCoordinator {
         }
     }
 
-    /// Whether the island should draw the call's mic as muted. App state is
-    /// tracked from the toggles NotchShot sent, since apps don't publish it.
-    public func isMeetingMuted(_ id: IslandActivityID) -> Bool {
-        guard MeetingControls.profile(for: id.key) == nil else { return meetingMutedApps.contains(id.key) }
-        // Read live: the default input or its mute can change outside
-        // NotchShot, and a cached value would show the wrong state.
-        return MeetingControls.isSystemInputMuted() ?? systemInputMuted
+    /// Keeps `systemInputMuted` live while any call is using the microphone.
+    func syncSystemInputMuteWatcher() {
+        let isOnCall = context.privacy.microphoneClients.contains {
+            CallActivityPolicy.isCall(bundleIdentifier: $0.bundleIdentifier)
+        }
+        SystemInputMuteWatcher.shared.setWatching(isOnCall) { [weak self] muted in
+            self?.systemInputMuted = muted
+        }
     }
 
     /// Turns the microphone back on once every call NotchShot muted it for

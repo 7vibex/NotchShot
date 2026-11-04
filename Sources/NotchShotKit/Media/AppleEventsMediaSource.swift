@@ -44,6 +44,7 @@ struct AppleScriptExecution: Sendable {
     var stringValue: String?
     var data: Data?
     var errorNumber: Int?
+    var booleanValue = false
 }
 
 /// `NSAppleScript` is synchronous and may wait several seconds for another
@@ -134,7 +135,8 @@ private final class ScriptThreadRunner: @unchecked Sendable {
         return AppleScriptExecution(
             stringValue: error == nil ? result.stringValue : nil,
             data: error == nil && !result.data.isEmpty ? result.data : nil,
-            errorNumber: errorNumber
+            errorNumber: errorNumber,
+            booleanValue: error == nil && result.booleanValue
         )
     }
 }
@@ -187,7 +189,9 @@ public actor AppleEventsMediaSource: MediaSource {
     private let maximumArtworkBytes = 8_000_000
     private let maximumArtworkDimension = 4_096
     private let maximumArtworkPixels = 16_000_000
-    private let artworkSession: URLSession = {
+    /// One for all instances, for the same reason as the cache: a session that
+    /// is never invalidated holds its memory until the process exits.
+    private static let artworkSession: URLSession = {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.timeoutIntervalForRequest = 8
         configuration.timeoutIntervalForResource = 12
@@ -203,6 +207,17 @@ public actor AppleEventsMediaSource: MediaSource {
     /// source's first answer.
     static let backgroundPollInterval: Duration = .seconds(10)
     private var pollsInBackground = false
+    /// Polls in a row where a running player gave no answer. Loading a playlist,
+    /// or a starved script thread on a busy Mac, looks like this and is no
+    /// reason to tell the notch that the music stopped.
+    private var unansweredPolls = 0
+    static let unansweredPollLimit = 3
+    /// The cover being fetched, apart from the poll: its download can take up
+    /// to twelve seconds, and the new title shouldn't wait for that.
+    private var artworkFetch: (key: String, task: Task<Void, Never>)?
+    /// A track with no cover is asked about at most this often, not every poll.
+    private var lastArtworkMiss: (key: String, at: Date)?
+    static let artworkRetryInterval: TimeInterval = 60
 
     public init() {}
 
@@ -245,9 +260,10 @@ public actor AppleEventsMediaSource: MediaSource {
         case .nextTrack: script = "next track"
         case .previousTrack: script = "previous track"
         case .seek(let position):
-            script = player == .spotify
-                ? "set player position to \(Int(position))"
-                : "set player position to \(Int(position))"
+            // A lyric's timestamp comes from a public database and can be huge;
+            // `Int(_:)` traps on a value out of range.
+            guard let seconds = MediaTimePolicy.wholeSeconds(position, rounding: .towardZero) else { return }
+            script = "set player position to \(seconds)"
         }
         _ = await run(script: "tell application \"\(player.applicationName)\" to \(script)")
         await poll()
@@ -256,6 +272,8 @@ public actor AppleEventsMediaSource: MediaSource {
     public func stop() async {
         pollTask?.cancel()
         pollTask = nil
+        artworkFetch?.task.cancel()
+        artworkFetch = nil
         continuation?.finish()
         continuation = nil
     }
@@ -263,8 +281,11 @@ public actor AppleEventsMediaSource: MediaSource {
     // MARK: Polling
 
     private func poll() async {
-        var snapshot = await snapshot()
-        snapshot.artworkData = await artwork(for: snapshot)
+        let polled = await snapshot()
+        unansweredPolls = polled.answered ? 0 : unansweredPolls + 1
+        guard !Self.holdsLastSnapshot(unansweredPolls: unansweredPolls) else { return }
+        var snapshot = polled.snapshot
+        snapshot.artworkData = artwork(for: snapshot)
 
         // Only emit when something the UI cares about actually changed, so the
         // 2 s tick doesn't churn SwiftUI or reload artwork.
@@ -274,18 +295,59 @@ public actor AppleEventsMediaSource: MediaSource {
         }
     }
 
+    /// True while a running player's silence is still given the benefit of the
+    /// doubt. Bounded, so one that has really hung doesn't keep its track.
+    static func holdsLastSnapshot(unansweredPolls: Int) -> Bool {
+        unansweredPolls > 0 && unansweredPolls < unansweredPollLimit
+    }
+
+    /// The cover to show now. A miss starts a fetch and answers with the cover
+    /// already up, the coordinator's "previous cover stays up" behaviour, and
+    /// the new one is published as soon as it lands.
+    private func artwork(for snapshot: MediaSnapshot) -> Data? {
+        guard let key = Self.cacheKey(for: snapshot) else { return nil }
+        if let cached = Self.artworkCache.data(for: key) { return cached }
+        if let lastArtworkMiss, Self.isWithinArtworkRetryInterval(
+            missedKey: lastArtworkMiss.key, at: lastArtworkMiss.at, key: key
+        ) {
+            return nil
+        }
+        if artworkFetch?.key != key {
+            artworkFetch?.task.cancel()
+            let bundleID = snapshot.applicationBundleID
+            artworkFetch = (key, Task { await self.fetchArtwork(key: key, bundleID: bundleID) })
+        }
+        return lastSnapshot.artworkData
+    }
+
+    static func isWithinArtworkRetryInterval(missedKey: String, at: Date, key: String, now: Date = Date()) -> Bool {
+        missedKey == key && now.timeIntervalSince(at) < artworkRetryInterval
+    }
+
+    private func fetchArtwork(key: String, bundleID: String?) async {
+        let data = await artworkData(bundleID: bundleID)
+        guard !Task.isCancelled else { return }
+        artworkFetch = nil
+        if let data {
+            Self.artworkCache.insert(data, for: key)
+            lastArtworkMiss = nil
+        } else {
+            lastArtworkMiss = (key, Date())
+        }
+        guard Self.cacheKey(for: lastSnapshot) == key, lastSnapshot.artworkData != data else { return }
+        lastSnapshot.artworkData = data
+        continuation?.yield(lastSnapshot)
+    }
+
     /// Album art for the current track.
     ///
     /// Music stores the image locally, so it comes back as raw bytes over Apple
     /// Events. Spotify only exposes a CDN URL, so that one costs a single
     /// request per track — the only network access in the app, and only when
     /// Spotify is the active player.
-    private func artwork(for snapshot: MediaSnapshot) async -> Data? {
-        guard let key = Self.cacheKey(for: snapshot) else { return nil }
-        if let cached = Self.artworkCache.data(for: key) { return cached }
-
+    private func artworkData(bundleID: String?) async -> Data? {
         let data: Data?
-        switch snapshot.applicationBundleID {
+        switch bundleID {
         case Player.music.rawValue:
             data = await musicArtworkData()
         case Player.spotify.rawValue:
@@ -297,15 +359,13 @@ public actor AppleEventsMediaSource: MediaSource {
         default:
             data = nil
         }
-
         guard let data, !data.isEmpty else { return nil }
-        Self.artworkCache.insert(data, for: key)
         return data
     }
 
     private func remoteArtwork(from url: URL) async -> Data? {
         do {
-            let (bytes, response) = try await artworkSession.bytes(from: url)
+            let (bytes, response) = try await Self.artworkSession.bytes(from: url)
             guard let http = response as? HTTPURLResponse,
                   (200 ..< 300).contains(http.statusCode),
                   http.url?.scheme?.lowercased() == "https",
@@ -365,6 +425,12 @@ public actor AppleEventsMediaSource: MediaSource {
     }
 
     private func runningPlayer() async -> Player? {
+        await playerStatus().player
+    }
+
+    /// The player to follow, and whether a running one failed to answer: the
+    /// same nil can mean nothing is open or everything open is busy.
+    private func playerStatus() async -> (player: Player?, someoneDidNotAnswer: Bool) {
         // Asked by identifier: reading `bundleIdentifier` off every running
         // app went to LaunchServices for most of them on every poll, about
         // 10 M instructions and 5 ms on the main thread each time.
@@ -376,41 +442,49 @@ public actor AppleEventsMediaSource: MediaSource {
         // as usable would start a poll loop that spends two seconds waiting on
         // every cycle while never producing metadata.
         var firstResponsivePlayer: Player?
+        var someoneDidNotAnswer = false
         for player in Player.allCases where running.contains(player.rawValue) {
             guard let state = await run(
                 script: "tell application \"\(player.applicationName)\" to player state as string"
-            )?.lowercased() else { continue }
+            )?.lowercased() else {
+                someoneDidNotAnswer = true
+                continue
+            }
             if state == "playing" {
-                return player
+                return (player, someoneDidNotAnswer)
             }
             firstResponsivePlayer = firstResponsivePlayer ?? player
         }
-        return firstResponsivePlayer
+        return (firstResponsivePlayer, someoneDidNotAnswer)
     }
 
-    private func snapshot() async -> MediaSnapshot {
-        guard let player = await runningPlayer() else {
-            return MediaSnapshot(source: .none)
+    /// `answered` is false when a running player gave no answer, as opposed to
+    /// saying it is stopped or there being no player at all.
+    private func snapshot() async -> (snapshot: MediaSnapshot, answered: Bool) {
+        let status = await playerStatus()
+        guard let player = status.player else {
+            return (MediaSnapshot(source: .none), !status.someoneDidNotAnswer)
         }
 
         let script = Self.snapshotScript(applicationName: player.applicationName)
 
-        guard let output = await run(script: script), output != "stopped" else {
-            return MediaSnapshot(
+        let answer = await run(script: script)
+        guard let output = answer, output != "stopped" else {
+            return (MediaSnapshot(
                 source: .appleEvents,
                 applicationBundleID: player.rawValue,
                 applicationName: player.applicationName
-            )
+            ), answer != nil)
         }
 
         guard let fields = Self.parseSnapshotFields(
             output,
             spotifyDurationIsMilliseconds: player == .spotify
         ) else {
-            return MediaSnapshot(source: .appleEvents, applicationBundleID: player.rawValue)
+            return (MediaSnapshot(source: .appleEvents, applicationBundleID: player.rawValue), true)
         }
 
-        return MediaSnapshot(
+        return (MediaSnapshot(
             source: .appleEvents,
             applicationBundleID: player.rawValue,
             applicationName: player.applicationName,
@@ -423,7 +497,7 @@ public actor AppleEventsMediaSource: MediaSource {
             positionTimestamp: Date(),
             isPlaying: fields.isPlaying,
             supportedCommands: [.play, .pause, .togglePlayPause, .nextTrack, .previousTrack, .seek]
-        )
+        ), true)
     }
 
     /// One round-trip for everything: each `tell` is a separate Apple Event

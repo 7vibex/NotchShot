@@ -27,6 +27,13 @@ enum SystemMediaKeyAction: Sendable, Equatable {
         }
     }
 
+    var isVolumeKey: Bool {
+        switch self {
+        case .volumeUp, .volumeDown, .mute: true
+        case .brightnessUp, .brightnessDown: false
+        }
+    }
+
     /// Presses from empty to full; Option-Shift moves a quarter of one.
     static let coarseSteps = 16
 
@@ -43,8 +50,9 @@ enum SystemMediaKeyAction: Sendable, Equatable {
 ///
 /// The tap answers from a thread of its own (`EventTapThread`): a late answer
 /// switches the tap off, and macOS then handles the key and draws its banner
-/// beside the notch. The tap thread swallows the key at once and the main actor
-/// applies it after.
+/// beside the notch. The tap thread swallows the key at once. Volume and mute
+/// are then applied on the audio queue (`SystemVolumeEngine`), and brightness,
+/// which reaches main-actor display state, on the main actor.
 @MainActor
 final class SystemMediaKeyInterceptor {
     var onKeyDown: ((SystemMediaKeyAction) -> Bool)?
@@ -91,10 +99,17 @@ final class SystemMediaKeyInterceptor {
         }
 
         // Without post-event access a swallowed key can't be handed back to
-        // macOS, so the tap thread must wait for the main actor's answer as
-        // before; with it, the answer is immediate and a failure is replayed.
+        // macOS, so the tap thread has to wait for an answer, though never for
+        // long; with it, the answer is immediate and a failure is replayed.
+        let volume = SystemVolumeEngine.shared
         let answer: MediaKeyFilter.Answer = canReplay
             ? .immediately { [weak self] action, keyDown in
+                if action.isVolumeKey {
+                    volume.apply(action) { applied in
+                        if !applied { keyDown.replayToSystem() }
+                    }
+                    return
+                }
                 DispatchQueue.main.async {
                     MainActor.assumeIsolated {
                         guard self?.onKeyDown?(action) != true else { return }
@@ -102,10 +117,19 @@ final class SystemMediaKeyInterceptor {
                     }
                 }
             }
-            : .afterMainActor { [weak self] action in
-                DispatchQueue.main.sync {
-                    MainActor.assumeIsolated { self?.onKeyDown?(action) == true }
+            : .afterApplying { [weak self] action in
+                let pending = PendingKeyAnswer()
+                if action.isVolumeKey {
+                    volume.apply(action, claim: { pending.claim() }) { pending.finish($0) }
+                } else {
+                    DispatchQueue.main.async {
+                        MainActor.assumeIsolated {
+                            guard pending.claim() else { return }
+                            pending.finish(self?.onKeyDown?(action) == true)
+                        }
+                    }
                 }
+                return pending.wait()
             }
         let filter = MediaKeyFilter(answer: answer)
         guard let tap = EventTapThread(
@@ -168,16 +192,72 @@ struct ConsumedMediaKey: @unchecked Sendable {
     }
 }
 
+/// A key the tap thread is waiting on, for the case where it can't be replayed
+/// to macOS later. The wait is bounded, because the tap thread blocked is every
+/// later key held behind this one, and a stalled main thread once held a key
+/// for 17 s. Past the wait macOS gets the key, so the worker has to claim it
+/// first: the key must not be applied by both.
+final class PendingKeyAnswer: @unchecked Sendable {
+    private enum State {
+        case waiting
+        case claimed
+        case abandoned
+    }
+
+    /// Long enough for a Mac that isn't under load. macOS showing its own
+    /// banner for one key is the accepted cost past this.
+    static let firstWait: DispatchTimeInterval = .milliseconds(100)
+    /// Once claimed the key is being applied, so handing it over now would
+    /// apply it twice. A slow write gets this much longer, then counts as done.
+    static let claimedWait: DispatchTimeInterval = .milliseconds(250)
+
+    private let lock = NSLock()
+    private let done = DispatchSemaphore(value: 0)
+    private var state = State.waiting
+    private var applied = false
+
+    /// False when the tap thread has already given the key to macOS.
+    func claim() -> Bool {
+        lock.withLock {
+            guard state == .waiting else { return false }
+            state = .claimed
+            return true
+        }
+    }
+
+    func finish(_ applied: Bool) {
+        lock.withLock { self.applied = applied }
+        done.signal()
+    }
+
+    /// Whether to swallow the key.
+    func wait(
+        first: DispatchTimeInterval = PendingKeyAnswer.firstWait,
+        claimed: DispatchTimeInterval = PendingKeyAnswer.claimedWait
+    ) -> Bool {
+        if done.wait(timeout: .now() + first) == .success {
+            return lock.withLock { applied }
+        }
+        let abandoned = lock.withLock {
+            guard state == .waiting else { return false }
+            state = .abandoned
+            return true
+        }
+        if abandoned { return false }
+        return done.wait(timeout: .now() + claimed) == .success ? lock.withLock { applied } : true
+    }
+}
+
 /// Decides, on the tap thread, which events the media-key tap swallows.
 ///
 /// `@unchecked Sendable`: `consumedKeyTypes` is touched only from
 /// `shouldSwallow`, which always runs on the tap thread.
 private final class MediaKeyFilter: @unchecked Sendable {
     enum Answer {
-        /// Swallow the key now; the main actor applies it later.
+        /// Swallow the key now; it is applied later.
         case immediately(@Sendable (SystemMediaKeyAction, ConsumedMediaKey) -> Void)
-        /// Wait for the main actor to say whether it applied the key.
-        case afterMainActor(@Sendable (SystemMediaKeyAction) -> Bool)
+        /// Wait, briefly, to hear whether the key was applied.
+        case afterApplying(@Sendable (SystemMediaKeyAction) -> Bool)
     }
 
     private let answer: Answer
@@ -207,7 +287,7 @@ private final class MediaKeyFilter: @unchecked Sendable {
                 } else {
                     consumed = false
                 }
-            case .afterMainActor(let decide):
+            case .afterApplying(let decide):
                 consumed = decide(action)
             }
             if consumed { consumedKeyTypes.insert(keyType) }

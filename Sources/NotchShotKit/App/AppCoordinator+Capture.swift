@@ -33,6 +33,7 @@ extension AppCoordinator {
         automationAction: URLCaptureAction = .defaultBehavior,
         displayID: CGDirectDisplayID? = nil
     ) {
+        guard openDeferredModals == 0 else { return }
         if recordingStartTask != nil {
             cancelPendingRecordingStart()
             refreshActivity()
@@ -123,7 +124,8 @@ extension AppCoordinator {
         // Scrolling takes over after the region is chosen.
         if intent == .scrolling {
             guard let rect = request.rect else { return }
-            guard let mode = chooseScrollingCaptureMode() else { return }
+            guard let mode = await chooseScrollingCaptureMode(operationID: operationID),
+                  isCurrentCapture(operationID) else { return }
             if mode.isAutomatic, !permissions.accessibilityGranted {
                 let options = [
                     kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true
@@ -158,11 +160,10 @@ extension AppCoordinator {
         automationAction: URLCaptureAction = .defaultBehavior,
         operationID: UUID
     ) async {
-        arbiter.isProcessing = "Capturing"
-        refreshActivity()
+        captureProcessingLabel = beginProcessing("Capturing")
         defer {
             if captureOperationID == operationID {
-                arbiter.isProcessing = nil
+                releaseCaptureProcessingLabel()
                 refreshActivity()
             }
         }
@@ -209,8 +210,7 @@ extension AppCoordinator {
 
     /// OCR captures never touch the shelf as an image: the point is the text.
     func handleTextCapture(_ image: CapturedImage, operationID: UUID) async {
-        arbiter.isProcessing = "Reading text"
-        refreshActivity()
+        captureProcessingLabel = beginProcessing("Reading text")
         do {
             let result = try await OCRService.shared.recognizeText(in: image)
             guard isCurrentCapture(operationID) else { return }
@@ -423,8 +423,8 @@ extension AppCoordinator {
         let name = preferences.expandFilename(template: template, appName: appName)
 
         let format = encodingFormat ?? recipe.imageFormat ?? preferences.imageFormat
-        let url: URL
-        let ownership: CaptureAssetOwnership
+        var url: URL
+        var ownership: CaptureAssetOwnership
         // A clipboard-only capture keeps its file in the app's store so it stays
         // recoverable from History, without dropping a file the user did not ask
         // for into their output folder.
@@ -442,12 +442,22 @@ extension AppCoordinator {
             )
             ownership = .managedTemporary
         case .askEveryTime:
-            let panel = NSSavePanel()
-            panel.allowedContentTypes = [ImageExport.utType(for: format)]
-            panel.nameFieldStringValue = "\(name).\(format.fileExtension)"
-            panel.directoryURL = preferences.outputFolder
-            if panel.runModal() == .OK, let chosen = panel.url {
-                url = chosen
+            let folder = preferences.outputFolder
+            let fileName = "\(name).\(format.fileExtension)"
+            let operationAtDialog = captureOperationID
+            let chosenURL = await runModalOutsideMainQueue { [weak self] () -> URL? in
+                // Queued behind another modal, the capture may be gone by now.
+                // No choice keeps the pixels in the app's local store below.
+                guard self?.captureOperationID == operationAtDialog else { return nil }
+                let panel = NSSavePanel()
+                panel.allowedContentTypes = [ImageExport.utType(for: format)]
+                panel.nameFieldStringValue = fileName
+                panel.directoryURL = folder
+                NSApp.activate(ignoringOtherApps: true)
+                return panel.runModal() == .OK ? panel.url : nil
+            }
+            if let chosenURL {
+                url = chosenURL
                 ownership = .userDocument
             } else {
                 // Cancelling the destination dialog must not destroy the pixels
@@ -460,12 +470,22 @@ extension AppCoordinator {
                 ownership = .managedTemporary
             }
         }
-        let written = try await ImageExport.write(
-            image,
-            to: url,
-            format: format,
-            quality: encodingQuality ?? preferences.jpegQuality
-        )
+        let quality = encodingQuality ?? preferences.jpegQuality
+        let written: ImageFormat
+        do {
+            written = try await ImageExport.write(image, to: url, format: format, quality: quality)
+        } catch let error where !(error is CancellationError) && !AppPaths.owns(url) {
+            // An ejected or denied folder must not cost the capture: the screen
+            // has moved on, so these pixels cannot be taken again.
+            let reason = error.localizedDescription
+            url = AppPaths.uniqueURL(in: AppPaths.captures, name: name, extension: format.fileExtension)
+            ownership = .managedTemporary
+            written = try await ImageExport.write(image, to: url, format: format, quality: quality)
+            present(error: NotchShotError.exportFailed(
+                "Saved to NotchShot instead: \(reason)"
+                    + (preferences.historyEnabled ? "" : " With History off, this copy is removed at the next launch.")
+            ))
+        }
 
         // If HEIC fell back to PNG the extension must follow, or Finder and
         // Preview will disagree about the file.
@@ -519,11 +539,18 @@ extension AppCoordinator {
         default: .area
         }
 
+        // A cancelled selection only resumes after its prelude returns, by which
+        // time a newer one may own this state.
+        let selectionToken = UUID()
+        SelectionWorkflow.current = selectionToken
         arbiter.selection = intent
         refreshActivity()
         defer {
-            arbiter.selection = nil
-            refreshActivity()
+            if SelectionWorkflow.current == selectionToken {
+                SelectionWorkflow.current = nil
+                arbiter.selection = nil
+                refreshActivity()
+            }
         }
 
         let excluded = WindowExclusionRegistry.shared.excludedWindowNumbers
@@ -617,8 +644,17 @@ extension AppCoordinator {
             scrollingFrameCount = 0
         }
         if hadCaptureWorkflow {
+            releaseCaptureProcessingLabel()
+        }
+    }
+
+    /// Frees the processing slot if the capture flow still holds it. Another
+    /// flow's label stays. Callers refresh when they need the change shown.
+    func releaseCaptureProcessingLabel() {
+        if let captureProcessingLabel, arbiter.isProcessing == captureProcessingLabel {
             arbiter.isProcessing = nil
         }
+        captureProcessingLabel = nil
     }
 
     func cancelPendingRecordingStart() {
@@ -638,22 +674,54 @@ extension AppCoordinator {
 
     // MARK: Scrolling capture
 
-    func chooseScrollingCaptureMode() -> ScrollingCaptureMode? {
-        let popup = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 260, height: 28))
-        for mode in ScrollingCaptureMode.allCases {
-            popup.addItem(withTitle: mode.title)
-        }
-        popup.selectItem(at: 1)
-        popup.setAccessibilityLabel("Scrolling capture mode")
+    func chooseScrollingCaptureMode(operationID: UUID) async -> ScrollingCaptureMode? {
+        await runModalOutsideMainQueue { [weak self] in
+            // It may have waited behind another modal, and the capture gone since.
+            guard self?.captureOperationID == operationID else { return nil }
+            let popup = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 260, height: 28))
+            for mode in ScrollingCaptureMode.allCases {
+                popup.addItem(withTitle: mode.title)
+            }
+            popup.selectItem(at: 1)
+            popup.setAccessibilityLabel("Scrolling capture mode")
 
-        let alert = NSAlert()
-        alert.messageText = "Choose Scrolling Direction"
-        alert.informativeText = "Automatic modes scroll until the content stops changing. Manual modes capture whenever scrolling settles."
-        alert.accessoryView = popup
-        alert.addButton(withTitle: "Start Capture")
-        alert.addButton(withTitle: "Cancel")
-        guard alert.runModal() == .alertFirstButtonReturn else { return nil }
-        return ScrollingCaptureMode.allCases[popup.indexOfSelectedItem]
+            let alert = NSAlert()
+            alert.messageText = "Choose Scrolling Direction"
+            alert.informativeText = "Automatic modes scroll until the content stops changing. Manual modes capture whenever scrolling settles."
+            alert.accessoryView = popup
+            alert.addButton(withTitle: "Start Capture")
+            alert.addButton(withTitle: "Cancel")
+            NSApp.activate(ignoringOtherApps: true)
+            guard alert.runModal() == .alertFirstButtonReturn else { return nil }
+            return ScrollingCaptureMode.allCases[popup.indexOfSelectedItem]
+        }
+    }
+
+    /// Runs a modal from a main-actor Task without stopping the main actor.
+    ///
+    /// Main-actor jobs run from the main dispatch queue, and a run loop nested
+    /// inside a main-queue callback does not service that queue. Every other
+    /// main-actor Task, timer wake-up and island update would wait for the dialog.
+    /// `RunLoop.perform` runs outside the dispatch callback, so the nested loop
+    /// keeps draining them. Capture and recording shortcuts are refused while
+    /// the modal is up, and callers still recheck what they are doing afterwards.
+    ///
+    /// The default mode waits for any open modal to close. A flow that quit can
+    /// wait on also needs `.modalPanel`, the mode a `.terminateLater` reply runs in.
+    func runModalOutsideMainQueue<Value: Sendable>(
+        modes: [RunLoop.Mode] = [.default],
+        _ body: @escaping @MainActor () -> Value
+    ) async -> Value {
+        await withCheckedContinuation { continuation in
+            RunLoop.main.perform(inModes: modes) { [self] in
+                let value = MainActor.assumeIsolated { () -> Value in
+                    openDeferredModals += 1
+                    defer { openDeferredModals -= 1 }
+                    return body()
+                }
+                continuation.resume(returning: value)
+            }
+        }
     }
 
     func beginScrollingCapture(
@@ -672,10 +740,9 @@ extension AppCoordinator {
         scrollingSession = session
         scrollingSessionID = sessionID
         scrollingFrameCount = 0
-        arbiter.isProcessing = mode.isAutomatic
+        captureProcessingLabel = beginProcessing(mode.isAutomatic
             ? "Auto-scrolling \(mode.axis.title.lowercased()) · Return to finish"
-            : "Scroll \(mode.axis.title.lowercased()) to capture · Return when done"
-        refreshActivity()
+            : "Scroll \(mode.axis.title.lowercased()) to capture · Return when done")
         await session.start()
         guard scrollingSessionID == sessionID else {
             session.cancel()
@@ -698,6 +765,7 @@ extension AppCoordinator {
         alert.accessoryView = field
         alert.addButton(withTitle: "Save Session")
         alert.addButton(withTitle: "Cancel")
+        NSApp.activate(ignoringOtherApps: true)
         guard alert.runModal() == .alertFirstButtonReturn else { return }
         do {
             _ = try stack.saveSession(named: field.stringValue)
@@ -730,17 +798,15 @@ extension AppCoordinator {
         switch event {
         case .frameCaptured(let count):
             scrollingFrameCount = count
-            arbiter.isProcessing = "\(count) frame\(count == 1 ? "" : "s") · Return when done"
-            refreshActivity()
+            captureProcessingLabel = beginProcessing("\(count) frame\(count == 1 ? "" : "s") · Return when done")
 
         case .stitching(let progress):
-            arbiter.isProcessing = "Stitching \(Int(progress * 100))%"
-            refreshActivity()
+            captureProcessingLabel = beginProcessing("Stitching \(Int(progress * 100))%")
 
         case .finished(let output):
             scrollingSession = nil
             scrollingSessionID = nil
-            arbiter.isProcessing = nil
+            releaseCaptureProcessingLabel()
             let region = scrollingRegion
             scrollingRegion = nil
             // The scroll may have happened on a 1x external display while the
@@ -779,7 +845,7 @@ extension AppCoordinator {
             scrollingSession = nil
             scrollingSessionID = nil
             scrollingRegion = nil
-            arbiter.isProcessing = nil
+            releaseCaptureProcessingLabel()
             present(error: NotchShotError.stitchFailed(reason))
             NSWorkspace.shared.activateFileViewerSelecting([folder])
 
@@ -787,7 +853,7 @@ extension AppCoordinator {
             scrollingSession = nil
             scrollingSessionID = nil
             scrollingRegion = nil
-            arbiter.isProcessing = nil
+            releaseCaptureProcessingLabel()
             present(error: NotchShotError.stitchFailed(reason))
 
         case .cancelled:
@@ -795,9 +861,16 @@ extension AppCoordinator {
             scrollingSessionID = nil
             scrollingRegion = nil
             scrollingFrameCount = 0
-            arbiter.isProcessing = nil
+            releaseCaptureProcessingLabel()
             refreshActivity()
         }
     }
 
+}
+
+/// Which selection owns the coordinator's selection state. An extension cannot
+/// hold it itself.
+@MainActor
+private enum SelectionWorkflow {
+    static var current: UUID?
 }

@@ -123,6 +123,14 @@ struct MediaQueueRow: View {
     }
 }
 
+/// The last reading of the outputs, so a player that has just been built shows
+/// the right device on its button before its own reading lands.
+@MainActor
+private enum AudioOutputMemory {
+    static var outputs: [AudioRouteReading] = []
+    static var currentID: UInt32?
+}
+
 struct MediaContent: View {
     @Bindable var coordinator: AppCoordinator
     var isPeeking: Bool
@@ -135,12 +143,14 @@ struct MediaContent: View {
     var sharedArtworkID: IslandActivityID?
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var audioOutputs: [AudioRouteReading] = []
+    @State private var audioOutputs = AudioOutputMemory.outputs
     @State private var upcoming: [MediaQueueEntry] = []
     @State private var isLoadingQueue = false
     @State private var queueUnavailable = false
     @State private var modes: MediaPlaybackModes?
-    @State private var currentAudioOutputID: UInt32?
+    @State private var currentAudioOutputID = AudioOutputMemory.currentID
+    @State private var audioOutputRefresh = 0
+    @State private var isSelectingAudioOutput = false
     @State private var lyrics: LyricsPanelState = .idle
 
     private var snapshot: MediaSnapshot { coordinator.media.snapshot }
@@ -223,6 +233,12 @@ struct MediaContent: View {
         .animation(NotchShotMotion.content(reduceMotion: reduceMotion), value: coordinator.mediaPanel)
         // A track change while Playing Next is open would otherwise leave the
         // previous track's queue on screen.
+        // The source list lands apart from the outputs, and the shell is sized
+        // from the row count.
+        .onChange(of: appVolumeSources.count) { _, _ in
+            guard coordinator.mediaPanel == .audioRoutes else { return }
+            coordinator.setMediaPanel(.audioRoutes, rowCount: max(1, audioOutputs.count + appVolumeSources.count))
+        }
         .task(id: queueRefreshKey) {
             guard coordinator.mediaPanel == .playingNext else { return }
             await refreshQueue()
@@ -249,7 +265,9 @@ struct MediaContent: View {
             }
             // In the island the cover is drawn in the shared layer above,
             // which draws its own sheen; this one serves the plain player.
-            .overlay { ArtworkGlareSheen(cornerRadius: 56 / 5) }
+            .overlay {
+                if sharedArtworkID == nil { ArtworkGlareSheen(cornerRadius: 56 / 5) }
+            }
             .overlay { ArtworkGlareTracker() }
 
             VStack(alignment: .leading, spacing: NotchIsland.Spacing.hairline) {
@@ -779,12 +797,26 @@ struct MediaContent: View {
         currentAudioOutput?.name ?? "Audio Output"
     }
 
+    /// Runs as the island opens, so none of this may hold up the spring: every
+    /// device costs several synchronous calls to coreaudiod, which is at its
+    /// slowest while a Bluetooth or AirPlay route connects. The last answer
+    /// stays up until the new one lands.
     private func refreshAudioOutputs() {
-        audioOutputs = AudioOutputDeviceService.availableOutputs()
-        currentAudioOutputID = AudioOutputDeviceService.currentOutput()?.deviceID
+        audioOutputRefresh &+= 1
+        let refresh = audioOutputRefresh
         AppVolumeMixer.shared.refreshSources()
-        if coordinator.mediaPanel == .audioRoutes {
-            coordinator.setMediaPanel(.audioRoutes, rowCount: max(1, audioOutputs.count + appVolumeSources.count))
+        Task {
+            let (outputs, currentID) = await Task.detached(priority: .userInitiated) {
+                (AudioOutputDeviceService.availableOutputs(), AudioOutputDeviceService.currentOutput()?.deviceID)
+            }.value
+            AudioOutputMemory.outputs = outputs
+            AudioOutputMemory.currentID = currentID
+            guard refresh == audioOutputRefresh else { return }
+            audioOutputs = outputs
+            currentAudioOutputID = currentID
+            if coordinator.mediaPanel == .audioRoutes {
+                coordinator.setMediaPanel(.audioRoutes, rowCount: max(1, audioOutputs.count + appVolumeSources.count))
+            }
         }
     }
 
@@ -798,12 +830,27 @@ struct MediaContent: View {
             coordinator.setMediaPanel(.none)
             return
         }
-        do {
-            try AudioOutputDeviceService.select(output.deviceID)
-            refreshAudioOutputs()
-            coordinator.setMediaPanel(.none)
-        } catch {
-            coordinator.present(error: error)
+        // Setting the default output waits on coreaudiod reconfiguring the route.
+        guard !isSelectingAudioOutput else { return }
+        isSelectingAudioOutput = true
+        let deviceID = output.deviceID
+        Task {
+            let failure = await Task.detached(priority: .userInitiated) { () -> (any Error)? in
+                do {
+                    try AudioOutputDeviceService.select(deviceID)
+                    return nil
+                } catch {
+                    return error
+                }
+            }.value
+            isSelectingAudioOutput = false
+            if let failure {
+                coordinator.present(error: failure)
+            } else {
+                refreshAudioOutputs()
+                // A route can take seconds, and another panel may be open by now.
+                if coordinator.mediaPanel == .audioRoutes { coordinator.setMediaPanel(.none) }
+            }
         }
     }
 
@@ -1000,11 +1047,14 @@ private struct MediaScrubber: View {
                 try? await Task.sleep(for: .seconds(Self.tick))
                 guard !Task.isCancelled else { return }
                 now = Date()
-                // Hand the bar back to the player once it has caught up with
-                // the seek (or given up on it), so gliding resumes.
-                if !isDragging, pending != nil, displayedFraction != pending?.fraction {
-                    pending = nil
-                }
+            }
+        }
+        // Hand the bar back to the player once it has caught up with the seek
+        // (or given up on it), so gliding resumes. Here rather than in the loop
+        // above, whose closure keeps the snapshot from when the task began.
+        .onChange(of: now) { _, _ in
+            if !isDragging, pending != nil, displayedFraction != pending?.fraction {
+                pending = nil
             }
         }
         .accessibilityElement(children: .ignore)

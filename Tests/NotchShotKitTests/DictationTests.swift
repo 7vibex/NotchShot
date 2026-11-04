@@ -101,7 +101,7 @@ struct DictationAudioCaptureTests {
 
     @Test("Level meter attack is faster than release")
     func meterSmoothing() {
-        var meter = AudioLevelMeter2()
+        var meter = AudioLevelMeter.dictation()
         meter.push(rms: 0.8)
         let afterAttack = meter.level
         meter.push(rms: 0)
@@ -115,7 +115,7 @@ struct DictationAudioCaptureTests {
 
     @Test("Silence decays to baseline")
     func silenceBaseline() {
-        var meter = AudioLevelMeter2()
+        var meter = AudioLevelMeter.dictation()
         meter.push(rms: 0.9)
         #expect(meter.level > 0.5)
         for _ in 0..<20 { meter.decay() }

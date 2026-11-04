@@ -19,5 +19,10 @@
 	<key>com.apple.security.automation.apple-events</key>
 	<true/>
 
+	<!-- Calendars, for Calendar Glance and adding a planner event. The Hardened
+	     Runtime refuses EventKit calendar access without it, with no prompt. -->
+	<key>com.apple.security.personal-information.calendars</key>
+	<true/>
+
 </dict>
 </plist>

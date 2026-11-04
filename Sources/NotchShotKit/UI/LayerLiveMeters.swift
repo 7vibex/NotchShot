@@ -9,8 +9,9 @@ import SwiftUI
 // LayerLoopIndicators.swift for the measurement. Here SwiftUI hands over a
 // target at most ten times a second and the render server moves toward it.
 
-/// Dashes travelling round `shape`. Animatable through the shape, so the
-/// dashes follow a shell that is still springing to its size.
+/// Dashes travelling round `shape`. They follow a shell that is still springing
+/// to its size through `layout()`; the shape's own parameters land at their
+/// final values at once.
 struct LayerDashStroke<S: Shape>: NSViewRepresentable {
     var shape: S
     var color: Color
@@ -21,11 +22,6 @@ struct LayerDashStroke<S: Shape>: NSViewRepresentable {
     /// Shows only the half of the stroke inside the shape, so a shell that
     /// clips its content draws the same border either way.
     var insideOnly = false
-
-    var animatableData: S.AnimatableData {
-        get { shape.animatableData }
-        set { shape.animatableData = newValue }
-    }
 
     func makeNSView(context: Context) -> LayerDashStrokeView {
         LayerDashStrokeView()

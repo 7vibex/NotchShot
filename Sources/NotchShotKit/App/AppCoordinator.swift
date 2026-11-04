@@ -119,6 +119,7 @@ public final class AppCoordinator {
     var systemNotificationHovered = false
     /// The lock state `observeMedia` last saw, so it can tell an unlock.
     var lastObservedScreenLock = false
+    @ObservationIgnored var lastObservedMediaState: MediaObservationState?
     var systemNotificationQueue = SystemNotificationQueue()
     /// When each calling app started holding the microphone, for the call
     /// activity's elapsed time. Keyed by bundle identifier.
@@ -129,7 +130,7 @@ public final class AppCoordinator {
     /// identifier, from the toggles it sent. Cleared when the call ends.
     var meetingMutedApps: Set<String> = []
     var meetingCameraOffApps: Set<String> = []
-    var systemInputMuted = MeetingControls.isSystemInputMuted() ?? false
+    var systemInputMuted = false
     /// The system mute NotchShot set for calls, undone when they end.
     var systemMuteHold: SystemMuteHold?
     var accessibilityLevelTask: Task<Void, Never>?
@@ -137,6 +138,12 @@ public final class AppCoordinator {
     var recordingStartTask: Task<Void, Never>?
     var recordingStartOperationID: UUID?
     var recordingCompletionTask: Task<Void, Never>?
+    /// Modals open through `runModalOutsideMainQueue`, which leaves the main
+    /// queue running, so a shortcut would otherwise act behind them.
+    var openDeferredModals = 0
+    /// What the capture flow last put in the processing slot. Its stages run
+    /// across several functions and cancel can arrive from outside them.
+    var captureProcessingLabel: String?
     var recordingSegments: [CaptureAsset] = []
     var recordingInteractionSegments: [RecordingInteractionTimeline] = []
     var pendingRecordingInteractionTimeline: RecordingInteractionTimeline?
@@ -217,15 +224,25 @@ public final class AppCoordinator {
         context.privacy.onChange = { [weak self] in self?.refreshActivity() }
         context.start()
         if history.loadOutcome.permitsManagedCleanup {
-            history.applyRetention()
+            // The sweep stays here, before hotkeys and recording recovery start:
+            // it deletes what no row owns, so it must not overlap a capture or a
+            // recovered recording whose file exists before its row does. It only
+            // lists Application Support. Retention stats every row, including
+            // rows on volumes that may be gone, so that part moves off main.
             history.removeUntrackedManagedFiles()
-        } else if let message = history.loadRecoveryMessage {
-            present(error: NotchShotError.exportFailed(message))
+            Task { [history] in
+                await history.applyRetentionInBackground()
+                history.refreshSpotlightIndex()
+            }
+        } else {
+            if let message = history.loadRecoveryMessage {
+                present(error: NotchShotError.exportFailed(message))
+            }
+            history.refreshSpotlightIndex()
         }
         clipboard.applyRetention()
         clipboard.removeOrphanedImages()
         clipboardMonitor.reconcile()
-        history.refreshSpotlightIndex()
 
         RecordingService.shared.onStatusChange = { [weak self] status in
             guard let self else { return }
@@ -234,11 +251,18 @@ public final class AppCoordinator {
             self.recordingStatus = adjusted
         }
         RecordingService.shared.onUnexpectedStop = { [weak self] error, recoveryURL in
-            Task { await self?.finishRecordingAfterFailure(error, recoveryURL: recoveryURL) }
+            // Set up before the service's wait for this failure ends, so quit
+            // cannot slip between the two.
+            FileWorkTracker.shared.run { [weak self] in
+                await self?.finishRecordingAfterFailure(error, recoveryURL: recoveryURL)
+            }
         }
         RecordingService.shared.onLowDiskThresholdReached = { [weak self] in
             self?.recordingStoppedForLowDisk = true
             self?.stopRecording()
+        }
+        MacSharePresenter.shared.onFailure = { [weak self] error in
+            self?.present(error: error)
         }
 
         systemLevels.onChange = { [weak self] level in
@@ -306,14 +330,26 @@ public final class AppCoordinator {
     }
 
     func observeMedia() {
-        if lastObservedScreenLock, !media.isScreenLocked { presentUnlockAnimation() }
-        lastObservedScreenLock = media.isScreenLocked
-        arbiter.hasMedia = media.snapshot.hasContent
-        systemNotifications.setSessionActive(media.isSessionActive)
-        if !media.isSessionActive {
-            clearSystemNotifications()
+        // Observation tracks the whole `snapshot` property, so the field reads
+        // below filter nothing and every position tick lands here. Only a real
+        // change is worth recomputing the island for; tracking is re-armed
+        // either way.
+        let observedState = MediaObservationState(
+            snapshot: media.snapshot,
+            isSessionActive: media.isSessionActive,
+            isScreenLocked: media.isScreenLocked
+        )
+        if observedState != lastObservedMediaState {
+            lastObservedMediaState = observedState
+            if lastObservedScreenLock, !media.isScreenLocked { presentUnlockAnimation() }
+            lastObservedScreenLock = media.isScreenLocked
+            arbiter.hasMedia = media.snapshot.hasContent
+            systemNotifications.setSessionActive(media.isSessionActive)
+            if !media.isSessionActive {
+                clearSystemNotifications()
+            }
+            refreshActivity()
         }
-        refreshActivity()
         withObservationTracking {
             _ = media.snapshot.hasContent
             _ = media.snapshot.title
@@ -378,11 +414,6 @@ public final class AppCoordinator {
         dictation.onAnnounce = { [weak self] msg in
             self?.announceForAccessibility(msg, priority: .medium)
         }
-        withObservationTracking {
-            _ = dictation.snapshot
-        } onChange: { [weak self] in
-            Task { @MainActor in self?.observeDictation() }
-        }
     }
 
     // MARK: Errors
@@ -390,16 +421,16 @@ public final class AppCoordinator {
     /// History is an index over already-created capture files. A persistence
     /// failure must be visible, but it must not turn a successful capture or
     /// export into a misleading claim that the underlying file was lost.
-    @discardableResult
-    func persistHistory() -> Bool {
-        do {
-            try history.save()
-            return true
-        } catch {
-            present(error: NotchShotError.exportFailed(
-                "The capture was saved, but NotchShot could not update History: \(error.localizedDescription)"
+    ///
+    /// The write starts now rather than after the debounce, so a row is not left
+    /// waiting on it, but it encodes off main: up to three of these land per
+    /// finished recording and each was a whole-store hitch. Quit still drains
+    /// the queue through `history.save()`.
+    func persistHistory() {
+        history.saveWithoutWaiting { [weak self] message in
+            self?.present(error: NotchShotError.exportFailed(
+                "The capture was saved, but NotchShot could not update History: \(message)"
             ))
-            return false
         }
     }
 
@@ -516,6 +547,23 @@ public final class AppCoordinator {
     }
 }
 
+/// What a media change has to alter to matter to the coordinator: everything in
+/// the snapshot except the playback position and its timestamp.
+struct MediaObservationState: Equatable {
+    var snapshot: MediaSnapshot
+    var isSessionActive: Bool
+    var isScreenLocked: Bool
+
+    init(snapshot: MediaSnapshot, isSessionActive: Bool, isScreenLocked: Bool) {
+        var positionFree = snapshot
+        positionFree.position = nil
+        positionFree.positionTimestamp = nil
+        self.snapshot = positionFree
+        self.isSessionActive = isSessionActive
+        self.isScreenLocked = isScreenLocked
+    }
+}
+
 /// The system's own screenshot shutter.
 ///
 /// `NSSound(named: "Grab")` only searches the app bundle and the Sounds
@@ -535,8 +583,6 @@ enum CaptureSound {
         Log.capture.notice("The system shutter sound is missing; captures will be silent")
         return nil
     }()
-
-    static var isAvailable: Bool { shutter != nil }
 
     static func play() {
         guard let shutter else { return }

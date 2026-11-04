@@ -43,6 +43,8 @@ public final class SongRecognizer {
     @ObservationIgnored private var session: SHSession?
     @ObservationIgnored private var resultsTask: Task<Void, Never>?
     @ObservationIgnored private var timeoutTask: Task<Void, Never>?
+    /// Moves with each tap, so a failure reported for an earlier one is dropped.
+    @ObservationIgnored private var tapGeneration = 0
 
     public var isListening: Bool { state == .listening }
 
@@ -56,14 +58,19 @@ public final class SongRecognizer {
         let session = SHSession()
         self.session = session
         let feeder = SongBufferFeeder(session: session)
-        do {
-            try tap.start(.system) { samples, channels, rate in
-                feeder.feed(samples, channels: channels, sampleRate: rate)
+        tapGeneration += 1
+        let generation = tapGeneration
+        tap.start(.system, handler: { samples, channels, rate in
+            feeder.feed(samples, channels: channels, sampleRate: rate)
+        }, completion: { error in
+            guard let error else { return }
+            let message = error.localizedDescription
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    SongRecognizer.shared.tapFailed(message: message, generation: generation)
+                }
             }
-        } catch {
-            finish(.failed(error.localizedDescription))
-            return
-        }
+        })
         state = .listening
         onEvent?(SongRecognitionPolicy.event(for: .listening))
         resultsTask = Task { [weak self] in
@@ -97,10 +104,9 @@ public final class SongRecognizer {
         if state == .listening { state = .idle }
     }
 
-    /// Opens the match in Music, or on the web when Music can't.
-    public func openLastMatch() {
-        guard case .matched(let match) = state, let url = match.appleMusicURL ?? match.webURL else { return }
-        NSWorkspace.shared.open(url)
+    private func tapFailed(message: String, generation: Int) {
+        guard generation == tapGeneration, isListening else { return }
+        finish(.failed(message))
     }
 
     private func finish(_ outcome: State) {

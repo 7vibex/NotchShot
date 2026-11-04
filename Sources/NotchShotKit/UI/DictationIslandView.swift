@@ -304,7 +304,9 @@ struct DictationIslandContent: View {
     /// One paragraph so it wraps and truncates as a unit, with the
     /// not-yet-final words dimmed to show they may still change.
     private var transcriptAttributed: AttributedString {
-        var finalized = AttributedString(snapshot.finalizedText)
+        // At most two lines show and the head truncates, so anything further
+        // back only makes each partial result slower to lay out.
+        var finalized = AttributedString(String(snapshot.finalizedText.suffix(400)))
         finalized.foregroundColor = .white
         var pending = AttributedString(transcriptJoiner + snapshot.volatileText)
         pending.foregroundColor = .white.opacity(increaseContrast ? 0.8 : 0.55)

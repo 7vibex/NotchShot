@@ -9,6 +9,7 @@ struct AppVolumeRow: View {
 
     @State private var draft: Double?
     @State private var isHovered = false
+    @State private var appIcon: NSImage?
 
     private var mixer: AppVolumeMixer { .shared }
     private var level: Double { draft ?? mixer.volume(for: source.bundleIdentifier) }
@@ -37,6 +38,13 @@ struct AppVolumeRow: View {
         .frame(height: height)
         .contentShape(Rectangle())
         .onHover { isHovered = $0 }
+        .task(id: source.bundleIdentifier) {
+            appIcon = await IslandAppIconCache.shared.load(for: source.bundleIdentifier)
+        }
+        // A panel closing mid-drag never delivers the end of the gesture.
+        .onDisappear {
+            if let draft { mixer.setVolume(draft, for: source.bundleIdentifier) }
+        }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("\(source.name) volume")
         .accessibilityValue("\(Int((level * 100).rounded())) percent")
@@ -46,9 +54,11 @@ struct AppVolumeRow: View {
         }
     }
 
+    /// Never asked for in `body`, which runs per mouse event during a drag: a
+    /// cold icon lookup goes to LaunchServices and the disk.
     @ViewBuilder
     private var icon: some View {
-        if let image = NSRunningApplication.runningApplications(withBundleIdentifier: source.bundleIdentifier).first?.icon {
+        if let image = appIcon ?? IslandAppIconCache.shared.cachedIcon(for: source.bundleIdentifier) {
             Image(nsImage: image).resizable()
         } else {
             Image(systemName: "app.fill")

@@ -19,8 +19,8 @@ struct MenuBarDisplayControls: View {
                     systemImage: display.isBuiltIn ? "laptopcomputer" : "display",
                     level: display.level,
                     accessibilityTitle: "\(display.name) brightness"
-                ) { value, _ in
-                    brightness.setLevel(value, for: display.id)
+                ) { value, isFinal in
+                    brightness.setLevel(value, for: display.id, isFinal: isFinal)
                 } trailing: {
                     Text("\(Int((display.level * 100).rounded()))")
                         .font(.system(size: 11, weight: .medium).monospacedDigit())
@@ -63,6 +63,10 @@ struct MenuBarDisplayControls: View {
         .onAppear {
             brightness.refreshNativeLevels()
             nightShift.refresh()
+        }
+        .onDisappear {
+            brightness.finishDrags()
+            nightShift.finishDrag()
         }
     }
 

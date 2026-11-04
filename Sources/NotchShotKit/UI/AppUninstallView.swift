@@ -27,10 +27,7 @@ public struct AppUninstallView: View {
     private var header: some View {
         HStack(spacing: 12) {
             if session.apps.count == 1 {
-                Image(nsImage: NSWorkspace.shared.icon(forFile: session.apps[0].url.path))
-                    .resizable()
-                    .frame(width: 48, height: 48)
-                    .accessibilityHidden(true)
+                FileIconImage(url: session.apps[0].url, side: 48)
             } else {
                 Image(systemName: "square.stack.3d.up.fill")
                     .font(.system(size: 30))
@@ -151,10 +148,7 @@ public struct AppUninstallView: View {
             HStack(spacing: 8) {
                 // Finder's own icon: a plist looks like a plist, a folder like
                 // a folder, and the app like itself.
-                Image(nsImage: NSWorkspace.shared.icon(forFile: url.path))
-                    .resizable()
-                    .frame(width: 22, height: 22)
-                    .accessibilityHidden(true)
+                FileIconImage(url: url, side: 22)
                 VStack(alignment: .leading, spacing: 1) {
                     Text(title).lineLimit(1).truncationMode(.middle)
                     Text(subtitle)
@@ -210,5 +204,33 @@ public struct AppUninstallView: View {
         let bytes = session.selectedByteCount
         return "\(count) \(count == 1 ? "item" : "items") selected"
             + (bytes > 0 ? ", \(ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file))" : "")
+    }
+}
+
+/// Finder's icon for one file, looked up once per URL and off the main actor.
+/// `body` above re-runs for every checkbox, so a lookup inside it repeated for
+/// every visible row on every toggle.
+private struct FileIconImage: View {
+    let url: URL
+    let side: CGFloat
+    @State private var icon: NSImage?
+
+    var body: some View {
+        Group {
+            if let icon {
+                Image(nsImage: icon).resizable()
+            } else {
+                Color.clear
+            }
+        }
+        .frame(width: side, height: side)
+        .accessibilityHidden(true)
+        .task(id: url) {
+            let path = url.path
+            // Apple documents this NSWorkspace method as safe from any thread.
+            icon = await Task.detached(priority: .userInitiated) {
+                NSWorkspace.shared.icon(forFile: path)
+            }.value
+        }
     }
 }

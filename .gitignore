@@ -15,3 +15,13 @@ xcuserdata/
 .env.*
 !.env.example
 !.env.sample
+*.p12
+*.p8
+*.cer
+*.pem
+*.key
+*.mobileprovision
+*.provisionprofile
+
+# Agent worktrees are whole repositories
+.claude/worktrees/

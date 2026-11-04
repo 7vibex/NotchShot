@@ -10,13 +10,24 @@ import Foundation
 /// release so the meter doesn't strobe between syllables.
 public struct AudioLevelMeter: Sendable {
     /// Floor of the displayed range, in dBFS.
-    private let floorDB: Float = -60
-    private let attack: Float = 0.55
-    private let release: Float = 0.12
+    private let floorDB: Float
+    private let attack: Float
+    private let release: Float
+    /// Biases the normalised level upward, so quiet-but-present audio is visible.
+    private let curve: Float
 
     private var smoothed: Float = 0
 
-    public init() {}
+    public init() {
+        self.init(floorDB: -60, attack: 0.55, release: 0.12, curve: 0.6)
+    }
+
+    init(floorDB: Float, attack: Float, release: Float, curve: Float) {
+        self.floorDB = floorDB
+        self.attack = attack
+        self.release = release
+        self.curve = curve
+    }
 
     public var level: Float { smoothed }
 
@@ -38,9 +49,8 @@ public struct AudioLevelMeter: Sendable {
     public mutating func push(rms: Float) {
         let db = rms > 0 ? 20 * log10(rms) : floorDB
         let clamped = max(floorDB, min(0, db))
-        // Normalise, then bias upward so quiet-but-present audio is visible.
         let linear = (clamped - floorDB) / -floorDB
-        let target = powf(linear, 0.6)
+        let target = powf(linear, curve)
 
         let coefficient = target > smoothed ? attack : release
         smoothed += (target - smoothed) * coefficient

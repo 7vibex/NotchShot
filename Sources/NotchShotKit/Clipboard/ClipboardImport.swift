@@ -93,6 +93,8 @@ public enum ClipboardImporter {
     @discardableResult
     public static func importClippings(_ clippings: [ImportedClipping], into store: ClipboardStore, sourceName: String) -> Int {
         let existing = Set(store.ordered.map { $0.kind.rawValue + ":" + $0.contentHash })
+        var batch: [ClipboardEntry] = []
+        batch.reserveCapacity(clippings.count)
         for clipping in clippings.reversed() {
             var text = clipping.text
             if text.utf8.count > ClipboardStore.maximumTextBytes {
@@ -100,7 +102,7 @@ public enum ClipboardImporter {
             }
             let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !trimmed.isEmpty else { continue }
-            store.record(ClipboardEntry(
+            batch.append(ClipboardEntry(
                 kind: ClipboardMonitor.classify(trimmed),
                 text: text,
                 sourceApplicationName: clipping.applicationName ?? sourceName,
@@ -109,6 +111,7 @@ public enum ClipboardImporter {
                 contentHash: ClipboardEntry.hash(forText: text)
             ))
         }
+        store.record(contentsOf: batch)
         // Retention can replace rows without growing the store. Report new
         // content that was actually retained, rather than net row growth.
         return store.ordered.count { !existing.contains($0.kind.rawValue + ":" + $0.contentHash) }

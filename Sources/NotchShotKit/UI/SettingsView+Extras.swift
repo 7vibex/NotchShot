@@ -1,4 +1,5 @@
 import AppKit
+import Security
 import SwiftUI
 import UniformTypeIdentifiers
 
@@ -8,6 +9,9 @@ struct ShareLinkSettings: View {
     @Bindable private var extras = ExtrasPreferences.shared
     @State private var secret = ""
     @State private var savedSecretFor: String?
+    /// Moves on every save, so a check that started before it cannot undo it.
+    @State private var secretRevision = 0
+    @State private var hasCheckedSecret = false
     @State private var testState: TestState = .idle
 
     private enum TestState: Equatable {
@@ -54,7 +58,6 @@ struct ShareLinkSettings: View {
                 LabeledContent("Access key ID") {
                     TextField("Key ID", text: $extras.shareLink.accessKeyID)
                         .font(.body.monospaced())
-                        .onChange(of: extras.shareLink.accessKeyID) { _, _ in loadSecret() }
                 }
                 LabeledContent("Secret access key") {
                     HStack {
@@ -108,17 +111,31 @@ struct ShareLinkSettings: View {
             }
         }
         .settingsWorkbenchFormStyle()
-        .onAppear(perform: loadSecret)
+        .task(id: extras.shareLink.accessKeyID) { await loadSecret() }
     }
 
-    private func loadSecret() {
+    /// Runs on appearing and on each change of the key ID. Off the main actor,
+    /// because the login Keychain can stop the caller on an unlock or access
+    /// prompt, and after a short pause while the ID is being typed.
+    private func loadSecret() async {
         secret = ""
         let id = extras.shareLink.accessKeyID
-        savedSecretFor = ShareLinkKeychain.secret(for: id) == nil ? nil : id
+        let revision = secretRevision
+        if hasCheckedSecret {
+            try? await Task.sleep(for: .milliseconds(200))
+            guard !Task.isCancelled else { return }
+        }
+        hasCheckedSecret = true
+        let exists = await Task.detached(priority: .userInitiated) {
+            ShareLinkKeychain.hasSecret(for: id)
+        }.value
+        guard !Task.isCancelled, revision == secretRevision else { return }
+        savedSecretFor = exists ? id : nil
     }
 
     private func saveSecret() {
         let id = extras.shareLink.accessKeyID
+        secretRevision += 1
         if ShareLinkKeychain.setSecret(secret, for: id) {
             savedSecretFor = id
             secret = ""
@@ -135,16 +152,38 @@ struct ShareLinkSettings: View {
             do {
                 try Data("NotchShot share-link test — \(Date().formatted())\n".utf8).write(to: file)
                 defer { try? FileManager.default.removeItem(at: file) }
+                let accessKeyID = configuration.accessKeyID
+                let savedSecret = await Task.detached(priority: .userInitiated) {
+                    ShareLinkKeychain.secret(for: accessKeyID)
+                }.value
                 let url = try await ShareLinkUploader.upload(
                     file,
                     configuration: configuration,
-                    secret: ShareLinkKeychain.secret(for: configuration.accessKeyID)
+                    secret: savedSecret
                 )
                 testState = .succeeded(url)
             } catch {
                 testState = .failed(error.localizedDescription)
             }
         }
+    }
+}
+
+extension ShareLinkKeychain {
+    /// Whether a secret is saved for this key, without reading it. Asking for the
+    /// attributes alone stays clear of the item's access control, so a build the
+    /// item doesn't recognise is not prompted just to label a text field.
+    static func hasSecret(for accessKeyID: String) -> Bool {
+        guard !accessKeyID.isEmpty else { return false }
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: accessKeyID,
+            kSecReturnAttributes as String: true,
+            kSecMatchLimit as String: kSecMatchLimitOne,
+        ]
+        var result: AnyObject?
+        return SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess
     }
 }
 

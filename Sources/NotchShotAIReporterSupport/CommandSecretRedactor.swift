@@ -11,11 +11,112 @@ public enum CommandSecretRedactor {
     ]
 
     /// Request bodies often carry credentials in JSON or form fields, so the
-    /// value is suppressed wholesale rather than parsed.
+    /// value is suppressed wholesale rather than parsed. Options are compared
+    /// lowercased, so curl's `-F` is matched by its exact spelling instead:
+    /// lowercase `-f` is everyday (`rm -f`, `tail -f`). Anywhere else on a line
+    /// `-F` can still be innocent, as `formFlagIsHarmless` decides.
     private static let bodyOptions: Set<String> = [
         "--data", "--data-raw", "--data-binary", "--data-urlencode",
-        "--form", "--json", "-d", "-F",
+        "--form", "--json", "-d",
     ]
+    private static let multipartFormOption = "-F"
+
+    /// Tools whose `-p -t -u -b -d -F` are never credentials, so `mkdir -p dir`
+    /// and `git push -u origin main` can be shown and approved as they are.
+    /// Deliberately a list of the harmless: a tool not named here (`sshpass -p`,
+    /// `sqlcmd -P`, `zip -P`, anything unknown) keeps the short-option rule.
+    /// `ssh` is left out because what follows its host is another command.
+    private static let ordinaryShortOptionTools: Set<String> = [
+        "awk", "cat", "cd", "chmod", "chown", "clang", "cp", "cut", "date", "df",
+        "diff", "du", "file", "find", "git", "grep", "head", "ln", "ls", "lsof",
+        "make", "mkdir", "mv", "ps", "pwd", "rg", "rm", "sed", "sort", "stat",
+        "swift", "swiftc", "tail", "tar", "touch", "tr", "uniq", "wc", "which",
+        "xcodebuild",
+    ]
+
+    /// Mentioned anywhere, for example inside a quoted `git -c` alias or an
+    /// `awk` `system()`, these put the short-option rule back.
+    private static let credentialTools: Set<String> = [
+        "curl", "wget", "http", "xh", "sshpass", "mysql", "mysqldump", "mariadb",
+        "psql", "pg_dump", "redis-cli", "ftp", "sftp", "mongo", "mongosh", "sqlcmd",
+        "docker", "podman", "htpasswd", "zip", "unzip", "7z",
+    ]
+
+    /// True only when every command on the line is a listed tool. Anything
+    /// that can run something this cannot read, such as a substitution or
+    /// `find -exec`, counts as not ordinary, which redacts as before.
+    private static func shortOptionsAreOrdinary(in text: String) -> Bool {
+        for marker in ["`", "$(", "<(", ">("] where text.contains(marker) { return false }
+        // `2>&1` and `&>file` are redirections, not command separators.
+        let line = text
+            .replacingOccurrences(of: ">&", with: ">")
+            .replacingOccurrences(of: "&>", with: ">")
+        var sawCommand = false
+        for segment in line.split(whereSeparator: { $0.isNewline || ";|&()".contains($0) }) {
+            let words = segment.split(whereSeparator: \.isWhitespace)
+            // Skips `VAR=value` before the command.
+            guard let command = words.first(where: { !$0.contains("=") }) else { continue }
+            let tool = String(command.split(separator: "/").last ?? command)
+            guard ordinaryShortOptionTools.contains(tool) else { return false }
+            if tool == "find", words.contains(where: { ["-exec", "-execdir", "-ok", "-okdir"].contains(String($0)) }) {
+                return false
+            }
+            if tool == "git", words.contains("-c") { return false }
+            sawCommand = true
+        }
+        guard sawCommand else { return false }
+        let mentioned = line.split { !($0.isLetter || $0.isNumber || "-_.".contains($0)) }
+        return !mentioned.contains { credentialTools.contains(String($0)) }
+    }
+
+    /// True when every `-F` on the line belongs to a tool for which it is a flag
+    /// or a config file (`grep -F`, `ssh -F`). A substitution, a mention of a tool
+    /// that takes credentials, or any other command using `-F` keeps the rule.
+    private static func formFlagIsHarmless(in text: String) -> Bool {
+        for marker in ["`", "$(", "<(", ">("] where text.contains(marker) { return false }
+        let line = text
+            .replacingOccurrences(of: ">&", with: ">")
+            .replacingOccurrences(of: "&>", with: ">")
+        let mentioned = line.split { !($0.isLetter || $0.isNumber || "-_.".contains($0)) }
+        if mentioned.contains(where: { credentialTools.contains(String($0)) }) { return false }
+        for segment in line.split(whereSeparator: { $0.isNewline || ";|&()".contains($0) }) {
+            let words = segment.split(whereSeparator: \.isWhitespace)
+            guard words.contains(where: isFormFlag) else { continue }
+            // Skips `VAR=value`, and `sudo` when a command follows it directly.
+            let command = words.drop { $0.contains("=") || $0 == "sudo" }
+            guard let first = command.first else { return false }
+            let tool = String(first.split(separator: "/").last ?? first)
+            let arguments = command.dropFirst()
+            if tool == "ssh" || tool == "scp" {
+                // What follows the host is another command, whose `-F` is unknown.
+                let leading = arguments.prefix { !isFormFlag($0) }
+                guard arguments.filter(isFormFlag).count == 1,
+                      leading.allSatisfy({ $0.hasPrefix("-") }) else { return false }
+            } else if !(ordinaryShortOptionTools.contains(tool) || tool == "egrep" || tool == "fgrep") {
+                return false
+            } else if tool == "find", words.contains(where: { ["-exec", "-execdir", "-ok", "-okdir"].contains(String($0)) }) {
+                return false
+            } else if tool == "git", words.contains("-c") {
+                return false
+            }
+        }
+        return true
+    }
+
+    private static func isFormFlag(_ word: Substring) -> Bool {
+        word.hasPrefix(multipartFormOption)
+    }
+
+    private static func takesSecretValue(
+        _ argument: String,
+        ordinaryShortOptions: Bool,
+        harmlessFormFlag: Bool
+    ) -> Bool {
+        if argument == multipartFormOption { return !ordinaryShortOptions && !harmlessFormFlag }
+        let lowered = argument.lowercased()
+        guard secretOptions.contains(lowered) || bodyOptions.contains(lowered) else { return false }
+        return !ordinaryShortOptions || argument.hasPrefix("--")
+    }
 
     private static let sensitiveNames: Set<String> = [
         "authorization", "proxyauthorization", "cookie", "setcookie",
@@ -49,6 +150,19 @@ public enum CommandSecretRedactor {
     }
 
     public static func redact(_ arguments: [String]) -> [String] {
+        let line = arguments.joined(separator: " ")
+        return redact(
+            arguments,
+            ordinaryShortOptions: shortOptionsAreOrdinary(in: line),
+            harmlessFormFlag: formFlagIsHarmless(in: line)
+        )
+    }
+
+    private static func redact(
+        _ arguments: [String],
+        ordinaryShortOptions: Bool,
+        harmlessFormFlag: Bool
+    ) -> [String] {
         var result: [String] = []
         result.reserveCapacity(arguments.count)
         var index = 0
@@ -56,18 +170,11 @@ public enum CommandSecretRedactor {
             let argument = arguments[index]
             let lowered = argument.lowercased()
 
-            if secretOptions.contains(lowered) {
-                result.append(argument)
-                if index + 1 < arguments.count {
-                    result.append("<redacted>")
-                    index += 2
-                } else {
-                    index += 1
-                }
-                continue
-            }
-
-            if bodyOptions.contains(lowered) {
+            if takesSecretValue(
+                argument,
+                ordinaryShortOptions: ordinaryShortOptions,
+                harmlessFormFlag: harmlessFormFlag
+            ) {
                 result.append(argument)
                 if index + 1 < arguments.count {
                     result.append("<redacted>")
@@ -124,8 +231,14 @@ public enum CommandSecretRedactor {
 
             // Attached short-option values (`-uuser:pass`, `-d{...}`) never
             // reach the split-option branch above.
-            if argument.count > 2, argument.hasPrefix("-"), !argument.hasPrefix("--") {
-                let short = "-" + String(argument[argument.index(after: argument.startIndex)]).lowercased()
+            if !ordinaryShortOptions, argument.count > 2, argument.hasPrefix("-"), !argument.hasPrefix("--") {
+                let spelled = String(argument.prefix(2))
+                let short = spelled.lowercased()
+                if spelled == multipartFormOption, !harmlessFormFlag {
+                    result.append(spelled + " <redacted>")
+                    index += 1
+                    continue
+                }
                 if secretOptions.contains(short) || bodyOptions.contains(short) {
                     result.append(short + " <redacted>")
                     index += 1
@@ -165,8 +278,12 @@ public enum CommandSecretRedactor {
     /// user string rather than a parsed argv. Tokenizing it gives those fields
     /// the same credential suppression without ever touching the source event.
     public static func redactText(_ text: String) -> String {
-        redact(text.split(whereSeparator: \Character.isWhitespace).map(String.init))
-            .joined(separator: " ")
+        redact(
+            text.split(whereSeparator: \Character.isWhitespace).map(String.init),
+            ordinaryShortOptions: shortOptionsAreOrdinary(in: text),
+            harmlessFormFlag: formFlagIsHarmless(in: text)
+        )
+        .joined(separator: " ")
     }
 
     private static func redactHeader(_ header: String) -> String {
@@ -214,11 +331,12 @@ public enum CommandSecretRedactor {
         let lowered = value.lowercased()
         for prefix in [
             "sk-", "sk_", "pk_", "ghp_", "gho_", "github_pat_", "xoxb-",
-            "xoxp-", "akia", "asia", "bearer ",
+            "xoxp-", "bearer ",
         ] where lowered.hasPrefix(prefix) {
             return true
         }
-        guard value.count >= 24, !value.hasPrefix("/") else { return false }
+        if looksLikeAWSAccessKey(value) { return true }
+        guard value.count >= 24, !value.hasPrefix("/"), !looksLikeRelativeFilePath(value) else { return false }
         let allowed = value.unicodeScalars.allSatisfy {
             CharacterSet.alphanumerics.contains($0)
                 || "-_=+/.".unicodeScalars.contains($0)
@@ -226,5 +344,25 @@ public enum CommandSecretRedactor {
         return allowed
             && value.contains(where: \Character.isNumber)
             && value.contains(where: \Character.isLetter)
+    }
+
+    /// `AKIA` or `ASIA` and sixteen more capitals or digits. Matching the bare
+    /// prefix redacted the word "Asia".
+    private static func looksLikeAWSAccessKey(_ value: String) -> Bool {
+        guard value.hasPrefix("AKIA") || value.hasPrefix("ASIA") else { return false }
+        let rest = value.dropFirst(4).prefix(16)
+        return rest.count == 16 && rest.allSatisfy { $0.isASCII && ($0.isUppercase || $0.isNumber) }
+    }
+
+    /// `Sources/Foo/Bar/H264Encoder.swift`. Base64 can hold `/`, `+` and `=`
+    /// but no dot, so a secret does not end up looking like this.
+    private static func looksLikeRelativeFilePath(_ value: String) -> Bool {
+        guard value.contains("/"), !value.contains("="), !value.contains("+"),
+              let name = value.split(separator: "/").last,
+              let dot = name.lastIndex(of: "."), dot != name.startIndex else { return false }
+        let fileExtension = name[name.index(after: dot)...]
+        return (1 ... 8).contains(fileExtension.count)
+            && fileExtension.first?.isLetter == true
+            && fileExtension.allSatisfy { $0.isLetter || $0.isNumber }
     }
 }

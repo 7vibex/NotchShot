@@ -3,7 +3,7 @@ import Foundation
 
 /// Notes and manual lyrics share a byte contract. Legacy oversized content is
 /// recoverable without trimming; a failed read never grants write authority.
-struct AuthoredContentFile {
+struct AuthoredContentFile: Sendable {
     static let maximumStoreBytes = 8 * 1_024 * 1_024
     static let maximumRecoverableBytes = 32 * 1_024 * 1_024
 
@@ -88,6 +88,56 @@ struct AuthoredContentFile {
         } else {
             var information = stat()
             guard lstat(url.path, &information) != 0, errno == ENOENT else { throw PersistenceError.changed }
+        }
+    }
+}
+
+/// Owns an `AuthoredContentFile` on one serial queue, so a whole-store encode
+/// and write can leave the main thread and still happen in order. The owner
+/// keeps a copy of the returned file for reading `canWrite` and the backup URL.
+final class AuthoredContentWriter: @unchecked Sendable {
+    struct Outcome: Sendable {
+        var file: AuthoredContentFile
+        var errorDescription: String?
+        /// Counts saves in the order they ran, so a late report of an earlier
+        /// one can be told from a newer one.
+        var sequence: Int
+    }
+
+    private let queue = DispatchQueue(label: "NotchShot.AuthoredContent", qos: .userInitiated)
+    /// Only touched on `queue`.
+    private var file: AuthoredContentFile
+    private var sequence = 0
+
+    init(file: AuthoredContentFile) {
+        self.file = file
+    }
+
+    /// Returns once this save, and any queued ahead of it, are on disk. For
+    /// discrete actions that report their result, and for quitting.
+    func saveNow<Value: Encodable & Sendable>(_ value: Value) -> Outcome {
+        queue.sync { write(value) }
+    }
+
+    func save<Value: Encodable & Sendable>(
+        _ value: Value,
+        completion: @escaping @MainActor @Sendable (Outcome) -> Void
+    ) {
+        queue.async { [self] in
+            let outcome = write(value)
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated { completion(outcome) }
+            }
+        }
+    }
+
+    private func write<Value: Encodable>(_ value: Value) -> Outcome {
+        sequence += 1
+        do {
+            try file.save(value)
+            return Outcome(file: file, errorDescription: nil, sequence: sequence)
+        } catch {
+            return Outcome(file: file, errorDescription: error.localizedDescription, sequence: sequence)
         }
     }
 }

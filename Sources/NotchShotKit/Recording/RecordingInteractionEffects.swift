@@ -7,6 +7,9 @@ public struct RecordingPointerSample: Sendable, Equatable {
     public var time: TimeInterval
     /// Unit coordinates with a top-left origin.
     public var point: CGPoint
+    /// False while the pointer is outside the recorded area. `point` is then
+    /// pinned to the nearest edge, so nothing should be drawn there.
+    public var isInsideTarget = true
 }
 
 public struct RecordingInteractionTimeline: Sendable, Equatable {
@@ -36,7 +39,7 @@ public struct RecordingInteractionTimeline: Sendable, Equatable {
         var clickPoints: [RecordingPointerSample] = []
         for segment in segments {
             samples.append(contentsOf: segment.pointerSamples.map {
-                RecordingPointerSample(time: $0.time + offset, point: $0.point)
+                RecordingPointerSample(time: $0.time + offset, point: $0.point, isInsideTarget: $0.isInsideTarget)
             })
             clicks.append(contentsOf: segment.clickTimes.map { $0 + offset })
             clickPoints.append(contentsOf: segment.clickPoints.map {
@@ -63,7 +66,11 @@ public struct RecordingInteractionTimeline: Sendable, Equatable {
                 x: previous.x + (sample.point.x - previous.x) * alpha,
                 y: previous.y + (sample.point.y - previous.y) * alpha
             )
-            output.append(RecordingPointerSample(time: sample.time, point: previous))
+            output.append(RecordingPointerSample(
+                time: sample.time,
+                point: previous,
+                isInsideTarget: sample.isInsideTarget
+            ))
         }
         return RecordingInteractionTimeline(
             duration: duration,
@@ -86,6 +93,12 @@ public struct RecordingInteractionTimeline: Sendable, Equatable {
             x: before.point.x + (after.point.x - before.point.x) * progress,
             y: before.point.y + (after.point.y - before.point.y) * progress
         )
+    }
+
+    public func pointerIsInsideTarget(at time: TimeInterval) -> Bool {
+        guard !pointerSamples.isEmpty else { return true }
+        let upper = pointerSamples.partitioningIndex { $0.time > time }
+        return pointerSamples[Swift.max(upper - 1, 0)].isInsideTarget
     }
 
     public func zoom(at time: TimeInterval) -> CGFloat {
@@ -130,6 +143,31 @@ private extension Array {
     }
 }
 
+enum RecordingZoomGeometry {
+    static let maximumZoom: CGFloat = 1.35
+
+    /// Scales about `focus` and eases it toward the centre as the zoom grows, so
+    /// the frame neither jumps at the start of a zoom nor shows empty space when
+    /// the click is near an edge. At a zoom of 1 this is the identity.
+    static func transform(focus: CGPoint, zoom: CGFloat, in extent: CGRect) -> CGAffineTransform {
+        guard zoom > 1 else { return .identity }
+        let progress = min((zoom - 1) / (maximumZoom - 1), 1)
+        func placed(_ point: CGFloat, middle: CGFloat, lower: CGFloat, upper: CGFloat) -> CGFloat {
+            let eased = point + (middle - point) * progress
+            // Past these, an edge of the scaled frame would come inside `extent`.
+            return min(max(eased, upper - zoom * (upper - point)), lower - zoom * (lower - point))
+        }
+        let x = placed(focus.x, middle: extent.midX, lower: extent.minX, upper: extent.maxX)
+        let y = placed(focus.y, middle: extent.midY, lower: extent.minY, upper: extent.maxY)
+        return CGAffineTransform(
+            a: zoom, b: 0,
+            c: 0, d: zoom,
+            tx: x - zoom * focus.x,
+            ty: y - zoom * focus.y
+        )
+    }
+}
+
 @MainActor
 public final class RecordingInteractionRecorder {
     public static let shared = RecordingInteractionRecorder()
@@ -137,6 +175,9 @@ public final class RecordingInteractionRecorder {
     private var timer: Timer?
     private var startedAt: Date?
     private var targetRect: CGRect?
+    /// A window recording follows its window, so its rect goes stale.
+    private var targetWindowID: CGWindowID?
+    private var isRefreshingWindowBounds = false
     private var samples: [RecordingPointerSample] = []
     private var clicks: [TimeInterval] = []
     private var clickPoints: [RecordingPointerSample] = []
@@ -147,6 +188,7 @@ public final class RecordingInteractionRecorder {
         guard configuration.smoothsCursor || configuration.autoZoomsOnClicks else { return }
         targetRect = Self.targetRect(for: configuration.target)
         guard targetRect != nil else { return }
+        if case .window(let windowID) = configuration.target { targetWindowID = windowID }
         startedAt = Date()
         sample()
         let timer = Timer(timeInterval: 1.0 / 30.0, repeats: true) { [weak self] _ in
@@ -178,6 +220,7 @@ public final class RecordingInteractionRecorder {
     private func reset() {
         startedAt = nil
         targetRect = nil
+        targetWindowID = nil
         samples.removeAll(keepingCapacity: true)
         clicks.removeAll(keepingCapacity: true)
         clickPoints.removeAll(keepingCapacity: true)
@@ -187,18 +230,48 @@ public final class RecordingInteractionRecorder {
     private func sample() {
         guard let startedAt, let rect = targetRect, rect.width > 0, rect.height > 0 else { return }
         let location = NSEvent.mouseLocation
+        let isInside = rect.contains(location)
         let point = CGPoint(
             x: min(max((location.x - rect.minX) / rect.width, 0), 1),
             y: min(max((rect.maxY - location.y) / rect.height, 0), 1)
         )
         let time = Date().timeIntervalSince(startedAt)
-        samples.append(RecordingPointerSample(time: time, point: point))
+        samples.append(RecordingPointerSample(time: time, point: point, isInsideTarget: isInside))
+        if samples.count % 30 == 0 { refreshWindowBoundsOffMain() }
         let pressed = CGEventSource.buttonState(.combinedSessionState, button: .left)
-        if pressed, !wasPressed {
+        if pressed, !wasPressed, isInside {
             clicks.append(time)
             clickPoints.append(RecordingPointerSample(time: time, point: point))
         }
         wasPressed = pressed
+    }
+
+    /// About once a second, since samples run at 30 Hz. A window that has gone
+    /// keeps its last known rect.
+    private func refreshWindowBoundsOffMain() {
+        guard let targetWindowID, !isRefreshingWindowBounds else { return }
+        isRefreshingWindowBounds = true
+        let session = startedAt
+        Task.detached(priority: .utility) { [weak self] in
+            let bounds = RecordingInteractionRecorder.windowBounds(targetWindowID)
+            await self?.applyWindowBounds(bounds, session: session)
+        }
+    }
+
+    private func applyWindowBounds(_ bounds: CGRect?, session: Date?) {
+        isRefreshingWindowBounds = false
+        guard let bounds, session == startedAt, startedAt != nil else { return }
+        targetRect = ScreenGeometry.cocoaRect(fromCG: bounds, primaryFrame: ScreenLookup.primaryFrame)
+    }
+
+    private nonisolated static func windowBounds(_ windowID: CGWindowID) -> CGRect? {
+        guard let list = CGWindowListCopyWindowInfo([.optionIncludingWindow], windowID) as? [[String: Any]],
+              let dictionary = list.first,
+              let boundsValue = dictionary[kCGWindowBounds as String],
+              let boundsDictionary = boundsValue as? NSDictionary else {
+            return nil
+        }
+        return CGRect(dictionaryRepresentation: boundsDictionary as CFDictionary)
     }
 
     private static func targetRect(for target: RecordingTarget) -> CGRect? {
@@ -208,13 +281,7 @@ public final class RecordingInteractionRecorder {
         case .area(let rect, _):
             return ScreenGeometry.cocoaRect(fromCG: rect, primaryFrame: ScreenLookup.primaryFrame)
         case .window(let windowID):
-            guard let list = CGWindowListCopyWindowInfo([.optionIncludingWindow], windowID) as? [[String: Any]],
-                  let dictionary = list.first,
-                  let boundsValue = dictionary[kCGWindowBounds as String],
-                  let boundsDictionary = boundsValue as? NSDictionary,
-                  let bounds = CGRect(dictionaryRepresentation: boundsDictionary as CFDictionary) else {
-                return nil
-            }
+            guard let bounds = windowBounds(windowID) else { return nil }
             return ScreenGeometry.cocoaRect(fromCG: bounds, primaryFrame: ScreenLookup.primaryFrame)
         }
     }
@@ -236,30 +303,30 @@ public enum RecordingEffectsProcessor {
         let composition = try await AVVideoComposition(applyingFiltersTo: asset) { request in
             let extent = request.sourceImage.extent
             let seconds = request.compositionTime.seconds
-            let unitPoint = effective.focusPoint(at: seconds) ?? CGPoint(x: 0.5, y: 0.5)
-            let focus = CGPoint(
-                x: extent.minX + extent.width * unitPoint.x,
-                y: extent.minY + extent.height * (1 - unitPoint.y)
-            )
+            func position(_ unit: CGPoint?) -> CGPoint {
+                let unit = unit ?? CGPoint(x: 0.5, y: 0.5)
+                return CGPoint(
+                    x: extent.minX + extent.width * unit.x,
+                    y: extent.minY + extent.height * (1 - unit.y)
+                )
+            }
             let zoom = autoZoomsOnClicks ? effective.zoom(at: seconds) : 1
+            let zoomTransform = zoom > 1.001
+                ? RecordingZoomGeometry.transform(
+                    focus: position(effective.focusPoint(at: seconds)),
+                    zoom: zoom,
+                    in: extent
+                )
+                : CGAffineTransform.identity
             var image = request.sourceImage
             if zoom > 1.001 {
-                let translated = image.transformed(by: CGAffineTransform(
-                    translationX: -focus.x,
-                    y: -focus.y
-                ))
-                image = translated
-                    .transformed(by: CGAffineTransform(scaleX: zoom, y: zoom))
-                    .transformed(by: CGAffineTransform(
-                        translationX: extent.midX,
-                        y: extent.midY
-                    ))
-                    .cropped(to: extent)
+                image = image.transformed(by: zoomTransform).cropped(to: extent)
             }
-            if let cursor {
+            if let cursor, effective.pointerIsInsideTarget(at: seconds) {
                 let cursorScale = max(0.75, min(extent.width, extent.height) / 1_400)
-                let cursorPosition = zoom > 1.001
-                    ? CGPoint(x: extent.midX, y: extent.midY) : focus
+                // The pointer itself, moved with the picture. It can leave the
+                // click point while a zoom holds.
+                let cursorPosition = position(effective.point(at: seconds)).applying(zoomTransform)
                 let overlay = cursor
                     .transformed(by: CGAffineTransform(scaleX: cursorScale, y: cursorScale))
                     .transformed(by: CGAffineTransform(

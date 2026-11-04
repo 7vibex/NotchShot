@@ -2,6 +2,7 @@ import AppKit
 @preconcurrency import ApplicationServices
 import CoreAudio
 import Foundation
+import Synchronization
 
 /// Mute and camera for the call on the island.
 ///
@@ -101,12 +102,6 @@ public enum MeetingControls {
     }
 
     @discardableResult
-    public static func setSystemInputMuted(_ muted: Bool) -> Bool {
-        guard let device = defaultInputDevice() else { return false }
-        return setInputMuted(muted, device: device)
-    }
-
-    @discardableResult
     static func setInputMuted(_ muted: Bool, device: AudioDeviceID) -> Bool {
         var value: UInt32 = muted ? 1 : 0
         var address = muteAddress
@@ -118,7 +113,7 @@ public enum MeetingControls {
         return AudioObjectSetPropertyData(device, &address, 0, nil, UInt32(MemoryLayout<UInt32>.size), &value) == noErr
     }
 
-    private static var muteAddress: AudioObjectPropertyAddress {
+    fileprivate static var muteAddress: AudioObjectPropertyAddress {
         AudioObjectPropertyAddress(
             mSelector: kAudioDevicePropertyMute,
             mScope: kAudioDevicePropertyScopeInput,
@@ -136,6 +131,81 @@ public enum MeetingControls {
         )
         let status = AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &size, &device)
         return status == noErr && device != 0 ? device : nil
+    }
+}
+
+/// Follows the default microphone's mute for as long as a call is on the
+/// island, so its icon is right when the mute changes elsewhere: a menu bar, a
+/// keyboard, another app. A read per view update would be Core Audio on main.
+final class SystemInputMuteWatcher: @unchecked Sendable {
+    static let shared = SystemInputMuteWatcher()
+
+    private let queue = DispatchQueue(label: "com.notchshot.input-mute", qos: .utility)
+    private let isWatching = Atomic<Bool>(false)
+
+    // Touched only on `queue`.
+    private var update: (@MainActor @Sendable (Bool) -> Void)?
+    private var device: AudioDeviceID?
+    private lazy var listener: AudioObjectPropertyListenerBlock = { [weak self] _, _ in
+        self?.follow()
+    }
+
+    private static var defaultInputAddress: AudioObjectPropertyAddress {
+        AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDefaultInputDevice,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+    }
+
+    private init() {}
+
+    /// Safe to call on every refresh: only a change does anything.
+    func setWatching(_ wanted: Bool, update: @escaping @MainActor @Sendable (Bool) -> Void) {
+        guard isWatching.exchange(wanted, ordering: .relaxed) != wanted else { return }
+        queue.async { [self] in
+            if wanted {
+                attach(update)
+            } else {
+                detach()
+            }
+        }
+    }
+
+    private func attach(_ update: @escaping @MainActor @Sendable (Bool) -> Void) {
+        self.update = update
+        var address = Self.defaultInputAddress
+        _ = AudioObjectAddPropertyListenerBlock(AudioObjectID(kAudioObjectSystemObject), &address, queue, listener)
+        follow()
+    }
+
+    private func detach() {
+        update = nil
+        var address = Self.defaultInputAddress
+        _ = AudioObjectRemovePropertyListenerBlock(AudioObjectID(kAudioObjectSystemObject), &address, queue, listener)
+        listen(to: nil)
+    }
+
+    private func follow() {
+        guard let update else { return }
+        let current = MeetingControls.defaultInputDevice()
+        listen(to: current)
+        let muted = current.flatMap(MeetingControls.isInputMuted) ?? false
+        DispatchQueue.main.async {
+            MainActor.assumeIsolated { update(muted) }
+        }
+    }
+
+    private func listen(to newDevice: AudioDeviceID?) {
+        guard newDevice != device else { return }
+        var address = MeetingControls.muteAddress
+        if let device {
+            _ = AudioObjectRemovePropertyListenerBlock(device, &address, queue, listener)
+        }
+        if let newDevice {
+            _ = AudioObjectAddPropertyListenerBlock(newDevice, &address, queue, listener)
+        }
+        device = newDevice
     }
 }
 

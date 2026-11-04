@@ -45,8 +45,20 @@ public final class SecureUpdateController: NSObject, ObservableObject, SPUUpdate
         pendingUpdateVersion = nil
     }
 
-    public func updater(_ updater: SPUUpdater, didDismissUpdate update: SUAppcastItem) {
-        pendingUpdateVersion = nil
+    public func updater(
+        _ updater: SPUUpdater,
+        userDidMake choice: SPUUserUpdateChoice,
+        forUpdate updateItem: SUAppcastItem,
+        state: SPUUserUpdateState
+    ) {
+        switch choice {
+        case .skip, .dismiss:
+            pendingUpdateVersion = nil
+        case .install:
+            break
+        @unknown default:
+            break
+        }
     }
 
     public static func allowedChannels(for channel: UpdateChannel) -> Set<String> {

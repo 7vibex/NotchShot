@@ -12,8 +12,6 @@ struct NetworkStatusCard: View {
     var onDismiss: () -> Void
     var onOpenNetworkSettings: () -> Void
 
-    static let buttonHeight: CGFloat = 32
-
     private var isOffline: Bool { NetworkContextPolicy.isOfflineAlert(snapshot) }
 
     private var accent: Color {

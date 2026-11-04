@@ -57,6 +57,28 @@ public struct PrivacyFinding: Identifiable, Sendable, Equatable {
     }
 }
 
+/// What a review found, and which checks never ran. A check that failed must
+/// not read as a clean result: an image whose text was never scanned is not
+/// "Share Ready".
+public struct PrivacyReviewResult: Sendable, Equatable {
+    public enum Check: String, Sendable, Equatable {
+        case text
+        case faces
+    }
+
+    public var findings: [PrivacyFinding]
+    public var failedChecks: [Check]
+
+    public var incompleteMessage: String? {
+        switch (failedChecks.contains(.text), failedChecks.contains(.faces)) {
+        case (true, true): "Text and faces could not be checked."
+        case (true, false): "Text could not be checked."
+        case (false, true): "Faces could not be checked."
+        case (false, false): nil
+        }
+    }
+}
+
 /// Local-only privacy inspection. It returns suggestions and never changes the
 /// capture. Redaction elements are created only after the user selects findings
 /// and presses the explicit review action.
@@ -65,7 +87,7 @@ public actor PrivacyReviewService {
 
     public init() {}
 
-    public func review(_ image: CGImage) async throws -> [PrivacyFinding] {
+    public func review(_ image: CGImage) async throws -> PrivacyReviewResult {
         async let textResult = OCRService.shared.recognizeText(in: image)
         async let faceResult = Self.detectFaces(in: image)
 
@@ -81,11 +103,22 @@ public actor PrivacyReviewService {
         } catch {
             faceOutcome = .failure(error)
         }
+        return try Self.result(ocr: ocrOutcome, faces: faceOutcome)
+    }
+
+    static func result(
+        ocr ocrOutcome: Result<OCRResult, Error>,
+        faces faceOutcome: Result<[PrivacyFinding], Error>
+    ) throws -> PrivacyReviewResult {
         // One failing pass (for example face detection) must not discard the
         // findings the other one produced; only a total failure is an error.
+        // The failed pass is still reported, so the result never claims it ran.
         if case .failure(let error) = ocrOutcome, case .failure = faceOutcome {
             throw error
         }
+        var failedChecks: [PrivacyReviewResult.Check] = []
+        if case .failure = ocrOutcome { failedChecks.append(.text) }
+        if case .failure = faceOutcome { failedChecks.append(.faces) }
         let ocr = (try? ocrOutcome.get()) ?? .empty
         var findings = (try? faceOutcome.get()) ?? []
 
@@ -155,10 +188,11 @@ public actor PrivacyReviewService {
             }
             if !isDuplicate { deduplicated.append(finding) }
         }
-        return deduplicated.sorted { lhs, rhs in
+        let sorted = deduplicated.sorted { lhs, rhs in
             if lhs.rect.minY != rhs.rect.minY { return lhs.rect.minY < rhs.rect.minY }
             return lhs.rect.minX < rhs.rect.minX
         }
+        return PrivacyReviewResult(findings: sorted, failedChecks: failedChecks)
     }
 
     static func containsAccessToken(_ text: String) -> Bool {
@@ -259,20 +293,31 @@ public final class PrivacyReviewSession {
     public private(set) var findings: [PrivacyFinding] = []
     public private(set) var isReviewing = false
     public private(set) var errorMessage: String?
+    /// A check that failed while the other one ran. Its findings are still shown.
+    public private(set) var incompleteMessage: String?
     public var selectedFindingIDs: Set<UUID> = []
+    /// One image, because a body evaluation building its own redraws the source.
+    let previewImage: NSImage
 
     public init(asset: CaptureAsset, source: CGImage) {
         self.asset = asset
         self.source = source
+        previewImage = NSImage(
+            cgImage: source,
+            size: NSSize(width: source.width, height: source.height)
+        )
     }
 
     public func run() {
         guard !isReviewing else { return }
         isReviewing = true
         errorMessage = nil
+        incompleteMessage = nil
         Task {
             do {
-                findings = try await PrivacyReviewService.shared.review(source)
+                let result = try await PrivacyReviewService.shared.review(source)
+                findings = result.findings
+                incompleteMessage = result.incompleteMessage
             } catch {
                 errorMessage = error.localizedDescription
             }
@@ -321,10 +366,7 @@ public struct PrivacyReviewView: View {
             )
             ZStack {
                 Color(nsColor: .underPageBackgroundColor)
-                Image(nsImage: NSImage(
-                    cgImage: session.source,
-                    size: NSSize(width: session.source.width, height: session.source.height)
-                ))
+                Image(nsImage: session.previewImage)
                 .resizable()
                 .aspectRatio(contentMode: .fit)
                 .accessibilityLabel("Capture being reviewed for private details")
@@ -355,7 +397,7 @@ public struct PrivacyReviewView: View {
         VStack(alignment: .leading, spacing: 12) {
             Text(PrivacyReviewPresentation.title(
                 isReviewing: session.isReviewing,
-                errorMessage: session.errorMessage,
+                errorMessage: session.errorMessage ?? session.incompleteMessage,
                 findingCount: session.findings.count
             ))
                 .font(.title2.weight(.semibold))
@@ -368,6 +410,12 @@ public struct PrivacyReviewView: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if let error = session.errorMessage {
                 ContentUnavailableView("Review failed", systemImage: "exclamationmark.triangle", description: Text(error))
+            } else if session.findings.isEmpty, let incomplete = session.incompleteMessage {
+                ContentUnavailableView(
+                    "Review incomplete",
+                    systemImage: "exclamationmark.triangle",
+                    description: Text("\(incomplete) Inspect the capture yourself before sharing.")
+                )
             } else if session.findings.isEmpty {
                 ContentUnavailableView(
                     "No likely private details",
@@ -375,6 +423,9 @@ public struct PrivacyReviewView: View {
                     description: Text("Still inspect the capture yourself before sharing.")
                 )
             } else {
+                if let incomplete = session.incompleteMessage {
+                    InlineErrorMessage(message: incomplete)
+                }
                 HStack {
                     Button("Select All") { session.selectAll() }
                     Button("Deselect All") { session.deselectAll() }

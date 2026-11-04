@@ -156,7 +156,7 @@ public final class AIHookInstaller {
             // repairs the configuration instead of reporting success.
             if let existing = entries.compactMap(Self.notchShotCommand).first {
                 if existing.contains(Self.shellQuoted(reporterURL.path)) { continue }
-                entries.removeAll { Self.notchShotCommand($0) != nil }
+                entries = entries.compactMap(Self.removingNotchShotCommands)
             }
             if integration == .cursor {
                 entries.append(["type": "command", "command": command])
@@ -263,6 +263,19 @@ public final class AIHookInstaller {
         return nil
     }
 
+    /// An entry can hold the user's own hooks beside ours, and those stay. Nil
+    /// when nothing is left of it.
+    private static func removingNotchShotCommands(_ entry: [String: Any]) -> [String: Any]? {
+        if let command = entry["command"] as? String, command.contains("notchshot-ai") { return nil }
+        guard let nested = entry["hooks"] as? [[String: Any]] else { return entry }
+        let kept = nested.filter { ($0["command"] as? String)?.contains("notchshot-ai") != true }
+        guard kept.count != nested.count else { return entry }
+        guard !kept.isEmpty else { return nil }
+        var trimmed = entry
+        trimmed["hooks"] = kept
+        return trimmed
+    }
+
     private static func shellQuoted(_ value: String) -> String {
         "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"
     }
@@ -365,7 +378,9 @@ extension AIHookInstaller {
     /// NotchShot.
     public func hasClaudeStatusLine() -> Bool {
         let destination = configurationURL(for: .claude)
-        guard let data = try? Data(contentsOf: destination),
+        guard let size = (try? destination.resourceValues(forKeys: [.fileSizeKey]))?.fileSize,
+              size <= Self.statusLineMaximumBytes,
+              let data = try? Data(contentsOf: destination),
               let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let statusLine = root["statusLine"] as? [String: Any],
               let command = statusLine["command"] as? String

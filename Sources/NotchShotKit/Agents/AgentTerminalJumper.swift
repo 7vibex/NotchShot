@@ -1,6 +1,7 @@
 import AppKit
 import Darwin
 import Foundation
+import os
 
 /// Takes the user to the terminal tab a Claude Code session runs in.
 ///
@@ -25,37 +26,80 @@ enum AgentTerminalJumper {
         var tmuxPane: Bool
     }
 
+    /// What is left for the main actor once the off-main work is done.
+    private enum Outcome: Sendable {
+        case failed
+        case done
+        case activate(pid_t)
+        /// Run on the shared script thread, then activate the app if it fails.
+        case script(String, fallback: pid_t)
+        /// A later click took over, so this one neither activates nor falls back.
+        case superseded
+    }
+
+    /// Scripts and tmux wait on other processes, one jump at a time so the
+    /// last click is the one that ends up in front.
+    private static let jumpQueue = DispatchQueue(label: "com.notchshot.agent-jump", qos: .userInitiated)
+    private static let latestJump = OSAllocatedUnfairLock(initialState: 0)
+
     /// Returns false when nothing could be found, so the caller can fall
     /// back to opening the agent's app.
     @MainActor
     @discardableResult
-    static func jump(pid: Int?, tty: String?) -> Bool {
+    static func jump(pid: Int?, tty: String?) async -> Bool {
         guard let pid, pid > 1 else { return false }
-        let chain = ancestry(of: pid_t(pid))
+        let sequence = latestJump.withLock { latest -> Int in
+            latest += 1
+            return latest
+        }
+        let outcome = await withCheckedContinuation { (continuation: CheckedContinuation<Outcome, Never>) in
+            jumpQueue.async {
+                continuation.resume(returning: locate(pid: pid_t(pid), tty: tty, sequence: sequence))
+            }
+        }
+        switch outcome {
+        case .failed:
+            return false
+        case .done, .superseded:
+            return true
+        case .script(let source, let appPID):
+            guard latestJump.withLock({ $0 }) == sequence else { return true }
+            let result = await AppleScriptExecutor().execute(source)
+            if result.booleanValue { return true }
+            Log.app.info("Terminal jump script failed: \(result.errorNumber ?? 0)")
+            guard latestJump.withLock({ $0 }) == sequence else { return true }
+            return NSRunningApplication(processIdentifier: appPID)?.activate() ?? false
+        case .activate(let appPID):
+            guard latestJump.withLock({ $0 }) == sequence else { return true }
+            return NSRunningApplication(processIdentifier: appPID)?.activate() ?? false
+        }
+    }
+
+    private static func locate(pid: pid_t, tty: String?, sequence: Int) -> Outcome {
+        guard latestJump.withLock({ $0 }) == sequence else { return .superseded }
+        let chain = ancestry(of: pid)
         var hosts: [pid_t: String] = [:]
         for process in chain {
             if let app = NSRunningApplication(processIdentifier: process.pid), app.activationPolicy == .regular {
                 hosts[process.pid] = app.bundleIdentifier ?? ""
             }
         }
-        guard let target = target(in: chain, hint: tty, hosts: hosts) else { return false }
+        guard let target = target(in: chain, hint: tty, hosts: hosts) else { return .failed }
 
         if target.tmuxPane, let paneTTY = target.tty {
             return selectTmuxPane(tty: paneTTY)
         }
-        guard let app = NSRunningApplication(processIdentifier: target.appPID) else { return false }
+        guard NSRunningApplication(processIdentifier: target.appPID) != nil else { return .failed }
 
         if let tty = target.tty, !target.tmuxPane {
-            switch target.bundleIdentifier {
-            case "com.apple.Terminal":
-                if runScript(terminalScript(tty: tty)) { return true }
-            case "com.googlecode.iterm2":
-                if runScript(iTermScript(tty: tty)) { return true }
-            default:
-                break
+            let script: String? = switch target.bundleIdentifier {
+            case "com.apple.Terminal": terminalScript(tty: tty)
+            case "com.googlecode.iterm2": iTermScript(tty: tty)
+            default: nil
             }
+            if let script { return .script(script, fallback: target.appPID) }
         }
-        return app.activate()
+        return .activate(target.appPID)
     }
 
     /// Pure: picks the hosting app and TTY out of a process chain, nearest
@@ -134,10 +178,9 @@ enum AgentTerminalJumper {
         tty.range(of: #"^/dev/ttys?[0-9a-z]{1,4}$"#, options: .regularExpression) != nil
     }
 
-    /// The scripts run on the main actor. Apple events wait two minutes for
-    /// a reply by default, so a terminal busy drawing a flood of output would
-    /// freeze the notch that long; past this bound the jump falls back to
-    /// bringing the app forward.
+    /// Apple events wait two minutes for a reply by default, so a terminal busy
+    /// drawing a flood of output would hold the jump that long; past this bound
+    /// the jump falls back to bringing the app forward.
     static let scriptTimeoutSeconds = 3
 
     static func terminalScript(tty: String) -> String? {
@@ -185,29 +228,16 @@ enum AgentTerminalJumper {
         """
     }
 
-    @MainActor
-    private static func runScript(_ source: String?) -> Bool {
-        guard let source, let script = NSAppleScript(source: source) else { return false }
-        var error: NSDictionary?
-        let result = script.executeAndReturnError(&error)
-        if let error {
-            Log.app.info("Terminal jump script failed: \(error[NSAppleScript.errorNumber] as? Int ?? 0)")
-            return false
-        }
-        return result.booleanValue
-    }
-
     // MARK: tmux
 
-    /// The whole tmux exchange runs on the main actor, so it shares one short
-    /// budget: a wedged tmux server costs the notch this long, not forever.
+    /// The whole tmux exchange shares one short budget: a wedged tmux server
+    /// costs the jump this long, not forever.
     static let tmuxBudget: TimeInterval = 1.5
 
     /// Switches the attached tmux client to the pane on `tty`, then brings
     /// that client's terminal forward.
-    @MainActor
-    private static func selectTmuxPane(tty: String) -> Bool {
-        guard isSafeTTY(tty), let tmuxPath = tmuxPath() else { return false }
+    private static func selectTmuxPane(tty: String) -> Outcome {
+        guard isSafeTTY(tty), let tmuxPath = tmuxPath() else { return .failed }
         let deadline = DispatchTime.now() + tmuxBudget
         let tmux = { (arguments: [String]) in run(tmuxPath, arguments, until: deadline) }
         let panes = tmux(["list-panes", "-a", "-F", "#{pane_tty} #{session_name}:#{window_index}.#{pane_index}"])
@@ -216,7 +246,7 @@ enum AgentTerminalJumper {
             .first(where: { $0.hasPrefix(tty + " ") })?
             .split(separator: " ", maxSplits: 1).last
             .map(String.init)
-        else { return false }
+        else { return .failed }
         _ = tmux(["switch-client", "-t", target])
         _ = tmux(["select-window", "-t", target])
         _ = tmux(["select-pane", "-t", target])
@@ -230,11 +260,11 @@ enum AgentTerminalJumper {
             .flatMap({ pid_t(String($0)) }) {
             for process in ancestry(of: clientPID) {
                 if let app = NSRunningApplication(processIdentifier: process.pid), app.activationPolicy == .regular {
-                    return app.activate()
+                    return .activate(app.processIdentifier)
                 }
             }
         }
-        return true
+        return .done
     }
 
     private static func tmuxPath() -> String? {

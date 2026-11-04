@@ -61,20 +61,27 @@
 	<!-- Sensitive capabilities are requested lazily when their feature is used. -->
 	<key>NSScreenCaptureUsageDescription</key>
 	<string>NotchShot captures the screen only when you start a screenshot, text capture, or screen recording.</string>
-	<key>NSAudioCaptureUsageDescription</key>
-	<string>NotchShot captures system audio only while you record the screen with system audio switched on.</string>
 	<key>NSDesktopFolderUsageDescription</key>
 	<string>NotchShot saves captures to the Desktop only when it is your selected output folder.</string>
+	<key>NSDocumentsFolderUsageDescription</key>
+	<string>NotchShot saves captures to Documents only when it is your selected output folder.</string>
+	<key>NSDownloadsFolderUsageDescription</key>
+	<string>NotchShot shows download progress only when you turn on Downloads as a live activity, saves captures to Downloads only when it is your selected output folder, and extracts an archive there only when its own folder is read-only.</string>
 	<key>NSFocusStatusUsageDescription</key>
 	<string>NotchShot can briefly show when a Focus turns on or off. macOS shares only whether a Focus is on, never which one.</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>NotchShot records your microphone only when you start a screen recording with microphone audio, explicitly start a Voice Note, or use Notch Dictation to transcribe speech locally.</string>
 	<key>NSAudioCaptureUsageDescription</key>
-	<string>NotchShot listens to what's playing only when you turn on the live music meter or ask "What's this song?". The sound is analysed in memory on this Mac and never recorded or saved.</string>
+	<string>NotchShot listens to the Mac's own sound only when you turn on the live music meter, ask "What's this song?", or turn an app down with per-app volume. The sound is handled in memory on this Mac and never recorded or saved.</string>
 	<key>NSCameraUsageDescription</key>
 	<string>NotchShot uses the camera only while you open Presenter Camera or explicitly enable its visible recording overlay.</string>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>NotchShot uses your local network only when you send selected files directly to a LocalSend receiver.</string>
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<key>NSAllowsLocalNetworking</key>
+		<true/>
+	</dict>
 	<key>NSServices</key>
 	<array>
 		<dict>

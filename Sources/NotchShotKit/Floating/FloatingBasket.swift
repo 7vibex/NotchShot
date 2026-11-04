@@ -10,13 +10,14 @@ import UniformTypeIdentifiers
 /// Droppy's signature gesture: wiggle the mouse side-to-side while holding
 /// files and a floating basket flies in wherever you are. The heuristic is
 /// deliberately loose — 4 direction reversals with at least 8 pt travel each
-/// inside 0.6 s — so it feels intentional but never requires precision.
+/// inside 0.6 s — so it feels intentional but never requires precision. The
+/// holding-files part is checked on the drag pasteboard: scribbling in a drawing
+/// app has the same motion, and must not pull keyboard focus away from it.
 @MainActor
 public final class JiggleDetector {
     public var onJiggle: (() -> Void)?
 
     private struct Sample {
-        var x: CGFloat
         var time: TimeInterval // seconds since boot via CACurrentMediaTime
         var dx: CGFloat
     }
@@ -24,6 +25,7 @@ public final class JiggleDetector {
     private var samples: [Sample] = []
     private var lastX: CGFloat?
     private var lastTrigger: TimeInterval = -10
+    private var dragChangeCountAtMouseDown: Int?
     nonisolated(unsafe) private var monitors: [Any] = []
 
     private let reversalThreshold: CGFloat = 8
@@ -59,17 +61,15 @@ public final class JiggleDetector {
     private func handle(_ event: NSEvent) {
         switch event.type {
         case .leftMouseDown:
-            lastX = event.locationInWindow.x
-            // Also consider screen position for global monitor where window coords are meaningless
-            if let screenX = NSScreen.main?.frame.midX {
-                // Keep lastX as screen location when global
-                lastX = NSEvent.mouseLocation.x
-                _ = screenX
-            }
+            // Screen position: window coordinates are meaningless for a global
+            // monitor.
+            lastX = NSEvent.mouseLocation.x
             samples.removeAll()
+            dragChangeCountAtMouseDown = NSPasteboard(name: .drag).changeCount
         case .leftMouseUp:
             lastX = nil
             samples.removeAll()
+            dragChangeCountAtMouseDown = nil
         case .leftMouseDragged:
             let x = NSEvent.mouseLocation.x
             guard let prev = lastX else {
@@ -80,9 +80,7 @@ public final class JiggleDetector {
             lastX = x
             guard abs(dx) >= 1 else { return }
             let now = CACurrentMediaTime()
-            // Ignore tiny moves
-            if abs(dx) < 1 { return }
-            samples.append(Sample(x: x, time: now, dx: dx))
+            samples.append(Sample(time: now, dx: dx))
             // Trim window
             samples.removeAll { now - $0.time > reversalWindow }
             // Count sign reversals with meaningful travel
@@ -99,6 +97,12 @@ public final class JiggleDetector {
                 // Only trigger if left button is actually down (pressedMouseButtons bit 0)
                 let pressed = NSEvent.pressedMouseButtons
                 guard pressed & 1 != 0 else { return }
+                let drag = NSPasteboard(name: .drag)
+                guard Self.dragCarriesFiles(
+                    types: drag.types ?? [],
+                    changeCount: drag.changeCount,
+                    changeCountAtMouseDown: dragChangeCountAtMouseDown
+                ) else { return }
                 lastTrigger = now
                 samples.removeAll()
                 onJiggle?()
@@ -106,6 +110,18 @@ public final class JiggleDetector {
         default:
             break
         }
+    }
+
+    /// The drag pasteboard keeps its last contents after a drag ends, so only a
+    /// write since this press counts. Promised files carry no file URL yet.
+    static func dragCarriesFiles(
+        types: [NSPasteboard.PasteboardType],
+        changeCount: Int,
+        changeCountAtMouseDown: Int?
+    ) -> Bool {
+        guard let changeCountAtMouseDown, changeCount != changeCountAtMouseDown else { return false }
+        let promised = NSFilePromiseReceiver.readableDraggedTypes.map(NSPasteboard.PasteboardType.init(rawValue:))
+        return types.contains(.fileURL) || types.contains { promised.contains($0) }
     }
 
     deinit {
@@ -116,8 +132,6 @@ public final class JiggleDetector {
 // MARK: - Floating Basket Window
 
 public final class FloatingBasketWindow: NSPanel {
-    private var hostingView: NSHostingView<AnyView>?
-
     public init() {
         let frame = NSRect(x: 0, y: 0, width: 360, height: 280)
         super.init(
@@ -142,7 +156,6 @@ public final class FloatingBasketWindow: NSPanel {
         MainActor.assumeIsolated {
             WindowExclusionRegistry.shared.register(self)
         }
-        hasShadow = true
         // Rounded corners are handled by the SwiftUI content's clip shape.
         isReleasedWhenClosed = false
     }
@@ -153,7 +166,6 @@ public final class FloatingBasketWindow: NSPanel {
         hosting.frame = contentView?.bounds ?? frame
         hosting.autoresizingMask = [.width, .height]
         contentView = hosting
-        hostingView = hosting
     }
 
     public override var canBecomeKey: Bool { true }
@@ -205,6 +217,7 @@ public final class FloatingBasketManager {
     private var jiggle = JiggleDetector()
     private var autoHideWorkItem: DispatchWorkItem?
     private var isVisible = false
+    private var hasStarted = false
     private weak var coordinator: AppCoordinator?
     /// The basket the floating panel is showing, and the one drops go into.
     public private(set) var activeColor: BasketColor = .standard
@@ -222,12 +235,19 @@ public final class FloatingBasketManager {
         jiggle.onJiggle = { [weak self] in
             MainActor.assumeIsolated { self?.handleJiggle() }
         }
-        jiggle.start()
+        hasStarted = true
+        reconcileJiggleMonitor()
     }
 
-    public func stop() {
-        jiggle.stop()
-        hide()
+    /// With the feature off, a global monitor is still a wakeup per drag event
+    /// in every app.
+    func reconcileJiggleMonitor() {
+        guard hasStarted else { return }
+        if FloatingBasketPreferences.shared.isEnabled {
+            jiggle.start()
+        } else {
+            jiggle.stop()
+        }
     }
 
     private func handleJiggle() {
@@ -278,10 +298,6 @@ public final class FloatingBasketManager {
         presentation.dismiss(window) { [weak window] in
             window?.unregisterFromExclusion()
         }
-    }
-
-    public func toggle() {
-        if isVisible { hide() } else { show() }
     }
 
     public var isShown: Bool { isVisible }
@@ -349,13 +365,6 @@ public final class FloatingBasketManager {
     }
 }
 
-// Helper to access AppCoordinator from MainActor-isolated manager without
-// a static shared. The manager keeps a weak coordinator reference set at start.
-extension AppCoordinator {
-    // No static shared — the app owns a single instance via AppDelegate.
-    // FloatingBasketManager keeps a weak reference after start(coordinator:).
-}
-
 // Lightweight preferences bridge — keeps FloatingBasketManager from importing
 // the whole Preferences observation graph on every jiggle test.
 public final class FloatingBasketPreferences: @unchecked Sendable {
@@ -366,7 +375,10 @@ public final class FloatingBasketPreferences: @unchecked Sendable {
             if UserDefaults.standard.object(forKey: key) == nil { return true }
             return UserDefaults.standard.bool(forKey: key)
         }
-        set { UserDefaults.standard.set(newValue, forKey: key) }
+        set {
+            UserDefaults.standard.set(newValue, forKey: key)
+            Task { @MainActor in FloatingBasketManager.shared.reconcileJiggleMonitor() }
+        }
     }
     private init() {}
 }
@@ -376,7 +388,6 @@ public final class FloatingBasketPreferences: @unchecked Sendable {
 public struct FloatingBasketView: View {
     @Bindable var coordinator: AppCoordinator
     var manager: FloatingBasketManager
-    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var isDropTargeted = false
     @State private var isShowingSwitcher = false
@@ -704,7 +715,6 @@ public struct FloatingBasketView: View {
 private struct BasketRow: View {
     let item: ShelfItem
     var tint: Color = .accentColor
-    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
 
     var body: some View {
         HStack(spacing: 10) {

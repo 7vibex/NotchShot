@@ -110,7 +110,7 @@ public enum AgentUsagePolicy {
         return result
     }
 
-    public static func crewlineGroups(from accounts: [CrewlineUsageAccount], now: Date = Date()) -> [AgentUsageGroup] {
+    public static func crewlineGroups(from accounts: [CrewlineUsageAccount]) -> [AgentUsageGroup] {
         var seen = Set<AISource>()
         return accounts.compactMap { account in
             let provider = account.provider.lowercased()
@@ -208,7 +208,7 @@ public final class ClaudeUsageMonitor {
         ) else { return [] }
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
-        var snapshots: [ClaudeStatusSnapshot] = []
+        var candidates: [(url: URL, modified: Date?)] = []
         for file in files where file.pathExtension == "json" {
             let values = try? file.resourceValues(forKeys: [.contentModificationDateKey, .fileSizeKey])
             guard (values?.fileSize ?? 0) < 16 * 1_024 else { continue }
@@ -217,9 +217,24 @@ public final class ClaudeUsageMonitor {
                 try? manager.removeItem(at: file)
                 continue
             }
-            if let data = try? Data(contentsOf: file),
+            candidates.append((file, values?.contentModificationDate))
+        }
+        candidates.sort { ($0.modified ?? .distantFuture) > ($1.modified ?? .distantFuture) }
+
+        // Files last eight days, but only those a session wrote in the last half
+        // hour can say anything about context or model, and of the older ones
+        // only the newest with plan windows counts.
+        var snapshots: [ClaudeStatusSnapshot] = []
+        var foundWindows = false
+        for candidate in candidates {
+            if foundWindows, let modified = candidate.modified,
+               now.timeIntervalSince(modified) >= AgentUsagePolicy.contextLifetime {
+                break
+            }
+            if let data = try? Data(contentsOf: candidate.url),
                let snapshot = try? decoder.decode(ClaudeStatusSnapshot.self, from: data) {
                 snapshots.append(snapshot)
+                if snapshot.fiveHour != nil || snapshot.sevenDay != nil { foundWindows = true }
             }
         }
         return snapshots

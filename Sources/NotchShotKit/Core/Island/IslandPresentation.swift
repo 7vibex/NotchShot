@@ -20,7 +20,6 @@ public struct IslandPresentation: Sendable, Equatable {
     public var trailing: IslandActivity?
     /// Level of the primary. Satellites are always `.minimal`.
     public var level: IslandPresentationLevel
-    public var expandedActivityID: IslandActivityID?
     public var transientOverlay: IslandOverlay?
     /// Live activities that did not fit in the visible slots.
     public var hiddenCount: Int
@@ -34,7 +33,6 @@ public struct IslandPresentation: Sendable, Equatable {
         leading: IslandActivity? = nil,
         trailing: IslandActivity? = nil,
         level: IslandPresentationLevel = .compact,
-        expandedActivityID: IslandActivityID? = nil,
         transientOverlay: IslandOverlay? = nil,
         hiddenCount: Int = 0,
         primaryArrivalEdge: IslandSlot? = nil
@@ -43,7 +41,6 @@ public struct IslandPresentation: Sendable, Equatable {
         self.leading = leading
         self.trailing = trailing
         self.level = level
-        self.expandedActivityID = expandedActivityID
         self.transientOverlay = transientOverlay
         self.hiddenCount = hiddenCount
         self.primaryArrivalEdge = primaryArrivalEdge
@@ -61,23 +58,8 @@ public struct IslandPresentation: Sendable, Equatable {
 
     public var isEmpty: Bool { primary == nil && transientOverlay == nil }
 
-    public func slot(of id: IslandActivityID) -> IslandSlot? {
-        if leading?.id == id { return .leading }
-        if trailing?.id == id { return .trailing }
-        return nil
-    }
-
-    public func activity(in slot: IslandSlot) -> IslandActivity? {
-        slot == .leading ? leading : trailing
-    }
-
     public func neighbor(_ direction: IslandNavigationDirection) -> IslandActivity? {
         direction == .leading ? leading : trailing
-    }
-
-    public func presentationLevel(of id: IslandActivityID) -> IslandPresentationLevel? {
-        if primary?.id == id { return level }
-        return slot(of: id) == nil ? nil : .minimal
     }
 
     /// Structural description for layout and animation.
@@ -306,18 +288,6 @@ public struct IslandPresentationEngine: Sendable {
         return result
     }
 
-    public mutating func upsert(_ activity: IslandActivity) {
-        if activities[activity.id] == nil {
-            insert(activity)
-        } else {
-            activities[activity.id] = activity
-        }
-    }
-
-    public mutating func remove(_ id: IslandActivityID) {
-        forget(id)
-    }
-
     @discardableResult
     public mutating func removeExpired(now: Date) -> [IslandActivityID] {
         let expired = activities.values.filter { $0.isExpired(at: now) }.map(\.id)
@@ -466,7 +436,6 @@ public struct IslandPresentationEngine: Sendable {
             leading: taken[.leading].flatMap { activities[$0] },
             trailing: taken[.trailing].flatMap { activities[$0] },
             level: level,
-            expandedActivityID: expandedID,
             transientOverlay: overlay,
             hiddenCount: hiddenCount,
             primaryArrivalEdge: level == .compact ? arrivalEdge : nil

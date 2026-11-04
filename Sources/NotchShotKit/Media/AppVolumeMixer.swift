@@ -21,6 +21,11 @@ public struct AppVolumeSource: Identifiable, Equatable, Sendable {
 /// plays the tapped copy to the same speakers at the chosen level. Quitting
 /// NotchShot, or turning the mixer off, removes every tap and the apps play
 /// as before. Levels are remembered per app.
+///
+/// This class is the main-actor face. The taps and every Core Audio call live
+/// on `AppVolumeEngine`'s queue: listing processes took 71 ms typically and
+/// 351 ms at worst with 36 of them at load 280 (Nov 2026), and building a tap
+/// is slower still.
 @MainActor
 @Observable
 public final class AppVolumeMixer {
@@ -32,10 +37,17 @@ public final class AppVolumeMixer {
     /// A tap couldn't start; the message is for the notch.
     @ObservationIgnored var onFailure: ((String) -> Void)?
 
-    @ObservationIgnored private var taps: [String: AppVolumeTap] = [:]
-    @ObservationIgnored private var listeners: [(AudioObjectPropertySelector, AudioObjectPropertyListenerBlock)] = []
-    /// Apps whose tap failed, so a broken one isn't retried on every change.
-    @ObservationIgnored private var refused: Set<String> = []
+    @ObservationIgnored private let engine = AppVolumeEngine()
+    /// Apps with a live tap, as the engine last reported.
+    @ObservationIgnored private var tappedApps: Set<String> = []
+    /// Levels mid-drag. Saved when the drag ends: saving encodes every app's
+    /// level into UserDefaults, and a drag sends a sample per mouse event.
+    @ObservationIgnored private var dragLevels: [String: Double] = [:]
+    /// Apps whose tap has been asked for in the current drag. One try per
+    /// gesture: a refused tap otherwise failed again on every sample.
+    @ObservationIgnored private var triedThisDrag: Set<String> = []
+    /// Moves on every start and stop, so a report from an earlier run is dropped.
+    @ObservationIgnored private var runGeneration = 0
 
     init() {}
 
@@ -43,36 +55,29 @@ public final class AppVolumeMixer {
     func reconcileEnabled() {
         let enabled = ExtrasPreferences.shared.appVolumesEnabled
         guard enabled != isRunning else {
-            if enabled { reconcileTaps() }
+            if enabled { engine.reconcile(levels: currentLevels) }
             return
         }
         isRunning = enabled
+        runGeneration += 1
+        let generation = runGeneration
         if enabled {
-            listen(kAudioHardwarePropertyDefaultOutputDevice) { [weak self] in
-                // Every tap plays to the old speakers until it is rebuilt.
-                self?.rebuildAllTaps()
+            engine.start(levels: currentLevels) { [weak self] report in
+                DispatchQueue.main.async {
+                    MainActor.assumeIsolated { self?.receive(report, generation: generation) }
+                }
             }
-            listen(kAudioHardwarePropertyProcessObjectList) { [weak self] in
-                self?.reconcileTaps()
-                self?.refreshSources()
-            }
-            refused.removeAll()
-            reconcileTaps()
-            refreshSources()
         } else {
-            for (selector, block) in listeners {
-                var address = Self.address(selector)
-                AudioObjectRemovePropertyListenerBlock(AudioObjectID(kAudioObjectSystemObject), &address, .main, block)
-            }
-            listeners.removeAll()
-            taps.values.forEach { $0.stop() }
-            taps.removeAll()
+            engine.stop()
+            tappedApps = []
+            dragLevels = [:]
+            triedThisDrag = []
             sources = []
         }
     }
 
     public func volume(for bundleIdentifier: String) -> Double {
-        ExtrasPreferences.shared.appVolumes[bundleIdentifier] ?? 1
+        dragLevels[bundleIdentifier] ?? ExtrasPreferences.shared.appVolumes[bundleIdentifier] ?? 1
     }
 
     /// Sets an app's level. Full volume removes its tap altogether, but only
@@ -80,29 +85,128 @@ public final class AppVolumeMixer {
     /// full gain, since every new tap costs a handover.
     public func setVolume(_ volume: Double, for bundleIdentifier: String, isFinal: Bool = true) {
         let clamped = min(max(volume, 0), 1)
-        let extras = ExtrasPreferences.shared
-        let tap = taps[bundleIdentifier]
         // Snaps the last percent to full, so dragging to the end really
         // gives the app its own output back.
         let isFull = clamped >= 0.99
-        if isFull, tap == nil || isFinal {
-            extras.appVolumes[bundleIdentifier] = nil
-            reconcileTaps()
+        let level = isFull ? 1 : clamped
+        guard isFinal else {
+            dragLevels[bundleIdentifier] = level
+            engine.setLevel(level, for: bundleIdentifier)
+            guard !isFull, !tappedApps.contains(bundleIdentifier),
+                  triedThisDrag.insert(bundleIdentifier).inserted else { return }
+            engine.reconcile(levels: currentLevels, retrying: bundleIdentifier)
             return
         }
-        extras.appVolumes[bundleIdentifier] = isFull ? 1 : clamped
-        if let tap {
-            tap.setGain(isFull ? 1 : Float(clamped))
-        } else {
-            refused.remove(bundleIdentifier)
+        dragLevels[bundleIdentifier] = nil
+        let hadTried = triedThisDrag.remove(bundleIdentifier) != nil
+        ExtrasPreferences.shared.appVolumes[bundleIdentifier] = isFull ? nil : level
+        engine.setLevel(isFull ? nil : level, for: bundleIdentifier)
+        // A drag that already tried doesn't try again as it lets go.
+        engine.reconcile(levels: currentLevels, retrying: hadTried || isFull ? nil : bundleIdentifier)
+    }
+
+    /// Re-reads which apps are playing. The panels call it as they open. The
+    /// answer lands in `sources` a moment later.
+    public func refreshSources() {
+        guard isRunning else { return }
+        engine.refreshSources()
+    }
+
+    private var currentLevels: [String: Double] {
+        ExtrasPreferences.shared.appVolumes.merging(dragLevels) { _, drag in drag }
+    }
+
+    private func receive(_ report: AppVolumeEngine.Report, generation: Int) {
+        guard generation == runGeneration, isRunning else { return }
+        switch report {
+        case .sources(let result):
+            if result != sources { sources = result }
+        case .tappedApps(let apps):
+            tappedApps = apps
+        case .failure(let message):
+            onFailure?(message)
+        }
+    }
+}
+
+/// Owns the taps. Listeners, process reads and tap builds all run on `queue`.
+///
+/// `@unchecked Sendable`: everything mutable is touched only on `queue`.
+final class AppVolumeEngine: @unchecked Sendable {
+    enum Report: Sendable {
+        case sources([AppVolumeSource])
+        case tappedApps(Set<String>)
+        case failure(String)
+    }
+
+    /// A browser opening tabs starts and stops helpers in bursts.
+    private static let processListSettle: DispatchTimeInterval = .milliseconds(250)
+
+    private let queue = DispatchQueue(label: "com.notchshot.app-volume", qos: .userInitiated)
+    private var isRunning = false
+    private var report: (@Sendable (Report) -> Void)?
+    private var levels: [String: Double] = [:]
+    private var taps: [String: AppVolumeTap] = [:]
+    private var listeners: [(AudioObjectPropertySelector, AudioObjectPropertyListenerBlock)] = []
+    /// Apps whose tap failed, so a broken one isn't retried on every change.
+    private var refused: Set<String> = []
+    private var isProcessChangeScheduled = false
+    private var isSourceReadScheduled = false
+
+    func start(levels: [String: Double], report: @escaping @Sendable (Report) -> Void) {
+        queue.async { [self] in
+            isRunning = true
+            self.levels = levels
+            self.report = report
+            refused.removeAll()
+            installListeners()
+            reconcileTaps()
+            readSources()
+        }
+    }
+
+    func stop() {
+        queue.async { [self] in
+            isRunning = false
+            report = nil
+            removeListeners()
+            taps.values.forEach { $0.stop() }
+            taps.removeAll()
+        }
+    }
+
+    /// A new level for one app, nil for "leave it alone". Doesn't build or
+    /// remove a tap: `reconcile` does that.
+    func setLevel(_ level: Double?, for bundleIdentifier: String) {
+        queue.async { [self] in
+            levels[bundleIdentifier] = level
+            if let level { taps[bundleIdentifier]?.setGain(Float(level)) }
+        }
+    }
+
+    func reconcile(levels: [String: Double], retrying bundleIdentifier: String? = nil) {
+        queue.async { [self] in
+            guard isRunning else { return }
+            self.levels = levels
+            if let bundleIdentifier { refused.remove(bundleIdentifier) }
             reconcileTaps()
         }
     }
 
-    /// Re-reads which apps are playing. The panels call it as they open.
-    public func refreshSources() {
+    /// Every call waiting behind a slow read shares the next one.
+    func refreshSources() {
+        queue.async { [self] in
+            guard isRunning, !isSourceReadScheduled else { return }
+            isSourceReadScheduled = true
+            queue.async { [self] in
+                isSourceReadScheduled = false
+                readSources()
+            }
+        }
+    }
+
+    private func readSources() {
         guard isRunning else { return }
-        let levels = ExtrasPreferences.shared.appVolumes
         let processes = ProcessAudioTap.audioProcessObjects().compactMap { object -> (String, Bool)? in
             ProcessAudioTap.bundleID(of: object).map { ($0, ProcessAudioTap.isRunningOutput(object)) }
         }
@@ -120,21 +224,21 @@ public final class AppVolumeMixer {
             ))
         }
         result.sort { ($0.isPlaying ? 0 : 1, $0.name) < ($1.isPlaying ? 0 : 1, $1.name) }
-        if result != sources { sources = result }
+        report?(.sources(result))
     }
 
     // MARK: Taps
 
     private func reconcileTaps() {
         guard isRunning else { return }
-        let levels = ExtrasPreferences.shared.appVolumes
         for (id, tap) in taps where levels[id] == nil {
             tap.stop()
             taps[id] = nil
         }
-        let running = ProcessAudioTap.audioProcessBundleIDs()
-        for (id, level) in levels where !refused.contains(id) {
-            let matched = AudioTapProcessPolicy.matches(for: id, among: running).sorted()
+        let wanted = levels.filter { !refused.contains($0.key) }
+        let running = wanted.isEmpty ? [] : ProcessAudioTap.audioProcessBundleIDs()
+        for (id, level) in wanted {
+            let matched = AudioTapProcessPolicy.tapTargets(for: id, among: running)
             if let existing = taps[id] {
                 // A helper that started after the tap isn't in it. Spotify
                 // and Chrome start and quit helpers all the time, so the
@@ -145,13 +249,14 @@ public final class AppVolumeMixer {
             }
             guard !matched.isEmpty else { continue }
             do {
-                taps[id] = try AppVolumeTap(bundleIDs: matched, gain: Float(level))
+                taps[id] = try AppVolumeTap(bundleIDs: matched, gain: Float(level), queue: queue)
             } catch {
                 refused.insert(id)
                 Log.app.error("App volume tap for \(id) failed: \(error.localizedDescription)")
-                onFailure?("Couldn't change that app's volume. NotchShot needs System Audio Recording in Privacy & Security.")
+                report?(.failure("Couldn't change that app's volume. NotchShot needs System Audio Recording in Privacy & Security."))
             }
         }
+        report?(.tappedApps(Set(taps.keys)))
     }
 
     private func rebuildAllTaps() {
@@ -161,12 +266,54 @@ public final class AppVolumeMixer {
         reconcileTaps()
     }
 
-    private func listen(_ selector: AudioObjectPropertySelector, _ handler: @escaping @MainActor () -> Void) {
-        var address = Self.address(selector)
-        let block: AudioObjectPropertyListenerBlock = { _, _ in
-            MainActor.assumeIsolated { handler() }
+    // MARK: Listeners
+
+    private func installListeners() {
+        listen(kAudioHardwarePropertyDefaultOutputDevice) { [weak self] in
+            // Every tap plays to the old speakers until it is rebuilt.
+            self?.rebuildAllTaps()
         }
-        if AudioObjectAddPropertyListenerBlock(AudioObjectID(kAudioObjectSystemObject), &address, .main, block) == noErr {
+        listen(kAudioHardwarePropertyProcessObjectList) { [weak self] in
+            self?.processListChanged()
+        }
+        listen(kAudioHardwarePropertyServiceRestarted) { [weak self] in
+            // After the callback returns, since this removes that listener.
+            self?.queue.async { [weak self] in self?.rebuildAfterServiceRestart() }
+        }
+    }
+
+    private func processListChanged() {
+        guard isRunning, !isProcessChangeScheduled else { return }
+        isProcessChangeScheduled = true
+        queue.asyncAfter(deadline: .now() + Self.processListSettle) { [self] in
+            isProcessChangeScheduled = false
+            reconcileTaps()
+            readSources()
+        }
+    }
+
+    /// coreaudiod came back with no memory of the taps, so the apps are back
+    /// at full volume while their sliders still say otherwise. Listeners on
+    /// the old daemon are gone too.
+    private func rebuildAfterServiceRestart() {
+        guard isRunning else { return }
+        removeListeners()
+        installListeners()
+        rebuildAllTaps()
+    }
+
+    private func removeListeners() {
+        for (selector, block) in listeners {
+            var address = Self.address(selector)
+            AudioObjectRemovePropertyListenerBlock(AudioObjectID(kAudioObjectSystemObject), &address, queue, block)
+        }
+        listeners.removeAll()
+    }
+
+    private func listen(_ selector: AudioObjectPropertySelector, _ handler: @escaping () -> Void) {
+        var address = Self.address(selector)
+        let block: AudioObjectPropertyListenerBlock = { _, _ in handler() }
+        if AudioObjectAddPropertyListenerBlock(AudioObjectID(kAudioObjectSystemObject), &address, queue, block) == noErr {
             listeners.append((selector, block))
         }
     }
@@ -203,8 +350,12 @@ final class AppVolumeTap: @unchecked Sendable {
     private static let handoverPoll: DispatchTimeInterval = .milliseconds(5)
     private static let handoverTimeout: TimeInterval = 1
 
-    init(bundleIDs: [String], gain: Float) throws {
+    /// `queue` is the engine's: every call but `setGain` runs on it.
+    private let queue: DispatchQueue
+
+    init(bundleIDs: [String], gain: Float, queue: DispatchQueue) throws {
         self.bundleIDs = bundleIDs
+        self.queue = queue
         self.gain.store(gain)
         do {
             try start()
@@ -306,7 +457,7 @@ final class AppVolumeTap: @unchecked Sendable {
     /// live first, so the slop is a short overlap, not a gap. If it never
     /// runs, the app is left playing on its own at full volume.
     private func scheduleMute(deadline: Date) {
-        DispatchQueue.main.asyncAfter(deadline: .now() + Self.handoverPoll) { [weak self] in
+        queue.asyncAfter(deadline: .now() + Self.handoverPoll) { [weak self] in
             guard let self, self.tapID != kAudioObjectUnknown, !self.isMuting else { return }
             guard self.handover.cycles >= Self.cyclesBeforeMute else {
                 if Date() < deadline {
@@ -390,7 +541,7 @@ private final class AppVolumeGain: Sendable {
     func store(_ value: Float) { bits.store(value.bitPattern, ordering: .relaxed) }
 }
 
-/// What the real-time thread and the main thread share during a handover:
+/// What the real-time thread and the engine's queue share during a handover:
 /// how many cycles the replay has run, and whether it is audible yet.
 private final class AppVolumeHandover: Sendable {
     private let cycleCount = Atomic<Int>(0)

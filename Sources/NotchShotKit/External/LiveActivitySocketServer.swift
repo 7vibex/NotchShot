@@ -32,6 +32,9 @@ final class LiveActivitySocketServer: @unchecked Sendable {
         var source: DispatchSourceRead?
         var buffer = Data()
         var handled = false
+        /// Suspended at EOF while its reply is pending. Dispatch crashes on an
+        /// unbalanced resume, so this is the only record of it.
+        var isSourceSuspended = false
 
         init(fileDescriptor: Int32) {
             self.fileDescriptor = fileDescriptor
@@ -205,6 +208,12 @@ final class LiveActivitySocketServer: @unchecked Sendable {
                 handle(client.buffer, from: client)
             } else if !client.handled {
                 closeClient(client)
+            } else if !client.isSourceSuspended {
+                // A read source stays readable at EOF. Waiting on the handler,
+                // which needs the main actor, this would spin a core for as long
+                // as the main thread is busy.
+                client.isSourceSuspended = true
+                client.source?.suspend()
             }
         } else if errno != EAGAIN && errno != EWOULDBLOCK {
             closeClient(client)
@@ -253,6 +262,11 @@ final class LiveActivitySocketServer: @unchecked Sendable {
     /// descriptor exactly once, after the source is done with it.
     private func retire(_ client: Client) {
         client.source?.cancel()
+        // A suspended source would never run the cancel handler that closes it.
+        if client.isSourceSuspended {
+            client.isSourceSuspended = false
+            client.source?.resume()
+        }
     }
 
     private func setNonBlocking(_ fileDescriptor: Int32) {

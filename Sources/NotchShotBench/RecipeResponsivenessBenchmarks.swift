@@ -10,7 +10,10 @@ enum RecipeResponsivenessBenchmarks {
         let clock = ContinuousClock()
         let useWorker = ProcessInfo.processInfo.environment["NOTCHSHOT_RECIPE_MODE"] == "worker"
         let path = ProcessInfo.processInfo.environment["NOTCHSHOT_RECIPE_RESULTS"]
-            ?? Fixtures.runDirectory.appendingPathComponent("recipe-responsiveness.jsonl").path
+            // Not the run directory: it is deleted when the run ends, taking the
+            // samples with it just after their path is printed.
+            ?? FileManager.default.temporaryDirectory
+                .appendingPathComponent("notchshot-recipe-responsiveness-\(getpid())-\(UUID().uuidString.prefix(8)).jsonl").path
         let url = URL(fileURLWithPath: path)
         FileManager.default.createFile(atPath: url.path, contents: nil)
         let journal = try FileHandle(forWritingTo: url)

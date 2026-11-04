@@ -111,7 +111,7 @@ public enum ShelfFileOperations {
         let currentExtension = currentURL.pathExtension
         let typedExtension = (cleaned as NSString).pathExtension
         let filename: String
-        if currentExtension.isEmpty || !typedExtension.isEmpty {
+        if currentExtension.isEmpty || isRealExtension(typedExtension, current: currentExtension) {
             // A typed extension is deliberate. Preserve the current extension
             // only when the user supplied a bare basename.
             filename = cleaned
@@ -120,6 +120,16 @@ public enum ShelfFileOperations {
         }
         guard filename.utf8.count <= maximumNameBytes else { throw OperationError.nameTooLong }
         return filename
+    }
+
+    /// `Screen 10.30` has a path extension of `30` but is a bare basename. Only
+    /// a suffix macOS knows as a file type, or the one the file already has,
+    /// counts as the user typing an extension.
+    private static func isRealExtension(_ typed: String, current: String) -> Bool {
+        guard !typed.isEmpty else { return false }
+        if typed.caseInsensitiveCompare(current) == .orderedSame { return true }
+        guard let type = UTType(filenameExtension: typed) else { return false }
+        return !type.isDynamic
     }
 
     // MARK: Rename
@@ -287,14 +297,23 @@ public enum ShelfFileOperations {
 
     /// Moves when possible and copies across volumes. Foundation reports a
     /// cross-volume move as one failure, so the fallback is explicit here for
-    /// the same reason it is in `move`.
+    /// the same reason it is in `move`. The copy gets its real name only once it
+    /// is whole, so being killed part way never leaves a truncated file there.
     private static func moveFile(from source: URL, to destination: URL) throws {
         let fileManager = FileManager.default
         do {
             try fileManager.moveItem(at: source, to: destination)
         } catch {
+            let staging = destination.deletingLastPathComponent()
+                .appendingPathComponent(".notchshot-move-\(UUID().uuidString).partial")
+            defer {
+                // A copy of a Finder-locked file inherits the lock.
+                lchflags(staging.path, 0)
+                try? fileManager.removeItem(at: staging)
+            }
             do {
-                try fileManager.copyItem(at: source, to: destination)
+                try fileManager.copyItem(at: source, to: staging)
+                try fileManager.moveItem(at: staging, to: destination)
                 do {
                     try fileManager.removeItem(at: source)
                 } catch {

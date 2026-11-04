@@ -142,11 +142,18 @@ public final class CaptureRecipeStore {
 
     public init() {
         let loadedCustomRecipes: [CaptureRecipe]
-        if let data = UserDefaults.standard.data(forKey: Self.customRecipesKey),
-           let decoded = try? JSONDecoder().decode([CaptureRecipe].self, from: data) {
+        let storedRecipes = UserDefaults.standard.data(forKey: Self.customRecipesKey)
+        if let storedRecipes,
+           let decoded = try? JSONDecoder().decode([CaptureRecipe].self, from: storedRecipes) {
             loadedCustomRecipes = decoded.filter { $0.id.hasPrefix("custom-") }
         } else {
             loadedCustomRecipes = []
+            if let storedRecipes {
+                // The next save overwrites the key with a shorter list, so keep
+                // the bytes a downgrade or a bad write made unreadable.
+                UserDefaults.standard.set(storedRecipes, forKey: Self.customRecipesKey + ".unreadable")
+                Log.capture.error("Custom capture recipes could not be read; kept a copy")
+            }
         }
         customRecipes = loadedCustomRecipes
         let stored = UserDefaults.standard.string(forKey: "notchshot.captureRecipe")
@@ -207,10 +214,19 @@ public enum CaptureRecipeRenderer {
     public static func render(_ image: CapturedImage, recipe: CaptureRecipe) throws -> CapturedImage {
         guard recipe.id != "standard" else { return image }
 
+        // The screen has moved on by now, so a framing too large to allocate
+        // costs the framing rather than the capture.
+        let fits = AnnotationRenderer.canvasFits(
+            recipe.background.layout(for: image.pixelSize, scale: image.scale).canvas,
+            content: image.pixelSize
+        )
+        if recipe.background.isEnabled, !fits {
+            Log.capture.warning("Recipe framing is too large for this capture; saving it unframed")
+        }
         let document = AnnotationDocument(
             sourcePixelSize: image.pixelSize,
             sourceScale: image.scale,
-            background: recipe.background
+            background: recipe.background.isEnabled && !fits ? .none : recipe.background
         )
         var output = try AnnotationRenderer.render(document: document, source: image.cgImage)
 

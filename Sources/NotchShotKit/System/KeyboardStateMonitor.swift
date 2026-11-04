@@ -36,10 +36,6 @@ final class KeyboardStateMonitor {
         }
     }
 
-    func stop() {
-        update(capsLock: false, inputSource: false)
-    }
-
     // MARK: Caps Lock
 
     private func startCapsLock() {

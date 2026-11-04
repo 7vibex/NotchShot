@@ -97,11 +97,14 @@ public final class CaptureStack {
     /// While on, every new capture is added to the stack instead of replacing
     /// the shelf's single result.
     public var isCollecting = false
+    /// A stack export is running off the main actor. A second one has to wait,
+    /// or two would race for the same result and the same `clear`.
+    public internal(set) var isExporting = false
 
     /// Beyond this the exported sheet stops being useful anyway.
     public static let maximumItems = 24
     /// Bounds simultaneous decoded input memory for one export operation.
-    public static let maximumDecodedPixels = 60_000_000
+    nonisolated public static let maximumDecodedPixels = 60_000_000
 
     private let sessionsURL: URL
     private let usesManagedStore: Bool
@@ -136,10 +139,6 @@ public final class CaptureStack {
         items[index].asset = asset
     }
 
-    public func move(from source: IndexSet, to destination: Int) {
-        items.move(fromOffsets: source, toOffset: destination)
-    }
-
     /// Swaps an item with its neighbour — the reorder affordance that fits in a
     /// notch, where drag-to-reorder has nowhere to go.
     public func moveItem(id: UUID, by offset: Int) {
@@ -152,6 +151,13 @@ public final class CaptureStack {
     public func clear() {
         items.removeAll()
         isCollecting = false
+    }
+
+    /// Removes what an export took from the stack. Captures added while it ran
+    /// stay, and so does collecting if any did.
+    func removeExported(ids: Set<UUID>) {
+        items.removeAll { ids.contains($0.id) }
+        if items.isEmpty { isCollecting = false }
     }
 
     @discardableResult
@@ -230,7 +236,17 @@ public final class CaptureStack {
     /// Renders the stack and writes it to `url`.
     @discardableResult
     public func export(to url: URL, options: StackExportOptions) throws -> URL {
-        let images = try loadImagesForExport()
+        try Self.export(assets: items.map(\.asset), to: url, options: options)
+    }
+
+    /// `export` for a snapshot of the stack, for use off the main actor.
+    @discardableResult
+    nonisolated static func export(
+        assets: [CaptureAsset],
+        to url: URL,
+        options: StackExportOptions
+    ) throws -> URL {
+        let images = try loadImagesForExport(assets: assets)
 
         if options.style == .pdf {
             try StackRenderer.writePDF(images: images, options: options, to: url)
@@ -242,24 +258,41 @@ public final class CaptureStack {
         return url
     }
 
-    /// Rendered preview of what export would produce.
-    public func renderPreview(options: StackExportOptions) -> CGImage? {
-        guard let images = try? loadImagesForExport() else { return nil }
-        var preview = options
-        if preview.style == .pdf { preview.style = .longImage }
-        return try? StackRenderer.render(images: images, options: preview)
+    /// Everything a finished export hands back to the main actor: the sheet
+    /// read back from disk and its thumbnail. Nil for a PDF, which ImageIO
+    /// may not read as an image.
+    struct ExportedSheet: @unchecked Sendable {
+        let image: CGImage?
+        let thumbnail: CGImage?
     }
 
-    private func loadImagesForExport() throws -> [CGImage] {
-        guard !items.isEmpty else {
+    /// Exports, reads the file back and resamples it, all off the main actor:
+    /// a stack is up to 24 files to decode and an 80 MP sheet to encode.
+    nonisolated static func exportSheet(
+        assets: [CaptureAsset],
+        to url: URL,
+        options: StackExportOptions
+    ) async throws -> ExportedSheet {
+        try await Task.detached(priority: .userInitiated) {
+            try CaptureStack.export(assets: assets, to: url, options: options)
+            let image = SafeImageFile.cgImage(at: url, limits: .generated)
+            return ExportedSheet(
+                image: image,
+                thumbnail: image.flatMap { ImageExport.makeThumbnail(from: $0) }
+            )
+        }.value
+    }
+
+    nonisolated private static func loadImagesForExport(assets: [CaptureAsset]) throws -> [CGImage] {
+        guard !assets.isEmpty else {
             throw NotchShotError.exportFailed("The capture stack is empty")
         }
         var images: [CGImage] = []
         var decodedPixels = 0
-        for item in items {
-            guard let image = SafeImageFile.cgImage(for: item.asset) else {
+        for asset in assets {
+            guard let image = SafeImageFile.cgImage(for: asset) else {
                 throw NotchShotError.exportFailed(
-                    "Could not safely read stacked capture \(item.asset.displayName)"
+                    "Could not safely read stacked capture \(asset.displayName)"
                 )
             }
             guard image.height > 0,

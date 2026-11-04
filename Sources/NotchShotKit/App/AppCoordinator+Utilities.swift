@@ -37,13 +37,6 @@ extension AppCoordinator {
         }
     }
 
-    func stopUtilities() {
-        keyboardState.stop()
-        downloads.stop()
-        peripherals.stop()
-        displayBrightness.stop()
-    }
-
     // MARK: Keyboard
 
     private func capsLockDidChange(_ isOn: Bool) {

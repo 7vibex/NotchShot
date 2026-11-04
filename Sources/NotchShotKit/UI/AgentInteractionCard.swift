@@ -14,6 +14,8 @@ struct AgentInteractionCard: View {
         switch interaction.kind {
         case .approval(let request):
             AgentApprovalCard(request: request, source: interaction.source, onRespond: onRespond)
+                // A new request must arm Return afresh.
+                .id(interaction.id)
         case .question(let form):
             AgentQuestionCard(
                 form: form,
@@ -31,6 +33,11 @@ private struct AgentApprovalCard: View {
     let request: AgentApprovalRequest
     let source: AISource
     let onRespond: (AgentInteractionResponse) -> Void
+
+    /// Return approves only once the card has been up long enough to be read
+    /// as a new request, so a keypress meant for something else can't land on
+    /// one that has just arrived.
+    @State private var returnIsArmed = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: NotchIsland.Spacing.element) {
@@ -59,12 +66,17 @@ private struct AgentApprovalCard: View {
                         .help("Allow \(request.tool) for the rest of this run")
                 }
                 NotchCapsuleButton(request.reviewActionTitle ?? "Allow", prominence: .primary) { onRespond(.allowOnce) }
-                    .keyboardShortcut(.defaultAction)
+                    .keyboardShortcut(returnIsArmed ? KeyboardShortcut.defaultAction : nil)
                     .accessibilityLabel("\(request.reviewActionTitle ?? "Allow") \(request.tool)")
             }
         }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("\(source.title) needs approval for \(request.tool)")
+        .task {
+            try? await Task.sleep(for: .milliseconds(500))
+            guard !Task.isCancelled else { return }
+            returnIsArmed = true
+        }
     }
 }
 

@@ -117,9 +117,7 @@ struct TodayToolView: View {
     }
 
     private func appIcon(_ bundleIdentifier: String) -> some View {
-        let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleIdentifier)
-        let icon = url.map { NSWorkspace.shared.icon(forFile: $0.path) } ?? NSImage(systemSymbolName: "app", accessibilityDescription: nil) ?? NSImage()
-        return Image(nsImage: icon)
+        Image(nsImage: ToolAppIcons.icon(forBundleIdentifier: bundleIdentifier))
             .resizable()
             .frame(width: 22, height: 22)
             .accessibilityHidden(true)
@@ -129,6 +127,36 @@ struct TodayToolView: View {
         seconds < 60
             ? "<1m"
             : Duration.seconds(seconds).formatted(.units(allowed: [.hours, .minutes], width: .abbreviated))
+    }
+}
+
+/// These rows redraw on a timer and on app switches, and each icon lookup goes
+/// to LaunchServices and the disk. Bounded because the Launcher can scroll
+/// through every installed app, and clearing costs only a lookup per visible row.
+@MainActor
+enum ToolAppIcons {
+    private static var icons: [String: NSImage] = [:]
+    private static let limit = 64
+
+    static func icon(forFile path: String) -> NSImage {
+        cached(path) { NSWorkspace.shared.icon(forFile: path) }
+    }
+
+    static func icon(forBundleIdentifier bundleIdentifier: String) -> NSImage {
+        cached(bundleIdentifier) {
+            NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleIdentifier)
+                .map { NSWorkspace.shared.icon(forFile: $0.path) }
+                ?? NSImage(systemSymbolName: "app", accessibilityDescription: nil)
+                ?? NSImage()
+        }
+    }
+
+    private static func cached(_ key: String, _ make: () -> NSImage) -> NSImage {
+        if let icon = icons[key] { return icon }
+        let icon = make()
+        if icons.count >= limit { icons.removeAll() }
+        icons[key] = icon
+        return icon
     }
 }
 
@@ -253,7 +281,7 @@ struct RunningAppsToolView: View {
             } else {
                 List(apps) { app in
                     HStack(spacing: 10) {
-                        Image(nsImage: app.bundleURL.map { NSWorkspace.shared.icon(forFile: $0.path) } ?? NSImage())
+                        Image(nsImage: app.bundleURL.map { ToolAppIcons.icon(forFile: $0.path) } ?? NSImage())
                             .resizable()
                             .frame(width: 28, height: 28)
                             .opacity(app.isHidden ? 0.5 : 1)

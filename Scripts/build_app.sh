@@ -13,8 +13,8 @@
 #   ./Scripts/build_app.sh --release --identity "Developer ID Application: …"
 #   ./Scripts/build_app.sh --adhoc          # explicit, permission-unstable fallback
 #   ./Scripts/build_app.sh --identity - --allow-permission-loss
-#                                          # packaging check that may overwrite
-#                                          # a signed bundle (voids TCC grants)
+#                                          # replaces a bundle signed by another
+#                                          # identity, keeping a backup (voids TCC)
 #   ./Scripts/build_app.sh --release --version 1.2.0 --build 42
 #
 # --version/--build set the bundle's marketing and build versions. Sparkle
@@ -319,12 +319,11 @@ fi
 
 if [[ -f "$ROOT/Resources/AppIcon.icns" ]]; then
     cp "$ROOT/Resources/AppIcon.icns" "$RESOURCES_DIR/AppIcon.icns"
-    /usr/libexec/PlistBuddy -c "Add :CFBundleIconFile string AppIcon" "$CONTENTS/Info.plist" 2>/dev/null || true
 fi
 
 echo "==> Signing with identity: $IDENTITY"
 # --options runtime enables the Hardened Runtime; the entitlements grant back
-# the microphone, camera, and Apple Events integrations it would otherwise block.
+# the microphone, camera, Apple Events and calendar access it would otherwise block.
 TIMESTAMP_OPTION=(--timestamp=none)
 APP_ENTITLEMENTS="$ROOT/Resources/NotchShot.entitlements"
 if [[ "$IS_DEVELOPER_ID" == true ]]; then
@@ -387,43 +386,62 @@ codesign \
 echo "==> Verifying"
 codesign --verify --deep --strict --verbose=2 "$APP_DIR"
 
-# Refuse to downgrade a permission-stable bundle into an ad-hoc one.
+# Refuse to change the identity macOS knows this app by.
 #
-# A verified build is not automatically a build worth installing. Replacing an
-# app signed with a real certificate by an ad-hoc one silently voids every TCC
-# grant it holds: Screen Recording and Input Monitoring stay switched on in
-# System Settings — the record belongs to the old designated requirement — while
-# `CGPreflightScreenCaptureAccess` and the media-key tap both start returning
-# false. The app then looks approved and broken at the same time, which is
-# exactly the state this guard exists to prevent.
-if [[ "$IDENTITY" == "-" && -d "$FINAL_APP_DIR" ]]; then
-    PREVIOUS_TEAM="$(codesign -dvv "$FINAL_APP_DIR" 2>&1 \
-        | sed -n 's/^TeamIdentifier=//p' || true)"
-    if [[ -n "$PREVIOUS_TEAM" && "$PREVIOUS_TEAM" != "not set" ]]; then
-        if [[ "$ALLOW_PERMISSION_LOSS" == true ]]; then
-            BACKUP_APP_DIR="$ROOT/dist/$APP_NAME-signed-backup.app"
-            rm -rf "$BACKUP_APP_DIR"
-            cp -R "$FINAL_APP_DIR" "$BACKUP_APP_DIR"
-            echo "==> Kept the signed bundle at $BACKUP_APP_DIR"
-        else
-            rm -rf "$APP_DIR"
-            trap - EXIT
-            cat >&2 <<WARN
+# A verified build is not automatically a build worth installing. TCC grants
+# belong to the designated requirement, so replacing a certificate-signed app with
+# anything that has a different one silently voids them: an ad-hoc build, but also
+# a new certificate that the auto-selection above simply ranks higher. Screen
+# Recording and Input Monitoring stay switched on in System Settings — the record
+# belongs to the old requirement — while `CGPreflightScreenCaptureAccess` and the
+# media-key tap both start returning false. The app then looks approved and broken
+# at the same time, which is exactly the state this guard exists to prevent.
+designated_requirement() {
+    codesign -d -r- "$1" 2>&1 | sed -n -E 's/^(# )?designated => //p' || true
+}
+if [[ -d "$FINAL_APP_DIR" ]]; then
+    PREVIOUS_SIGNATURE="$(codesign -dvv "$FINAL_APP_DIR" 2>&1 || true)"
+    # Only a certificate leaves an Authority line, and only a certificate's
+    # requirement outlives a rebuild. Ad-hoc and unsigned bundles have no grants
+    # left to protect. TeamIdentifier cannot tell them apart: a self-signed
+    # certificate reports "not set", the same as ad-hoc.
+    if [[ "$PREVIOUS_SIGNATURE" == *$'\n'Authority=* ]]; then
+        PREVIOUS_REQUIREMENT="$(designated_requirement "$FINAL_APP_DIR")"
+        NEW_REQUIREMENT="$(designated_requirement "$APP_DIR")"
+        if [[ -z "$PREVIOUS_REQUIREMENT" || "$PREVIOUS_REQUIREMENT" != "$NEW_REQUIREMENT" ]]; then
+            if [[ "$ALLOW_PERMISSION_LOSS" == true ]]; then
+                BACKUP_APP_DIR="$ROOT/dist/$APP_NAME-signed-backup.app"
+                rm -rf "$BACKUP_APP_DIR"
+                cp -R "$FINAL_APP_DIR" "$BACKUP_APP_DIR"
+                echo "==> Kept the signed bundle at $BACKUP_APP_DIR"
+            else
+                PREVIOUS_AUTHORITY="$(printf '%s\n' "$PREVIOUS_SIGNATURE" \
+                    | sed -n 's/^Authority=//p' | head -1 || true)"
+                # Its fingerprint when this keychain still has it: a renewed
+                # certificate shares the name, and codesign rejects that as ambiguous.
+                SAME_IDENTITY="$(printf '%s\n' "$IDENTITY_LIST" | grep -F "\"$PREVIOUS_AUTHORITY\"" | head -1 \
+                    | sed -E 's/^[[:space:]]*[0-9]+\) ([[:xdigit:]]+) ".*"/\1/' || true)"
+                cat >&2 <<WARN
 
-Refusing to replace a signed NotchShot.app with an ad-hoc build.
+Refusing to replace NotchShot.app: this build would change its signing identity.
 
-The installed bundle is signed by team $PREVIOUS_TEAM. macOS keys Screen
-Recording and Input Monitoring to that identity, so overwriting it ad-hoc would
-leave both permissions switched on in System Settings but refused in the app —
-screenshots fail, and the macOS volume and brightness overlay comes back.
+  Installed: $PREVIOUS_AUTHORITY
+  This build: $IDENTITY
 
-Build with the certificate instead:
-  ./Scripts/build_app.sh --release --identity "$(security find-identity -v -p codesigning 2>/dev/null | sed -n '1s/^[[:space:]]*1) \([[:xdigit:]]*\).*/\1/p')"
+macOS keys Screen Recording and Input Monitoring to the installed identity, so
+replacing it would leave both permissions switched on in System Settings but
+refused in the app — screenshots fail, and the macOS volume and brightness
+overlay comes back.
 
-Or, if losing those permissions is intended, pass --allow-permission-loss.
+Build with the installed identity instead:
+  ./Scripts/build_app.sh --release --identity "${SAME_IDENTITY:-$PREVIOUS_AUTHORITY}"
+
+Or, if losing those permissions is intended, pass --allow-permission-loss. The
+installed bundle is kept as a backup, and each permission has to be granted again.
 
 WARN
-            exit 3
+                exit 3
+            fi
         fi
     fi
 fi
@@ -433,6 +451,7 @@ fi
 rm -rf "$FINAL_APP_DIR"
 mv "$APP_DIR" "$FINAL_APP_DIR"
 trap - EXIT
+rm -rf "$APP_INTENTS_TEMP"
 APP_DIR="$FINAL_APP_DIR"
 
 echo

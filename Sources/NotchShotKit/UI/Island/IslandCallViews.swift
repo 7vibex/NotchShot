@@ -5,7 +5,6 @@ import SwiftUI
 /// expanded card read as one activity: the phone's own green and orange.
 enum IslandCallStyle {
     static let green = IslandSystemColor.green
-    static let orange = IslandSystemColor.orange
 }
 
 /// Time on the call, counted from when the app first held the microphone.

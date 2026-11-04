@@ -60,7 +60,9 @@ struct ClipboardImageOverlapMeasurements {
             try await Task.sleep(for: .milliseconds(600))
         }
 
-        for _ in 0 ..< 400 where captured < 4 {
+        // Decoding runs at utility priority, which a loaded machine can starve for
+        // much longer than the work itself takes.
+        for _ in 0 ..< 2_400 where captured < 4 {
             try await Task.sleep(for: .milliseconds(50))
         }
         print(

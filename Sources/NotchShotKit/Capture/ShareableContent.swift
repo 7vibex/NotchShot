@@ -47,20 +47,6 @@ public struct ShareableSnapshot: Sendable {
         }
     }
 
-    /// Topmost selectable window under a global CG-space point. ScreenCaptureKit
-    /// returns windows front-to-back, so the first hit wins.
-    public func window(at point: CGPoint, excluding excluded: Set<CGWindowID>) -> WindowInfo? {
-        selectableWindows(excluding: excluded).first { $0.frame.contains(point) }
-    }
-
-    public func display(containing point: CGPoint) -> DisplayInfo? {
-        displays.first { $0.frame.contains(point) }
-    }
-
-    public func display(id: CGDirectDisplayID) -> DisplayInfo? {
-        displays.first { $0.id == id }
-    }
-
     /// Converts one ScreenCaptureKit inventory. Synchronous, so it can run
     /// inside whichever actor fetched `content` without sending it anywhere.
     init(
@@ -102,11 +88,6 @@ public actor ShareableContentProvider {
     private let cacheLifetime: TimeInterval = 0.75
 
     public init() {}
-
-    public func invalidate() {
-        cached = nil
-        cachedAt = nil
-    }
 
     public func snapshot(forceRefresh: Bool = false) async throws -> ShareableSnapshot {
         if !forceRefresh,

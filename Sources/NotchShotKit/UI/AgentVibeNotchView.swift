@@ -25,13 +25,15 @@ enum AgentVibePresentation {
         interactions: [AgentInteraction] = []
     ) -> [AIActivitySnapshot] {
         let asking = Set(interactions.map(\.activityKey))
+        let awaitingPermission = Set(claudeSessions.filter { $0.permission != nil }.map(\.id))
+        func needsAttention(_ activity: AIActivitySnapshot) -> Bool {
+            activity.state.isAttention
+                || (activity.source == .claude && awaitingPermission.contains(activity.id))
+                || asking.contains(activity.displayIdentifier)
+        }
         return activities.sorted { lhs, rhs in
-            let lhsSession = claudeSessions.first { $0.id == lhs.id && lhs.source == .claude }
-            let rhsSession = claudeSessions.first { $0.id == rhs.id && rhs.source == .claude }
-            let lhsNeedsAttention = lhs.state.isAttention || lhsSession?.permission != nil
-                || asking.contains(lhs.displayIdentifier)
-            let rhsNeedsAttention = rhs.state.isAttention || rhsSession?.permission != nil
-                || asking.contains(rhs.displayIdentifier)
+            let lhsNeedsAttention = needsAttention(lhs)
+            let rhsNeedsAttention = needsAttention(rhs)
             if lhsNeedsAttention != rhsNeedsAttention {
                 return lhsNeedsAttention
             }
@@ -51,10 +53,6 @@ enum AgentVibePresentation {
             return "AI Agents"
         }
         return first.source.title + " Agents"
-    }
-
-    static func liveCountText(_ count: Int) -> String {
-        count == 1 ? "1 live activity" : String(count) + " live activities"
     }
 
     /// Runs waiting on the user: open questions and approvals, counted once
@@ -260,12 +258,15 @@ struct AgentVibeActivitySurface: View {
         return AgentVibePresentation.sorted(merged, claudeSessions: claudeSessions, interactions: interactions)
     }
 
-    private var recentActivities: [AIActivitySnapshot] {
-        let liveIDs = Set(liveActivities.map(\.displayIdentifier))
+    private func recentActivities(besides live: [AIActivitySnapshot]) -> [AIActivitySnapshot] {
+        let liveIDs = Set(live.map(\.displayIdentifier))
         return recent.filter { !liveIDs.contains($0.displayIdentifier) }
     }
 
     var body: some View {
+        // Compute once per body evaluation: every hook event re-runs this, and
+        // the merge and sort aren't free with many sessions.
+        let live = liveActivities
         // The list and the conversation panel overlap while one pushes the
         // other out, both hanging from the top.
         ZStack(alignment: .top) {
@@ -275,27 +276,28 @@ struct AgentVibeActivitySurface: View {
                 }
                 .transition(AgentListMotion.conversationTransition(reduceMotion: reduceMotion))
             } else {
-                surface
+                surface(live: live)
                     .transition(AgentListMotion.listTransition(reduceMotion: reduceMotion))
             }
         }
-        .onChange(of: needingYouNow, initial: true) { _, keys in
+        .onChange(of: needingYou(in: live), initial: true) { _, keys in
             needingYouKeys = keys
         }
-        .onChange(of: leadActivity(in: liveActivities)?.displayIdentifier, initial: true) { _, key in
+        .onChange(of: leadActivity(in: live)?.displayIdentifier, initial: true) { _, key in
             cardRunKey = key
         }
     }
 
-    private var surface: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            if showsHeader, !liveActivities.isEmpty {
-                header
+    private func surface(live: [AIActivitySnapshot]) -> some View {
+        let earlier = recentActivities(besides: live)
+        return VStack(alignment: .leading, spacing: 0) {
+            if showsHeader, !live.isEmpty {
+                header(live: live)
             }
-            if liveActivities.isEmpty && recentActivities.isEmpty {
+            if live.isEmpty && earlier.isEmpty {
                 emptyState
             } else {
-                list
+                list(live: live, earlier: earlier)
             }
             if let accessory {
                 Rectangle()
@@ -308,15 +310,14 @@ struct AgentVibeActivitySurface: View {
         .padding(.horizontal, NotchAlertStyle.horizontalInset - 4)
         .padding(.bottom, NotchIsland.Spacing.element)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-        .animation(NotchMotion.selection(reduceMotion: reduceMotion), value: liveActivities.map(\.displayIdentifier))
+        .animation(NotchMotion.selection(reduceMotion: reduceMotion), value: live.map(\.displayIdentifier))
         .animation(NotchMotion.selection(reduceMotion: reduceMotion), value: interactions.map(\.id))
         .accessibilityElement(children: .contain)
         .accessibilityLabel("AI agent activity")
-        .accessibilityValue(accessibilityValue)
+        .accessibilityValue(accessibilityValue(live: live))
     }
 
-    private var list: some View {
-        let live = liveActivities
+    private func list(live: [AIActivitySnapshot], earlier: [AIActivitySnapshot]) -> some View {
         let lead = leadActivity(in: live)
         let others = live.filter { $0.displayIdentifier != lead?.displayIdentifier }
         // Under Reduce Motion nothing travels: the card swap crossfades.
@@ -351,7 +352,7 @@ struct AgentVibeActivitySurface: View {
                             if let interaction { onRespond(interaction, response) }
                         },
                         canOpenAgent: onJump != nil
-                            || AgentIconCatalog.applicationURL(for: activity.source) != nil,
+                            || AgentIconCatalog.hasKnownApplication(for: activity.source),
                         onOpenAgent: {
                             if let onJump { onJump(activity) } else { AgentIconCatalog.activate(activity.source) }
                         },
@@ -367,9 +368,9 @@ struct AgentVibeActivitySurface: View {
                         : AgentListMotion.rowTransition(reduceMotion: reduceMotion))
                 }
 
-                if !recentActivities.isEmpty {
-                    historyHeader
-                    ForEach(recentActivities, id: \.displayIdentifier) { activity in
+                if !earlier.isEmpty {
+                    historyHeader(hasLive: !live.isEmpty)
+                    ForEach(earlier, id: \.displayIdentifier) { activity in
                         AgentVibeRecentRow(
                             activity: activity,
                             onOpenAgent: { AgentIconCatalog.activate(activity.source) },
@@ -410,8 +411,8 @@ struct AgentVibeActivitySurface: View {
         )
     }
 
-    private var needingYouNow: Set<String> {
-        Set(liveActivities.filter(needsYou).map(\.displayIdentifier))
+    private func needingYou(in live: [AIActivitySnapshot]) -> Set<String> {
+        Set(live.filter(needsYou).map(\.displayIdentifier))
     }
 
     /// True only in the update where the run starts needing the user, which
@@ -437,7 +438,7 @@ struct AgentVibeActivitySurface: View {
             ),
             interaction: interaction,
             showsPermissionButtons: interaction == nil && session?.permission != nil,
-            canOpen: onJump != nil || AgentIconCatalog.applicationURL(for: activity.source) != nil,
+            canOpen: onJump != nil || AgentIconCatalog.hasKnownApplication(for: activity.source),
             openHelp: AgentVibePresentation.jumpHelp(for: activity, claudeSession: session),
             onOpen: {
                 if let onJump { onJump(activity) } else { AgentIconCatalog.activate(activity.source) }
@@ -458,16 +459,16 @@ struct AgentVibeActivitySurface: View {
     }
 
     /// Only drawn where the island has no camera-band header of its own.
-    private var header: some View {
+    private func header(live: [AIActivitySnapshot]) -> some View {
         HStack(spacing: 6) {
-            AgentMarkStack(sources: AgentVibePresentation.sources(of: liveActivities))
-            Text(AgentVibePresentation.headerTitle(for: liveActivities))
+            AgentMarkStack(sources: AgentVibePresentation.sources(of: live))
+            Text(AgentVibePresentation.headerTitle(for: live))
                 .font(.system(size: 11, weight: .semibold))
                 .foregroundStyle(Color.islandInk(NotchIsland.Ink.secondary))
                 .lineLimit(1)
             Spacer(minLength: NotchIsland.Spacing.element)
             Text(subtitle ?? AgentVibePresentation.summaryText(
-                live: liveActivities,
+                live: live,
                 interactions: interactions,
                 claudeSessions: claudeSessions
             ))
@@ -496,7 +497,7 @@ struct AgentVibeActivitySurface: View {
         .accessibilityElement(children: .combine)
     }
 
-    private var historyHeader: some View {
+    private func historyHeader(hasLive: Bool) -> some View {
         HStack(spacing: NotchIsland.Spacing.snug) {
             Text("Earlier")
                 .font(NotchAlertStyle.meta)
@@ -512,7 +513,7 @@ struct AgentVibeActivitySurface: View {
             .buttonStyle(NotchPressButtonStyle())
             .accessibilityLabel("Clear earlier agent activity")
         }
-        .padding(.top, liveActivities.isEmpty ? 0 : NotchIsland.Spacing.element)
+        .padding(.top, hasLive ? NotchIsland.Spacing.element : 0)
     }
 
     private func claudeSession(for activity: AIActivitySnapshot) -> ClaudeCodeSession? {
@@ -527,8 +528,8 @@ struct AgentVibeActivitySurface: View {
             .min { $0.receivedAt < $1.receivedAt }
     }
 
-    private var accessibilityValue: String {
-        liveActivities.map {
+    private func accessibilityValue(live: [AIActivitySnapshot]) -> String {
+        live.map {
             let session = claudeSession(for: $0)
             return "\($0.source.title), \($0.title), \(AgentVibePresentation.statusText(for: $0, claudeSession: session, interaction: interaction(for: $0)))"
         }.joined(separator: ". ")
@@ -663,11 +664,7 @@ private struct AgentVibeActivityRow: View {
     }
 
     private var jumpHelp: String {
-        switch activity.source {
-        case .claude where claudeSession?.tty != nil || claudeSession?.pid != nil: "Go to this session's terminal"
-        case .crewline: "Open this run in Crewline"
-        default: "Open \(activity.source.title)"
-        }
+        AgentVibePresentation.jumpHelp(for: activity, claudeSession: claudeSession)
     }
 
     // MARK: Text
@@ -768,7 +765,7 @@ private struct AgentVibeRecentRow: View {
                     .contentShape(Rectangle())
             }
             .buttonStyle(NotchPressButtonStyle())
-            .disabled(AgentIconCatalog.applicationURL(for: activity.source) == nil)
+            .disabled(!AgentIconCatalog.hasKnownApplication(for: activity.source))
             .accessibilityLabel("Open \(activity.source.title)")
 
             Text(activity.title)

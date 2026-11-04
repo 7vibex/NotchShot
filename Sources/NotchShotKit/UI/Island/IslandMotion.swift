@@ -314,6 +314,11 @@ enum FileDropPullPolicy {
         let sign: CGFloat = normalized < 0 ? -1 : 1
         return sign * (abs(normalized) - deadZone) / (1 - deadZone)
     }
+
+    /// `pull` in eighths, as `IslandPointerLean` steps its lean.
+    static func steppedPull(x: CGFloat, width: CGFloat) -> CGFloat {
+        (pull(x: x, width: width) * 8).rounded() / 8
+    }
 }
 
 /// A new result appears to rise from the screen into the notch: it starts a
@@ -332,8 +337,12 @@ private struct IslandArrivalFromScreen<ID: Hashable>: ViewModifier {
             .opacity(hasArrived ? 1 : 0)
             .onAppear { arrive() }
             .onChange(of: id) { _, _ in
-                hasArrived = false
-                arrive()
+                // Written together in one update these go true to true, and
+                // nothing animates. Reset first, then rise on the next turn.
+                var transaction = Transaction()
+                transaction.disablesAnimations = true
+                withTransaction(transaction) { hasArrived = false }
+                Task { @MainActor in arrive() }
             }
     }
 

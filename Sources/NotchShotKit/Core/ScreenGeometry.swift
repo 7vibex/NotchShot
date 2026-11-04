@@ -45,10 +45,6 @@ public enum ScreenGeometry {
         CGPoint(x: point.x, y: globalHeight(primaryFrame: primaryFrame) - point.y)
     }
 
-    public static func cocoaPoint(fromCG point: CGPoint, primaryFrame: CGRect) -> CGPoint {
-        CGPoint(x: point.x, y: globalHeight(primaryFrame: primaryFrame) - point.y)
-    }
-
     /// Converts a global CG rect into the display's local point space, then to
     /// backing pixels. ScreenCaptureKit's `sourceRect` wants *points* relative
     /// to the display; the resulting pixel size is what the output should be.
@@ -140,12 +136,6 @@ public enum ScreenLookup {
     /// Screen containing a Cocoa-space point, falling back to the main screen.
     public static func screen(containingCocoaPoint point: CGPoint) -> NSScreen? {
         NSScreen.screens.first { $0.frame.contains(point) } ?? NSScreen.main
-    }
-
-    /// Screen containing a CG-space (top-left) point.
-    public static func screen(containingCGPoint point: CGPoint) -> NSScreen? {
-        let cocoa = ScreenGeometry.cocoaPoint(fromCG: point, primaryFrame: primaryFrame)
-        return screen(containingCocoaPoint: cocoa)
     }
 
     /// CG-space bounds of a screen.

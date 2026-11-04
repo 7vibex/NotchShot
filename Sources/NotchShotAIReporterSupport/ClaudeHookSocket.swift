@@ -31,3 +31,60 @@ public enum ClaudeHookSocket {
         return peerUser == getuid()
     }
 }
+
+/// A connection to one of NotchShot's owner-only local sockets, for the two
+/// command-line tools.
+public enum OwnerOnlySocket {
+    public enum ConnectionError: Error {
+        case socketUnavailable
+        case pathTooLong
+        case notListening
+        case untrustedPeer
+    }
+
+    /// The returned descriptor belongs to the caller. A vanished app gives
+    /// failed writes rather than `SIGPIPE`, and a wedged one cannot hold a
+    /// write past the two-second limit once its socket buffer is full. Never
+    /// connects to a listener owned by another account.
+    public static func connection(
+        to path: String,
+        receiveTimeoutSeconds: Int? = nil
+    ) throws(ConnectionError) -> Int32 {
+        let descriptor = socket(AF_UNIX, SOCK_STREAM, 0)
+        guard descriptor >= 0 else { throw .socketUnavailable }
+        var noSigPipe: Int32 = 1
+        setsockopt(descriptor, SOL_SOCKET, SO_NOSIGPIPE, &noSigPipe, socklen_t(MemoryLayout<Int32>.size))
+        var sendTimeout = timeval(tv_sec: 2, tv_usec: 0)
+        setsockopt(descriptor, SOL_SOCKET, SO_SNDTIMEO, &sendTimeout, socklen_t(MemoryLayout<timeval>.size))
+        if let receiveTimeoutSeconds {
+            var receiveTimeout = timeval(tv_sec: receiveTimeoutSeconds, tv_usec: 0)
+            setsockopt(descriptor, SOL_SOCKET, SO_RCVTIMEO, &receiveTimeout, socklen_t(MemoryLayout<timeval>.size))
+        }
+
+        var address = sockaddr_un()
+        address.sun_family = sa_family_t(AF_UNIX)
+        guard path.utf8.count < MemoryLayout.size(ofValue: address.sun_path) else {
+            close(descriptor)
+            throw .pathTooLong
+        }
+        _ = path.withCString { source in
+            withUnsafeMutablePointer(to: &address.sun_path) { pointer in
+                strcpy(UnsafeMutableRawPointer(pointer).assumingMemoryBound(to: CChar.self), source)
+            }
+        }
+        let connected = withUnsafePointer(to: &address) { pointer in
+            pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                connect(descriptor, $0, socklen_t(MemoryLayout<sockaddr_un>.size))
+            }
+        }
+        guard connected == 0 else {
+            close(descriptor)
+            throw .notListening
+        }
+        guard ClaudeHookSocket.isTrustedPeer(descriptor) else {
+            close(descriptor)
+            throw .untrustedPeer
+        }
+        return descriptor
+    }
+}

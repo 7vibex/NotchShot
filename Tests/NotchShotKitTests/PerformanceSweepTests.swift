@@ -186,17 +186,28 @@ struct PerformanceSweepTests {
             }
             rows = Array(rows.prefix(ClipboardStore.maximumEntryCount))
         }
-        while ClipboardStore.encodedStoreBytes(rows) > ClipboardStore.storeByteBudget {
-            let unpinned = rows.indices.filter { !rows[$0].isPinned && (rows[$0].text?.utf8.count ?? 0) > 4096 }
-            let candidates = unpinned.isEmpty ? rows.indices.filter { (rows[$0].text?.utf8.count ?? 0) > 4096 } : unpinned
-            if !candidates.isEmpty {
-                for index in candidates {
-                    let text = rows[index].text!
-                    rows[index].text = String(text.prefix(max(2048, text.count / 2))) + "…"
-                }
-            } else if let index = rows.lastIndex(where: { !$0.isPinned }) ?? rows.indices.last {
-                rows.remove(at: index)
-            } else { break }
+        // Trimming starts only once the real encoder confirms an overrun, as it
+        // did before the quick bound existed.
+        var measured = ClipboardStore.encodedStoreBytes(rows)
+        while measured > ClipboardStore.storeByteBudget {
+            let unpinned = rows.indices.reversed().filter { !rows[$0].isPinned && (rows[$0].text?.utf8.count ?? 0) > 4096 }
+            let candidates = unpinned.isEmpty ? rows.indices.reversed().filter { (rows[$0].text?.utf8.count ?? 0) > 4096 } : unpinned
+            var shortened = false
+            for index in candidates where measured > ClipboardStore.storeByteBudget {
+                let text = rows[index].text!
+                let reduced = String(text.prefix(max(2048, text.count / 2))) + "…"
+                guard reduced.utf8.count < text.utf8.count else { continue }
+                rows[index].text = reduced
+                measured -= ClipboardStore.encodedStringBound(text) - ClipboardStore.encodedStringBound(reduced)
+                shortened = true
+            }
+            if shortened {
+                if measured <= ClipboardStore.storeByteBudget { measured = ClipboardStore.encodedStoreBytes(rows) }
+                continue
+            }
+            guard let index = rows.lastIndex(where: { !$0.isPinned }) ?? rows.indices.last else { break }
+            rows.remove(at: index)
+            measured = ClipboardStore.encodedStoreBytes(rows)
         }
         return rows
     }

@@ -16,6 +16,7 @@ public final class VideoTrimSession {
     public private(set) var errorMessage: String?
     public let player: AVPlayer
     public var onExport: ((CaptureAsset) -> Void)?
+    @ObservationIgnored private var previewEndObserver: Any?
 
     public init(asset: CaptureAsset) {
         self.asset = asset
@@ -61,8 +62,24 @@ public final class VideoTrimSession {
     }
 
     public func previewFromStart() {
+        removePreviewEndObserver()
+        previewEndObserver = player.addBoundaryTimeObserver(
+            forTimes: [NSValue(time: CMTime(seconds: endTime, preferredTimescale: 600))],
+            queue: .main
+        ) { [weak self] in
+            MainActor.assumeIsolated {
+                self?.player.pause()
+                self?.removePreviewEndObserver()
+            }
+        }
         player.seek(to: CMTime(seconds: startTime, preferredTimescale: 600))
         player.play()
+    }
+
+    private func removePreviewEndObserver() {
+        guard let previewEndObserver else { return }
+        player.removeTimeObserver(previewEndObserver)
+        self.previewEndObserver = nil
     }
 
     public func export() async {
@@ -95,7 +112,12 @@ public final class VideoTrimSession {
                 start: CMTime(seconds: startTime, preferredTimescale: 600),
                 duration: CMTime(seconds: endTime - startTime, preferredTimescale: 600)
             )
-            try await exporter.export(to: destination, as: .mp4)
+            // The Save panel has already asked about replacing, and the exporter
+            // refuses to overwrite, so publish over the destination at the end.
+            let staging = try RecordingExportService.stagingURL(for: destination, fileExtension: "mp4")
+            defer { try? FileManager.default.removeItem(at: staging.deletingLastPathComponent()) }
+            try await exporter.export(to: staging, as: .mp4)
+            try RecordingExportService.publishOutput(at: staging, to: destination)
             let metadata = await VideoThumbnail.metadata(for: destination)
             let trimmed = CaptureAsset(
                 url: destination,

@@ -101,6 +101,9 @@ public struct ClaudeCodeSession: Codable, Equatable, Identifiable, Sendable {
     /// True once a PostToolUse arrives: calls then end on their own events,
     /// so parallel calls are not cut short by the next one starting.
     public var reportsToolEnds = false
+    /// A failed tool went back to working with no later event. Nothing says the
+    /// turn is still going, so the row gets a short lifetime, not the full one.
+    var settledAfterFailure = false
 
     private enum CodingKeys: String, CodingKey {
         case id, cwd, pid, tty, phase, title, detail, lastTool, permission, startedAt, updatedAt
@@ -175,6 +178,10 @@ enum ClaudeCodeHookPolicy {
         if normalizedEvent.contains("permissionrequest") || normalizedStatus.contains("waitingforapproval") {
             return .waiting
         }
+        // A rate-limited turn ended with the session still open for a prompt.
+        if normalizedEvent.contains("stopfailure") {
+            return .waiting
+        }
         if normalizedEvent.contains("posttoolusefailure")
             || normalizedEvent.contains("permissiondenied")
             || normalizedEvent.contains("failure") {
@@ -189,7 +196,7 @@ enum ClaudeCodeHookPolicy {
         if normalizedNotification.contains("idleprompt") || normalizedStatus.contains("waitingforinput") {
             return .waiting
         }
-        if normalizedEvent == "stop" || normalizedEvent.contains("stopfailure") || normalizedEvent.contains("sessionstart") {
+        if normalizedEvent == "stop" || normalizedEvent.contains("sessionstart") {
             return .waiting
         }
         return .working
@@ -223,6 +230,35 @@ enum ClaudeCodeHookPolicy {
         }
         guard parsed.count == min(questions.count, ClaudeQuestionBridge.maximumQuestions) else { return nil }
         return AgentQuestionForm(title: parsed[0].prompt, questions: parsed, encoding: .claudeIndexed)
+    }
+
+    /// Subagents and parallel calls share the parent's session ID, so most
+    /// events arriving while a question is held belong to something else.
+    /// The hook holding it has gone only if its own tool moved on or the turn
+    /// or session ended.
+    static func endsQuestion(event normalizedEvent: String, tool: String?) -> Bool {
+        if normalizedEvent.contains("userpromptsubmit")
+            || normalizedEvent == "stop"
+            || normalizedEvent.contains("sessionend") {
+            return true
+        }
+        return (normalizedEvent.contains("posttooluse") || normalizedEvent.contains("pretooluse"))
+            && ClaudeQuestionBridge.isQuestionTool(tool)
+    }
+
+    /// A permission's own tool finishing is only a hint, as a sibling call of
+    /// the same tool looks identical. The monitor therefore releases any hook
+    /// still waiting on a card it clears here, back to Claude's own prompt.
+    static func endsPermission(
+        event normalizedEvent: String,
+        tool: String?,
+        permission: ClaudeCodePermissionRequest?
+    ) -> Bool {
+        if normalizedEvent == "stop" || normalizedEvent.contains("sessionend") { return true }
+        guard normalizedEvent.contains("posttooluse") || normalizedEvent.contains("permissiondenied") else {
+            return false
+        }
+        return tool != nil && tool == permission?.toolName
     }
 
     static func normalized(_ value: String) -> String {
@@ -275,6 +311,10 @@ final class ClaudeCodeHookServer: @unchecked Sendable {
     private let decisionTimeout: TimeInterval
     private static let maximumMessageBytes = 64 * 1_024
     private static let holdTimeout = TimeInterval(ClaudeRunControl.holdTimeoutMilliseconds) / 1_000 + 10
+    /// Room for hooks already waiting on the user or on Resume, on top of
+    /// `maximumClients`. They wait for minutes, and must not crowd out the
+    /// short events that keep arriving meanwhile.
+    private static let maximumWaitingClients = 64
 
     private final class Client: @unchecked Sendable {
         let fileDescriptor: Int32
@@ -282,7 +322,11 @@ final class ClaudeCodeHookServer: @unchecked Sendable {
         var buffer = Data()
         var handledMessage = false
         var requestID: String?
+        var sessionID: String?
         var timeout: DispatchWorkItem?
+
+        /// Holding a request or a paused session, rather than still being read.
+        var isWaiting = false
 
         init(fileDescriptor: Int32) {
             self.fileDescriptor = fileDescriptor
@@ -296,6 +340,7 @@ final class ClaudeCodeHookServer: @unchecked Sendable {
     private var serverFileDescriptor: Int32 = -1
     private var acceptSource: DispatchSourceRead?
     private var eventHandler: (@Sendable (Data) -> Void)?
+    private var requestClosedHandler: (@Sendable (_ sessionID: String, _ requestID: String) -> Void)?
     private var clients: [Int32: Client] = [:]
     private var pendingBySession: [String: Int32] = [:]
     /// Hooks holding a paused session before its next tool. Parallel tool
@@ -314,9 +359,15 @@ final class ClaudeCodeHookServer: @unchecked Sendable {
 
     func stopAndWait() { queue.sync { stopOnQueue() } }
 
-    func start(onData: @escaping @Sendable (Data) -> Void) {
+    /// `onRequestClosed` reports that the hook holding a request is gone, for
+    /// whatever reason. It is apart from `onData` so that nothing a client
+    /// writes to the socket can claim it.
+    func start(
+        onData: @escaping @Sendable (Data) -> Void,
+        onRequestClosed: (@Sendable (_ sessionID: String, _ requestID: String) -> Void)? = nil
+    ) {
         queue.async { [weak self] in
-            self?.startOnQueue(onData: onData)
+            self?.startOnQueue(onData: onData, onRequestClosed: onRequestClosed)
         }
     }
 
@@ -326,12 +377,18 @@ final class ClaudeCodeHookServer: @unchecked Sendable {
         }
     }
 
-    func respond(sessionID: String, requestID: String? = nil, decision: String, reason: String?) {
+    func respond(
+        sessionID: String,
+        requestID: String? = nil,
+        decision: String,
+        reason: String?,
+        onUndelivered: (@Sendable () -> Void)? = nil
+    ) {
         var response: [String: Any] = ["decision": decision]
         if let reason {
             response["reason"] = String(reason.prefix(240))
         }
-        respond(sessionID: sessionID, requestID: requestID, object: response)
+        respond(sessionID: sessionID, requestID: requestID, object: response, onUndelivered: onUndelivered)
     }
 
     /// Lets every hook holding this paused session go: on to the tool, or
@@ -348,15 +405,28 @@ final class ClaudeCodeHookServer: @unchecked Sendable {
     }
 
     /// Writes one JSON line to the hook process waiting for this session and
-    /// lets it go.
-    func respond(sessionID: String, requestID: String? = nil, object: [String: Any]) {
-        guard let data = try? JSONSerialization.data(withJSONObject: object) else { return }
+    /// lets it go. `onUndelivered` runs when no hook received the answer: the
+    /// request had already gone, or a newer one holds the session.
+    func respond(
+        sessionID: String,
+        requestID: String? = nil,
+        object: [String: Any],
+        onUndelivered: (@Sendable () -> Void)? = nil
+    ) {
+        guard let data = try? JSONSerialization.data(withJSONObject: object) else {
+            onUndelivered?()
+            return
+        }
         queue.async { [weak self] in
-            self?.respondOnQueue(sessionID: sessionID, requestID: requestID, line: data)
+            guard let self else { return }
+            if !self.respondOnQueue(sessionID: sessionID, requestID: requestID, line: data) { onUndelivered?() }
         }
     }
 
-    private func startOnQueue(onData: @escaping @Sendable (Data) -> Void) {
+    private func startOnQueue(
+        onData: @escaping @Sendable (Data) -> Void,
+        onRequestClosed: (@Sendable (_ sessionID: String, _ requestID: String) -> Void)?
+    ) {
         guard serverFileDescriptor < 0 else { return }
         guard socketPath.utf8.count < MemoryLayout.size(ofValue: sockaddr_un().sun_path) else { return }
         guard removeStaleSocketIfSafe() else {
@@ -364,6 +434,7 @@ final class ClaudeCodeHookServer: @unchecked Sendable {
             return
         }
         eventHandler = onData
+        requestClosedHandler = onRequestClosed
 
         let descriptor = socket(AF_UNIX, SOCK_STREAM, 0)
         guard descriptor >= 0 else { return }
@@ -417,6 +488,7 @@ final class ClaudeCodeHookServer: @unchecked Sendable {
     }
 
     private func stopOnQueue() {
+        requestClosedHandler = nil
         acceptSource?.cancel()
         acceptSource = nil
         serverFileDescriptor = -1
@@ -445,7 +517,9 @@ final class ClaudeCodeHookServer: @unchecked Sendable {
                 close(clientFileDescriptor)
                 continue
             }
-            guard clients.count < maximumClients else {
+            let waiting = clients.values.filter(\.isWaiting).count
+            guard clients.count - waiting < maximumClients,
+                  clients.count < maximumClients + Self.maximumWaitingClients else {
                 close(clientFileDescriptor)
                 continue
             }
@@ -513,6 +587,7 @@ final class ClaudeCodeHookServer: @unchecked Sendable {
 
         if status == ClaudeRunControl.heldStatus, !sessionID.isEmpty {
             eventHandler?(message)
+            client.isWaiting = true
             heldBySession[sessionID, default: []].append(client.fileDescriptor)
             // The hook gives up first; this only reclaims one that vanished.
             scheduleTimeout(for: client, after: Self.holdTimeout)
@@ -530,20 +605,21 @@ final class ClaudeCodeHookServer: @unchecked Sendable {
         pendingBySession[sessionID] = client.fileDescriptor
         let requestID = UUID().uuidString
         client.requestID = requestID
+        client.sessionID = sessionID
+        client.isWaiting = true
         object["notchshot_request_id"] = requestID
         scheduleTimeout(for: client, after: decisionTimeout)
         if let identified = try? JSONSerialization.data(withJSONObject: object) { eventHandler?(identified) }
     }
 
-    private func respondOnQueue(sessionID: String, requestID: String?, line data: Data) {
+    /// True once the answer reached the hook holding exactly this request.
+    private func respondOnQueue(sessionID: String, requestID: String?, line data: Data) -> Bool {
         guard let fileDescriptor = pendingBySession[sessionID],
-              requestID == nil || clients[fileDescriptor]?.requestID == requestID else { return }
+              requestID == nil || clients[fileDescriptor]?.requestID == requestID else { return false }
         pendingBySession.removeValue(forKey: sessionID)
-        guard writeAll(data + Data([10]), to: fileDescriptor) else {
-            closeClient(fileDescriptor)
-            return
-        }
+        let delivered = writeAll(data + Data([10]), to: fileDescriptor)
         closeClient(fileDescriptor)
+        return delivered
     }
 
     private func writeAll(_ data: Data, to fileDescriptor: Int32) -> Bool {
@@ -575,6 +651,10 @@ final class ClaudeCodeHookServer: @unchecked Sendable {
         guard let client = clients.removeValue(forKey: fileDescriptor) else { return }
         client.timeout?.cancel()
         client.source?.cancel()
+        // An answered request's card is already gone, so this is a no-op then.
+        if let sessionID = client.sessionID, let requestID = client.requestID {
+            requestClosedHandler?(sessionID, requestID)
+        }
     }
 
     private func scheduleTimeout(for client: Client, after delay: TimeInterval) {
@@ -627,6 +707,14 @@ public final class ClaudeCodeSessionMonitor {
     private var modelChecks: [String: Date] = [:]
     private var pruneTask: Task<Void, Never>?
     private var mayInterruptMedia = true
+    private static let pruneInterval: Duration = .seconds(15)
+    /// How long the hook waits on a permission (`main.swift`) before Claude
+    /// falls back to its terminal prompt.
+    static let permissionLifetime: TimeInterval = 300
+    /// How long a failed tool with no later event can keep its row. An Esc or a
+    /// closed terminal sends nothing more, and a live turn that outlasts this
+    /// comes back with its next hook.
+    static let settledFailureLifetime: TimeInterval = 5 * 60
 
     public init() {}
 
@@ -639,14 +727,21 @@ public final class ClaudeCodeSessionMonitor {
         isRunning = true
         // Nothing asked of a run before NotchShot last quit still stands.
         ClaudeRunControl.clearAll()
-        server.start { [weak self] data in
-            Task { @MainActor [weak self] in
-                self?.receiveHookData(data)
+        server.start(
+            onData: { [weak self] data in
+                Task { @MainActor [weak self] in
+                    self?.receiveHookData(data)
+                }
+            },
+            onRequestClosed: { [weak self] sessionID, requestID in
+                Task { @MainActor [weak self] in
+                    self?.requestClosed(sessionID: sessionID, requestID: requestID)
+                }
             }
-        }
+        )
         pruneTask = Task { [weak self] in
             while !Task.isCancelled {
-                try? await Task.sleep(for: .seconds(15))
+                try? await Task.sleep(for: Self.pruneInterval)
                 guard !Task.isCancelled else { return }
                 self?.pruneExpiredSessions()
             }
@@ -698,11 +793,18 @@ public final class ClaudeCodeSessionMonitor {
         guard let index = sessions.firstIndex(where: { $0.id == sessionID }),
               let permission = sessions[index].permission,
               permission.id == requestID, permission.canApproveInline else { return }
-        server.respond(sessionID: sessionID, requestID: permission.id, decision: "allow", reason: nil)
+        let answeredAt = Date()
+        server.respond(
+            sessionID: sessionID,
+            requestID: permission.id,
+            decision: "allow",
+            reason: nil,
+            onUndelivered: undeliveredHandler(sessionID: sessionID, answeredAt: answeredAt)
+        )
         sessions[index].permission = nil
         sessions[index].phase = .working
         sessions[index].detail = "Permission approved"
-        sessions[index].updatedAt = Date()
+        sessions[index].updatedAt = answeredAt
         publish()
     }
 
@@ -711,15 +813,50 @@ public final class ClaudeCodeSessionMonitor {
               let permission = sessions[index].permission,
               requestID == nil || permission.id == requestID else { return }
         let boundedReason = ClaudeCodeHookPolicy.bounded(reason, maximum: 180)
+        let answeredAt = Date()
         server.respond(
             sessionID: sessionID,
             requestID: permission.id,
             decision: "deny",
-            reason: boundedReason ?? "Denied by user via NotchShot"
+            reason: boundedReason ?? "Denied by user via NotchShot",
+            onUndelivered: undeliveredHandler(sessionID: sessionID, answeredAt: answeredAt)
         )
         sessions[index].permission = nil
         sessions[index].phase = .failed
         sessions[index].detail = boundedReason ?? "Permission denied"
+        sessions[index].updatedAt = answeredAt
+        publish()
+    }
+
+    /// Takes back what `approve`, `deny` or `answer` said when the answer
+    /// reached no hook, unless a newer event has already said something else.
+    private func undeliveredHandler(sessionID: String, answeredAt: Date) -> @Sendable () -> Void {
+        { [weak self] in
+            Task { @MainActor [weak self] in
+                self?.answerNotDelivered(sessionID: sessionID, answeredAt: answeredAt)
+            }
+        }
+    }
+
+    func answerNotDelivered(sessionID: String, answeredAt: Date) {
+        guard let index = sessions.firstIndex(where: { $0.id == sessionID }),
+              sessions[index].updatedAt == answeredAt else { return }
+        sessions[index].phase = .waiting
+        sessions[index].detail = "Answer in the terminal"
+        publish()
+    }
+
+    /// The hook holding this request has gone: it gave up, or the user
+    /// answered in the terminal. The card goes with it, as an answer now could
+    /// reach nothing. The ID keeps a late report off a newer request's card.
+    func requestClosed(sessionID: String, requestID: String) {
+        let id = AIActivityPolicy.safeIdentifier(sessionID)
+        guard let index = sessions.firstIndex(where: { $0.id == id }),
+              sessions[index].permission?.id == requestID || sessions[index].question?.id == requestID
+        else { return }
+        if sessions[index].permission?.id == requestID { sessions[index].permission = nil }
+        if sessions[index].question?.id == requestID { sessions[index].question = nil }
+        sessions[index].detail = "Answer in the terminal"
         sessions[index].updatedAt = Date()
         publish()
     }
@@ -800,14 +937,15 @@ public final class ClaudeCodeSessionMonitor {
               sessions[index].question?.id == questionID,
               let encoded = AgentAnswerEncoder.encode(answers, for: form)
         else { return }
+        let answeredAt = Date()
         server.respond(sessionID: sessionID, requestID: questionID, object: [
             "decision": "answer",
             "answers": AgentAnswerEncoder.jsonObject(encoded),
-        ])
+        ], onUndelivered: undeliveredHandler(sessionID: sessionID, answeredAt: answeredAt))
         sessions[index].question = nil
         sessions[index].phase = .working
         sessions[index].detail = "Answered in NotchShot"
-        sessions[index].updatedAt = Date()
+        sessions[index].updatedAt = answeredAt
         publish()
     }
 
@@ -866,6 +1004,7 @@ public final class ClaudeCodeSessionMonitor {
         let eventName = ClaudeCodeHookPolicy.normalized(event)
         let previousControl = session.control
         let changesPhase = ClaudeCodeRunTracker.apply(object, event: eventName, tool: tool, now: now, to: &session)
+        session.settledAfterFailure = false
         if previousControl != nil, session.control == nil { ClaudeRunControl.clear(sessionID: id) }
         guard changesPhase else {
             // A pause holding or a stop taking effect: only the run changed.
@@ -882,6 +1021,9 @@ public final class ClaudeCodeSessionMonitor {
         if let pid { session.pid = pid }
         if let tty { session.tty = tty }
         if let prompt { session.title = prompt }
+        let phaseBeforeEvent = session.phase
+        let detailBeforeEvent = session.detail
+        let requestsBeforeEvent = [session.permission?.id, session.question?.id].compactMap { $0 }
         session.phase = phase
         session.lastTool = tool ?? session.lastTool
         session.detail = ClaudeCodeHookPolicy.detail(
@@ -902,11 +1044,7 @@ public final class ClaudeCodeSessionMonitor {
             session.question = ClaudeCodeQuestion(id: requestID, form: form, receivedAt: now)
             session.phase = .waiting
             session.detail = "Asked a question"
-        } else if normalizedEvent.contains("posttooluse")
-                    || normalizedEvent.contains("userpromptsubmit")
-                    || normalizedEvent == "stop"
-                    || normalizedEvent.contains("sessionend")
-                    || normalizedEvent.contains("pretooluse") {
+        } else if ClaudeCodeHookPolicy.endsQuestion(event: normalizedEvent, tool: tool) {
             // The hook that held the question has returned or moved on.
             session.question = nil
         }
@@ -917,11 +1055,24 @@ public final class ClaudeCodeSessionMonitor {
                 detail: message,
                 actionDescription: ClaudePermissionDetails.validated(object["permission_action"] as? String, tool: tool)
             )
-        } else if normalizedEvent.contains("posttooluse")
-                    || normalizedEvent.contains("permissiondenied")
-                    || normalizedEvent == "stop"
-                    || normalizedEvent.contains("sessionend") {
+        } else if ClaudeCodeHookPolicy.endsPermission(event: normalizedEvent, tool: tool, permission: session.permission) {
             session.permission = nil
+        }
+        // A sibling's event must not read as the user having answered: the
+        // session is still waiting on the card it was already showing.
+        if session.permission != nil || session.question != nil,
+           !normalizedEvent.contains("permissionrequest"),
+           status != ClaudeQuestionBridge.waitingStatus {
+            session.phase = phaseBeforeEvent
+            session.detail = detailBeforeEvent
+        }
+        // Whatever cleared the card, a hook still holding it would otherwise
+        // wait out its timeout with nothing left to answer it. This is the
+        // same exact-request hand-back as Answer in Terminal: it approves
+        // nothing, and does nothing if the hook has already gone.
+        for requestID in requestsBeforeEvent
+        where requestID != session.permission?.id && requestID != session.question?.id {
+            server.respond(sessionID: id, requestID: requestID, object: ["decision": "defer"])
         }
 
         if let index = sessions.firstIndex(where: { $0.id == id }) {
@@ -943,25 +1094,47 @@ public final class ClaudeCodeSessionMonitor {
         publish()
     }
 
-    private func pruneExpiredSessions(now: Date = Date()) {
+    func pruneExpiredSessions(now: Date = Date()) {
         // The hook gives up on a question after its timeout and Claude falls
-        // back to the terminal picker; the card must not outlive it.
+        // back to the terminal picker; the card must not outlive it. The
+        // socket closing normally says so first.
         let questionLifetime = TimeInterval(ClaudeQuestionBridge.answerTimeoutMilliseconds) / 1_000
-        var expiredQuestion = false
+        // A failed tool does not end the turn: Claude reads the error and goes
+        // on, perhaps thinking for a long time without a hook. Back to working
+        // while the failure still shows, so the next prune cannot be too late
+        // for the snapshot's terminal lifetime and the row never drops out.
+        let failureSettles = AIActivityPolicy.terminalLifetime - TimeInterval(Self.pruneInterval.components.seconds)
+        var changed = false
         for index in sessions.indices {
             if let question = sessions[index].question,
                now.timeIntervalSince(question.receivedAt) >= questionLifetime {
                 sessions[index].question = nil
                 sessions[index].detail = "Answer in the terminal"
-                expiredQuestion = true
+                changed = true
+            }
+            if let permission = sessions[index].permission,
+               now.timeIntervalSince(permission.receivedAt) >= Self.permissionLifetime {
+                sessions[index].permission = nil
+                sessions[index].detail = "Answer in the terminal"
+                changed = true
+            }
+            if sessions[index].phase == .failed, sessions[index].turnEndedAt == nil,
+               now.timeIntervalSince(sessions[index].updatedAt) >= failureSettles {
+                sessions[index].phase = .working
+                sessions[index].settledAfterFailure = true
+                changed = true
             }
         }
-        if expiredQuestion { publish() }
+        if changed { publish() }
         let oldCount = sessions.count
         sessions.removeAll { session in
-            let lifetime = session.phase.isTerminal
-                ? AIActivityPolicy.terminalLifetime
-                : AIActivityPolicy.activeLifetime
+            let lifetime = if session.phase.isTerminal {
+                AIActivityPolicy.terminalLifetime
+            } else if session.settledAfterFailure, session.control == nil {
+                Self.settledFailureLifetime
+            } else {
+                AIActivityPolicy.activeLifetime
+            }
             return session.updatedAt.addingTimeInterval(lifetime) <= now
         }
         if oldCount != sessions.count { publish() }

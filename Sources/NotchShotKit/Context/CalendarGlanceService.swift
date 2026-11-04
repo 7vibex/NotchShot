@@ -157,6 +157,13 @@ struct ContextTiming {
     }
 }
 
+/// Lets an event store be used off the main actor. EventKit documents
+/// `events(matching:)` as synchronous and meant for a background thread. Its
+/// `EKObject`s stay on the thread that fetched them; only plain values return.
+struct EventStoreReference: @unchecked Sendable {
+    let store: EKEventStore
+}
+
 @MainActor
 @Observable
 public final class CalendarGlanceService {
@@ -172,6 +179,17 @@ public final class CalendarGlanceService {
     private var started = false
     private var cancelReevaluation: (() -> Void)?
     private var reevaluationGeneration = 0
+    private var readTask: Task<Void, Never>?
+    private var readGeneration = 0
+    private var storeChangeTask: Task<Void, Never>?
+
+    private struct ReadRequest: Sendable {
+        var now: Date
+        var selectedIdentifiers: [String]
+        var hasCustomSelection: Bool
+        var hiddenIdentifiers: Set<String>
+        var showsTitles: Bool
+    }
 
     private let timing: ContextTiming
     private let mayInterruptMedia: () -> Bool
@@ -197,6 +215,9 @@ public final class CalendarGlanceService {
 
     public func stop() {
         cancelScheduledReevaluation()
+        readGeneration += 1
+        storeChangeTask?.cancel()
+        storeChangeTask = nil
         for observer in observers {
             NotificationCenter.default.removeObserver(observer)
             NSWorkspace.shared.notificationCenter.removeObserver(observer)
@@ -224,20 +245,50 @@ public final class CalendarGlanceService {
         }
     }
 
+    /// EventKit is XPC to calaccessd over a month of events, slowest at wake
+    /// and during a sync, so the read runs off the main actor. Reads run one at
+    /// a time, and one that a newer refresh has overtaken neither runs nor lands.
     public func refresh() {
         cancelScheduledReevaluation()
         refreshAccessState()
+        readGeneration += 1
         guard accessState == .granted else {
             calendars = []
             replaceCachedEvents([])
             return
         }
+        let generation = readGeneration
+        let reference = EventStoreReference(store: store)
+        let request = ReadRequest(
+            now: timing.now(),
+            selectedIdentifiers: Preferences.shared.selectedCalendarIdentifiers,
+            hasCustomSelection: Preferences.shared.hasCustomCalendarSelection,
+            hiddenIdentifiers: Set(Preferences.shared.hiddenTitleCalendarIdentifiers),
+            showsTitles: Preferences.shared.showsCalendarEventTitles
+        )
+        let previous = readTask
+        readTask = Task { [weak self] in
+            await previous?.value
+            guard generation == self?.readGeneration else { return }
+            let read = await Task.detached(priority: .utility) {
+                Self.read(request, from: reference.store)
+            }.value
+            guard let self, generation == self.readGeneration else { return }
+            self.calendars = read.calendars
+            self.replaceCachedEvents(read.events)
+        }
+    }
+
+    private nonisolated static func read(
+        _ request: ReadRequest,
+        from store: EKEventStore
+    ) -> (calendars: [CalendarDescriptor], events: [CalendarEventSnapshot]) {
         let eventCalendars = store.calendars(for: .event)
-        calendars = eventCalendars.map { calendar in
+        let calendars = eventCalendars.map { calendar in
             CalendarDescriptor(
                 id: calendar.calendarIdentifier,
                 title: calendar.title,
-                colorHex: Self.colorHex(calendar.cgColor)
+                colorHex: colorHex(calendar.cgColor)
             )
         }
         .sorted { $0.title.localizedStandardCompare($1.title) == .orderedAscending }
@@ -247,34 +298,34 @@ public final class CalendarGlanceService {
         guard let selected = CalendarSelectionPolicy.resolved(
             from: eventCalendars,
             identifiedBy: \.calendarIdentifier,
-            current: Preferences.shared.selectedCalendarIdentifiers,
-            hasCustomSelection: Preferences.shared.hasCustomCalendarSelection
+            current: request.selectedIdentifiers,
+            hasCustomSelection: request.hasCustomSelection
         ) else {
-            replaceCachedEvents([])
-            return
+            return (calendars, [])
         }
-        let now = timing.now()
-        let end = Calendar.autoupdatingCurrent.date(byAdding: .day, value: 31, to: now)
-            ?? now.addingTimeInterval(31 * 86_400)
-        let predicate = store.predicateForEvents(withStart: now, end: end, calendars: selected)
-        let hiddenIDs = Set(Preferences.shared.hiddenTitleCalendarIdentifiers)
-        events = store.events(matching: predicate).map { event in
-            let showsTitle = Preferences.shared.showsCalendarEventTitles
-                && !hiddenIDs.contains(event.calendar.calendarIdentifier)
+        let end = Calendar.autoupdatingCurrent.date(byAdding: .day, value: 31, to: request.now)
+            ?? request.now.addingTimeInterval(31 * 86_400)
+        let predicate = store.predicateForEvents(withStart: request.now, end: end, calendars: selected)
+        let events = store.events(matching: predicate).map { (event: EKEvent) -> CalendarEventSnapshot in
+            let showsTitle = request.showsTitles
+                && !request.hiddenIdentifiers.contains(event.calendar.calendarIdentifier)
+            let itemIdentifier: String = event.eventIdentifier ?? event.calendarItemIdentifier
+            let startStamp = String(event.startDate.timeIntervalSinceReferenceDate)
             return CalendarEventSnapshot(
-                id: (event.eventIdentifier ?? event.calendarItemIdentifier)
-                    + "-" + String(event.startDate.timeIntervalSinceReferenceDate),
+                id: "\(itemIdentifier)-\(startStamp)",
                 calendarIdentifier: event.calendar.calendarIdentifier,
                 title: showsTitle ? (event.title ?? "Untitled Event") : "Busy",
                 startDate: event.startDate,
                 endDate: event.endDate,
                 isAllDay: event.isAllDay,
-                colorHex: Self.colorHex(event.calendar.cgColor),
+                colorHex: colorHex(event.calendar.cgColor),
                 eventURL: event.url
             )
         }
-        .sorted { lhs, rhs in lhs.startDate == rhs.startDate ? lhs.endDate < rhs.endDate : lhs.startDate < rhs.startDate }
-        replaceCachedEvents(events)
+        .sorted { (lhs: CalendarEventSnapshot, rhs: CalendarEventSnapshot) -> Bool in
+            lhs.startDate == rhs.startDate ? lhs.endDate < rhs.endDate : lhs.startDate < rhs.startDate
+        }
+        return (calendars, events)
     }
 
     /// Re-presents queried data without performing another EventKit read.
@@ -352,8 +403,10 @@ public final class CalendarGlanceService {
 
     private func installObservers() {
         let center = NotificationCenter.default
+        observers.append(center.addObserver(forName: .EKEventStoreChanged, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.scheduleStoreChangeRefresh() }
+        })
         let names: [Notification.Name] = [
-            .EKEventStoreChanged,
             .NSCalendarDayChanged,
             .NSSystemTimeZoneDidChange,
         ]
@@ -371,7 +424,17 @@ public final class CalendarGlanceService {
         })
     }
 
-    private static func colorHex(_ cgColor: CGColor) -> String {
+    /// An iCloud or Exchange sync sends these in bursts; one read follows it.
+    private func scheduleStoreChangeRefresh() {
+        storeChangeTask?.cancel()
+        storeChangeTask = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(500))
+            guard !Task.isCancelled else { return }
+            self?.refresh()
+        }
+    }
+
+    private nonisolated static func colorHex(_ cgColor: CGColor) -> String {
         (NSColor(cgColor: cgColor)?.usingColorSpace(.sRGB) ?? .systemBlue).hexString
     }
 }

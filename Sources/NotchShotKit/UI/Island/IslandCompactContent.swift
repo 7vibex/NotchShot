@@ -63,7 +63,7 @@ struct IslandCompactContent: View {
         .buttonStyle(IslandSquishButtonStyle())
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(activity.kind.title)
-        .accessibilityValue(IslandAccessibility.value(for: activity, coordinator: coordinator))
+        .modifier(LiveAccessibilityValue { IslandAccessibility.value(for: activity, coordinator: coordinator) })
         .accessibilityHint("Shows details. Adjust to switch between activities.")
         .accessibilityAdjustableAction { direction in
             switch direction {
@@ -185,6 +185,17 @@ private struct IslandRecordingClock: View {
             font: .system(size: size, weight: .semibold, design: .rounded),
             color: .red
         )
+    }
+}
+
+/// An accessibility value that reads live state. Built in its own body, so ten
+/// recording readings a second re-evaluate only this and not the view it is
+/// attached to, even with VoiceOver off.
+struct LiveAccessibilityValue: ViewModifier {
+    let value: @MainActor () -> String
+
+    func body(content: Content) -> some View {
+        content.accessibilityValue(value())
     }
 }
 

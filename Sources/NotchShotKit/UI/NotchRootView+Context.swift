@@ -36,34 +36,20 @@ struct ContextContent: View {
             expanded
         } else if isPreviewing {
             if let agent = headlineAgent {
-                if hasLiveVibeSurface {
-                    AgentVibePeekHeader(
-                        activity: agent,
-                        activityCount: vibeActivityCount
-                    ) { coordinator.setContextExpanded(true) }
-                } else {
-                    AgentPeekHeader(activity: agent) { coordinator.setContextExpanded(true) }
-                }
+                AgentVibePeekHeader(
+                    activity: agent,
+                    activityCount: vibeActivityCount
+                ) { coordinator.setContextExpanded(true) }
             } else {
                 preview
             }
         } else {
             if let agent = headlineAgent {
-                if hasLiveVibeSurface {
-                    AgentVibeCompactStrip(
-                        activity: agent,
-                        activityCount: vibeActivityCount,
-                        physicalNotchWidth: physicalNotchWidth
-                    ) { coordinator.setContextExpanded(true) }
-                } else {
-                    AgentCompactStrip(
-                        activity: agent,
-                        otherAgentCount: max(0, snapshot.aiActivities.count - 1),
-                        physicalNotchWidth: physicalNotchWidth
-                    ) {
-                        coordinator.setContextExpanded(true)
-                    }
-                }
+                AgentVibeCompactStrip(
+                    activity: agent,
+                    activityCount: vibeActivityCount,
+                    physicalNotchWidth: physicalNotchWidth
+                ) { coordinator.setContextExpanded(true) }
             } else if snapshot.kind == .power {
                 PowerCompactStrip(
                     snapshot: snapshot,
@@ -160,13 +146,9 @@ struct ContextContent: View {
 
     private var previewHeader: some View {
         HStack(spacing: 10) {
-            if let agent = headlineAgent {
-                AgentGlyph(source: agent.source, size: 24)
-            } else {
-                Image(systemName: snapshot.kind.symbolName)
-                    .font(.system(size: 20, weight: .semibold))
-                    .foregroundStyle(accent)
-            }
+            Image(systemName: snapshot.kind.symbolName)
+                .font(.system(size: 20, weight: .semibold))
+                .foregroundStyle(accent)
             VStack(alignment: .leading, spacing: 3) {
                 Text(snapshot.title)
                     .font(.system(size: 12, weight: .semibold))
@@ -277,10 +259,7 @@ struct ContextContent: View {
                         recent: snapshot.aiRecentActivities,
                         subtitle: snapshot.subtitle,
                         onDismiss: { coordinator.dismissAIActivity($0) },
-                        onClearHistory: { coordinator.clearAIActivityHistory() },
-                        claudeSessions: coordinator.context.claude.sessions,
-                        onApprovePermission: { coordinator.approveClaudePermission(sessionID: $0) },
-                        onDenyPermission: { coordinator.denyClaudePermission(sessionID: $0) }
+                        onClearHistory: { coordinator.clearAIActivityHistory() }
                     )
                 }
             } else if snapshot.kind == .timer {
@@ -437,29 +416,30 @@ struct ContextContent: View {
     }
 
     private var monthOverview: some View {
-        VStack(alignment: .leading, spacing: 5) {
-            Text(Date().formatted(.dateTime.month(.wide).year()))
+        let month = MonthOverview.current()
+        return VStack(alignment: .leading, spacing: 5) {
+            Text(month.title)
                 .font(.system(size: NotchIsland.TextSize.caption, weight: .semibold))
                 .foregroundStyle(Color.islandInk(NotchIsland.Ink.secondary))
             LazyVGrid(
                 columns: Array(repeating: GridItem(.flexible(), spacing: 2), count: 7),
                 spacing: 4
             ) {
-                ForEach(Array(weekdaySymbols.enumerated()), id: \.offset) { _, symbol in
+                ForEach(Array(month.weekdaySymbols.enumerated()), id: \.offset) { _, symbol in
                     Text(symbol)
                         .font(.system(size: 9, weight: .semibold))
                         .foregroundStyle(.white.opacity(0.52))
                         .accessibilityHidden(true)
                 }
-                ForEach(Array(monthCells.enumerated()), id: \.offset) { _, date in
-                    if let date {
-                        let isToday = Calendar.autoupdatingCurrent.isDateInToday(date)
-                        Text(date.formatted(.dateTime.day()))
+                ForEach(Array(month.cells.enumerated()), id: \.offset) { _, cell in
+                    if let cell {
+                        let isToday = cell.isToday
+                        Text(cell.day)
                             .font(.system(size: 10, weight: isToday ? .bold : .regular))
                             .foregroundStyle(isToday ? accentForeground : .white)
                             .frame(width: 18, height: 18)
                             .background(isToday ? accent : .clear, in: Circle())
-                            .accessibilityLabel(date.formatted(date: .complete, time: .omitted))
+                            .accessibilityLabel(cell.accessibilityLabel)
                     } else {
                         Color.clear
                             .frame(width: 18, height: 18)
@@ -469,17 +449,58 @@ struct ContextContent: View {
             }
         }
     }
+}
 
-    private var weekdaySymbols: [String] {
-        let calendar = Calendar.autoupdatingCurrent
-        let symbols = calendar.veryShortStandaloneWeekdaySymbols
-        let start = max(0, min(symbols.count - 1, calendar.firstWeekday - 1))
-        return Array(symbols[start...]) + Array(symbols[..<start])
+/// The calendar card's month grid, formatted once a day: about 90 date
+/// formats and comparisons that used to run on every evaluation of the card.
+@MainActor
+struct MonthOverview {
+    struct Cell {
+        var day: String
+        var accessibilityLabel: String
+        var isToday: Bool
     }
 
-    private var monthCells: [Date?] {
+    var title: String
+    var weekdaySymbols: [String]
+    var cells: [Cell?]
+
+    private static var cached: (key: String, overview: MonthOverview)?
+
+    static func current(now: Date = Date()) -> MonthOverview {
         let calendar = Calendar.autoupdatingCurrent
-        let now = Date()
+        let today = calendar.dateComponents([.year, .month, .day], from: now)
+        // Everything that can change the strings or which cell is today.
+        let key = [
+            "\(calendar.identifier)",
+            calendar.locale?.identifier ?? "",
+            calendar.timeZone.identifier,
+            "\(calendar.firstWeekday)",
+            "\(today.year ?? 0)-\(today.month ?? 0)-\(today.day ?? 0)",
+        ].joined(separator: "|")
+        if let cached, cached.key == key { return cached.overview }
+        let overview = MonthOverview(now: now, calendar: calendar)
+        cached = (key, overview)
+        return overview
+    }
+
+    init(now: Date, calendar: Calendar) {
+        title = now.formatted(.dateTime.month(.wide).year())
+        let symbols = calendar.veryShortStandaloneWeekdaySymbols
+        let start = max(0, min(symbols.count - 1, calendar.firstWeekday - 1))
+        weekdaySymbols = Array(symbols[start...]) + Array(symbols[..<start])
+        cells = Self.monthDates(now: now, calendar: calendar).map { date in
+            date.map {
+                Cell(
+                    day: $0.formatted(.dateTime.day()),
+                    accessibilityLabel: $0.formatted(date: .complete, time: .omitted),
+                    isToday: calendar.isDate($0, inSameDayAs: now)
+                )
+            }
+        }
+    }
+
+    private static func monthDates(now: Date, calendar: Calendar) -> [Date?] {
         guard let month = calendar.dateInterval(of: .month, for: now),
               let days = calendar.range(of: .day, in: .month, for: now) else {
             return []
@@ -532,7 +553,7 @@ struct IdleContent: View {
                 IslandBandHeader(leadingInset: 10, trailingInset: 8) {
                     HStack(spacing: 6) {
                         if let url = IdleAnimationStore.currentURL {
-                            IdleAnimationView(url: url, animates: !reduceMotion)
+                            IdleAnimationView(url: url, animates: !reduceMotion, sharesImage: true)
                                 .frame(width: 22, height: 22)
                         }
                         captureMenuButton

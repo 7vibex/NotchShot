@@ -24,10 +24,24 @@ final class LiveAudioMeter {
     /// A player that refused once is not retried until it changes, so a
     /// denied permission doesn't prompt or log on every track.
     private var refusedBundleID: String?
-    private(set) var isDelivering = false
+    /// A tap has been asked for and not stopped. The tap itself reports late,
+    /// as it comes up off this thread.
+    private var tapIsWanted = false
+    /// Moves with each tap, so a failure reported for an earlier one is dropped.
+    private var tapGeneration = 0
+    /// The last player this run has heard from. Its later silence is a quiet
+    /// passage, not a denied permission.
+    private var heardSignalFrom: String?
     private var stopTask: Task<Void, Never>?
+    /// When the tap came up: nil until it has, so a slow build doesn't count
+    /// against the silence timeout.
     private var tapStartedAt: Date?
     private var lastSignalAt: Date?
+    /// A player already heard that fell silent keeps its permission, but a tap
+    /// and an aggregate device for every position tick would cost coreaudiod
+    /// calls and flicker the recording indicator, so the next try waits.
+    private var silentRetryNotBefore: Date?
+    static let silentRetryDelay: TimeInterval = 30
     /// A tap without the System Audio Recording permission still starts, but
     /// delivers silence. Playing music this quiet for this long means that,
     /// so the meters go back to their bounce instead of lying flat.
@@ -35,7 +49,8 @@ final class LiveAudioMeter {
 
     func updateSource(bundleID: String?, isPlaying: Bool, screensAwake: Bool) {
         if bundleID != self.bundleID { refusedBundleID = nil }
-        let sourceChanged = bundleID != self.bundleID && tap.isRunning
+        if bundleID != self.bundleID || isPlaying != self.isPlaying { silentRetryNotBefore = nil }
+        let sourceChanged = bundleID != self.bundleID && tapIsWanted
         self.bundleID = bundleID
         self.isPlaying = isPlaying
         self.screensAwake = screensAwake
@@ -54,7 +69,10 @@ final class LiveAudioMeter {
     }
 
     func preferenceChanged() {
-        if !ExtrasPreferences.shared.usesLiveAudioMeter { refusedBundleID = nil }
+        if !ExtrasPreferences.shared.usesLiveAudioMeter {
+            refusedBundleID = nil
+            silentRetryNotBefore = nil
+        }
         reconcile()
     }
 
@@ -63,14 +81,15 @@ final class LiveAudioMeter {
             && isPlaying && screensAwake
             && meters.count > 0
             && bundleID != nil && bundleID != refusedBundleID
+            && silentRetryNotBefore.map { $0 <= Date() } ?? true
     }
 
     private func reconcile() {
         if shouldRun {
             stopTask?.cancel()
             stopTask = nil
-            if !tap.isRunning { startTap() }
-        } else if tap.isRunning, stopTask == nil {
+            if !tapIsWanted { startTap() }
+        } else if tapIsWanted, stopTask == nil {
             // A short grace, so a track change or a meter remounting during
             // an island transition doesn't tear the tap down and rebuild it.
             stopTask = Task { [weak self] in
@@ -85,42 +104,75 @@ final class LiveAudioMeter {
     private func startTap() {
         guard let bundleID else { return }
         let analyzer = LevelAnalyzer(bandCount: Self.bandCount)
-        do {
-            try tap.start(.applications([bundleID])) { samples, channels, rate in
-                guard let levels = analyzer.process(samples, channels: channels, sampleRate: rate) else { return }
+        tapIsWanted = true
+        tapGeneration += 1
+        let generation = tapGeneration
+        tapStartedAt = nil
+        lastSignalAt = nil
+        silentRetryNotBefore = nil
+        tap.start(.applications([bundleID]), handler: { samples, channels, rate in
+            guard let levels = analyzer.process(samples, channels: channels, sampleRate: rate) else { return }
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated { LiveAudioMeter.shared.deliver(levels) }
+            }
+        }, completion: { error in
+            guard let error else {
                 DispatchQueue.main.async {
-                    MainActor.assumeIsolated { LiveAudioMeter.shared.deliver(levels) }
+                    MainActor.assumeIsolated { LiveAudioMeter.shared.tapCameUp(generation: generation) }
+                }
+                return
+            }
+            let message = error.localizedDescription
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    LiveAudioMeter.shared.tapFailed(bundleID: bundleID, message: message, generation: generation)
                 }
             }
-            tapStartedAt = Date()
-            lastSignalAt = nil
-        } catch {
-            refusedBundleID = bundleID
-            Log.media.notice("Live meter unavailable for \(bundleID, privacy: .public): \(error.localizedDescription, privacy: .public)")
-        }
+        })
+    }
+
+    private func tapCameUp(generation: Int) {
+        guard generation == tapGeneration else { return }
+        tapStartedAt = Date()
+    }
+
+    private func tapFailed(bundleID: String, message: String, generation: Int) {
+        guard generation == tapGeneration else { return }
+        tapIsWanted = false
+        refusedBundleID = bundleID
+        Log.media.notice("Live meter unavailable for \(bundleID, privacy: .public): \(message, privacy: .public)")
     }
 
     private func stopTap() {
         tap.stop()
-        isDelivering = false
+        tapIsWanted = false
         for meter in meters.allObjects { meter.liveLevelsEnded() }
     }
 
     private func deliver(_ levels: [Float]) {
-        guard tap.isRunning else { return }
+        guard tapIsWanted else { return }
         let now = Date()
         if levels.contains(where: { $0 > 0.05 }) {
             lastSignalAt = now
+            heardSignalFrom = bundleID
         } else if now.timeIntervalSince(lastSignalAt ?? tapStartedAt ?? now) > Self.silentTapTimeout {
-            if lastSignalAt == nil {
+            if Self.refusesAfterSilence(player: bundleID, heardSignalFrom: heardSignalFrom) {
                 refusedBundleID = bundleID
                 Log.media.notice("Live meter heard only silence; falling back to the animated meter")
+            } else {
+                silentRetryNotBefore = now.addingTimeInterval(Self.silentRetryDelay)
             }
             stopTap()
             return
         }
-        isDelivering = true
         for meter in meters.allObjects { meter.applyLiveLevels(levels) }
+    }
+
+    /// Silence only means a missing permission from a player that has never
+    /// produced anything. A later tap on the same player starts with no signal
+    /// of its own, so a long pause would otherwise read as a refusal.
+    nonisolated static func refusesAfterSilence(player: String?, heardSignalFrom: String?) -> Bool {
+        player != heardSignalFrom
     }
 }
 

@@ -65,7 +65,7 @@ public actor MediaQueueService {
 
     /// Everything is wrapped in one `try`: a track played from Up Next has no
     /// current playlist, and asking for one raises rather than returning empty.
-    private static let musicQueueScript = """
+    static let musicQueueScript = """
     tell application "Music"
         if player state is stopped then return (character id 3)
         set fieldSeparator to character id 31
@@ -75,10 +75,10 @@ public actor MediaQueueService {
             set thePlaylist to current playlist
             set startIndex to (index of current track) + 1
             set lastIndex to (count of tracks of thePlaylist)
-            repeat with offset from 0 to \(lookAhead - 1)
-                set position to startIndex + offset
-                if position > lastIndex then exit repeat
-                set theTrack to track position of thePlaylist
+            repeat with rowOffset from 0 to \(lookAhead - 1)
+                set rowIndex to startIndex + rowOffset
+                if rowIndex > lastIndex then exit repeat
+                set theTrack to track rowIndex of thePlaylist
                 set collected to collected & (name of theTrack) & fieldSeparator ¬
                     & (artist of theTrack) & recordSeparator
             end repeat

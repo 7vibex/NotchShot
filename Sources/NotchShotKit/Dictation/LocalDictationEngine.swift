@@ -24,7 +24,10 @@ public actor SpeechAnalyzerDictationEngine: LocalDictationEngine {
     private var inputContinuation: AsyncStream<AnalyzerInput>.Continuation?
     private var resultTask: Task<Void, Never>?
     public private(set) var analyzerFormat: AVAudioFormat?
-    private let converter = SpeechBufferConverter2()
+    private let converter = SpeechBufferConverter(
+        componentPrefix: "Dictation audio",
+        conversionPrefix: "Dictation audio"
+    )
 
     public init() {}
 
@@ -111,51 +114,5 @@ public actor SpeechAnalyzerDictationEngine: LocalDictationEngine {
         analyzer = nil
         transcriber = nil
         analyzerFormat = nil
-    }
-}
-
-// Private converter identical to LiveVoiceNoteTranscription's but scoped here.
-private final class ConverterInput2: @unchecked Sendable {
-    let buffer: AVAudioPCMBuffer
-    var wasSupplied = false
-    init(buffer: AVAudioPCMBuffer) { self.buffer = buffer }
-}
-
-private final class SpeechBufferConverter2: @unchecked Sendable {
-    enum ConversionError: LocalizedError {
-        case couldNotCreateConverter
-        case couldNotCreateBuffer
-        case conversionFailed(NSError?)
-        var errorDescription: String? {
-            switch self {
-            case .couldNotCreateConverter: "Dictation audio converter could not start."
-            case .couldNotCreateBuffer: "Dictation audio buffer could not be created."
-            case let .conversionFailed(error): error?.localizedDescription ?? "Dictation audio conversion failed."
-            }
-        }
-    }
-    private var converter: AVAudioConverter?
-    func convert(_ buffer: AVAudioPCMBuffer, to format: AVAudioFormat) throws -> AVAudioPCMBuffer {
-        guard buffer.format != format else { return buffer }
-        if converter == nil || converter?.inputFormat != buffer.format || converter?.outputFormat != format {
-            converter = AVAudioConverter(from: buffer.format, to: format)
-            converter?.primeMethod = .none
-        }
-        guard let converter else { throw ConversionError.couldNotCreateConverter }
-        let ratio = converter.outputFormat.sampleRate / converter.inputFormat.sampleRate
-        let capacity = AVAudioFrameCount((Double(buffer.frameLength) * ratio).rounded(.up))
-        guard let output = AVAudioPCMBuffer(pcmFormat: converter.outputFormat, frameCapacity: max(1, capacity)) else {
-            throw ConversionError.couldNotCreateBuffer
-        }
-        var conversionError: NSError?
-        let input = ConverterInput2(buffer: buffer)
-        let status = converter.convert(to: output, error: &conversionError) { _, inputStatus in
-            if input.wasSupplied { inputStatus.pointee = .noDataNow; return nil }
-            input.wasSupplied = true
-            inputStatus.pointee = .haveData
-            return input.buffer
-        }
-        guard status != .error else { throw ConversionError.conversionFailed(conversionError) }
-        return output
     }
 }

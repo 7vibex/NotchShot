@@ -220,7 +220,7 @@ struct RecordingContent: View {
                     .monospacedDigit()
                     .foregroundStyle(Color.islandInk(NotchIsland.Ink.tertiary))
                     .lineLimit(1)
-                    .contentTransition(.numericText())
+                    .contentTransition(.identity)
             }
 
             HStack(spacing: NotchIsland.Spacing.group) {

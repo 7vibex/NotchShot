@@ -12,7 +12,7 @@ extension AppCoordinator {
 
     public func toggleDictation() {
         // Arbitrate: don't start dictation during modal selection/countdown/recording or voice note
-        if arbiter.selection != nil || arbiter.countdown != nil || arbiter.isRecording {
+        if arbiter.selection != nil || arbiter.countdown != nil || arbiter.isRecording || RecordingService.shared.hasActiveSession {
             present(error: NotchShotError.recordingFailed("Finish the current capture or recording before starting dictation"))
             return
         }
@@ -20,14 +20,7 @@ extension AppCoordinator {
             present(error: NotchShotError.recordingFailed("Finish the current voice note before starting dictation"))
             return
         }
-        // Use trigger mode: toggle vs holdToTalk
-        // Toggle mode uses Carbon hotkey; hold mode uses event tap. But both can be invoked via toggle.
-        if Preferences.shared.dictationTriggerMode == .toggle {
-            dictation.toggle()
-        } else {
-            // Hold-to-talk triggered via toggle shortcut should still toggle (fallback)
-            dictation.toggle()
-        }
+        dictation.toggle()
     }
 
     public func stopDictation() {
@@ -64,14 +57,6 @@ extension AppCoordinator {
     }
 
     public func cancelDictation() {
-        dictation.cancel()
-    }
-
-    public func handleDictationReturn() {
-        Task { await dictation.stop() }
-    }
-
-    public func handleDictationEscape() {
         dictation.cancel()
     }
 
@@ -182,8 +167,10 @@ extension AppCoordinator {
     func refreshActivity() {
         islandSourcesAtLastRefresh = islandSourceValues
         releaseSystemMuteAfterCalls()
-        syncQuickToggleInputs()
-        refreshIsland()
+        syncSystemInputMuteWatcher()
+        let aiActivities = context.islandAIActivities
+        syncQuickToggleInputs(aiActivities: aiActivities)
+        refreshIsland(aiActivities: aiActivities)
         let resolved = arbiter.resolve()
         if resolved != activity {
             activity = resolved
@@ -192,6 +179,7 @@ extension AppCoordinator {
             tabPageHeightHold = 0
         }
         reconcileSystemNotificationTimer(for: resolved)
+        let lockedCharging = media.isSessionActive ? nil : LockedChargingPolicy.reading()
         windowController?.update(
             activity: activity,
             isPeeking: isPeeking,
@@ -200,10 +188,11 @@ extension AppCoordinator {
             hasMediaContent: media.snapshot.hasContent,
             hasLockedActivityContent: notifications.lockScreenItem() != nil
                 || context.timer.current != nil
-                || (!media.isSessionActive && LockedChargingPolicy.reading() != nil),
-            hasLockedChargingContent: !media.isSessionActive && LockedChargingPolicy.reading() != nil,
+                || lockedCharging != nil,
+            hasLockedChargingContent: lockedCharging != nil,
             mediaPanelRowCount: mediaPanelRowCount,
-            tabPageHeightHold: tabPageHeightHold
+            tabPageHeightHold: tabPageHeightHold,
+            isScrollingCapture: isScrollingCaptureActive
         )
     }
 

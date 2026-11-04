@@ -18,18 +18,10 @@ public final class ActivityHeartbeat: @unchecked Sendable {
     private let queue = DispatchQueue(label: "com.notchshot.cli.activity-heartbeat")
     private let lock = NSLock()
     private var timer: DispatchSourceTimer?
-    private var fired = 0
     private var stopped = true
 
     public init(interval: TimeInterval = ActivityHeartbeat.defaultInterval) {
         self.interval = max(0.01, interval)
-    }
-
-    /// Number of times the handler has run. Test seam.
-    public var fireCount: Int {
-        lock.lock()
-        defer { lock.unlock() }
-        return fired
     }
 
     public var isRunning: Bool {
@@ -60,7 +52,6 @@ public final class ActivityHeartbeat: @unchecked Sendable {
                 self.lock.unlock()
                 return
             }
-            self.fired += 1
             self.lock.unlock()
             handler()
         }

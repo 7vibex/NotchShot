@@ -1,4 +1,5 @@
 import AppKit
+import Observation
 import SwiftUI
 
 /// Resolves the real application icon for an AI source from the user's own Mac.
@@ -11,7 +12,8 @@ import SwiftUI
 /// Every lookup is cached. `urlForApplication(withBundleIdentifier:)` is a
 /// LaunchServices round trip — an order of magnitude past the `FileManager`
 /// walk that already had to be cached out of the history load path — and the
-/// island re-evaluates its body on every progress tick.
+/// island re-evaluates its body on every progress tick. A view body never makes
+/// one: it draws the fallback and a background lookup draws it again.
 @MainActor
 enum AgentIconCatalog {
     /// Bundle identifiers to try, in order. The first that resolves wins, so
@@ -53,6 +55,8 @@ enum AgentIconCatalog {
     private static var resolvedURLs: [AISource: URL] = [:]
     private static var resolvedIcons: [AISource: NSImage] = [:]
     private static var misses: [AISource: Date] = [:]
+    private static var resolving: Set<AISource> = []
+    private static let revision = AgentIconRevision()
 
     /// How long a failed lookup is trusted. A miss is cached so an uninstalled
     /// agent does not pay LaunchServices on every frame, but not permanently —
@@ -86,11 +90,58 @@ enum AgentIconCatalog {
         return nil
     }
 
+    /// Whether this source's application is known to be installed, for a SwiftUI
+    /// body. Until the lookup has landed the answer is no.
+    static func hasKnownApplication(for source: AISource) -> Bool {
+        _ = revision.value
+        if resolvedURLs[source] != nil { return true }
+        resolveInBackground(source)
+        return false
+    }
+
+    private static func resolveInBackground(_ source: AISource) {
+        if let missedAt = misses[source], Date().timeIntervalSince(missedAt) < missLifetime { return }
+        guard resolving.insert(source).inserted else { return }
+        let identifiers = bundleIdentifiers(for: source)
+        Task.detached(priority: .utility) {
+            let found = lookUp(identifiers)
+            await finishResolving(source, found: found)
+        }
+    }
+
+    private nonisolated static func lookUp(_ identifiers: [String]) -> AgentIconLookup? {
+        // Apple documents both NSWorkspace methods as safe from any thread.
+        let workspace = NSWorkspace.shared
+        for identifier in identifiers {
+            guard let url = workspace.urlForApplication(withBundleIdentifier: identifier) else { continue }
+            let image = workspace.icon(forFile: url.path).copy() as! NSImage
+            image.size = NSSize(width: 64, height: 64)
+            return AgentIconLookup(url: url, icon: image)
+        }
+        return nil
+    }
+
+    private static func finishResolving(_ source: AISource, found: AgentIconLookup?) {
+        resolving.remove(source)
+        guard let found else {
+            misses[source] = Date()
+            return
+        }
+        resolvedURLs[source] = found.url
+        resolvedIcons[source] = found.icon
+        misses[source] = nil
+        revision.value += 1
+    }
+
     /// The installed icon for this source, or `nil` when no candidate app is
-    /// present. Safe to call from a SwiftUI body.
+    /// present or the lookup hasn't landed yet. Safe to call from a SwiftUI body.
     static func icon(for source: AISource) -> NSImage? {
+        _ = revision.value
         if let cached = resolvedIcons[source] { return cached }
-        guard let url = applicationURL(for: source) else { return nil }
+        guard let url = resolvedURLs[source] else {
+            resolveInBackground(source)
+            return nil
+        }
 
         let image = NSWorkspace.shared.icon(forFile: url.path)
         // An app icon is drawn at 16–28pt here. Pinning the size lets AppKit
@@ -106,6 +157,20 @@ enum AgentIconCatalog {
         guard let url = applicationURL(for: source) else { return }
         NSWorkspace.shared.openApplication(at: url, configuration: NSWorkspace.OpenConfiguration())
     }
+}
+
+/// Tells the views that asked too early that a lookup has landed.
+@MainActor
+@Observable
+private final class AgentIconRevision {
+    var value = 0
+}
+
+/// A finished lookup. The image is a private copy that nothing else holds until
+/// it reaches the main actor.
+private struct AgentIconLookup: @unchecked Sendable {
+    let url: URL
+    let icon: NSImage
 }
 
 /// The macOS app icon grid: an icon's body is 824 of its 1024 pt canvas, with

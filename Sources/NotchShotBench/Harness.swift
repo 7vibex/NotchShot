@@ -158,6 +158,7 @@ enum Benchmark {
             warmupFailures: warmupFailures,
             environment: environment
         )
+        if !result.isValid { anyInvalid = true }
         report(result)
         BenchmarkJournal.shared?.recordSummary(result)
         return result
@@ -201,7 +202,7 @@ enum Benchmark {
         let median = result.medianSeconds.isNaN ? "      n/a" : String(format: "%9.3f", result.medianMilliseconds)
         let minimum = result.minimumSeconds.isNaN ? "      n/a" : String(format: "%9.3f", result.minimumMilliseconds)
         let name = result.name.padding(toLength: 46, withPad: " ", startingAt: 0)
-        let failures = result.failures > 0 ? "   FAILURES=\(result.failures + result.warmupFailures)" : ""
+        let failures = result.isValid ? "" : "   FAILURES=\(result.failures + result.warmupFailures)"
         print("\(name) median \(median) ms   min \(minimum) ms   n=\(result.iterations)\(failures)")
     }
 
@@ -223,6 +224,9 @@ enum Benchmark {
         sink = UInt(truncatingIfNeeded: value)
     }
 
+    /// Whether any benchmark threw, so a script can tell from the exit status.
+    /// Benchmarks run one at a time, like the two values below.
+    nonisolated(unsafe) private(set) static var anyInvalid = false
     nonisolated(unsafe) private static var sink: UInt = 0
     nonisolated(unsafe) private static var sunkCount: UInt = 0
 }

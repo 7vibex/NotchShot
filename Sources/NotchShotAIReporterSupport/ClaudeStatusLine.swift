@@ -47,7 +47,6 @@ public struct ClaudeStatusSnapshot: Codable, Equatable, Sendable {
 
 public enum ClaudeStatusLine {
     public static let directoryName = "Claude Status"
-    public static let maximumInputBytes = 256 * 1_024
 
     public static func directory(base: URL) -> URL {
         base.appendingPathComponent(directoryName, isDirectory: true)
@@ -56,11 +55,8 @@ public enum ClaudeStatusLine {
     /// Reads Claude's status line JSON. Returns nil without a session ID,
     /// since a snapshot nobody can attribute is worse than none.
     public static func snapshot(from json: [String: Any], now: Date = Date()) -> ClaudeStatusSnapshot? {
-        guard let rawID = json["session_id"] as? String else { return nil }
-        let sessionID = String(rawID.unicodeScalars.filter {
-            CharacterSet.alphanumerics.contains($0) || "._-".unicodeScalars.contains($0)
-        }.prefix(64))
-        guard !sessionID.isEmpty else { return nil }
+        guard let rawID = json["session_id"] as? String,
+              let sessionID = ClaudeRunReport.safeIdentifier(rawID) else { return nil }
 
         let model = (json["model"] as? [String: Any]).flatMap {
             ($0["display_name"] as? String) ?? ($0["id"] as? String)

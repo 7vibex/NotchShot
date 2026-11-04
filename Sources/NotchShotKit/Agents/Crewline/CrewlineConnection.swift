@@ -57,7 +57,10 @@ public struct CrewlineLocalHost: Sendable {
     var userdata: URL { homeURL.appendingPathComponent("userdata", isDirectory: true) }
 
     /// The server's port. Crewline writes the file on start and removes it on
-    /// quit, so its presence is the "is it running" signal the CLI uses too.
+    /// quit, so its presence is the "is it running" signal the CLI uses too. A
+    /// crash leaves it behind, and by then the port can belong to anything, so
+    /// the process that wrote it must still be alive before a token goes there
+    /// or a refusal from that port can cost the pairing.
     public func port() -> Int? {
         let url = userdata.appendingPathComponent("connection.json")
         guard let data = try? Data(contentsOf: url, options: .uncached),
@@ -65,6 +68,7 @@ public struct CrewlineLocalHost: Sendable {
               let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let number = object["wsPort"] as? NSNumber
         else { return nil }
+        if let pid = (object["pid"] as? NSNumber)?.int32Value, pid <= 1 || kill(pid, 0) != 0 { return nil }
         let port = number.intValue
         return (1...65_535).contains(port) ? port : nil
     }
@@ -82,8 +86,15 @@ public struct CrewlineLocalHost: Sendable {
     }
 }
 
+/// What a stream's `next` frame says, read inside the connection so a token
+/// stream's items are never parsed on the main actor.
+struct CrewlineStreamItem: Equatable, Sendable {
+    var type: String
+    var runID: String?
+}
+
 /// One authenticated socket to Crewline's local RPC server. Requests resolve
-/// on their `res`/`err` frame; streams yield the raw JSON of each `next`
+/// on their `res`/`err` frame; streams yield the type and run of each `next`
 /// item. Payloads cross the actor as JSON `Data` so nothing non-Sendable
 /// escapes it.
 actor CrewlineConnection {
@@ -102,7 +113,7 @@ actor CrewlineConnection {
         var timeout: Task<Void, Never>
     }
     private var pending: [String: PendingRequest] = [:]
-    private var streams: [String: AsyncStream<Data>.Continuation] = [:]
+    private var streams: [String: AsyncStream<CrewlineStreamItem>.Continuation] = [:]
     private var nextID = 0
     private var onClose: (@Sendable (CrewlineConnectionError) -> Void)?
 
@@ -178,12 +189,12 @@ actor CrewlineConnection {
 
     /// Opens a server stream. The returned sequence ends when the socket
     /// closes or the caller stops iterating.
-    func subscribe(_ method: String, payload: [String: any Sendable]? = nil) throws -> AsyncStream<Data> {
+    func subscribe(_ method: String, payload: [String: any Sendable]? = nil) throws -> AsyncStream<CrewlineStreamItem> {
         guard let task else { throw CrewlineConnectionError.closed }
         nextID += 1
         let id = "ns-sub-\(nextID)"
         let frame = try Self.frame(op: "sub", id: id, method: method, payload: payload)
-        let (stream, continuation) = AsyncStream<Data>.makeStream(bufferingPolicy: .bufferingNewest(32))
+        let (stream, continuation) = AsyncStream<CrewlineStreamItem>.makeStream(bufferingPolicy: .bufferingNewest(32))
         streams[id] = continuation
         continuation.onTermination = { [weak self] _ in
             Task { await self?.unsubscribe(id) }
@@ -250,11 +261,12 @@ actor CrewlineConnection {
                 streams.removeValue(forKey: id)?.finish()
             }
         case "next":
-            let item = (try? JSONSerialization.data(
-                withJSONObject: object["item"] ?? NSNull(),
-                options: .fragmentsAllowed
-            )) ?? Data("null".utf8)
-            streams[id]?.yield(item)
+            let item = object["item"] as? [String: Any]
+            let event = item?["event"] as? [String: Any]
+            streams[id]?.yield(CrewlineStreamItem(
+                type: event?["type"] as? String ?? "",
+                runID: item?["runId"] as? String
+            ))
         case "done":
             streams.removeValue(forKey: id)?.finish()
         default:

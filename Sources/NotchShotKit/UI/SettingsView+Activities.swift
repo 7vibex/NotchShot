@@ -38,7 +38,7 @@ struct ActivityIslandSettings: View {
                 }
                 .pickerStyle(.segmented)
                 LabeledContent("Shadow") {
-                    Slider(value: binding(\.islandShadowStrength), in: 0...1) {
+                    Slider(value: $preferences.islandShadowStrength, in: 0...1) {
                         Text("Shadow")
                     } minimumValueLabel: {
                         Image(systemName: "circle").imageScale(.small)
@@ -50,7 +50,7 @@ struct ActivityIslandSettings: View {
                 }
                 Toggle("Glass notch", isOn: binding(\.islandGlassEnabled))
                 LabeledContent("Glass level") {
-                    Slider(value: binding(\.islandGlassLevel), in: 0...1) {
+                    Slider(value: $preferences.islandGlassLevel, in: 0...1) {
                         Text("Glass level")
                     } minimumValueLabel: {
                         Image(systemName: "square.fill").imageScale(.small)

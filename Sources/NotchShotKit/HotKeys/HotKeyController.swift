@@ -108,6 +108,39 @@ public enum HotKeyAction: String, Sendable, CaseIterable, Identifiable, Codable 
         case .saveInstantReplay: HotKeyBinding(keyCode: UInt32(kVK_ANSI_P), modifiers: UInt32(cmdKey | shiftKey | optionKey))
         }
     }
+
+    /// Every action that exists today predates the record of installed defaults,
+    /// so a gap in a saved dictionary is left alone: it may be a shortcut the user
+    /// cleared, and an update shouldn't start claiming a new global combination.
+    /// Only actions added after this record get their default installed.
+    static let actionsPredatingInstalledDefaults = Set(allCases)
+
+    /// Gives each action added since a dictionary was saved its default, once
+    /// ever, so clearing it afterwards sticks. An action whose combination is
+    /// already held gets none. Returns whether `bindings` changed.
+    static func installNewDefaults(
+        into bindings: inout [HotKeyAction: HotKeyBinding],
+        installed: inout Set<HotKeyAction>
+    ) -> Bool {
+        var changed = false
+        for action in allCases where !installed.contains(action) {
+            installed.insert(action)
+            guard bindings[action] == nil,
+                  let binding = action.defaultBinding,
+                  !bindings.values.contains(binding) else { continue }
+            bindings[action] = binding
+            changed = true
+        }
+        return changed
+    }
+
+    /// Whether take-over may point this action at its system shortcut. An action
+    /// with no default looks untouched while it is empty, so one the user cleared
+    /// has to be remembered or it comes straight back.
+    func canClaimSystemShortcut(current: HotKeyBinding?, cleared: Set<HotKeyAction>) -> Bool {
+        guard !cleared.contains(self) else { return false }
+        return current == defaultBinding || current == systemStyleBinding
+    }
 }
 
 public struct HotKeyBinding: Codable, Sendable, Equatable, Hashable {
@@ -200,8 +233,13 @@ public final class HotKeyController {
     private let defaultsKey = "notchshot.hotkeys"
     private let dictationDefaultMigrationKey = "notchshot.hotkeys.dictationDefaultInstalled"
     private let simpleDictationShortcutMigrationKey = "notchshot.hotkeys.simpleDictationShortcutInstalled"
+    private let installedDefaultsKey = "notchshot.hotkeys.installedDefaults"
+    private let clearedSystemReplacementsKey = "notchshot.hotkeys.clearedSystemReplacements"
+    /// System-replacement actions the user emptied while take-over was on.
+    private var clearedSystemReplacements: Set<HotKeyAction> = []
 
     private init() {
+        clearedSystemReplacements = loadActionSet(forKey: clearedSystemReplacementsKey) ?? []
         loadBindings()
     }
 
@@ -213,7 +251,6 @@ public final class HotKeyController {
         SystemScreenshotHotKeys.shared.restoreAll()
         applySystemShortcutTakeover()
         installEventHandler()
-        registerAll()
     }
 
     public func stop() {
@@ -249,7 +286,7 @@ public final class HotKeyController {
             let current = bindings[action]
             // A combination the user picked themselves is theirs; only the
             // untouched default gets moved onto the system shortcut.
-            guard current == action.defaultBinding || current == action.systemStyleBinding
+            guard action.canClaimSystemShortcut(current: current, cleared: clearedSystemReplacements)
             else { continue }
             bindings[action] = action.systemStyleBinding
         }
@@ -277,8 +314,13 @@ public final class HotKeyController {
         if let binding {
             for (other, existing) in bindings where other != action && existing == binding {
                 bindings[other] = nil
+                noteClearedSystemReplacement(other)
             }
+            clearedSystemReplacements.remove(action)
+        } else {
+            noteClearedSystemReplacement(action)
         }
+        saveActionSet(clearedSystemReplacements, forKey: clearedSystemReplacementsKey)
         bindings[action] = binding
         saveBindings()
         // Rebinding a screenshot shortcut changes which system keys NotchShot
@@ -286,7 +328,15 @@ public final class HotKeyController {
         applySystemShortcutTakeover()
     }
 
+    private func noteClearedSystemReplacement(_ action: HotKeyAction) {
+        guard action.defaultBinding == nil, action.systemStyleBinding != nil,
+              Preferences.shared.usesSystemScreenshotShortcuts else { return }
+        clearedSystemReplacements.insert(action)
+    }
+
     public func restoreDefaults() {
+        clearedSystemReplacements = []
+        saveActionSet(clearedSystemReplacements, forKey: clearedSystemReplacementsKey)
         bindings = [:]
         for action in HotKeyAction.allCases {
             bindings[action] = action.defaultBinding
@@ -305,6 +355,12 @@ public final class HotKeyController {
             for action in HotKeyAction.allCases {
                 bindings[action] = action.defaultBinding
             }
+            // Nothing is left to migrate after this. With the keys unset, the
+            // launch after the user cleared a default took the saved gap for a
+            // dictionary from before that action existed and put it back.
+            UserDefaults.standard.set(true, forKey: dictationDefaultMigrationKey)
+            UserDefaults.standard.set(true, forKey: simpleDictationShortcutMigrationKey)
+            saveActionSet(Set(HotKeyAction.allCases), forKey: installedDefaultsKey)
             return
         }
         // Older builds could persist Caps Lock/Fn-only captures as a binding
@@ -312,12 +368,16 @@ public final class HotKeyController {
         // as they are, but do not turn an invalid legacy entry into a bare
         // system-wide key.
         bindings = decoded.filter { $0.value.isValidGlobalShortcut }
+        // Saved at the end when anything moved: a migration marks itself done,
+        // so one that stayed in memory would be lost on the following launch.
+        var migrated = false
         // Dictionaries from releases before Notch Dictation cannot contain the
         // new action. Install its default exactly once without changing any
         // existing custom or explicitly cleared shortcuts on later launches.
         if !UserDefaults.standard.bool(forKey: dictationDefaultMigrationKey) {
             if decoded[.toggleDictation] == nil {
                 bindings[.toggleDictation] = HotKeyAction.toggleDictation.defaultBinding
+                migrated = true
             }
             UserDefaults.standard.set(true, forKey: dictationDefaultMigrationKey)
         }
@@ -330,9 +390,26 @@ public final class HotKeyController {
             )
             if decoded[.toggleDictation] == oldDefault {
                 bindings[.toggleDictation] = HotKeyAction.toggleDictation.defaultBinding
+                migrated = true
             }
             UserDefaults.standard.set(true, forKey: simpleDictationShortcutMigrationKey)
         }
+        var installed = loadActionSet(forKey: installedDefaultsKey)
+            ?? HotKeyAction.actionsPredatingInstalledDefaults
+        if HotKeyAction.installNewDefaults(into: &bindings, installed: &installed) {
+            migrated = true
+        }
+        saveActionSet(installed, forKey: installedDefaultsKey)
+        if migrated { saveBindings() }
+    }
+
+    private func loadActionSet(forKey key: String) -> Set<HotKeyAction>? {
+        guard let names = UserDefaults.standard.stringArray(forKey: key) else { return nil }
+        return Set(names.compactMap(HotKeyAction.init(rawValue:)))
+    }
+
+    private func saveActionSet(_ actions: Set<HotKeyAction>, forKey key: String) {
+        UserDefaults.standard.set(actions.map(\.rawValue).sorted(), forKey: key)
     }
 
     private func saveBindings() {

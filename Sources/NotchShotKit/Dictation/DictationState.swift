@@ -22,11 +22,6 @@ public enum DictationState: Sendable, Equatable {
         }
     }
 
-    public var isListening: Bool {
-        if case .listening = self { return true }
-        return false
-    }
-
     public var debugName: String {
         switch self {
         case .idle: "idle"
@@ -245,6 +240,4 @@ public struct DictationSnapshot: Sendable, Equatable {
         if v.isEmpty { return f }
         return f + " " + v
     }
-
-    public var isActive: Bool { state.isActive }
 }

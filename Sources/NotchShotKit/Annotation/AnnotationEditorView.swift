@@ -14,7 +14,11 @@ public struct AnnotationEditorView: View {
     /// Framing is half of what the editor is for, so it starts open; the
     /// choice sticks once someone closes it.
     @AppStorage("notchshot.editor.showsBackgroundPanel") private var showsBackgroundPanel = true
+    /// A text element just placed, whose field takes focus once it is selected.
     @State private var editingTextID: UUID?
+    /// A click that moves a pixel or two can reach both the tap and the end of
+    /// the drag, and must place one element.
+    @State private var lastPointAdd: (date: Date, point: CGPoint)?
     @State private var errorMessage: String?
     @State private var colorEditingTask: Task<Void, Never>?
     @State private var imageActionTask: Task<Void, Never>?
@@ -312,7 +316,7 @@ public struct AnnotationEditorView: View {
             ZStack {
                 EditorCanvasBackdrop()
 
-                if let preview = controller.basePreviewImage() {
+                if let preview = controller.displayedBasePreview {
                     Image(nsImage: preview)
                         .resizable()
                         .interpolation(.high)
@@ -321,36 +325,29 @@ public struct AnnotationEditorView: View {
                         .shadow(color: .black.opacity(0.45), radius: 18, y: 8)
                 }
 
-                Canvas { context, _ in
-                    var elements: [AnnotationElement] = controller.document.sortedElements
-                    if let inProgress { elements.append(inProgress) }
-                    context.withCGContext { cgContext in
-                        cgContext.saveGState()
-                        defer { cgContext.restoreGState() }
-                        // The rounded corners belong to the whole frame; under
-                        // a title bar the screenshot's top corners are square.
-                        cgContext.addPath(CGPath(
-                            roundedRect: layout.frameViewRect,
-                            cornerWidth: layout.contentCornerRadius,
-                            cornerHeight: layout.contentCornerRadius,
-                            transform: nil
-                        ))
-                        cgContext.clip()
-                        cgContext.clip(to: layout.contentViewRect)
-                        cgContext.concatenate(layout.sourceToViewTransform)
-                        AnnotationRenderer.drawInteractive(
-                            elements: elements,
-                            in: cgContext,
-                            contentRect: layout.visibleSourceRect,
-                            visibleSourceRect: layout.visibleSourceRect,
-                            isPreview: true
-                        )
+                // Highlighters multiply against the screenshot here as they do in
+                // the export, which only works from a layer of their own: inside a
+                // transparent Canvas the blend has nothing to act on.
+                // A run per stretch of the stacking order, so a highlight above
+                // an arrow covers it here as it does in the export.
+                let runs = AnnotationElement.highlighterRuns(in: canvasElements)
+                ForEach(runs.indices, id: \.self) { index in
+                    if runs[index].first?.kind == .highlighter {
+                        annotationLayer(runs[index], seams: [], layout: layout)
+                            .blendMode(.multiply)
+                    } else {
+                        annotationLayer(runs[index], seams: [], layout: layout)
                     }
                 }
-                .allowsHitTesting(false)
+                if !controller.seams.isEmpty {
+                    annotationLayer([], seams: controller.seams, layout: layout)
+                }
 
                 if let selected = controller.selectedElement {
-                    selectionOverlay(for: selected, layout: layout)
+                    selectionOverlay(
+                        for: inProgress?.id == selected.id ? inProgress ?? selected : selected,
+                        layout: layout
+                    )
                 }
 
                 if isCropping, let cropDraft {
@@ -366,7 +363,14 @@ public struct AnnotationEditorView: View {
                 isCanvasFocused = true
                 guard !isCropping else { return }
                 guard let point = layout.sourcePoint(from: location) else { return }
-                controller.selectElement(at: point)
+                // A drag needs a point of movement, so a still click only
+                // arrives here.
+                if controller.selectedTool.isPointAnchored,
+                   controller.document.element(at: point) == nil {
+                    addPointAnchored(controller.makeElement(kind: controller.selectedTool, points: [point]))
+                } else {
+                    controller.selectElement(at: point)
+                }
             }
             .focusable()
             .focused($isCanvasFocused)
@@ -401,6 +405,71 @@ public struct AnnotationEditorView: View {
                 Button("Delete selected annotation") { controller.deleteSelection() }
             }
         }
+    }
+
+    /// Committed elements plus the one being drawn or moved. A moved element
+    /// stands in for its original, and a new one stays on top until committed.
+    private var canvasElements: [AnnotationElement] {
+        var elements = controller.document.sortedElements
+        guard var inProgress else { return elements }
+        if let index = elements.firstIndex(where: { $0.id == inProgress.id }) {
+            elements[index] = inProgress
+        } else {
+            inProgress.order = Int.max
+            elements.append(inProgress)
+        }
+        return elements
+    }
+
+    private func annotationLayer(
+        _ elements: [AnnotationElement],
+        seams: [StitchSeam],
+        layout: AnnotationEditorGeometry
+    ) -> some View {
+        let sourceSize = controller.document.sourcePixelSize
+        return Canvas { context, _ in
+            context.withCGContext { cgContext in
+                cgContext.saveGState()
+                defer { cgContext.restoreGState() }
+                // The rounded corners belong to the whole frame; under
+                // a title bar the screenshot's top corners are square.
+                cgContext.addPath(CGPath(
+                    roundedRect: layout.frameViewRect,
+                    cornerWidth: layout.contentCornerRadius,
+                    cornerHeight: layout.contentCornerRadius,
+                    transform: nil
+                ))
+                cgContext.clip()
+                cgContext.clip(to: layout.contentViewRect)
+                cgContext.concatenate(layout.sourceToViewTransform)
+                AnnotationRenderer.drawInteractive(
+                    elements: elements,
+                    in: cgContext,
+                    contentRect: layout.visibleSourceRect,
+                    visibleSourceRect: layout.visibleSourceRect,
+                    isPreview: true
+                )
+                AnnotationRenderer.drawSeamMarkers(
+                    seams,
+                    in: cgContext,
+                    sourceSize: sourceSize,
+                    viewScale: hypot(layout.sourceToViewTransform.a, layout.sourceToViewTransform.b)
+                )
+            }
+        }
+        .allowsHitTesting(false)
+    }
+
+    private func addPointAnchored(_ element: AnnotationElement) {
+        guard let point = element.points.first else { return }
+        if let last = lastPointAdd,
+           Date().timeIntervalSince(last.date) < 0.25,
+           hypot(point.x - last.point.x, point.y - last.point.y) < 8 {
+            return
+        }
+        lastPointAdd = (Date(), point)
+        if element.kind == .text { editingTextID = element.id }
+        controller.add(element)
     }
 
     private func selectionOverlay(
@@ -503,9 +572,10 @@ public struct AnnotationEditorView: View {
                 ) > 3
                 guard dragged || controller.selectedTool.isPointAnchored else { return }
 
-                controller.add(element)
-                if element.kind == .text {
-                    editingTextID = element.id
+                if element.kind.isPointAnchored {
+                    addPointAnchored(element)
+                } else {
+                    controller.add(element)
                 }
             }
     }
@@ -527,9 +597,6 @@ public struct AnnotationEditorView: View {
                 .frame(width: 240)
                 .accessibilityLabel("Annotation text")
                 .focused($isEditingSelectedText)
-                .onChange(of: isEditingSelectedText) { _, editing in
-                    updateContinuousEditing(editing)
-                }
             }
 
             if controller.document.hasRedactions {
@@ -547,12 +614,19 @@ public struct AnnotationEditorView: View {
                     .foregroundStyle(.orange)
             }
 
+            if let previewError = controller.basePreviewError {
+                Label(previewError, systemImage: "exclamationmark.triangle")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+            }
+
             Spacer()
 
             if imageActionTask != nil { ProgressView().controlSize(.small) }
             Group {
                 Button("Close") { onClose() }
                 Button("Save Project") { performSaveProject() }
+                    .disabled(imageActionTask != nil)
                 Button("Share…") { performShare() }
                     .disabled(imageActionTask != nil)
                 Button("Copy") { performCopy() }
@@ -570,6 +644,21 @@ public struct AnnotationEditorView: View {
         .controlSize(.large)
         .padding(.horizontal, 14)
         .padding(.vertical, 10)
+        // These live on the bar, not the text field: the field leaves the view
+        // when the selection clears, and its gesture has to end regardless.
+        .onChange(of: isEditingSelectedText) { _, editing in
+            updateContinuousEditing(editing)
+        }
+        .onChange(of: controller.selectedElementID) { previousID, selectedID in
+            finishColorEditing()
+            controller.endCoalescing()
+            if let previousID { controller.removeIfEmptyText(id: previousID) }
+            if selectedID != nil, selectedID == editingTextID {
+                editingTextID = nil
+                isEditingSelectedText = true
+            }
+            if isEditingSelectedText { controller.beginCoalescing() }
+        }
     }
 
     // MARK: Actions
@@ -618,12 +707,10 @@ public struct AnnotationEditorView: View {
     }
 
     private func performSaveProject() {
+        guard imageActionTask == nil else { return }
         guard controller.confirmProjectPrivacyBeforeSaving() else { return }
-        do {
-            let url = try controller.saveProject()
-            onProjectSaved(url)
-        } catch {
-            errorMessage = error.localizedDescription
+        beginImageAction {
+            onProjectSaved(try await controller.saveProjectOffMain())
         }
     }
 
@@ -962,6 +1049,7 @@ struct AnnotationEditorGeometry: Sendable {
 struct BackgroundPanel: View {
     @Bindable var controller: AnnotationDocumentController
     @State private var backgroundError: String?
+    @State private var thumbnails = BackdropThumbnails.cached
 
     private var background: BackgroundConfiguration { controller.document.background }
 
@@ -994,6 +1082,9 @@ struct BackgroundPanel: View {
             Button("OK") { backgroundError = nil }
         } message: {
             Text(backgroundError ?? "")
+        }
+        .task {
+            thumbnails = await BackdropThumbnails.load(BackgroundPreset.all)
         }
     }
 
@@ -1059,7 +1150,7 @@ struct BackgroundPanel: View {
                     BackdropTile(
                         title: preset.title,
                         isSelected: isSelected,
-                        thumbnail: BackdropThumbnails.image(for: preset)
+                        thumbnail: thumbnails[preset.id]
                     )
                 }
                 .buttonStyle(.plain)
@@ -1236,14 +1327,19 @@ struct BackgroundPanel: View {
         panel.allowedContentTypes = [.image]
         panel.allowsMultipleSelection = false
         guard panel.runModal() == .OK, let url = panel.url else { return }
-        guard SafeImageFile.cgImage(at: url, limits: .background) != nil else {
-            backgroundError = "Choose a regular, single-frame image no larger than 16,384 pixels per side or 50 megapixels."
-            return
+        Task {
+            let isReadable = await Task.detached(priority: .userInitiated) {
+                SafeImageFile.cgImage(at: url, limits: .background) != nil
+            }.value
+            guard isReadable else {
+                backgroundError = "Choose a regular, single-frame image no larger than 16,384 pixels per side or 50 megapixels."
+                return
+            }
+            var updated = controller.document.background
+            updated.fill = .image(path: url.path)
+            if updated.padding == 0 { updated.padding = 64 }
+            controller.applyBackground(updated)
         }
-        var updated = controller.document.background
-        updated.fill = .image(path: url.path)
-        if updated.padding == 0 { updated.padding = 64 }
-        controller.applyBackground(updated)
     }
 }
 
@@ -1296,20 +1392,26 @@ private struct BackdropTile: View {
 /// Small renders of each preset: the backdrop with a stand-in window on it.
 @MainActor
 enum BackdropThumbnails {
-    private static var cache: [String: NSImage] = [:]
-    static let pixelSize = CGSize(width: 168, height: 126)
+    private(set) static var cached: [String: NSImage] = [:]
+    nonisolated static let pixelSize = CGSize(width: 168, height: 126)
 
-    static func image(for preset: BackgroundPreset) -> NSImage {
-        if let cached = cache[preset.id] { return cached }
-        let image = render(preset.configuration)
-        cache[preset.id] = image
-        return image
+    /// Paints any tile not yet cached, off the main actor: the artwork presets
+    /// are per-pixel float loops, and all of them are visible at once.
+    static func load(_ presets: [BackgroundPreset]) async -> [String: NSImage] {
+        for preset in presets where cached[preset.id] == nil {
+            let configuration = preset.configuration
+            let rendered = await Task.detached(priority: .userInitiated) {
+                render(configuration).map { CapturedImage(cgImage: $0, scale: 2, sourceRect: .zero) }
+            }.value
+            if let rendered { cached[preset.id] = rendered.makeNSImage() }
+        }
+        return cached
     }
 
-    static func render(_ configuration: BackgroundConfiguration) -> NSImage {
+    nonisolated private static func render(_ configuration: BackgroundConfiguration) -> CGImage? {
         let size = pixelSize
         guard let context = AnnotationRenderer.makeContext(width: Int(size.width), height: Int(size.height)) else {
-            return NSImage(size: CGSize(width: size.width / 2, height: size.height / 2))
+            return nil
         }
         let canvas = CGRect(origin: .zero, size: size)
         if configuration.fill.isTransparent {
@@ -1347,7 +1449,6 @@ enum BackdropThumbnails {
         }
         context.restoreGState()
 
-        guard let image = context.makeImage() else { return NSImage(size: size) }
-        return NSImage(cgImage: image, size: CGSize(width: size.width / 2, height: size.height / 2))
+        return context.makeImage()
     }
 }

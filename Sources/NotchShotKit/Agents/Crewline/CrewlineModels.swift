@@ -105,13 +105,6 @@ public struct CrewlineWorkspace: Equatable, Sendable {
 
     public func run(_ id: String) -> CrewlineRun? { runs.first { $0.id == id } }
 
-    /// Top-level runs that are still going, newest first. Delegated helpers
-    /// are left out: their parent run already stands for the work.
-    public var activeRuns: [CrewlineRun] {
-        runs.filter { $0.status.isActive && $0.parentRunID == nil }
-            .sorted { ($0.startedAt ?? .distantPast) > ($1.startedAt ?? .distantPast) }
-    }
-
     /// The run a screenshot should go to: the most recent active top-level
     /// run, else the most recent finished one.
     public var followUpCandidates: [CrewlineRun] {
@@ -226,7 +219,10 @@ public enum CrewlineParser {
 
         var pending: (id: String, object: [String: Any], at: Date?)?
         for row in events {
-            guard let type = string(row["type"]) else { continue }
+            // Most rows are other events; only these two are worth decoding.
+            guard let type = string(row["type"]),
+                  type == "input.requested" || type == "input.resolved"
+            else { continue }
             let body: [String: Any]
             if let text = row["payload"] as? String,
                let data = text.data(using: .utf8),
@@ -453,7 +449,12 @@ public enum CrewlineActivityMapper {
         }
     }
 
-    public static func approvalInteractions(from workspace: CrewlineWorkspace) -> [AgentInteraction] {
+    /// `firstSeen` holds when each approval first appeared, so its place in the
+    /// oldest-first order survives every read.
+    public static func approvalInteractions(
+        from workspace: CrewlineWorkspace,
+        firstSeen: [String: Date] = [:]
+    ) -> [AgentInteraction] {
         workspace.approvals.map { approval in
             AgentInteraction(
                 id: approval.id,
@@ -463,7 +464,8 @@ public enum CrewlineActivityMapper {
                     tool: approval.tool,
                     summary: approval.summary,
                     offersSessionApproval: true
-                ))
+                )),
+                receivedAt: firstSeen[approval.id] ?? Date()
             )
         }
     }

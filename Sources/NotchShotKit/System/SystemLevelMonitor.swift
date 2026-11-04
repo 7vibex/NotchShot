@@ -4,17 +4,16 @@ import CoreAudio
 import Foundation
 import IOKit
 import Observation
+import Synchronization
 
 public enum SystemLevelKind: String, Sendable, Equatable {
     case volume
     case brightness
-    case keyboardBrightness
 
     public var title: String {
         switch self {
         case .volume: "Volume"
         case .brightness: "Brightness"
-        case .keyboardBrightness: "Keyboard Brightness"
         }
     }
 
@@ -29,8 +28,6 @@ public enum SystemLevelKind: String, Sendable, Equatable {
             return "speaker.wave.3.fill"
         case .brightness:
             return value < 0.5 ? "sun.min.fill" : "sun.max.fill"
-        case .keyboardBrightness:
-            return "light.max"
         }
     }
 }
@@ -69,6 +66,16 @@ public struct SystemLevelBump: Sendable, Equatable {
         if !increasing, current <= 0.001 { return SystemLevelBump(edge: .bottom, sequence: sequence) }
         return nil
     }
+
+    /// The next press's bump. Volume keys count on the audio queue and
+    /// brightness keys on main, and one bar shows both, so they share a counter.
+    static func next(current: Double, increasing: Bool) -> SystemLevelBump? {
+        guard at(current: current, increasing: increasing, sequence: 0) != nil else { return nil }
+        let sequence = nextSequence.add(1, ordering: .relaxed).newValue
+        return at(current: current, increasing: increasing, sequence: sequence)
+    }
+
+    private static let nextSequence = Atomic<Int>(0)
 }
 
 /// Watches system volume and display brightness so the notch can mirror them.
@@ -76,35 +83,22 @@ public struct SystemLevelBump: Sendable, Equatable {
 /// Volume uses CoreAudio property listeners — event-driven, no polling, no
 /// permissions. Brightness has no public change notification, so it is sampled
 /// at a low rate; the sample is a single IOKit read, and it pauses entirely
-/// while the display is asleep.
+/// while the display is asleep. Both talk to a daemon that can take half a
+/// second to answer on a loaded Mac, so both run on queues of their own and
+/// this class only sees what has to reach the screen.
 @MainActor
 @Observable
 public final class SystemLevelMonitor {
     public static let shared = SystemLevelMonitor()
 
-    /// Most recent change, cleared by the coordinator once shown.
-    public private(set) var latest: SystemLevel?
-
     /// Fires on each *change*, not on each sample.
     public var onChange: ((SystemLevel) -> Void)?
 
-    private struct AudioListenerRegistration {
-        var objectID: AudioObjectID
-        var address: AudioObjectPropertyAddress
-        var block: AudioObjectPropertyListenerBlock
-    }
-
-    private var audioDeviceID = AudioObjectID(kAudioObjectUnknown)
-    private var deviceListeners: [AudioListenerRegistration] = []
-    private var defaultDeviceListener: AudioListenerRegistration?
-    private var serviceRestartListener: AudioListenerRegistration?
-    private let listenerQueue = DispatchQueue.main
-    private var brightnessTimer: Timer?
-    private var lastVolume: Double?
-    private var lastMuted: Bool?
-    private var bumpSequence = 0
-    private var brightness = BrightnessChangeClassifier()
-    private var brightnessDisplayID: CGDirectDisplayID?
+    private let volume = SystemVolumeEngine.shared
+    private let sampler = BrightnessSampler()
+    /// Moves whenever the main actor changes the brightness baseline or pauses
+    /// the samples, so a report already on its way here can't override it.
+    private var brightnessGeneration = 0
     private var brightnessIntent = BrightnessKeyIntentGate()
     private var globalBrightnessKeyMonitor: Any?
     private var localBrightnessKeyMonitor: Any?
@@ -125,25 +119,22 @@ public final class SystemLevelMonitor {
     public func start() {
         guard !isRunning else { return }
         isRunning = true
+        NightShiftController.preload()
 
-        // Resolve the device before seeding. Reading first would always return
-        // nil because `audioDeviceID` still held kAudioObjectUnknown, making the
-        // first CoreAudio callback look like a user change.
-        installDefaultDeviceListenerIfNeeded()
-        installServiceRestartListenerIfNeeded()
-        audioDeviceID = defaultOutputDevice()
-
-        // Seed the baselines so the first real event doesn't fire a phantom HUD.
-        lastVolume = readVolume()
-        lastMuted = readMuted()
+        volume.start { [weak self] level in
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    guard let self, self.isRunning else { return }
+                    self.publish(level)
+                }
+            }
+        }
         if Preferences.shared.mirrorsBrightnessChanges {
             rebaselineBrightness()
         } else {
-            brightnessDisplayID = nil
-            brightness.reset(to: nil)
+            clearBrightnessBaseline()
         }
 
-        installDeviceVolumeListeners()
         sessionIsActive = ScreenLockSignal.current().sessionIsActive
         startBrightnessSampling()
         installSleepObservers()
@@ -153,9 +144,8 @@ public final class SystemLevelMonitor {
 
     public func stop() {
         isRunning = false
-        removeVolumeListeners()
-        brightnessTimer?.invalidate()
-        brightnessTimer = nil
+        volume.stop()
+        pauseBrightnessSampling()
         removeBrightnessKeyMonitors()
         for observer in observers {
             NSWorkspace.shared.notificationCenter.removeObserver(observer)
@@ -173,11 +163,419 @@ public final class SystemLevelMonitor {
         }
     }
 
-    public func clearLatest() {
-        latest = nil
+    /// Applies a hardware-key action after the event tap has claimed it. A
+    /// false result tells the tap to pass the original event through so the key
+    /// never becomes inert on an unsupported output device or display.
+    ///
+    /// Volume keys don't come here: the tap sends them straight to
+    /// `SystemVolumeEngine`, so they never wait on the main thread.
+    func applyInterceptedKey(_ action: SystemMediaKeyAction) -> Bool {
+        guard isRunning else { return false }
+        switch action {
+        case .volumeUp, .volumeDown, .mute:
+            return false
+        case .brightnessUp(let fine):
+            return adjustBrightness(increasing: true, fine: fine)
+        case .brightnessDown(let fine):
+            return adjustBrightness(increasing: false, fine: fine)
+        }
     }
 
-    // MARK: Volume
+    // MARK: Brightness
+
+    private func startBrightnessSampling() {
+        guard Preferences.shared.mirrorsBrightnessChanges else { return }
+        guard BrightnessReader.shared.isAvailable else {
+            Log.app.notice("Brightness monitoring unavailable on this system")
+            return
+        }
+        installBrightnessKeyMonitorsIfNeeded()
+        sampler.stop()
+        guard !screensAsleep, sessionIsActive else { return }
+        sampler.start(generation: brightnessGeneration) { [weak self] report in
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated { self?.deliverBrightness(report) }
+            }
+        }
+    }
+
+    private func pauseBrightnessSampling() {
+        brightnessGeneration += 1
+        sampler.stop()
+    }
+
+    /// The key gate is asked here, as the report lands: key events are noted on
+    /// the main actor, so one that arrived just before this block has been
+    /// counted, whichever side of the reading it fell on.
+    private func deliverBrightness(_ report: BrightnessSampler.Report) {
+        guard isRunning,
+              report.generation == brightnessGeneration,
+              brightnessIntent.allowsPublication(at: ProcessInfo.processInfo.systemUptime) else { return }
+        publish(SystemLevel(
+            kind: .brightness,
+            value: report.value,
+            isMuted: false,
+            displayID: report.displayID
+        ))
+    }
+
+    private func adjustBrightness(increasing: Bool, fine: Bool) -> Bool {
+        // A key pressed with the pointer on an external monitor is meant for
+        // that monitor, as on a Mac with an Apple display.
+        if ExtrasPreferences.shared.controlsExternalDisplays,
+           let target = DisplayBrightnessController.displayUnderPointer(),
+           CGDisplayIsBuiltin(target) == 0,
+           let level = DisplayBrightnessController.shared.step(target, increasing: increasing, fine: fine) {
+            brightnessIntent.noteKeyEvent(at: ProcessInfo.processInfo.systemUptime)
+            publish(SystemLevel(kind: .brightness, value: level, isMuted: false, displayID: target, isKeyStep: true))
+            return true
+        }
+        guard Preferences.shared.mirrorsBrightnessChanges,
+              let reading = BrightnessReader.shared.reading() else { return false }
+        let target = SystemMediaKeyAction.adjustedLevel(
+            current: reading.value,
+            increasing: increasing,
+            fine: fine
+        )
+        let bump = SystemLevelBump.next(current: reading.value, increasing: increasing)
+        guard BrightnessReader.shared.setBrightness(target, displayID: reading.displayID) else {
+            return false
+        }
+        brightnessGeneration += 1
+        sampler.adopt(displayID: reading.displayID, value: target, generation: brightnessGeneration)
+        brightnessIntent.noteKeyEvent(at: ProcessInfo.processInfo.systemUptime)
+        publish(SystemLevel(
+            kind: .brightness,
+            value: target,
+            isMuted: false,
+            displayID: reading.displayID,
+            bump: bump,
+            isKeyStep: true
+        ))
+        return true
+    }
+
+    private func rebaselineBrightness() {
+        brightnessGeneration += 1
+        sampler.rebaseline(generation: brightnessGeneration)
+    }
+
+    private func clearBrightnessBaseline() {
+        brightnessGeneration += 1
+        sampler.clear(generation: brightnessGeneration)
+    }
+
+    /// Turns brightness mirroring on or off without disturbing volume.
+    public func setBrightnessMirroringEnabled(_ enabled: Bool) {
+        guard isRunning else { return }
+        if enabled {
+            rebaselineBrightness()
+            startBrightnessSampling()
+        } else {
+            pauseBrightnessSampling()
+            removeBrightnessKeyMonitors()
+            clearBrightnessBaseline()
+            brightnessIntent.reset()
+        }
+    }
+
+    private func installSleepObservers() {
+        let center = NSWorkspace.shared.notificationCenter
+        observers.append(center.addObserver(
+            forName: NSWorkspace.screensDidSleepNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.screensAsleep = true
+                self?.pauseBrightnessSampling()
+                self?.brightnessIntent.reset()
+            }
+        })
+        observers.append(center.addObserver(
+            forName: NSWorkspace.screensDidWakeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.screensAsleep = false
+                guard self.isRunning else { return }
+                guard Preferences.shared.mirrorsBrightnessChanges else { return }
+                // Brightness usually differs after a wake; re-baseline instead
+                // of firing a HUD nobody asked for.
+                self.rebaselineBrightness()
+                self.startBrightnessSampling()
+            }
+        })
+    }
+
+    /// Ctrl-Cmd-Q posts only the loginwindow signal; Fast User Switching
+    /// posts only the workspace one. Either pauses brightness sampling.
+    private func installSessionObservers() {
+        let center = NSWorkspace.shared.notificationCenter
+        for name in [NSWorkspace.sessionDidResignActiveNotification, NSWorkspace.sessionDidBecomeActiveNotification] {
+            observers.append(center.addObserver(forName: name, object: nil, queue: .main) { [weak self] note in
+                let active = note.name == NSWorkspace.sessionDidBecomeActiveNotification
+                MainActor.assumeIsolated { self?.setSessionActive(active) }
+            })
+        }
+        let distributed = DistributedNotificationCenter.default()
+        for name in [ScreenLockSignal.lockedNotification, ScreenLockSignal.unlockedNotification] {
+            distributedObservers.append(distributed.addObserver(forName: name, object: nil, queue: .main) { [weak self] note in
+                let name = note.name
+                MainActor.assumeIsolated {
+                    guard let active = ScreenLockSignal.sessionIsActive(for: name) else { return }
+                    self?.setSessionActive(active)
+                }
+            })
+        }
+    }
+
+    private func setSessionActive(_ active: Bool) {
+        guard active != sessionIsActive else { return }
+        sessionIsActive = active
+        guard isRunning else { return }
+        guard active else {
+            pauseBrightnessSampling()
+            brightnessIntent.reset()
+            return
+        }
+        guard Preferences.shared.mirrorsBrightnessChanges else { return }
+        // As after a wake: the value may have moved while locked.
+        rebaselineBrightness()
+        startBrightnessSampling()
+    }
+
+    private func installDisplayObserver() {
+        guard displayObserver == nil else { return }
+        displayObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.didChangeScreenParametersNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                // Unconditional: the resolved display must not survive a layout
+                // change even while mirroring is off, or turning it back on
+                // would keep reading a display that is no longer the best one.
+                BrightnessReader.shared.invalidateDisplayCache()
+                guard let self,
+                      self.isRunning,
+                      Preferences.shared.mirrorsBrightnessChanges else { return }
+                // The main display may have changed. Never compare a sample
+                // from one panel against another display's previous value.
+                self.rebaselineBrightness()
+            }
+        }
+    }
+
+    private func publish(_ level: SystemLevel) {
+        onChange?(level)
+    }
+
+    private func installBrightnessKeyMonitorsIfNeeded() {
+        if globalBrightnessKeyMonitor == nil {
+            globalBrightnessKeyMonitor = NSEvent.addGlobalMonitorForEvents(
+                matching: .systemDefined
+            ) { [weak self] event in
+                Task { @MainActor in self?.recordBrightnessKeyEvent(event) }
+            }
+        }
+        if localBrightnessKeyMonitor == nil {
+            localBrightnessKeyMonitor = NSEvent.addLocalMonitorForEvents(
+                matching: .systemDefined
+            ) { [weak self] event in
+                MainActor.assumeIsolated { self?.recordBrightnessKeyEvent(event) }
+                return event
+            }
+        }
+    }
+
+    private func removeBrightnessKeyMonitors() {
+        if let globalBrightnessKeyMonitor {
+            NSEvent.removeMonitor(globalBrightnessKeyMonitor)
+            self.globalBrightnessKeyMonitor = nil
+        }
+        if let localBrightnessKeyMonitor {
+            NSEvent.removeMonitor(localBrightnessKeyMonitor)
+            self.localBrightnessKeyMonitor = nil
+        }
+        brightnessIntent.reset()
+    }
+
+    private func recordBrightnessKeyEvent(_ event: NSEvent) {
+        guard event.subtype.rawValue == NX_SUBTYPE_AUX_CONTROL_BUTTONS else { return }
+        let keyType = (event.data1 & 0xFFFF_0000) >> 16
+        guard keyType == NX_KEYTYPE_BRIGHTNESS_UP
+                || keyType == NX_KEYTYPE_BRIGHTNESS_DOWN else { return }
+        brightnessIntent.noteKeyEvent(at: ProcessInfo.processInfo.systemUptime)
+    }
+}
+
+/// The Core Audio half of `SystemLevelMonitor`.
+///
+/// Every volume and mute read is a round trip to coreaudiod, and at load 280 a
+/// press cost 53 ms typically and 551 ms at worst when these ran on main (Nov
+/// 2026). So the listeners, the key actions and all the state they share live
+/// on one serial queue, and only the finished `SystemLevel` crosses to main.
+///
+/// `@unchecked Sendable`: everything mutable is touched only on `queue`.
+final class SystemVolumeEngine: @unchecked Sendable {
+    static let shared = SystemVolumeEngine()
+
+    private struct AudioListenerRegistration {
+        var objectID: AudioObjectID
+        var address: AudioObjectPropertyAddress
+        var block: AudioObjectPropertyListenerBlock
+    }
+
+    private struct PendingKey {
+        var action: SystemMediaKeyAction
+        var claim: (@Sendable () -> Bool)?
+        var completion: @Sendable (Bool) -> Void
+    }
+
+    /// One volume change fires a listener per address, three or four on a
+    /// stereo device. They share one read.
+    private static let listenerBurst: DispatchTimeInterval = .milliseconds(25)
+
+    private let listenerQueue = DispatchQueue(label: "com.notchshot.system-audio", qos: .userInteractive)
+    private var audioDeviceID = AudioObjectID(kAudioObjectUnknown)
+    private var deviceListeners: [AudioListenerRegistration] = []
+    private var defaultDeviceListener: AudioListenerRegistration?
+    private var serviceRestartListener: AudioListenerRegistration?
+    private var lastVolume: Double?
+    private var lastMuted: Bool?
+    private var isRunning = false
+    private var publish: (@Sendable (SystemLevel) -> Void)?
+    private var pendingKeys: [PendingKey] = []
+    private var isDrainingKeys = false
+    private var isVolumeReadScheduled = false
+
+    private init() {}
+
+    /// Delivered on the audio queue; `publish` hops to main itself.
+    func start(publish: @escaping @Sendable (SystemLevel) -> Void) {
+        listenerQueue.async { [self] in
+            guard !isRunning else { return }
+            isRunning = true
+            self.publish = publish
+
+            // Resolve the device before seeding. Reading first would always return
+            // nil because `audioDeviceID` still held kAudioObjectUnknown, making the
+            // first CoreAudio callback look like a user change.
+            installDefaultDeviceListenerIfNeeded()
+            installServiceRestartListenerIfNeeded()
+            audioDeviceID = defaultOutputDevice()
+
+            // Seed the baselines so the first real event doesn't fire a phantom HUD.
+            lastVolume = readVolume()
+            lastMuted = readMuted()
+            installDeviceVolumeListeners()
+        }
+    }
+
+    func stop() {
+        listenerQueue.async { [self] in
+            isRunning = false
+            publish = nil
+            removeVolumeListeners()
+        }
+    }
+
+    /// Applies a volume or mute key off the main thread. `completion` runs on
+    /// the audio queue; false means the key did nothing and macOS should have
+    /// it. `claim`, when given, is asked first: the caller may have stopped
+    /// waiting and handed the key to macOS already.
+    ///
+    /// Each key arrives by its own `async`, and the drain goes behind them, so
+    /// every key that came in while Core Audio was slow lands in one drain.
+    func apply(
+        _ action: SystemMediaKeyAction,
+        claim: (@Sendable () -> Bool)? = nil,
+        completion: @escaping @Sendable (Bool) -> Void
+    ) {
+        listenerQueue.async { [self] in
+            pendingKeys.append(PendingKey(action: action, claim: claim, completion: completion))
+            guard !isDrainingKeys else { return }
+            isDrainingKeys = true
+            listenerQueue.async { [self] in drainKeys() }
+        }
+    }
+
+    private func drainKeys() {
+        isDrainingKeys = false
+        let keys = pendingKeys
+        pendingKeys = []
+        var steps: [PendingKey] = []
+        for key in keys where key.claim?() ?? true {
+            guard key.action == .mute else {
+                steps.append(key)
+                continue
+            }
+            applySteps(steps)
+            steps = []
+            key.completion(isRunning && toggleMute())
+        }
+        applySteps(steps)
+    }
+
+    private func applySteps(_ steps: [PendingKey]) {
+        guard !steps.isEmpty else { return }
+        let applied = isRunning && adjustVolume(through: steps.map(\.action))
+        for step in steps { step.completion(applied) }
+    }
+
+    /// Where a run of volume keys ends up, and the last one's bump if it was
+    /// pressed against the end of the scale. Keys queued behind a slow read
+    /// become one write, so nothing keeps stepping after the key is let go and
+    /// no press is lost.
+    static func stepped(
+        from current: Double,
+        through actions: [SystemMediaKeyAction]
+    ) -> (level: Double, bump: SystemLevelBump?) {
+        var level = current
+        var bump: SystemLevelBump?
+        for action in actions {
+            let step: (increasing: Bool, fine: Bool)
+            switch action {
+            case .volumeUp(let fine): step = (true, fine)
+            case .volumeDown(let fine): step = (false, fine)
+            default: continue
+            }
+            bump = SystemLevelBump.next(current: level, increasing: step.increasing)
+            level = SystemMediaKeyAction.adjustedLevel(current: level, increasing: step.increasing, fine: step.fine)
+        }
+        return (level, bump)
+    }
+
+    private func adjustVolume(through actions: [SystemMediaKeyAction]) -> Bool {
+        guard let current = readVolume() else { return false }
+        let (target, bump) = Self.stepped(from: current, through: actions)
+        guard writeVolume(Float32(target)) else { return false }
+        var actualMuted = false
+        if readMuted() == true {
+            _ = writeMuted(false)
+            actualMuted = readMuted() ?? false
+        }
+        let actualVolume = readVolume() ?? target
+        lastVolume = actualVolume
+        lastMuted = actualMuted
+        publish?(SystemLevel(kind: .volume, value: actualVolume, isMuted: actualMuted, bump: bump, isKeyStep: true))
+        return true
+    }
+
+    private func toggleMute() -> Bool {
+        guard let muted = readMuted(), writeMuted(!muted) else { return false }
+        let actualVolume = readVolume() ?? 0
+        let actualMuted = readMuted() ?? !muted
+        lastVolume = actualVolume
+        lastMuted = actualMuted
+        publish?(SystemLevel(kind: .volume, value: actualVolume, isMuted: actualMuted))
+        return true
+    }
+
+    // MARK: Listeners
 
     private func installDefaultDeviceListenerIfNeeded() {
         guard defaultDeviceListener == nil else { return }
@@ -190,17 +588,15 @@ public final class SystemLevelMonitor {
         )
         let systemObject = AudioObjectID(kAudioObjectSystemObject)
         let block: AudioObjectPropertyListenerBlock = { [weak self] _, _ in
-            MainActor.assumeIsolated {
-                guard let self, self.isRunning else { return }
-                self.removeDeviceVolumeListeners()
-                self.audioDeviceID = self.defaultOutputDevice()
-                // Headphones sit at their own volume. Re-baseline against the
-                // new device, or the next change would be measured against the
-                // old one and show a HUD for a switch nobody asked for.
-                self.lastVolume = self.readVolume()
-                self.lastMuted = self.readMuted()
-                self.installDeviceVolumeListeners()
-            }
+            guard let self, self.isRunning else { return }
+            self.removeDeviceVolumeListeners()
+            self.audioDeviceID = self.defaultOutputDevice()
+            // Headphones sit at their own volume. Re-baseline against the
+            // new device, or the next change would be measured against the
+            // old one and show a HUD for a switch nobody asked for.
+            self.lastVolume = self.readVolume()
+            self.lastMuted = self.readMuted()
+            self.installDeviceVolumeListeners()
         }
         let status = AudioObjectAddPropertyListenerBlock(
             systemObject,
@@ -226,7 +622,8 @@ public final class SystemLevelMonitor {
         )
         let systemObject = AudioObjectID(kAudioObjectSystemObject)
         let block: AudioObjectPropertyListenerBlock = { [weak self] _, _ in
-            Task { @MainActor in
+            // After the callback returns: the rebuild removes this very listener.
+            self?.listenerQueue.async { [weak self] in
                 self?.rebuildAudioAfterServiceRestart()
             }
         }
@@ -291,7 +688,7 @@ public final class SystemLevelMonitor {
         for candidate in addresses {
             var address = candidate
             let block: AudioObjectPropertyListenerBlock = { [weak self] _, _ in
-                MainActor.assumeIsolated { self?.volumeDidChange() }
+                self?.volumeDidChange()
             }
             let status = AudioObjectAddPropertyListenerBlock(
                 audioDeviceID,
@@ -322,13 +719,18 @@ public final class SystemLevelMonitor {
     }
 
     private func volumeDidChange() {
-        guard isRunning else { return }
-        let volume = readVolume()
-        let muted = readMuted()
-        guard volume != lastVolume || muted != lastMuted else { return }
-        lastVolume = volume
-        lastMuted = muted
-        publish(SystemLevel(kind: .volume, value: volume ?? 0, isMuted: muted ?? false))
+        guard isRunning, !isVolumeReadScheduled else { return }
+        isVolumeReadScheduled = true
+        listenerQueue.asyncAfter(deadline: .now() + Self.listenerBurst) { [self] in
+            isVolumeReadScheduled = false
+            guard isRunning else { return }
+            let volume = readVolume()
+            let muted = readMuted()
+            guard volume != lastVolume || muted != lastMuted else { return }
+            lastVolume = volume
+            lastMuted = muted
+            publish?(SystemLevel(kind: .volume, value: volume ?? 0, isMuted: muted ?? false))
+        }
     }
 
     private func defaultOutputDevice() -> AudioObjectID {
@@ -429,61 +831,6 @@ public final class SystemLevelMonitor {
         return status == noErr ? value : nil
     }
 
-    /// Applies a hardware-key action after the event tap has claimed it. A
-    /// false result tells the tap to pass the original event through so the key
-    /// never becomes inert on an unsupported output device or display.
-    func applyInterceptedKey(_ action: SystemMediaKeyAction) -> Bool {
-        guard isRunning else { return false }
-        switch action {
-        case .volumeUp(let fine):
-            return adjustVolume(increasing: true, fine: fine)
-        case .volumeDown(let fine):
-            return adjustVolume(increasing: false, fine: fine)
-        case .mute:
-            return toggleMute()
-        case .brightnessUp(let fine):
-            return adjustBrightness(increasing: true, fine: fine)
-        case .brightnessDown(let fine):
-            return adjustBrightness(increasing: false, fine: fine)
-        }
-    }
-
-    private func adjustVolume(increasing: Bool, fine: Bool) -> Bool {
-        guard let current = readVolume() else { return false }
-        let bump = nextBump(current: current, increasing: increasing)
-        let target = SystemMediaKeyAction.adjustedLevel(
-            current: current,
-            increasing: increasing,
-            fine: fine
-        )
-        guard writeVolume(Float32(target)) else { return false }
-        if readMuted() == true { _ = writeMuted(false) }
-        let actualVolume = readVolume() ?? target
-        let actualMuted = readMuted() ?? false
-        lastVolume = actualVolume
-        lastMuted = actualMuted
-        publish(SystemLevel(kind: .volume, value: actualVolume, isMuted: actualMuted, bump: bump, isKeyStep: true))
-        return true
-    }
-
-    private func nextBump(current: Double, increasing: Bool) -> SystemLevelBump? {
-        guard let bump = SystemLevelBump.at(current: current, increasing: increasing, sequence: bumpSequence + 1) else {
-            return nil
-        }
-        bumpSequence = bump.sequence
-        return bump
-    }
-
-    private func toggleMute() -> Bool {
-        guard let muted = readMuted(), writeMuted(!muted) else { return false }
-        let actualVolume = readVolume() ?? 0
-        let actualMuted = readMuted() ?? !muted
-        lastVolume = actualVolume
-        lastMuted = actualMuted
-        publish(SystemLevel(kind: .volume, value: actualVolume, isMuted: actualMuted))
-        return true
-    }
-
     private func writeVolume(_ value: Float32) -> Bool {
         if writeFloat32(
             value,
@@ -570,241 +917,91 @@ public final class SystemLevelMonitor {
         )
         return status == noErr
     }
+}
 
-    // MARK: Brightness
-
-    private func startBrightnessSampling() {
-        guard Preferences.shared.mirrorsBrightnessChanges else { return }
-        guard BrightnessReader.shared.isAvailable else {
-            Log.app.notice("Brightness monitoring unavailable on this system")
-            return
-        }
-        installBrightnessKeyMonitorsIfNeeded()
-        brightnessTimer?.invalidate()
-        brightnessTimer = nil
-        guard !screensAsleep, sessionIsActive else { return }
-        // 5 Hz: fast enough that a key-repeat ramp looks continuous, while each
-        // tick remains one bounded compatibility-shim read.
-        let timer = Timer(timeInterval: 0.2, repeats: true) { [weak self] _ in
-            MainActor.assumeIsolated { self?.sampleBrightness() }
-        }
-        RunLoop.main.add(timer, forMode: .common)
-        brightnessTimer = timer
+/// Reads brightness off the main thread, five times a second.
+///
+/// `DisplayServicesGetBrightness` is a synchronous XPC with no timeout: about
+/// 3.75 ms a read from a live sample, and as long as the daemon likes under
+/// heavy swap (Nov 2026). The classifier lives here too, because most ticks
+/// end in it and nothing needs main until a change is worth showing.
+///
+/// `@unchecked Sendable`: everything mutable is touched only on `queue`.
+private final class BrightnessSampler: @unchecked Sendable {
+    struct Report: Sendable {
+        var value: Double
+        var displayID: CGDirectDisplayID
+        var generation: Int
     }
 
-    private func sampleBrightness() {
-        guard isRunning, let reading = BrightnessReader.shared.reading() else { return }
-        guard brightnessDisplayID == reading.displayID else {
-            brightnessDisplayID = reading.displayID
-            brightness.reset(to: reading.value)
+    private let queue = DispatchQueue(label: "com.notchshot.brightness-sampler", qos: .userInitiated)
+    private var timer: DispatchSourceTimer?
+    private var deliver: (@Sendable (Report) -> Void)?
+    private var classifier = BrightnessChangeClassifier()
+    private var displayID: CGDirectDisplayID?
+    private var generation = 0
+
+    func start(generation: Int, deliver: @escaping @Sendable (Report) -> Void) {
+        queue.async { [self] in
+            self.generation = generation
+            self.deliver = deliver
+            timer?.cancel()
+            // 5 Hz: fast enough that a key-repeat ramp looks continuous, while each
+            // tick remains one bounded compatibility-shim read. A read that runs
+            // long costs ticks, not a backlog: a timer source merges missed fires.
+            let source = DispatchSource.makeTimerSource(queue: queue)
+            source.schedule(deadline: .now() + 0.2, repeating: 0.2, leeway: .milliseconds(10))
+            source.setEventHandler { [weak self] in self?.sample() }
+            source.activate()
+            timer = source
+        }
+    }
+
+    func stop() {
+        queue.async { [self] in
+            timer?.cancel()
+            timer = nil
+        }
+    }
+
+    func rebaseline(generation: Int) {
+        queue.async { [self] in
+            self.generation = generation
+            let reading = BrightnessReader.shared.reading()
+            displayID = reading?.displayID
+            classifier.reset(to: reading?.value)
+        }
+    }
+
+    func clear(generation: Int) {
+        queue.async { [self] in
+            self.generation = generation
+            displayID = nil
+            classifier.reset(to: nil)
+        }
+    }
+
+    /// A value NotchShot just set itself, so it isn't reported as a change.
+    func adopt(displayID: CGDirectDisplayID, value: Double, generation: Int) {
+        queue.async { [self] in
+            self.generation = generation
+            self.displayID = displayID
+            classifier.reset(to: value)
+        }
+    }
+
+    private func sample() {
+        guard let reading = BrightnessReader.shared.reading() else { return }
+        guard displayID == reading.displayID else {
+            displayID = reading.displayID
+            classifier.reset(to: reading.value)
             return
         }
         // Shape classification plus the recent key-event gate prevents a
         // sensor-driven value from opening the notch.
         let now = ProcessInfo.processInfo.systemUptime
-        guard case .report(let reported) = brightness.classify(
-            reading.value,
-            at: now
-        ), brightnessIntent.allowsPublication(at: now) else { return }
-        publish(SystemLevel(
-            kind: .brightness,
-            value: reported,
-            isMuted: false,
-            displayID: reading.displayID
-        ))
-    }
-
-    private func adjustBrightness(increasing: Bool, fine: Bool) -> Bool {
-        // A key pressed with the pointer on an external monitor is meant for
-        // that monitor, as on a Mac with an Apple display.
-        if ExtrasPreferences.shared.controlsExternalDisplays,
-           let target = DisplayBrightnessController.displayUnderPointer(),
-           CGDisplayIsBuiltin(target) == 0,
-           let level = DisplayBrightnessController.shared.step(target, increasing: increasing, fine: fine) {
-            brightnessIntent.noteKeyEvent(at: ProcessInfo.processInfo.systemUptime)
-            publish(SystemLevel(kind: .brightness, value: level, isMuted: false, displayID: target, isKeyStep: true))
-            return true
-        }
-        guard Preferences.shared.mirrorsBrightnessChanges,
-              let reading = BrightnessReader.shared.reading() else { return false }
-        let target = SystemMediaKeyAction.adjustedLevel(
-            current: reading.value,
-            increasing: increasing,
-            fine: fine
-        )
-        let bump = nextBump(current: reading.value, increasing: increasing)
-        guard BrightnessReader.shared.setBrightness(target, displayID: reading.displayID) else {
-            return false
-        }
-        brightnessDisplayID = reading.displayID
-        brightness.reset(to: target)
-        brightnessIntent.noteKeyEvent(at: ProcessInfo.processInfo.systemUptime)
-        publish(SystemLevel(
-            kind: .brightness,
-            value: target,
-            isMuted: false,
-            displayID: reading.displayID,
-            bump: bump,
-            isKeyStep: true
-        ))
-        return true
-    }
-
-    private func rebaselineBrightness() {
-        let reading = BrightnessReader.shared.reading()
-        brightnessDisplayID = reading?.displayID
-        brightness.reset(to: reading?.value)
-    }
-
-    /// Turns brightness mirroring on or off without disturbing volume.
-    public func setBrightnessMirroringEnabled(_ enabled: Bool) {
-        guard isRunning else { return }
-        if enabled {
-            rebaselineBrightness()
-            startBrightnessSampling()
-        } else {
-            brightnessTimer?.invalidate()
-            brightnessTimer = nil
-            removeBrightnessKeyMonitors()
-            brightnessDisplayID = nil
-            brightness.reset(to: nil)
-            brightnessIntent.reset()
-        }
-    }
-
-    private func installSleepObservers() {
-        let center = NSWorkspace.shared.notificationCenter
-        observers.append(center.addObserver(
-            forName: NSWorkspace.screensDidSleepNotification,
-            object: nil,
-            queue: .main
-        ) { [weak self] _ in
-            MainActor.assumeIsolated {
-                self?.screensAsleep = true
-                self?.brightnessTimer?.invalidate()
-                self?.brightnessTimer = nil
-                self?.brightnessIntent.reset()
-            }
-        })
-        observers.append(center.addObserver(
-            forName: NSWorkspace.screensDidWakeNotification,
-            object: nil,
-            queue: .main
-        ) { [weak self] _ in
-            MainActor.assumeIsolated {
-                guard let self else { return }
-                self.screensAsleep = false
-                guard self.isRunning else { return }
-                guard Preferences.shared.mirrorsBrightnessChanges else { return }
-                // Brightness usually differs after a wake; re-baseline instead
-                // of firing a HUD nobody asked for.
-                self.rebaselineBrightness()
-                self.startBrightnessSampling()
-            }
-        })
-    }
-
-    /// Ctrl-Cmd-Q posts only the loginwindow signal; Fast User Switching
-    /// posts only the workspace one. Either pauses brightness sampling.
-    private func installSessionObservers() {
-        let center = NSWorkspace.shared.notificationCenter
-        for name in [NSWorkspace.sessionDidResignActiveNotification, NSWorkspace.sessionDidBecomeActiveNotification] {
-            observers.append(center.addObserver(forName: name, object: nil, queue: .main) { [weak self] note in
-                let active = note.name == NSWorkspace.sessionDidBecomeActiveNotification
-                MainActor.assumeIsolated { self?.setSessionActive(active) }
-            })
-        }
-        let distributed = DistributedNotificationCenter.default()
-        for name in [ScreenLockSignal.lockedNotification, ScreenLockSignal.unlockedNotification] {
-            distributedObservers.append(distributed.addObserver(forName: name, object: nil, queue: .main) { [weak self] note in
-                let name = note.name
-                MainActor.assumeIsolated {
-                    guard let active = ScreenLockSignal.sessionIsActive(for: name) else { return }
-                    self?.setSessionActive(active)
-                }
-            })
-        }
-    }
-
-    private func setSessionActive(_ active: Bool) {
-        guard active != sessionIsActive else { return }
-        sessionIsActive = active
-        guard isRunning else { return }
-        guard active else {
-            brightnessTimer?.invalidate()
-            brightnessTimer = nil
-            brightnessIntent.reset()
-            return
-        }
-        guard Preferences.shared.mirrorsBrightnessChanges else { return }
-        // As after a wake: the value may have moved while locked.
-        rebaselineBrightness()
-        startBrightnessSampling()
-    }
-
-    private func installDisplayObserver() {
-        guard displayObserver == nil else { return }
-        displayObserver = NotificationCenter.default.addObserver(
-            forName: NSApplication.didChangeScreenParametersNotification,
-            object: nil,
-            queue: .main
-        ) { [weak self] _ in
-            MainActor.assumeIsolated {
-                // Unconditional: the resolved display must not survive a layout
-                // change even while mirroring is off, or turning it back on
-                // would keep reading a display that is no longer the best one.
-                BrightnessReader.shared.invalidateDisplayCache()
-                guard let self,
-                      self.isRunning,
-                      Preferences.shared.mirrorsBrightnessChanges else { return }
-                // The main display may have changed. Never compare a sample
-                // from one panel against another display's previous value.
-                self.rebaselineBrightness()
-            }
-        }
-    }
-
-    private func publish(_ level: SystemLevel) {
-        latest = level
-        onChange?(level)
-    }
-
-    private func installBrightnessKeyMonitorsIfNeeded() {
-        if globalBrightnessKeyMonitor == nil {
-            globalBrightnessKeyMonitor = NSEvent.addGlobalMonitorForEvents(
-                matching: .systemDefined
-            ) { [weak self] event in
-                Task { @MainActor in self?.recordBrightnessKeyEvent(event) }
-            }
-        }
-        if localBrightnessKeyMonitor == nil {
-            localBrightnessKeyMonitor = NSEvent.addLocalMonitorForEvents(
-                matching: .systemDefined
-            ) { [weak self] event in
-                MainActor.assumeIsolated { self?.recordBrightnessKeyEvent(event) }
-                return event
-            }
-        }
-    }
-
-    private func removeBrightnessKeyMonitors() {
-        if let globalBrightnessKeyMonitor {
-            NSEvent.removeMonitor(globalBrightnessKeyMonitor)
-            self.globalBrightnessKeyMonitor = nil
-        }
-        if let localBrightnessKeyMonitor {
-            NSEvent.removeMonitor(localBrightnessKeyMonitor)
-            self.localBrightnessKeyMonitor = nil
-        }
-        brightnessIntent.reset()
-    }
-
-    private func recordBrightnessKeyEvent(_ event: NSEvent) {
-        guard event.subtype.rawValue == NX_SUBTYPE_AUX_CONTROL_BUTTONS else { return }
-        let keyType = (event.data1 & 0xFFFF_0000) >> 16
-        guard keyType == NX_KEYTYPE_BRIGHTNESS_UP
-                || keyType == NX_KEYTYPE_BRIGHTNESS_DOWN else { return }
-        brightnessIntent.noteKeyEvent(at: ProcessInfo.processInfo.systemUptime)
+        guard case .report(let reported) = classifier.classify(reading.value, at: now) else { return }
+        deliver?(Report(value: reported, displayID: reading.displayID, generation: generation))
     }
 }
 
@@ -827,11 +1024,14 @@ final class BrightnessReader: @unchecked Sendable {
     /// The display `reading()` last resolved, so the steady state is one shim
     /// read rather than a full enumeration.
     private var resolvedDisplayID: CGDirectDisplayID?
+    /// Moves with each invalidation, so a resolve that began before one can't
+    /// store its older answer after it.
+    private var cacheGeneration = 0
     private let cacheLock = NSLock()
 
     var isAvailable: Bool { getBrightness != nil }
 
-    struct Reading {
+    struct Reading: Sendable {
         var displayID: CGDirectDisplayID
         var value: Double
     }
@@ -866,11 +1066,12 @@ final class BrightnessReader: @unchecked Sendable {
         if let cached = cachedDisplayID(), let value = brightness(displayID: cached) {
             return Reading(displayID: cached, value: value)
         }
+        let generation = currentCacheGeneration()
         guard let resolved = resolveReading() else {
-            setCachedDisplayID(nil)
+            setCachedDisplayID(nil, ifGeneration: generation)
             return nil
         }
-        setCachedDisplayID(resolved.displayID)
+        setCachedDisplayID(resolved.displayID, ifGeneration: generation)
         return resolved
     }
 
@@ -878,7 +1079,10 @@ final class BrightnessReader: @unchecked Sendable {
     /// that plugging in — or opening the lid on — a better candidate is noticed
     /// even though the old one still answers.
     func invalidateDisplayCache() {
-        setCachedDisplayID(nil)
+        cacheLock.lock()
+        cacheGeneration += 1
+        resolvedDisplayID = nil
+        cacheLock.unlock()
     }
 
     private func cachedDisplayID() -> CGDirectDisplayID? {
@@ -887,9 +1091,15 @@ final class BrightnessReader: @unchecked Sendable {
         return resolvedDisplayID
     }
 
-    private func setCachedDisplayID(_ displayID: CGDirectDisplayID?) {
+    private func currentCacheGeneration() -> Int {
         cacheLock.lock()
-        resolvedDisplayID = displayID
+        defer { cacheLock.unlock() }
+        return cacheGeneration
+    }
+
+    private func setCachedDisplayID(_ displayID: CGDirectDisplayID?, ifGeneration generation: Int) {
+        cacheLock.lock()
+        if generation == cacheGeneration { resolvedDisplayID = displayID }
         cacheLock.unlock()
     }
 

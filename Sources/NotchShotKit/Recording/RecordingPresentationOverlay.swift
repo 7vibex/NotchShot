@@ -62,7 +62,6 @@ public final class RecordingPresentationOverlayController {
     /// finishes after the next shortcut arrived does not hide it.
     private var keyAreaGeneration = 0
 
-    public var isVisible: Bool { panel?.isVisible == true }
 
     public func start(
         options: RecordingPresentationOptions,

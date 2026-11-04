@@ -445,22 +445,66 @@ public final class Preferences {
     /// be rewritten at a moment that is allowed to mutate state.
     @ObservationIgnored private var outputFolderBookmarkIsStale = false
 
+    /// The bookmark that last failed to resolve, and when. A folder on a drive
+    /// or share that isn't mounted misses the cache above, and the menu bar
+    /// panel, every capture and every save panel read this on the main thread.
+    /// The window keeps that to one attempt, and still notices the drive
+    /// coming back.
+    @ObservationIgnored private var unresolvedOutputFolder: (bookmark: Data, failedAt: Date)?
+    private static let outputFolderRetryInterval: TimeInterval = 10
+
+    /// The read below may not mount anything, but a folder on a share should
+    /// still come back by itself, so the mount happens here, off the main thread.
+    /// Until it finishes, captures use the Desktop, as they do for any folder
+    /// that can't be reached.
+    private func mountOutputFolder(_ bookmark: Data) {
+        Task.detached(priority: .utility) { [weak self] in
+            var stale = false
+            guard let url = try? URL(
+                resolvingBookmarkData: bookmark,
+                options: [.withSecurityScope, .withoutUI],
+                relativeTo: nil,
+                bookmarkDataIsStale: &stale
+            ) else { return }
+            let isStale = stale
+            await MainActor.run { [weak self] in
+                guard let self, self.outputFolderBookmark == bookmark else { return }
+                self.resolvedOutputFolder = (bookmark, url)
+                self.outputFolderBookmarkIsStale = isStale
+                self.unresolvedOutputFolder = nil
+            }
+        }
+    }
+
     /// Resolved output folder, falling back to ~/Desktop.
     public var outputFolder: URL {
         if let bookmark = outputFolderBookmark {
             if let cached = resolvedOutputFolder, cached.bookmark == bookmark {
                 return cached.url
             }
-            var stale = false
-            if let url = try? URL(
-                resolvingBookmarkData: bookmark,
-                options: [.withSecurityScope],
-                relativeTo: nil,
-                bookmarkDataIsStale: &stale
-            ) {
-                resolvedOutputFolder = (bookmark, url)
-                outputFolderBookmarkIsStale = stale
-                return url
+            let isInRetryWindow = unresolvedOutputFolder.map {
+                $0.bookmark == bookmark && Date().timeIntervalSince($0.failedAt) < Self.outputFolderRetryInterval
+            } ?? false
+            if !isInRetryWindow {
+                var stale = false
+                // Without mounting or UI: this runs on the main thread, and
+                // reaching for an unreachable share can block it for seconds.
+                if let url = try? URL(
+                    resolvingBookmarkData: bookmark,
+                    options: [.withSecurityScope, .withoutUI, .withoutMounting],
+                    relativeTo: nil,
+                    bookmarkDataIsStale: &stale
+                ) {
+                    resolvedOutputFolder = (bookmark, url)
+                    outputFolderBookmarkIsStale = stale
+                    unresolvedOutputFolder = nil
+                    return url
+                }
+                if unresolvedOutputFolder?.bookmark != bookmark {
+                    Log.app.notice("The output folder can't be reached; using the Desktop")
+                }
+                unresolvedOutputFolder = (bookmark, Date())
+                mountOutputFolder(bookmark)
             }
         }
         return FileManager.default.urls(for: .desktopDirectory, in: .userDomainMask).first
@@ -497,6 +541,7 @@ public final class Preferences {
         )
         resolvedOutputFolder = bookmark.map { ($0, url) }
         outputFolderBookmarkIsStale = false
+        unresolvedOutputFolder = nil
         outputFolderBookmark = bookmark
     }
 

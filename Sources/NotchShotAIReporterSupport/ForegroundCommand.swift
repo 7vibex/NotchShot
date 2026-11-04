@@ -144,3 +144,31 @@ private final class TerminateForwarding: @unchecked Sendable {
         lock.withLock { child = -1 }
     }
 }
+
+/// `--key value` pairs, as both command-line tools take them.
+public enum LongOptions {
+    public struct Failure: Error {
+        public let message: String
+    }
+
+    public static func parse(
+        _ arguments: ArraySlice<String>
+    ) throws(Failure) -> [(key: String, value: String)] {
+        var pairs: [(key: String, value: String)] = []
+        var index = arguments.startIndex
+        while index < arguments.endIndex {
+            let argument = arguments[index]
+            guard argument.hasPrefix("--") else {
+                throw Failure(message: "Unexpected argument: \(argument)")
+            }
+            let key = String(argument.dropFirst(2))
+            let next = arguments.index(after: index)
+            guard next < arguments.endIndex, !arguments[next].hasPrefix("--") else {
+                throw Failure(message: "Missing value for --\(key)")
+            }
+            pairs.append((key, arguments[next]))
+            index = arguments.index(after: next)
+        }
+        return pairs
+    }
+}

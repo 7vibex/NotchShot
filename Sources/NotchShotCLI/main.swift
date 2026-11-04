@@ -33,17 +33,10 @@ private struct Options {
     var values: [String: String] = [:]
 
     init(_ arguments: ArraySlice<String>) throws {
-        var index = arguments.startIndex
-        while index < arguments.endIndex {
-            let argument = arguments[index]
-            guard argument.hasPrefix("--") else { throw CLIError.usage("Unexpected argument: \(argument)") }
-            let key = String(argument.dropFirst(2))
-            let next = arguments.index(after: index)
-            guard next < arguments.endIndex, !arguments[next].hasPrefix("--") else {
-                throw CLIError.usage("Missing value for --\(key)")
-            }
-            values[key] = arguments[next]
-            index = arguments.index(after: next)
+        do throws(LongOptions.Failure) {
+            for (key, value) in try LongOptions.parse(arguments) { values[key] = value }
+        } catch {
+            throw CLIError.usage(error.message)
         }
         let known: Set<String> = [
             "id", "source", "title", "subtitle", "state", "progress", "current", "total",
@@ -95,38 +88,18 @@ private enum Client {
         guard data.count <= LiveActivitySanitizer.maximumMessageBytes else {
             throw CLIError.usage("message too large")
         }
-        let descriptor = socket(AF_UNIX, SOCK_STREAM, 0)
-        guard descriptor >= 0 else { throw CLIError.unreachable("socket() failed") }
+        let descriptor: Int32
+        do throws(OwnerOnlySocket.ConnectionError) {
+            descriptor = try OwnerOnlySocket.connection(to: LiveActivitySocket.path, receiveTimeoutSeconds: 2)
+        } catch {
+            switch error {
+            case .socketUnavailable: throw CLIError.unreachable("socket() failed")
+            case .pathTooLong: throw CLIError.unreachable("socket path too long")
+            case .notListening: throw CLIError.unreachable("open NotchShot and enable Live Activities in Settings")
+            case .untrustedPeer: throw CLIError.unreachable("the socket is not owned by the current user")
+            }
+        }
         defer { close(descriptor) }
-        var noSigPipe: Int32 = 1
-        setsockopt(descriptor, SOL_SOCKET, SO_NOSIGPIPE, &noSigPipe, socklen_t(MemoryLayout<Int32>.size))
-        var timeout = timeval(tv_sec: 2, tv_usec: 0)
-        setsockopt(descriptor, SOL_SOCKET, SO_RCVTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
-        setsockopt(descriptor, SOL_SOCKET, SO_SNDTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
-
-        let path = LiveActivitySocket.path
-        var address = sockaddr_un()
-        address.sun_family = sa_family_t(AF_UNIX)
-        guard path.utf8.count < MemoryLayout.size(ofValue: address.sun_path) else {
-            throw CLIError.unreachable("socket path too long")
-        }
-        _ = path.withCString { source in
-            withUnsafeMutablePointer(to: &address.sun_path) { pointer in
-                strcpy(UnsafeMutableRawPointer(pointer).assumingMemoryBound(to: CChar.self), source)
-            }
-        }
-        let connected = withUnsafePointer(to: &address) { pointer in
-            pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) {
-                connect(descriptor, $0, socklen_t(MemoryLayout<sockaddr_un>.size))
-            }
-        }
-        guard connected == 0 else {
-            throw CLIError.unreachable("open NotchShot and enable Live Activities in Settings")
-        }
-        // Never hand activity data to a listener owned by another account.
-        guard LiveActivitySocket.isTrustedPeer(descriptor) else {
-            throw CLIError.unreachable("the socket is not owned by the current user")
-        }
 
         let written = data.withUnsafeBytes { write(descriptor, $0.baseAddress, $0.count) }
         guard written == data.count else { throw CLIError.unreachable("write failed") }

@@ -19,7 +19,7 @@ struct NotchFileDropDelegate: DropDelegate {
     var onPerform: ([NSItemProvider], FileDropAction) -> Void
 
     func validateDrop(info: DropInfo) -> Bool {
-        !fileProviders(in: info).isEmpty
+        info.hasItemsConforming(to: [.fileURL])
     }
 
     func dropEntered(info: DropInfo) {
@@ -33,12 +33,16 @@ struct NotchFileDropDelegate: DropDelegate {
         updateSelection(for: info)
     }
 
+    /// Runs on every pointer movement of the drag. Building a provider per
+    /// file here cost a pasteboard read for each one, and a drag can't change
+    /// its files, so the count from `dropEntered` stands. The pull moves in
+    /// steps because `pointerPull` is the root view's state: at every pixel the
+    /// whole notch re-evaluated. The shell's drag spring smooths the steps.
     func dropUpdated(info: DropInfo) -> DropProposal? {
-        let providers = fileProviders(in: info)
-        guard !providers.isEmpty else { return DropProposal(operation: .forbidden) }
-        itemCount = providers.count
+        guard info.hasItemsConforming(to: [.fileURL]) else { return DropProposal(operation: .forbidden) }
         updateSelection(for: info)
-        pointerPull = FileDropPullPolicy.pull(x: info.location.x, width: layoutSize.width)
+        let pull = FileDropPullPolicy.steppedPull(x: info.location.x, width: layoutSize.width)
+        if pull != pointerPull { pointerPull = pull }
         return DropProposal(operation: .copy)
     }
 

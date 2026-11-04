@@ -25,16 +25,6 @@ public enum PermissionKind: String, Sendable, CaseIterable, Identifiable {
         }
     }
 
-    public var rationale: String {
-        switch self {
-        case .screenRecording: "Required for every screenshot and recording."
-        case .microphone: "Only used when you record your voice."
-        case .automation: "Only used if the system Now Playing bridge is unavailable."
-        case .inputMonitoring: "Only used when you choose to replace the macOS volume and brightness overlay or show keyboard shortcuts in a recording."
-        case .accessibility: "Used only for features you enable: automatic scrolling capture, inserting dictation into another app, mirroring visible notification banners, and—on some macOS builds—replacing media-key overlays."
-        }
-    }
-
     /// Deep link into the exact System Settings pane.
     public var settingsURL: URL? {
         switch self {
@@ -263,7 +253,9 @@ public final class PermissionCenter {
             }
             return false
         }
-        // Start over cleanly: the next capture asks macOS again.
+        // Start over cleanly: the next capture asks macOS again. A poll left
+        // running would see the now-absent grant and raise the stale banner again.
+        stopPollingScreenRecording()
         hasRequestedScreenRecording = false
         requestedScreenRecordingThisLaunch = false
         isScreenRecordingGrantStale = false
@@ -351,14 +343,6 @@ public final class PermissionCenter {
         }
     }
 
-    public func availableMicrophones() -> [AVCaptureDevice] {
-        AVCaptureDevice.DiscoverySession(
-            deviceTypes: [.microphone, .external],
-            mediaType: .audio,
-            position: .unspecified
-        ).devices
-    }
-
     // MARK: Remediation
 
     public func openSettings(for kind: PermissionKind) {
@@ -402,10 +386,6 @@ public final class PermissionCenter {
             return
         }
         NSApp.terminate(nil)
-    }
-
-    public func dismissRemediation() {
-        pendingRemediation = nil
     }
 
     private static func state(for status: AVAuthorizationStatus) -> PermissionState {

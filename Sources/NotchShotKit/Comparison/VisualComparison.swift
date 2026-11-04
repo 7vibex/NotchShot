@@ -34,38 +34,47 @@ public enum ImageComparisonRenderer {
         | CGBitmapInfo.byteOrder32Big.rawValue
 
     static func differencePlanes(before: CGImage, after: CGImage) throws -> DifferencePlanes {
-        let (lhs, rhs) = try normalizedPair(before: before, after: after)
-        let width = lhs.width
-        let height = lhs.height
-        let bytesPerRow = width * 4
-        let colorSpace = CGColorSpace(name: CGColorSpace.sRGB)!
-        var leftBytes = [UInt8](repeating: 0, count: bytesPerRow * height)
-        var rightBytes = [UInt8](repeating: 0, count: bytesPerRow * height)
+        // A session's pair is already the same size, and refitting it would be a
+        // full decode and resample that changes nothing the difference reads:
+        // the premultiplied colour is the same, and alpha is forced opaque.
+        let (lhs, rhs) = before.width == after.width && before.height == after.height
+            ? try validatedPair(before: before, after: after)
+            : try normalizedPair(before: before, after: after)
+        return DifferencePlanes(
+            left: try decodedPlane(lhs),
+            right: try decodedPlane(rhs),
+            width: lhs.width,
+            height: lhs.height
+        )
+    }
 
-        guard let leftContext = CGContext(
-            data: &leftBytes,
-            width: width,
-            height: height,
-            bitsPerComponent: 8,
-            bytesPerRow: bytesPerRow,
-            space: colorSpace,
-            bitmapInfo: differenceBitmapInfo
-        ), let rightContext = CGContext(
-            data: &rightBytes,
-            width: width,
-            height: height,
-            bitsPerComponent: 8,
-            bytesPerRow: bytesPerRow,
-            space: colorSpace,
-            bitmapInfo: differenceBitmapInfo
-        ) else {
+    private static func validatedPair(before: CGImage, after: CGImage) throws -> (CGImage, CGImage) {
+        try validateOperationSize(before)
+        try validateOperationSize(after)
+        return (before, after)
+    }
+
+    private static func decodedPlane(_ image: CGImage) throws -> [UInt8] {
+        let bytesPerRow = image.width * 4
+        var bytes = [UInt8](repeating: 0, count: bytesPerRow * image.height)
+        // The context writes through this pointer, so it must not outlive the closure.
+        let didDraw = bytes.withUnsafeMutableBytes { buffer -> Bool in
+            guard let context = CGContext(
+                data: buffer.baseAddress,
+                width: image.width,
+                height: image.height,
+                bitsPerComponent: 8,
+                bytesPerRow: bytesPerRow,
+                space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                bitmapInfo: differenceBitmapInfo
+            ) else { return false }
+            context.draw(image, in: CGRect(x: 0, y: 0, width: image.width, height: image.height))
+            return true
+        }
+        guard didDraw else {
             throw NotchShotError.exportFailed("Could not allocate the image difference")
         }
-
-        let rect = CGRect(x: 0, y: 0, width: width, height: height)
-        leftContext.draw(lhs, in: rect)
-        rightContext.draw(rhs, in: rect)
-        return DifferencePlanes(left: leftBytes, right: rightBytes, width: width, height: height)
+        return bytes
     }
 
     public static func difference(
@@ -225,47 +234,113 @@ public enum ImageComparisonRenderer {
 @MainActor
 @Observable
 public final class VisualComparisonSession {
+    /// The decoded pair, ready for a session. `CGImage` is immutable.
+    public struct LoadedImages: @unchecked Sendable {
+        let before: CGImage
+        let after: CGImage
+    }
+
     public let beforeAsset: CaptureAsset
     public let afterAsset: CaptureAsset
     public let before: CGImage
     public let after: CGImage
+    /// One image per side rather than one per body evaluation: every slider tick
+    /// re-runs the body, and each new image is a new one for Core Animation to prepare.
+    let beforeDisplayImage: NSImage
+    let afterDisplayImage: NSImage
     public private(set) var difference: CGImage?
+    public private(set) var isExporting = false
     public var sliderPosition = 0.5
     public var showsDifference = false
     public var differenceThreshold = 0.0
     public var errorMessage: String?
     private var cachedPlanes: ImageComparisonRenderer.DifferencePlanes?
+    private var isLoadingDifference = false
 
-    public init(beforeAsset: CaptureAsset, afterAsset: CaptureAsset) throws {
-        guard let before = SafeImageFile.cgImage(for: beforeAsset),
-              let after = SafeImageFile.cgImage(for: afterAsset) else {
-            throw NotchShotError.exportFailed("Both captures must be readable images")
-        }
-        let pair = try ImageComparisonRenderer.normalizedPair(before: before, after: after)
+    /// Reads, decodes and sizes both captures off the main actor.
+    public nonisolated static func loadImages(
+        beforeAsset: CaptureAsset,
+        afterAsset: CaptureAsset
+    ) async throws -> LoadedImages {
+        try await Task.detached(priority: .userInitiated) {
+            guard let before = SafeImageFile.cgImage(for: beforeAsset, decodeImmediately: true),
+                  let after = SafeImageFile.cgImage(for: afterAsset, decodeImmediately: true) else {
+                throw NotchShotError.exportFailed("Both captures must be readable images")
+            }
+            let pair = try ImageComparisonRenderer.normalizedPair(before: before, after: after)
+            return LoadedImages(before: pair.0, after: pair.1)
+        }.value
+    }
+
+    public init(beforeAsset: CaptureAsset, afterAsset: CaptureAsset, images: LoadedImages) {
         self.beforeAsset = beforeAsset
         self.afterAsset = afterAsset
-        self.before = pair.0
-        self.after = pair.1
+        before = images.before
+        after = images.after
+        beforeDisplayImage = NSImage(
+            cgImage: images.before,
+            size: NSSize(width: images.before.width, height: images.before.height)
+        )
+        afterDisplayImage = NSImage(
+            cgImage: images.after,
+            size: NSSize(width: images.after.width, height: images.after.height)
+        )
     }
 
     public func setDifferenceVisible(_ visible: Bool) {
         showsDifference = visible
         guard visible, difference == nil else { return }
+        guard let cachedPlanes else {
+            loadDifference()
+            return
+        }
         do {
             // Decoded once and kept: dragging the threshold slider re-runs only
             // the comparison, not the decode of both source images.
-            let planes = try cachedPlanes ?? ImageComparisonRenderer.differencePlanes(
-                before: before,
-                after: after
-            )
-            cachedPlanes = planes
             difference = try ImageComparisonRenderer.difference(
-                planes: planes,
+                planes: cachedPlanes,
                 threshold: UInt8(differenceThreshold.rounded())
             )
         } catch {
             errorMessage = error.localizedDescription
             showsDifference = false
+        }
+    }
+
+    /// The first difference decodes both images, up to 200 MB of planes, so it
+    /// runs off the main actor. The slider stays on screen until it lands.
+    private func loadDifference() {
+        guard !isLoadingDifference else { return }
+        isLoadingDifference = true
+        let images = LoadedImages(before: before, after: after)
+        let threshold = UInt8(differenceThreshold.rounded())
+        Task { [weak self] in
+            do {
+                let loaded = try await Task.detached(priority: .userInitiated) {
+                    let planes = try ImageComparisonRenderer.differencePlanes(
+                        before: images.before,
+                        after: images.after
+                    )
+                    return LoadedDifference(
+                        planes: planes,
+                        image: try ImageComparisonRenderer.difference(planes: planes, threshold: threshold)
+                    )
+                }.value
+                guard let self else { return }
+                self.isLoadingDifference = false
+                self.cachedPlanes = loaded.planes
+                // The threshold may have moved while this ran.
+                if UInt8(self.differenceThreshold.rounded()) == threshold {
+                    self.difference = loaded.image
+                } else if self.showsDifference {
+                    self.setDifferenceVisible(true)
+                }
+            } catch {
+                guard let self else { return }
+                self.isLoadingDifference = false
+                self.errorMessage = error.localizedDescription
+                self.showsDifference = false
+            }
         }
     }
 
@@ -275,49 +350,91 @@ public final class VisualComparisonSession {
         if showsDifference { setDifferenceVisible(true) }
     }
 
-    public func renderedComparison() throws -> CGImage {
-        if showsDifference {
-            if difference == nil { setDifferenceVisible(true) }
-            guard let difference else {
-                throw NotchShotError.exportFailed("Could not render the image difference")
-            }
-            return difference
-        }
-        return try ImageComparisonRenderer.split(
-            before: before,
-            after: after,
+    /// What the window is showing right now, as values that can leave the main actor.
+    private var renderRequest: ComparisonRenderRequest {
+        ComparisonRenderRequest(
+            images: LoadedImages(before: before, after: after),
+            showsDifference: showsDifference,
+            difference: difference,
+            planes: cachedPlanes,
+            threshold: UInt8(differenceThreshold.rounded()),
             position: sliderPosition
         )
     }
 
     public func share() {
-        do {
-            let image = try renderedComparison()
-            try MacSharePresenter.shared.present(items: [NSImage(
-                cgImage: image,
-                size: NSSize(width: image.width, height: image.height)
-            )])
-        } catch {
-            errorMessage = error.localizedDescription
+        guard !isExporting else { return }
+        let request = renderRequest
+        isExporting = true
+        Task { [weak self] in
+            do {
+                let rendered = try await Task.detached(priority: .userInitiated) {
+                    CapturedImage(cgImage: try request.render(), scale: 1, sourceRect: .zero)
+                }.value
+                try MacSharePresenter.shared.present(items: [rendered.makeNSImage()])
+            } catch {
+                self?.errorMessage = error.localizedDescription
+            }
+            self?.isExporting = false
         }
     }
 
     public func export() {
+        guard !isExporting else { return }
         let panel = NSSavePanel()
         panel.allowedContentTypes = [ImageExport.utType(for: .png)]
         panel.nameFieldStringValue = "NotchShot Comparison.png"
         guard panel.runModal() == .OK, let url = panel.url else { return }
-        do {
-            _ = try ImageExport.write(
-                try renderedComparison(),
-                to: url,
-                format: .png,
-                quality: 1,
-                dpiScale: 1
-            )
-        } catch {
-            errorMessage = error.localizedDescription
+        let request = renderRequest
+        isExporting = true
+        FileWorkTracker.shared.run { [weak self] in
+            do {
+                try await Task.detached(priority: .userInitiated) {
+                    _ = try ImageExport.write(
+                        try request.render(),
+                        to: url,
+                        format: .png,
+                        quality: 1,
+                        dpiScale: 1
+                    )
+                }.value
+            } catch {
+                self?.errorMessage = error.localizedDescription
+            }
+            self?.isExporting = false
         }
+    }
+}
+
+private struct LoadedDifference: @unchecked Sendable {
+    let planes: ImageComparisonRenderer.DifferencePlanes
+    let image: CGImage
+}
+
+private struct ComparisonRenderRequest: @unchecked Sendable {
+    let images: VisualComparisonSession.LoadedImages
+    let showsDifference: Bool
+    let difference: CGImage?
+    let planes: ImageComparisonRenderer.DifferencePlanes?
+    let threshold: UInt8
+    let position: Double
+
+    func render() throws -> CGImage {
+        guard showsDifference else {
+            return try ImageComparisonRenderer.split(
+                before: images.before,
+                after: images.after,
+                position: position
+            )
+        }
+        if let difference { return difference }
+        return try ImageComparisonRenderer.difference(
+            planes: try planes ?? ImageComparisonRenderer.differencePlanes(
+                before: images.before,
+                after: images.after
+            ),
+            threshold: threshold
+        )
     }
 }
 
@@ -332,15 +449,18 @@ public struct VisualComparisonView: View {
         VStack(spacing: 0) {
             toolbar
             GeometryReader { geometry in
-                let fitted = fit(
-                    CGSize(width: session.before.width, height: session.before.height),
+                let fitted = ImageViewFit.rect(
+                    source: CGSize(width: session.before.width, height: session.before.height),
                     into: geometry.size,
                     margin: 28
                 )
                 ZStack {
                     Color(nsColor: .underPageBackgroundColor)
                     if session.showsDifference, let difference = session.difference {
-                        comparisonImage(difference)
+                        comparisonImage(NSImage(
+                            cgImage: difference,
+                            size: NSSize(width: difference.width, height: difference.height)
+                        ))
                             .frame(width: fitted.width, height: fitted.height)
                             .position(x: fitted.midX, y: fitted.midY)
                     } else {
@@ -384,7 +504,9 @@ public struct VisualComparisonView: View {
                 .accessibilityValue("\(Int(session.differenceThreshold.rounded()))")
             }
             Button("Share…") { session.share() }
+                .disabled(session.isExporting)
             Button("Export…") { session.export() }
+                .disabled(session.isExporting)
                 .notchShotPrimaryActionStyle()
             Spacer(minLength: 8)
             Text(session.afterAsset.displayName)
@@ -402,10 +524,10 @@ public struct VisualComparisonView: View {
 
     private func slider(fitted: CGRect) -> some View {
         ZStack {
-            comparisonImage(session.before)
+            comparisonImage(session.beforeDisplayImage)
                 .frame(width: fitted.width, height: fitted.height)
 
-            comparisonImage(session.after)
+            comparisonImage(session.afterDisplayImage)
                 .frame(width: fitted.width, height: fitted.height)
                 .mask(alignment: .trailing) {
                     Rectangle()
@@ -416,14 +538,14 @@ public struct VisualComparisonView: View {
                 .fill(.white)
                 .frame(width: 2, height: fitted.height)
                 .shadow(color: .black.opacity(0.6), radius: 2)
-                .offset(x: fitted.width * (session.sliderPosition - 0.5))
+                .offset(x: fitted.width * (0.5 - session.sliderPosition))
 
             Circle()
                 .fill(.white)
                 .frame(width: 28, height: 28)
                 .overlay { Image(systemName: "arrow.left.and.right").font(.caption.bold()) }
                 .shadow(color: .black.opacity(0.45), radius: 5)
-                .offset(x: fitted.width * (session.sliderPosition - 0.5))
+                .offset(x: fitted.width * (0.5 - session.sliderPosition))
         }
         .frame(width: fitted.width, height: fitted.height)
         .position(x: fitted.midX, y: fitted.midY)
@@ -431,16 +553,19 @@ public struct VisualComparisonView: View {
         .gesture(
             DragGesture(minimumDistance: 0)
                 .onChanged { value in
-                    session.sliderPosition = min(max(value.location.x / fitted.width, 0), 1)
+                    // The position is the trailing fraction showing After, and
+                    // this gesture reads the whole container, not the image.
+                    let fraction = 1 - (value.location.x - fitted.minX) / fitted.width
+                    session.sliderPosition = min(max(fraction, 0), 1)
                 }
         )
         .focusable()
         .onKeyPress(.leftArrow) {
-            session.sliderPosition = max(0, session.sliderPosition - 0.02)
+            session.sliderPosition = min(1, session.sliderPosition + 0.02)
             return .handled
         }
         .onKeyPress(.rightArrow) {
-            session.sliderPosition = min(1, session.sliderPosition + 0.02)
+            session.sliderPosition = max(0, session.sliderPosition - 0.02)
             return .handled
         }
         .accessibilityElement(children: .ignore)
@@ -453,27 +578,9 @@ public struct VisualComparisonView: View {
         }
     }
 
-    private func comparisonImage(_ image: CGImage) -> some View {
-        Image(nsImage: NSImage(
-            cgImage: image,
-            size: NSSize(width: image.width, height: image.height)
-        ))
-        .resizable()
-        .interpolation(.high)
-    }
-
-    private func fit(_ source: CGSize, into container: CGSize, margin: CGFloat) -> CGRect {
-        let available = CGSize(
-            width: max(1, container.width - margin * 2),
-            height: max(1, container.height - margin * 2)
-        )
-        let scale = min(available.width / source.width, available.height / source.height)
-        let size = CGSize(width: source.width * scale, height: source.height * scale)
-        return CGRect(
-            x: (container.width - size.width) / 2,
-            y: (container.height - size.height) / 2,
-            width: size.width,
-            height: size.height
-        )
+    private func comparisonImage(_ image: NSImage) -> some View {
+        Image(nsImage: image)
+            .resizable()
+            .interpolation(.high)
     }
 }

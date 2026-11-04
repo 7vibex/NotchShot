@@ -9,11 +9,16 @@ public struct CapturePreviewView: View {
     @Bindable var item: ShelfItem
 
     @State private var image: NSImage?
+    /// Keeps "Preview unavailable" from flashing while the file is read.
+    @State private var finishedLoading: Bool
+    @State private var fileSizeDescription = ""
 
     public init(coordinator: AppCoordinator, item: ShelfItem) {
         self.coordinator = coordinator
         self.item = item
-        _image = State(initialValue: item.image?.makeNSImage() ?? SafeImageFile.nsImage(for: item.asset))
+        let inMemory = item.image?.makeNSImage()
+        _image = State(initialValue: inMemory)
+        _finishedLoading = State(initialValue: inMemory != nil)
     }
 
     public var body: some View {
@@ -29,7 +34,9 @@ public struct CapturePreviewView: View {
                         .font(.headline)
                         .lineLimit(1)
                         .truncationMode(.middle)
-                    Text("\(item.asset.dimensionsDescription) · \(item.asset.fileSizeDescription)")
+                    Text([item.asset.dimensionsDescription, fileSizeDescription]
+                        .filter { !$0.isEmpty }
+                        .joined(separator: " · "))
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -58,6 +65,28 @@ public struct CapturePreviewView: View {
         .background(Color(nsColor: .windowBackgroundColor))
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Capture preview")
+        .task(id: item.asset.url) {
+            await loadFromDisk()
+        }
+    }
+
+    /// The read and the decode both stay off the main actor. Without
+    /// `decodeImmediately` the decode lands on the first commit instead.
+    private func loadFromDisk() async {
+        let asset = item.asset
+        let needsImage = image == nil
+        let loaded = await Task.detached(priority: .userInitiated) {
+            let image = needsImage
+                ? SafeImageFile.capturedImage(for: asset, decodeImmediately: true)
+                : nil
+            return (image: image, size: asset.fileSizeDescription)
+        }.value
+        guard !Task.isCancelled else { return }
+        fileSizeDescription = loaded.size
+        if let cgImage = loaded.image?.cgImage {
+            image = NSImage(cgImage: cgImage, size: NSSize(width: cgImage.width, height: cgImage.height))
+        }
+        finishedLoading = true
     }
 
     @ViewBuilder
@@ -71,7 +100,7 @@ public struct CapturePreviewView: View {
                     .background(Color.black.opacity(0.88))
                     .accessibilityLabel("Screenshot \(item.asset.displayName)")
             }
-        } else {
+        } else if finishedLoading {
             ContentUnavailableView(
                 "Preview unavailable",
                 systemImage: "photo.badge.exclamationmark",

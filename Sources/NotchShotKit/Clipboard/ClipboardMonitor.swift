@@ -82,6 +82,26 @@ public final class ClipboardMonitor {
     private(set) var pendingImageProcessing = 0
     private(set) var peakPendingImageProcessing = 0
 
+    /// Payload reads wait on whichever app owns the clipping, and a promised
+    /// representation is rendered on demand. Serial, with one queued request
+    /// that the newest copy replaces, so a hung source cannot pile reads up.
+    private nonisolated static let readQueue = DispatchQueue(
+        label: "com.notchshot.clipboard.read",
+        qos: .utility
+    )
+    private var isReading = false
+    private var queuedRead: ReadRequest?
+
+    /// Runs a pasteboard read behind the monitor's own, so two threads off main
+    /// are never inside `NSPasteboard` at once.
+    nonisolated static func onReadQueue<Value: Sendable>(
+        _ work: @escaping @Sendable () -> Value
+    ) async -> Value {
+        await withCheckedContinuation { continuation in
+            readQueue.async { continuation.resume(returning: work()) }
+        }
+    }
+
     public init(
         pasteboard: NSPasteboard = .general,
         store: ClipboardStore = .shared
@@ -125,6 +145,7 @@ public final class ClipboardMonitor {
         }
         activationObserver = nil
         focusWindow = []
+        queuedRead = nil
     }
 
     /// Bounded so a burst of switching cannot grow this without limit; the
@@ -171,20 +192,51 @@ public final class ClipboardMonitor {
             excludedBundleIDs: Preferences.shared.clipboardExcludedBundleIDs
         ) else { return }
 
-        guard let result = readEntry(
+        // Everything up to here only reads the change count and the type list,
+        // which do not wait on the app that owns the clipping. The payload does.
+        requestRead(ReadRequest(
+            changeCount: changeCount,
             sourceName: frontmost?.localizedName,
             sourceBundleID: frontmost?.bundleIdentifier,
             now: now
-        ) else { return }
+        ))
+    }
+
+    private func requestRead(_ request: ReadRequest) {
+        guard !isReading else {
+            queuedRead = request
+            return
+        }
+        isReading = true
+        let pasteboardName = pasteboard.name.rawValue
+        Self.readQueue.async { [weak self] in
+            let result = Self.readEntry(from: pasteboardName, request: request)
+            Task { @MainActor [weak self] in
+                self?.finishRead(result)
+            }
+        }
+    }
+
+    private func finishRead(_ result: ReadResult?) {
+        isReading = false
+        if let queuedRead {
+            self.queuedRead = nil
+            requestRead(queuedRead)
+        }
+        // The store refuses this itself if clipboard history was turned off
+        // while the read was out.
+        guard let result else { return }
 
         switch result {
+        case let .rejectedFileCount(count):
+            store.acceptsFileCount(count)
         case let .immediate(entry):
-            if let recorded = store.record(entry) {
+            if let recorded = store.recordRead(entry) {
                 onCapture?(recorded)
             }
         case let .image(entry, data):
-            // Pasteboard access stays on the main actor, as AppKit requires;
-            // bounded image decoding and PNG persistence do not.
+            // Bounded image decoding and PNG persistence run off the main actor
+            // like the read before them.
             pendingImageProcessing += 1
             peakPendingImageProcessing = max(peakPendingImageProcessing, pendingImageProcessing)
             Task { [weak self] in
@@ -254,23 +306,50 @@ public final class ClipboardMonitor {
         )
     }
 
-    /// Classifies the clipping. Order matters: files and images are checked
-    /// before text, because both also advertise a string representation.
-    private enum ReadResult {
-        case immediate(ClipboardEntry)
-        case image(ClipboardEntry, Data)
+    struct ReadRequest: Sendable {
+        var changeCount: Int
+        var sourceName: String?
+        var sourceBundleID: String?
+        var now: Date
     }
 
-    private func readEntry(
-        sourceName: String?,
-        sourceBundleID: String?,
-        now: Date
+    enum ReadResult: Sendable {
+        case immediate(ClipboardEntry)
+        case image(ClipboardEntry, Data)
+        case rejectedFileCount(Int)
+    }
+
+    /// Reads the clipping `poll` already vetted, or nothing if it is gone.
+    ///
+    /// The filters in `poll` judged the contents at one change count, and
+    /// contents cannot change without that count moving. Matching it before and
+    /// after the read is what stops a concealed clipping written in between from
+    /// being read at all, or from being recorded if it landed mid-read. The next
+    /// poll sees the newer count and vets it from the start.
+    nonisolated static func readEntry(
+        from pasteboardName: String,
+        request: ReadRequest
+    ) -> ReadResult? {
+        let pasteboard = NSPasteboard(name: NSPasteboard.Name(pasteboardName))
+        guard pasteboard.changeCount == request.changeCount else { return nil }
+        let result = classifiedContents(of: pasteboard, request: request)
+        guard pasteboard.changeCount == request.changeCount else { return nil }
+        return result
+    }
+
+    /// Classifies the clipping. Order matters: files and images are checked
+    /// before text, because both also advertise a string representation.
+    private nonisolated static func classifiedContents(
+        of pasteboard: NSPasteboard,
+        request: ReadRequest
     ) -> ReadResult? {
         if let urls = pasteboard.readObjects(
             forClasses: [NSURL.self],
             options: [.urlReadingFileURLsOnly: true]
         ) as? [URL], !urls.isEmpty {
-            guard store.acceptsFileCount(urls.count) else { return nil }
+            guard urls.count <= ClipboardStore.maximumFileCount else {
+                return .rejectedFileCount(urls.count)
+            }
             let limited = urls.map(\.standardizedFileURL)
             let identities = limited.compactMap {
                 SafeAssetFile.fileSystemIdentity(
@@ -288,23 +367,24 @@ public final class ClipboardMonitor {
                     kind: .files,
                     filePaths: paths,
                     fileIdentities: identities,
-                    sourceApplicationName: sourceName,
-                    sourceApplicationBundleID: sourceBundleID,
-                    createdAt: now,
+                    sourceApplicationName: request.sourceName,
+                    sourceApplicationBundleID: request.sourceBundleID,
+                    createdAt: request.now,
                     contentHash: ClipboardEntry.hash(forText: paths.joined(separator: "\n"))
                 )
             )
         }
 
+        // An image too large to keep does not take the clipping's text with it.
         if let imageType = pasteboard.availableType(from: [.png, .tiff]),
-           let data = pasteboard.data(forType: imageType) {
-            guard data.count <= ClipboardStore.maximumImageBytes else { return nil }
+           let data = pasteboard.data(forType: imageType),
+           data.count <= ClipboardStore.maximumImageBytes {
             return .image(
                 ClipboardEntry(
                     kind: .image,
-                    sourceApplicationName: sourceName,
-                    sourceApplicationBundleID: sourceBundleID,
-                    createdAt: now,
+                    sourceApplicationName: request.sourceName,
+                    sourceApplicationBundleID: request.sourceBundleID,
+                    createdAt: request.now,
                     contentHash: ClipboardEntry.hash(for: data)
                 ),
                 data
@@ -323,9 +403,9 @@ public final class ClipboardMonitor {
             ClipboardEntry(
                 kind: Self.classify(trimmed),
                 text: text,
-                sourceApplicationName: sourceName,
-                sourceApplicationBundleID: sourceBundleID,
-                createdAt: now,
+                sourceApplicationName: request.sourceName,
+                sourceApplicationBundleID: request.sourceBundleID,
+                createdAt: request.now,
                 contentHash: ClipboardEntry.hash(forText: text)
             )
         )

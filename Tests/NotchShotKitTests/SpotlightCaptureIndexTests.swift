@@ -57,7 +57,9 @@ struct SpotlightCaptureIndexTests {
 
     private func yieldUntil(
         _ condition: @escaping () -> Bool,
-        timeout: TimeInterval = 2
+        // Items are now built off the main actor at utility priority, so a loaded
+        // machine can take longer than the old synchronous build did.
+        timeout: TimeInterval = 30
     ) async {
         let deadline = Date().addingTimeInterval(timeout)
         while Date() < deadline {
@@ -99,7 +101,7 @@ struct SpotlightCaptureIndexTests {
         indexer.replaceIndex(with: first)
         fake.completeDelete()
         await yieldUntil { fake.indexedBatches.count == 1 }
-        #expect(fake.indexedBatches[0].count == 3)
+        #expect(fake.indexedBatches.first?.count == 3)
 
         // The first indexing call is still pending when the source changes.
         let newer = (10 ..< 12).map(entry)

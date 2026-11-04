@@ -18,6 +18,8 @@ struct ShelfContent: View {
     /// has arrived, and the other layout draws it in place instead of having
     /// it rise from the screen again; a new capture is not this, so it rises.
     @State private var settledNewestID: ShelfItem.ID?
+    /// Filled off the main actor and only read in `body`; see `ShelfFileFacts`.
+    @State private var fileFacts: [URL: ShelfFileFacts] = [:]
 
     private var items: [ShelfItem] { coordinator.shelfItems }
     private var selected: ShelfItem? { coordinator.selectedShelfItem }
@@ -119,6 +121,29 @@ struct ShelfContent: View {
             }
         }
         .animation(NotchMotion.selection(reduceMotion: reduceMotion), value: coordinator.selectedShelfIndex)
+        .task(id: items.map { $0.asset.url }) {
+            await loadFileFacts()
+        }
+    }
+
+    /// One lookup per file, so a sleeping volume behind one item holds up only
+    /// the items after it, and none of them hold up the main actor.
+    private func loadFileFacts() async {
+        let assets = items.map { $0.asset }
+        let lookups = assets.map { asset in
+            (url: asset.url, facts: Task.detached(priority: .userInitiated) { ShelfFileFacts(asset: asset) })
+        }
+        for lookup in lookups {
+            let facts = await lookup.facts.value
+            guard !Task.isCancelled else { return }
+            fileFacts[lookup.url] = facts
+        }
+        let current = Set(assets.map(\.url))
+        fileFacts = fileFacts.filter { current.contains($0.key) }
+    }
+
+    private func fileSizeDescription(for item: ShelfItem) -> String {
+        fileFacts[item.asset.url].map { ByteCountFormatter.string(fromByteCount: $0.fileSize, countStyle: .file) } ?? ""
     }
 
     // MARK: Paging
@@ -224,7 +249,7 @@ struct ShelfContent: View {
 
     private var totalSizeDescription: String {
         let total = items.reduce(Int64.zero) { partial, item in
-            let (sum, overflow) = partial.addingReportingOverflow(item.asset.fileSize)
+            let (sum, overflow) = partial.addingReportingOverflow(fileFacts[item.asset.url]?.fileSize ?? 0)
             return overflow ? Int64.max : sum
         }
         return ByteCountFormatter.string(fromByteCount: max(0, total), countStyle: .file)
@@ -250,7 +275,9 @@ struct ShelfContent: View {
                     .contextMenu { shelfMenuContent(for: item) }
                     .accessibilityLabel(item.asset.displayName)
                     .accessibilityValue(
-                        "\(item.asset.kind.displayName), \(item.asset.fileSizeDescription), item \(index + 1) of \(items.count)"
+                        [item.asset.kind.displayName, fileSizeDescription(for: item), "item \(index + 1) of \(items.count)"]
+                            .filter { !$0.isEmpty }
+                            .joined(separator: ", ")
                     )
                     .accessibilityAddTraits(index == coordinator.selectedShelfIndex ? [.isSelected] : [])
                 }
@@ -410,7 +437,7 @@ struct ShelfContent: View {
         if let duration = item.asset.duration {
             parts.append(durationText(duration))
         }
-        parts.append(item.asset.fileSizeDescription)
+        parts.append(fileSizeDescription(for: item))
         return parts.filter { !$0.isEmpty }.joined(separator: " · ")
     }
 
@@ -449,8 +476,10 @@ struct ShelfContent: View {
             menuAction(.copy, item: item)
             menuAction(.open, item: item)
 
-            let applications = coordinator.applicationsThatCanOpen(item.asset)
-            if !applications.isEmpty {
+            // `contextMenu` and `Menu` run this builder during `body`, not when
+            // the menu opens, so it may only read what was looked up already.
+            // `open(_:with:)` validates the file again at click time.
+            if let applications = fileFacts[item.asset.url]?.applications, !applications.isEmpty {
                 Menu("Open With") {
                     ForEach(applications, id: \.self) { applicationURL in
                         Button {
@@ -697,7 +726,7 @@ struct ShelfContent: View {
             .menuStyle(.borderlessButton)
             .fixedSize()
             .foregroundStyle(.white)
-            .disabled(coordinator.stack.isEmpty)
+            .disabled(coordinator.stack.isEmpty || coordinator.stack.isExporting)
 
             Button {
                 coordinator.toggleStackCollecting()
@@ -780,6 +809,22 @@ struct ShelfContent: View {
     private func durationText(_ duration: TimeInterval) -> String {
         let total = Int(duration.rounded())
         return String(format: "%d:%02d", total / 60, total % 60)
+    }
+}
+
+/// What the shelf shows about a file but must not ask the disk or LaunchServices
+/// for during `body`, which runs on every hover and when a capture lands. Each
+/// answer is an `lstat`/`statfs` and a LaunchServices query, and a file on a
+/// sleeping volume can block them for as long as the volume takes to answer.
+/// Kept in the view's state, so it goes when the shelf closes and the next open
+/// picks up newly installed apps.
+private struct ShelfFileFacts: Sendable {
+    let applications: [URL]
+    let fileSize: Int64
+
+    init(asset: CaptureAsset) {
+        applications = AppCoordinator.applicationsThatCanOpen(asset)
+        fileSize = asset.fileSize
     }
 }
 
