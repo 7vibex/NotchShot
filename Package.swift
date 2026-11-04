@@ -18,7 +18,7 @@ let package = Package(
         // signed release must be reproducible. That makes the pin a standing
         // obligation: 2.9.5 and 2.9.6 each carried symlink and privilege
         // fixes that a stale `exact:` would have silently skipped.
-        .package(url: "https://github.com/sparkle-project/Sparkle", exact: "2.9.6"),
+        .package(url: "https://github.com/sparkle-project/Sparkle", exact: "2.10.1"),
     ],
     targets: [
         .executableTarget(
