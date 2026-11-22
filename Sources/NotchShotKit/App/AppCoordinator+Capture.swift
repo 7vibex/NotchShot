@@ -276,9 +276,10 @@ extension AppCoordinator {
             let recipe = recipeOverride ?? CaptureRecipeStore.shared.activeRecipe
             let format = recipe.imageFormat ?? Preferences.shared.imageFormat
             let quality = Preferences.shared.jpegQuality
-            let prepared = try await CaptureRecipeRenderer.prepare(
+            let preparedExport = try await CaptureRecipeRenderer.prepareForExport(
                 image, recipe: recipe, format: format, quality: quality
             )
+            let prepared = preparedExport.image
             guard !Task.isCancelled, operationID.map(isCurrentCapture) ?? true else { return }
             let asset = try await persist(
                 prepared,
@@ -287,7 +288,8 @@ extension AppCoordinator {
                 recipe: recipe,
                 clipboardOnly: clipboardOnly,
                 encodingFormat: format,
-                encodingQuality: quality
+                encodingQuality: quality,
+                preparedExport: preparedExport
             )
             guard operationID.map(isCurrentCapture) ?? true else {
                 removeCancelledArtifactIfOwned(asset)
@@ -414,7 +416,8 @@ extension AppCoordinator {
         recipe: CaptureRecipe? = nil,
         clipboardOnly: Bool = false,
         encodingFormat: ImageFormat? = nil,
-        encodingQuality: Double? = nil
+        encodingQuality: Double? = nil,
+        preparedExport: PreparedCaptureExport? = nil
     ) async throws -> CaptureAsset {
         let preferences = Preferences.shared
         let recipe = recipe ?? CaptureRecipe.all[0]
@@ -471,16 +474,24 @@ extension AppCoordinator {
             }
         }
         let quality = encodingQuality ?? preferences.jpegQuality
+        // A prepared export already holds the encoding that passed the size
+        // check, so it is written as is instead of being encoded again.
+        func writeCapture(to destination: URL) async throws -> ImageFormat {
+            if let preparedExport {
+                return try await preparedExport.write(to: destination)
+            }
+            return try await ImageExport.write(image, to: destination, format: format, quality: quality)
+        }
         let written: ImageFormat
         do {
-            written = try await ImageExport.write(image, to: url, format: format, quality: quality)
+            written = try await writeCapture(to: url)
         } catch let error where !(error is CancellationError) && !AppPaths.owns(url) {
             // An ejected or denied folder must not cost the capture: the screen
             // has moved on, so these pixels cannot be taken again.
             let reason = error.localizedDescription
             url = AppPaths.uniqueURL(in: AppPaths.captures, name: name, extension: format.fileExtension)
             ownership = .managedTemporary
-            written = try await ImageExport.write(image, to: url, format: format, quality: quality)
+            written = try await writeCapture(to: url)
             present(error: NotchShotError.exportFailed(
                 "Saved to NotchShot instead: \(reason)"
                     + (preferences.historyEnabled ? "" : " With History off, this copy is removed at the next launch.")

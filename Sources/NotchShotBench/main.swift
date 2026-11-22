@@ -443,6 +443,10 @@ func runBenchmarks() async {
         do { try await RecipeResponsivenessBenchmarks.run() }
         catch { fatalError("Recipe responsiveness benchmark failed: \(error)") }
     }
+    if enabled("capture-persistence") {
+        do { try await CapturePersistenceBenchmarks.run() }
+        catch { fatalError("Capture persistence benchmark failed: \(error)") }
+    }
     if enabled("export-handler") {
         do { try ExportHandlerBenchmarks.run() }
         catch { fatalError("Export handler benchmark failed: \(error)") }

@@ -1,0 +1,49 @@
+{
+  "source_base": "6fc82ef00280e943165bc994bf7334ff20208a17",
+  "candidate_id": "capture-export-candidate-v2",
+  "baseline_binary_sha256": "9e0cf4017fe4d49b805ef1edf3fa7366dec555acf430f68480c2c1ccedff83f4",
+  "candidate_binary_sha256": "5e450f707acbb20e4294fec4d3758e76532e8dd3859f32a24133e775a6b48dc8",
+  "selected_sources": {
+    "Package.swift": {
+      "before_sha256": "3e9ec978e24a5b2cfffc4caaa1a08c4e73775dcf512dfdaf96780f6750f2069a",
+      "after_sha256": "3e9ec978e24a5b2cfffc4caaa1a08c4e73775dcf512dfdaf96780f6750f2069a"
+    },
+    "Package.resolved": {
+      "before_sha256": "bf104769444b7b2f854fac22dc62206939d53b6796a9f088e020f97b821b4499",
+      "after_sha256": "bf104769444b7b2f854fac22dc62206939d53b6796a9f088e020f97b821b4499"
+    },
+    "Sources/NotchShotKit/Capture/PreparedCaptureExport.swift": {
+      "before_sha256": null,
+      "after_sha256": "92bc28b4d4a2041802aa4b14e6534a50faf6caa83e822a069f7b4e3a896a494a"
+    },
+    "Sources/NotchShotKit/Capture/CaptureRecipe.swift": {
+      "before_sha256": "96d85ab219795c64b7dd32760dc9193a0a7ad7d214f549686833113c5e3db5ed",
+      "after_sha256": "840c8e47c451125d09a811425c84c091ba043586c565465dc23cb83896eebcee"
+    },
+    "Sources/NotchShotKit/Export/SmartExport.swift": {
+      "before_sha256": "807a288c610f67cb36b4a68f510dcc239f4e72fe8a86eb9d43349c6a52b58193",
+      "after_sha256": "89ac2596ab20d231b67761bca45c95b167c2c755045a78c23a06d9a0e35a8661"
+    },
+    "Sources/NotchShotKit/App/AppCoordinator+Capture.swift": {
+      "before_sha256": "59a847c67942118bc6fca270696efe6860ffdc1930a8174a901d072032526d00",
+      "after_sha256": "4bd0ca110f20a15b3b9957d7794d05a0aadead55fed60fc669448b42437877f7"
+    },
+    "Sources/NotchShotBench/CapturePersistenceBenchmarks.swift": {
+      "before_sha256": "d56636b8de24cf9ba0f0c30acb24adb8c0e4a537f47ad0305eacdfcd35ce3b91",
+      "after_sha256": "3ac304cbb9fe55e8a4040f624a103ece6778a42b02e6f681a761288823cc2fc6"
+    },
+    "Sources/NotchShotBench/main.swift": {
+      "before_sha256": "6198f8c04a9e7bda5ad609f85e3d6b464fdab9ff66ec27333d79f9fbd8ae3c50",
+      "after_sha256": "6198f8c04a9e7bda5ad609f85e3d6b464fdab9ff66ec27333d79f9fbd8ae3c50"
+    },
+    "Tests/NotchShotKitTests/PreparedCaptureExportTests.swift": {
+      "before_sha256": null,
+      "after_sha256": "26e4a0ff182980ae4c22f5dfa7367a78d772a0041b070d06e5b2759fa24689d5"
+    },
+    "Scripts/benchmark_capture_persistence.py": {
+      "before_sha256": null,
+      "after_sha256": "35aef58fdef0a717d0692c52a74b75dcca78dbfb0bf520851399d75fa4b3ab46"
+    }
+  },
+  "frozen_baseline_benchmark_source": "baseline-capture-persistence.swift"
+}

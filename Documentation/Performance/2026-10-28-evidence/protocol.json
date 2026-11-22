@@ -1,0 +1,38 @@
+{
+  "date": "2026-10-28",
+  "source": "6fc82ef",
+  "hardware": "Apple M5, 16 GiB, 10 logical CPUs",
+  "os": "26.7.2",
+  "swift": "Apple Swift 6.4 (swiftlang-6.4.0.34.1), macOS 27.0 SDK, deployment macOS 26",
+  "primary": "recipe preparation through completed atomic write",
+  "workloads": [
+    "standard-png",
+    "bounded-png-fits",
+    "bounded-png-resize",
+    "bounded-jpeg-resize"
+  ],
+  "fixture": "3456x2234 deterministic screenshot, seed 42, scale 2",
+  "sampling": "5 fresh-process baseline/candidate pairs; alternate order; 2 warmups and 9 measured iterations per workload per process",
+  "decision": "Retain if the primary bounded PNG workload has >=10% median completed-time improvement, every other workload has no >10% aggregate slowdown, PNG/JPEG files are byte-identical with matching dimensions and metadata, and peak RSS increase is <=10% + 2 MiB. Report noisy or overlapping results as inconclusive rather than equivalence.",
+  "limits": "No personal files, general clipboard changes, shared/third-party load tests, quality reduction, polling or debounce changes. No timings under build contention.",
+  "tooling": "Explicit installed Xcode compiler, SDK and SwiftUI macro plugin, with CLT used for Git discovery. No system toolchain or license settings changed.",
+  "sourceRoot": "/tmp/notchshot-performance-2026-10-28/checkout",
+  "primaryWorkload": "bounded-png-fits",
+  "secondaryWorkloads": [
+    "bounded-png-resize",
+    "bounded-jpeg-resize"
+  ],
+  "pngResizeFraction": 0.1,
+  "jpegResizeFraction": 0.5,
+  "invalidAttempts": [
+    "CLT build: missing SwiftUI macro plugin",
+    "CLT/Xcode macro combination: incompatible compiler diagnostic symbols",
+    "Initial resize fixture: original 176302-byte PNG, maximum 88151 bytes, existing bounded fitter rejected after its attempts; partial run has no completion marker and is excluded."
+  ],
+  "retained_scope": "Only bounded images returned unchanged by the fitter reuse accepted bytes; resized images retain the original final encoding path.",
+  "baseline_characterization": "baseline-valid: 36 completed timed iterations before production changes; not part of the paired final decision.",
+  "candidate_iterations": [
+    "v1: reuse all accepted encodings; superseded after a consistent resized-PNG slowdown",
+    "v2: reuse only unchanged fitted images; retained after matched measurements"
+  ]
+}

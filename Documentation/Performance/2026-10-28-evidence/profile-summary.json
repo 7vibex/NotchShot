@@ -1,0 +1,12 @@
+{
+  "baseline_installed_app": {
+    "tool": "sample, 8 seconds at 5 ms interval, plus vmmap",
+    "physical_footprint_mib_reported": 68.4,
+    "physical_footprint_peak_mib_reported": 202.3,
+    "main_thread": "Predominantly waiting for AppKit run-loop events",
+    "boundary": "One installed-bundle idle observation, not a matched candidate, leak, energy or frame-pacing result"
+  },
+  "selected_bottleneck": "Source call trace showed size-fitting encode followed by repeated persistence encode. Controlled immutable-input experiment removed the repeated encode only in the retained scope.",
+  "interval_specific_instruments_attribution": false,
+  "raw_traces": "Retained outside Git; no private screen pixels or process environments included in repository evidence."
+}
